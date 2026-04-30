@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, Play, Loader2, Cpu, Zap, Download, Plus, Check, RefreshCw, ChevronDown, Trash2, Search, FileUp, X } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
@@ -56,21 +56,23 @@ export default function AiTaggerTab() {
 
   // 打标进度事件
   useEffect(() => {
-    let u: UnlistenFn | null = null;
-    listen<ProgressPayload>('tagger-progress', (e) => {
+    let active = true;
+    const unlistenPromise = listen<ProgressPayload>('tagger-progress', (e) => {
+      if (!active) return;
       const p = e.payload; setPCur(p.current); setPTot(p.total);
       if (p.total > 0) setProgress((p.current / p.total) * 100);
       if (p.status === 'done') setIsDone(true);
       if (p.status === 'error') setHasErr(true);
       setLogs(prev => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }]);
-    }).then(fn => { u = fn; });
-    return () => { u?.(); };
+    });
+    return () => { active = false; unlistenPromise.then(fn => fn()); };
   }, []);
 
   // 下载进度事件（独立，不刷日志）
   useEffect(() => {
-    let u: UnlistenFn | null = null;
-    listen<DownloadPayload>('tagger-download', (e) => {
+    let active = true;
+    const unlistenPromise = listen<DownloadPayload>('tagger-download', (e) => {
+      if (!active) return;
       const d = e.payload;
       if (d.status === 'done' || d.status === 'cancelled' || d.status === 'error') {
         setDlProgress(null);
@@ -80,8 +82,8 @@ export default function AiTaggerTab() {
       } else {
         setDlProgress(d);
       }
-    }).then(fn => { u = fn; });
-    return () => { u?.(); };
+    });
+    return () => { active = false; unlistenPromise.then(fn => fn()); };
   }, []);
 
   const cur = models.find(m => m.id === selectedModel);
