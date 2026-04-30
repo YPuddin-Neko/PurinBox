@@ -183,9 +183,17 @@ pub async fn remove_custom_tagger_model(id: String) -> Result<(), String> {
 /// 检测 CUDA 是否可用，返回 (可用, 详情信息)
 #[tauri::command]
 pub async fn check_cuda_available() -> Result<(bool, String), String> {
-    tokio::task::spawn_blocking(inference::check_cuda)
-        .await
-        .map_err(|e| format!("检测失败: {}", e))
+    let task = tokio::task::spawn_blocking(inference::check_cuda);
+
+    // 8 秒超时，防止 ort 加载 DLL 时卡死
+    match tokio::time::timeout(std::time::Duration::from_secs(8), task).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(e)) => Err(format!("检测失败: {}", e)),
+        Err(_) => Ok((false, "CUDA 检测超时 (8秒)\n\n可能原因:\n\
+            1. ONNX Runtime 正在尝试加载 CUDA 库但卡住了\n\
+            2. CUDA 驱动异常\n\
+            3. 请尝试重启应用".into())),
+    }
 }
 
 /// 开始打标

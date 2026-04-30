@@ -115,7 +115,7 @@ export default function Header() {
               <span className="header-stat-value" style={{ color: getUsageColor(stats.memory_percent) }}>{stats.memory_percent.toFixed(0)}%</span>
               <MiniBar value={stats.memory_percent} color={getUsageColor(stats.memory_percent)} />
             </div>
-            {stats.gpu_usage >= 0 && (
+            {stats.gpu_usage >= 0 ? (
               <>
                 <div className="header-stat-divider" />
                 <div className="header-stat-item" title={stats.gpu_name}>
@@ -124,7 +124,15 @@ export default function Header() {
                   <MiniBar value={stats.gpu_usage} color={getUsageColor(stats.gpu_usage)} />
                 </div>
               </>
-            )}
+            ) : stats.gpu_name && !stats.gpu_name.includes('未检测') ? (
+              <>
+                <div className="header-stat-divider" />
+                <div className="header-stat-item" title={stats.gpu_name}>
+                  <MonitorDot style={{ width: 13, height: 13, color: '#a78bfa' }} />
+                  <span className="header-stat-value" style={{ color: '#a78bfa', fontSize: 10 }}>GPU</span>
+                </div>
+              </>
+            ) : null}
           </>
         )}
       </div>

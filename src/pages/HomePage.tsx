@@ -116,6 +116,15 @@ export default function HomePage() {
                   label="显存"
                   detail={stats.vram_total > 0 ? `${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}` : 'N/A'} />
               </>
+            ) : stats.gpu_name && !stats.gpu_name.includes('未检测') ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                <div style={{ width: 80, height: 80, borderRadius: '50%', border: '6px solid rgba(124,92,252,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa' }}>✓</span>
+                </div>
+                <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-primary)' }}>GPU</span>
+                <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center', lineHeight: 1.3, maxWidth: 120 }}>{stats.gpu_name}</span>
+                <span style={{ fontSize: 9, color: '#a78bfa' }}>统一内存</span>
+              </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, opacity: 0.5 }}>
                 <div style={{ width: 80, height: 80, borderRadius: '50%', border: '6px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

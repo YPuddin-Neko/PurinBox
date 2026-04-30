@@ -9,21 +9,24 @@ use crate::commands::collect_image_files;
 
 /// 检测 CUDA 是否可用，返回 (可用, 详情)
 pub fn check_cuda() -> (bool, String) {
-    let rt_info = format!("ONNX Runtime: {}", ort::info());
+    // 用 catch_unwind 防止 ort 内部 panic 导致整个程序崩溃
+    let rt_info = std::panic::catch_unwind(|| {
+        format!("ONNX Runtime: {}", ort::info())
+    }).unwrap_or_else(|_| "ONNX Runtime: 信息获取失败".into());
 
-    match ort::execution_providers::CUDAExecutionProvider::default().is_available() {
-        Ok(true) => (true, format!("{}\nCUDA ExecutionProvider: 可用", rt_info)),
-        Ok(false) => (false, format!(
+    match std::panic::catch_unwind(|| {
+        ort::execution_providers::CUDAExecutionProvider::default().is_available()
+    }) {
+        Ok(Ok(true)) => (true, format!("{}\nCUDA ExecutionProvider: 可用", rt_info)),
+        Ok(Ok(false)) => (false, format!(
             "{}\nCUDA ExecutionProvider: 不可用\n\n可能原因:\n\
             1. 当前加载的 ONNX Runtime 不含 CUDA 支持\n\
-            2. 请安装 onnxruntime-gpu: pip install onnxruntime-gpu\n\
-            3. 或将 onnxruntime_providers_cuda.dll 放到程序目录",
+            2. 系统未安装 CUDA Toolkit 或版本不匹配\n\
+            3. 未找到 onnxruntime_providers_cuda.dll",
             rt_info
         )),
-        Err(e) => (false, format!(
-            "{}\nCUDA 检测异常: {}\n\n请确认已安装 onnxruntime-gpu (pip install onnxruntime-gpu)",
-            rt_info, e
-        )),
+        Ok(Err(e)) => (false, format!("{}\nCUDA 检测异常: {}", rt_info, e)),
+        Err(_) => (false, format!("{}\nCUDA 检测时发生内部错误", rt_info)),
     }
 }
 
