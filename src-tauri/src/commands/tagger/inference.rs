@@ -9,24 +9,99 @@ use crate::commands::collect_image_files;
 
 /// 检测 CUDA 是否可用，返回 (可用, 详情)
 pub fn check_cuda() -> (bool, String) {
-    // 用 catch_unwind 防止 ort 内部 panic 导致整个程序崩溃
+    let mut lines: Vec<String> = Vec::new();
+
+    // 1. 检测 ONNX Runtime 版本
     let rt_info = std::panic::catch_unwind(|| {
         format!("ONNX Runtime: {}", ort::info())
     }).unwrap_or_else(|_| "ONNX Runtime: 信息获取失败".into());
+    lines.push(rt_info);
 
-    match std::panic::catch_unwind(|| {
+    // 2. 通过 nvidia-smi 检测系统 NVIDIA 驱动和 CUDA 版本
+    let nvidia_ok = check_nvidia_smi(&mut lines);
+
+    // 3. 检测 ort CUDA ExecutionProvider
+    let ep_ok = match std::panic::catch_unwind(|| {
         ort::execution_providers::CUDAExecutionProvider::default().is_available()
     }) {
-        Ok(Ok(true)) => (true, format!("{}\nCUDA ExecutionProvider: 可用", rt_info)),
-        Ok(Ok(false)) => (false, format!(
-            "{}\nCUDA ExecutionProvider: 不可用\n\n可能原因:\n\
-            1. 当前加载的 ONNX Runtime 不含 CUDA 支持\n\
-            2. 系统未安装 CUDA Toolkit 或版本不匹配\n\
-            3. 未找到 onnxruntime_providers_cuda.dll",
-            rt_info
-        )),
-        Ok(Err(e)) => (false, format!("{}\nCUDA 检测异常: {}", rt_info, e)),
-        Err(_) => (false, format!("{}\nCUDA 检测时发生内部错误", rt_info)),
+        Ok(Ok(true)) => {
+            lines.push("CUDA ExecutionProvider: ✓ 可用".into());
+            true
+        }
+        Ok(Ok(false)) => {
+            lines.push("CUDA ExecutionProvider: ✗ 不可用".into());
+            lines.push("原因: 当前 ONNX Runtime 为 CPU 版本".into());
+            lines.push("需要将 onnxruntime_providers_cuda.dll 和 onnxruntime_providers_shared.dll".into());
+            lines.push("放入程序目录，或安装 onnxruntime-gpu".into());
+            false
+        }
+        Ok(Err(e)) => {
+            lines.push(format!("CUDA ExecutionProvider: 异常 ({})", e));
+            false
+        }
+        Err(_) => {
+            lines.push("CUDA ExecutionProvider: 内部错误".into());
+            false
+        }
+    };
+
+    // 4. 总结
+    if ep_ok {
+        lines.insert(0, "✓ CUDA 加速可用".into());
+        (true, lines.join("\n"))
+    } else if nvidia_ok {
+        lines.push("".into());
+        lines.push("总结: 系统已安装 NVIDIA 驱动和 CUDA，但 ONNX Runtime 缺少 CUDA 支持".into());
+        lines.push("当前使用 CPU 推理仍可正常打标".into());
+        (false, lines.join("\n"))
+    } else {
+        lines.push("".into());
+        lines.push("总结: 未检测到 NVIDIA GPU，将使用 CPU 推理".into());
+        (false, lines.join("\n"))
+    }
+}
+
+/// 通过 nvidia-smi 检测系统 NVIDIA 信息（Windows 隐藏窗口）
+fn check_nvidia_smi(lines: &mut Vec<String>) -> bool {
+    let mut cmd = std::process::Command::new("nvidia-smi");
+    cmd.args(["--query-gpu=name,driver_version", "--format=csv,noheader,nounits"]);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+
+    match cmd.output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Some(line) = stdout.lines().next() {
+                let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+                let gpu_name = parts.first().unwrap_or(&"Unknown");
+                let driver_ver = parts.get(1).unwrap_or(&"Unknown");
+                lines.push(format!("NVIDIA GPU: {} (驱动 {})", gpu_name, driver_ver));
+            }
+
+            // 获取 CUDA 版本
+            let mut cmd2 = std::process::Command::new("nvidia-smi");
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd2.creation_flags(0x08000000);
+            }
+            if let Ok(full_output) = cmd2.output() {
+                let full_str = String::from_utf8_lossy(&full_output.stdout);
+                if let Some(cuda_pos) = full_str.find("CUDA Version:") {
+                    let cuda_ver = full_str[cuda_pos + 14..].split_whitespace().next().unwrap_or("?");
+                    lines.push(format!("CUDA 版本: {}", cuda_ver));
+                }
+            }
+            true
+        }
+        _ => {
+            lines.push("NVIDIA GPU: 未检测到 (nvidia-smi 不可用)".into());
+            false
+        }
     }
 }
 

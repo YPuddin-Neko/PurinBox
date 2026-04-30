@@ -187,12 +187,19 @@ fn detect_gpu() -> (String, f32, u64, u64, f32) {
     ("未检测到 GPU".into(), -1.0, 0, 0, -1.0)
 }
 
-/// 通过 nvidia-smi 检测 NVIDIA 显卡
+/// 通过 nvidia-smi 检测 NVIDIA 显卡（Windows 上隐藏控制台窗口）
 fn detect_nvidia_gpu() -> Option<(String, f32, u64, u64, f32)> {
-    let output = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=name,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"])
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("nvidia-smi");
+    cmd.args(["--query-gpu=name,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"]);
+
+    // Windows: 添加 CREATE_NO_WINDOW 标志，防止弹出 CMD 窗口
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let output = cmd.output().ok()?;
 
     if !output.status.success() {
         return None;
