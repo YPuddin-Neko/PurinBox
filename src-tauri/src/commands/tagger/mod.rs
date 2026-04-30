@@ -139,12 +139,12 @@ pub async fn add_custom_tagger_model(
     models::add_custom_model(id, name, repo_id, input_size)
 }
 
-/// 检测 CUDA 是否可用
+/// 检测 CUDA 是否可用，返回 (可用, 详情信息)
 #[tauri::command]
-pub async fn check_cuda_available() -> Result<bool, String> {
-    Ok(tokio::task::spawn_blocking(inference::check_cuda)
+pub async fn check_cuda_available() -> Result<(bool, String), String> {
+    tokio::task::spawn_blocking(inference::check_cuda)
         .await
-        .unwrap_or(false))
+        .map_err(|e| format!("检测失败: {}", e))
 }
 
 /// 开始打标

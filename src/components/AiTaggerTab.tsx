@@ -167,11 +167,11 @@ export default function AiTaggerTab() {
               <Zap style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} />
               <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>GPU</span>
             </div>
-            <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const a = await invoke<boolean>('check_cuda_available'); setCudaOk(a); setLogs(p => [...p, { time: getTimeStr(), message: a ? '✓ CUDA 可用' : '✗ CUDA 不可用', status: a ? 'success' : 'error' }]); } catch { setCudaOk(false); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
+            <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok, detail] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); setLogs(p => [...p, { time: getTimeStr(), message: detail, status: ok ? 'success' : 'error' }]); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: String(e), status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
               {cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测
             </button>
           </div>
-          {cudaOk !== null && <div style={{ marginTop: 6, fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '4px 8px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)' }}>{cudaOk ? '✓ CUDA 可用' : '✗ CUDA 不可用 — 使用 CPU'}</div>}
+          {cudaOk !== null && <div style={{ marginTop: 6, fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6, whiteSpace: 'pre-line' }}>{cudaOk ? '✓ CUDA 可用' : '✗ CUDA 不可用 — 详情请查看日志'}</div>}
         </div>
       </div>
 

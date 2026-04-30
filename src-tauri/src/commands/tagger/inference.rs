@@ -7,11 +7,25 @@ use tauri::Emitter;
 use super::{TagCategory, TagDefinition, TaggerOptions, ProcessResult, ProgressEvent};
 use crate::commands::collect_image_files;
 
-/// 检测 CUDA 是否可用
-pub fn check_cuda() -> bool {
-    ort::execution_providers::CUDAExecutionProvider::default()
-        .is_available()
-        .unwrap_or(false)
+/// 检测 CUDA 是否可用，返回 (可用, 详情)
+pub fn check_cuda() -> (bool, String) {
+    // 检查 ONNX Runtime 是否成功加载
+    let rt_info = format!("ONNX Runtime: {}", ort::info());
+
+    match ort::execution_providers::CUDAExecutionProvider::default().is_available() {
+        Ok(true) => (true, format!("{}\nCUDA ExecutionProvider: 可用", rt_info)),
+        Ok(false) => (false, format!(
+            "{}\nCUDA ExecutionProvider: 不可用\n\n可能原因:\n\
+            1. 当前加载的 ONNX Runtime 不含 CUDA 支持\n\
+            2. 请安装 onnxruntime-gpu: pip install onnxruntime-gpu\n\
+            3. 或将 onnxruntime_providers_cuda.dll 放到程序目录",
+            rt_info
+        )),
+        Err(e) => (false, format!(
+            "{}\nCUDA 检测异常: {}\n\n请确认已安装 onnxruntime-gpu (pip install onnxruntime-gpu)",
+            rt_info, e
+        )),
+    }
 }
 
 /// 从 CSV 文件加载标签定义
@@ -83,7 +97,8 @@ pub fn run_tagging(
         .map_err(|e| format!("创建会话失败: {}", e))?;
 
     if options.use_gpu {
-        if check_cuda() {
+        let (cuda_ok, cuda_detail) = check_cuda();
+        if cuda_ok {
             builder = builder
                 .with_execution_providers([
                     ort::execution_providers::CUDAExecutionProvider::default().build()
@@ -98,7 +113,7 @@ pub fn run_tagging(
             let _ = app.emit("tagger-progress", ProgressEvent {
                 current: 0, total: 0, filename: String::new(),
                 status: "error".to_string(),
-                message: "✗ 未检测到可用的 CUDA 环境，将使用 CPU。原因: 1) 未安装 NVIDIA 驱动 2) 未安装 CUDA Toolkit 3) ONNX Runtime 不含 CUDA 支持".to_string(),
+                message: format!("✗ CUDA 不可用，使用 CPU\n{}", cuda_detail),
             });
         }
     }

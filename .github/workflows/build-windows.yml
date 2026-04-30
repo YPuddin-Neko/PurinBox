@@ -35,17 +35,15 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Build Tauri app (with CUDA support)
+      - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_CLI_EXTRA_ARGS: "--features cuda"
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'AI Train Tools ${{ github.ref_name }}'
-          releaseBody: 'Windows build with CUDA support'
+          releaseBody: 'Windows build - CUDA support via system ONNX Runtime'
           releaseDraft: true
-          args: --features cuda
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
