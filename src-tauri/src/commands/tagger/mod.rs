@@ -2,6 +2,7 @@ pub mod models;
 pub mod download;
 pub mod inference;
 pub mod llm_tagger;
+pub mod gpu_runtime;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -286,10 +287,28 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
     Ok((cuda_ok, summary_lines.join("\n")))
 }
 
-/// 取消正在进行的下载
+/// 取消正在进行的模型下载
 #[tauri::command]
 pub fn cancel_tagger_download() {
     download::cancel_download();
+}
+
+/// 获取 GPU Runtime 状态
+#[tauri::command]
+pub fn get_gpu_runtime_status() -> gpu_runtime::GpuRuntimeStatus {
+    gpu_runtime::check_gpu_runtime()
+}
+
+/// 下载 GPU 版 ONNX Runtime
+#[tauri::command]
+pub async fn download_gpu_runtime(app: tauri::AppHandle) -> Result<(), String> {
+    gpu_runtime::download_gpu_runtime(&app).await
+}
+
+/// 取消 GPU Runtime 下载
+#[tauri::command]
+pub fn cancel_gpu_runtime_download() {
+    gpu_runtime::cancel_gpu_download();
 }
 
 /// 开始打标

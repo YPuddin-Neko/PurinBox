@@ -48,9 +48,13 @@ export default function AiTaggerTab() {
   const [nFormat, setNFormat] = useState('NHWC');
   const [detecting, setDetecting] = useState(false);
   const [importing, setImporting] = useState(false);
+  // GPU Runtime
+  const [gpuRtAvail, setGpuRtAvail] = useState(false);
+  const [gpuRtDownloading, setGpuRtDownloading] = useState(false);
 
   const load = useCallback(async () => {
     try { const l = await invoke<ModelInfo[]>('get_tagger_models'); setModels(l); if (l.length > 0 && !selectedModel) setSelectedModel(l[0].id); } catch {}
+    try { const s = await invoke<{ available: boolean }>('get_gpu_runtime_status'); setGpuRtAvail(s.available); } catch {}
   }, [selectedModel]);
   useEffect(() => { load(); }, []);
 
@@ -302,11 +306,40 @@ export default function AiTaggerTab() {
               <Zap style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} />
               <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>GPU</span>
             </div>
-            <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `CUDA 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={!useGpu || cudaChecking} style={{ whiteSpace: 'nowrap', opacity: !useGpu ? 0.4 : 1 }} title={!useGpu ? '请先选择 GPU 模式' : 'CUDA 环境检测'}>
-              {cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测
-            </button>
           </div>
-          {cudaOk !== null && useGpu && <div style={{ marginTop: 6, fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6, whiteSpace: 'pre-line' }}>{cudaOk ? '✓ CUDA 可用' : '✗ CUDA 不可用 — 详情请查看日志'}</div>}
+          {useGpu && (
+            <div style={{ marginTop: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {gpuRtAvail ? (
+                <>
+                  <div style={{ fontSize: 11, color: '#4ade80', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(74,222,128,0.06)' }}>
+                    ✓ GPU 版 ONNX Runtime 已安装
+                  </div>
+                  <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                    <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `CUDA 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
+                      {cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测 CUDA
+                    </button>
+                  </div>
+                  {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6 }}>{cudaOk ? '✓ CUDA 可用，GPU 加速已启用' : '✗ CUDA 不可用 — 详情请查看日志'}</div>}
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 11, color: '#fbbf24', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(251,191,36,0.06)', lineHeight: 1.6 }}>
+                    ⚠ GPU 加速需要下载 GPU 版 ONNX Runtime（约 200MB）
+                  </div>
+                  <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                    <button className="btn btn-primary btn-sm" onClick={async () => { setGpuRtDownloading(true); try { await invoke('download_gpu_runtime'); setGpuRtAvail(true); } catch(e: any) { setLogs(p => [...p, { time: getTimeStr(), message: `GPU Runtime 下载失败: ${String(e)}`, status: 'error' }]); } setGpuRtDownloading(false); }} disabled={gpuRtDownloading} style={{ whiteSpace: 'nowrap' }}>
+                      {gpuRtDownloading ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 14, height: 14 }} />} 下载 GPU Runtime
+                    </button>
+                    {gpuRtDownloading && (
+                      <button className="btn btn-secondary btn-sm" onClick={() => { invoke('cancel_gpu_runtime_download'); setGpuRtDownloading(false); }} style={{ whiteSpace: 'nowrap', color: '#f87171' }}>
+                        <X style={{ width: 14, height: 14 }} /> 取消
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
