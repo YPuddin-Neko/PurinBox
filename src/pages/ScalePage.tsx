@@ -37,7 +37,6 @@ export default function ScalePage() {
   const [downWidth, setDownWidth] = useState(512);
   const [downHeight, setDownHeight] = useState(512);
   const [processing, setProcessing] = useState(false);
-  const [result, setResult] = useState<ProcessResult | null>(null);
   const [progress, setProgress] = useState(0);
   const [progressCurrent, setProgressCurrent] = useState(0);
   const [progressTotal, setProgressTotal] = useState(0);
@@ -90,7 +89,6 @@ export default function ScalePage() {
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
     setProcessing(true);
-    setResult(null);
     setProgress(0);
     setProgressCurrent(0);
     setProgressTotal(0);
@@ -98,7 +96,7 @@ export default function ScalePage() {
     setHasError(false);
     setLogs([{ time: getTimeStr(), message: `开始${mode === 'upscale' ? '上采样' : '下采样'}处理 → ${targetWidth}×${targetHeight}`, status: 'info' }]);
     try {
-      const res = await invoke<ProcessResult>('scale_images', {
+      await invoke<ProcessResult>('scale_images', {
         options: {
           input_path: inputPath,
           output_path: outputPath,
@@ -107,9 +105,9 @@ export default function ScalePage() {
           target_height: targetHeight,
         },
       });
-      setResult(res);
+      // done
     } catch (e: any) {
-      setResult({ success_count: 0, fail_count: 1, total: 1, errors: [String(e)] });
+
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
       setHasError(true);
       setIsDone(true);
@@ -118,7 +116,7 @@ export default function ScalePage() {
     }
   };
 
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); setResult(null); }, []);
+  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
 
   return (
     <div className="page">

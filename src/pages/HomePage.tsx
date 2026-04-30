@@ -9,8 +9,6 @@ import {
   TextCursorInput,
   Tags,
   Crop,
-  ImagePlus,
-  FolderSync,
   Image,
   BarChart3,
   HardDrive,

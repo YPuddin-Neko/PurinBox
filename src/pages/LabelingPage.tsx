@@ -2,15 +2,12 @@ import { useState, useRef, useCallback } from 'react';
 import {
   Tags,
   Upload,
-  Save,
   Trash2,
   ChevronLeft,
   ChevronRight,
   Plus,
-  X,
   Copy,
   FileText,
-  FolderOpen,
 } from 'lucide-react';
 
 interface ImageItem {

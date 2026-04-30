@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
-import { FileType, Upload, Check, Plus } from 'lucide-react';
+import { FileType, Upload, Check } from 'lucide-react';
 
 interface ImageItem { id: string; name: string; url: string; }
 

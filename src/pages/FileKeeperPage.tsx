@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { FileCheck2, FolderOpen, Play, Loader2, Info, Shield } from 'lucide-react';
+import { FileCheck2, FolderOpen, Play, Loader2, Shield } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
