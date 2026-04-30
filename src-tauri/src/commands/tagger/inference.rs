@@ -18,9 +18,12 @@ pub fn check_cuda() -> (bool, String) {
     lines.push(rt_info);
 
     // 2. 通过 nvidia-smi 检测系统 NVIDIA 驱动和 CUDA 版本
-    let nvidia_ok = check_nvidia_smi(&mut lines);
+    let nvidia_ok = detect_nvidia_env(&mut lines);
 
-    // 3. 检测 ort CUDA ExecutionProvider
+    // 3. 检测 CUDA Toolkit (nvcc)
+    detect_cuda_toolkit(&mut lines);
+
+    // 4. 检测 ort CUDA ExecutionProvider
     let ep_ok = match std::panic::catch_unwind(|| {
         ort::execution_providers::CUDAExecutionProvider::default().is_available()
     }) {
@@ -30,9 +33,7 @@ pub fn check_cuda() -> (bool, String) {
         }
         Ok(Ok(false)) => {
             lines.push("CUDA ExecutionProvider: ✗ 不可用".into());
-            lines.push("原因: 当前 ONNX Runtime 为 CPU 版本".into());
-            lines.push("需要将 onnxruntime_providers_cuda.dll 和 onnxruntime_providers_shared.dll".into());
-            lines.push("放入程序目录，或安装 onnxruntime-gpu".into());
+            lines.push("  → 当前 ONNX Runtime 为 CPU 版本，不支持 GPU 加速".into());
             false
         }
         Ok(Err(e)) => {
@@ -45,64 +46,145 @@ pub fn check_cuda() -> (bool, String) {
         }
     };
 
-    // 4. 总结
+    // 5. 总结
     if ep_ok {
-        lines.insert(0, "✓ CUDA 加速可用".into());
+        lines.insert(0, "✓ CUDA 加速已启用".into());
         (true, lines.join("\n"))
     } else if nvidia_ok {
         lines.push("".into());
-        lines.push("总结: 系统已安装 NVIDIA 驱动和 CUDA，但 ONNX Runtime 缺少 CUDA 支持".into());
-        lines.push("当前使用 CPU 推理仍可正常打标".into());
+        lines.push("结论: 系统已安装 NVIDIA 驱动和 CUDA".into());
+        lines.push("但当前打包的 ONNX Runtime 为 CPU 版本".into());
+        lines.push("GPU 加速需要替换为 GPU 版 ONNX Runtime".into());
+        lines.push("CPU 推理仍可正常使用所有打标功能".into());
         (false, lines.join("\n"))
     } else {
         lines.push("".into());
-        lines.push("总结: 未检测到 NVIDIA GPU，将使用 CPU 推理".into());
+        lines.push("结论: 未检测到 NVIDIA GPU，将使用 CPU 推理".into());
         (false, lines.join("\n"))
     }
 }
 
-/// 通过 nvidia-smi 检测系统 NVIDIA 信息（Windows 隐藏窗口）
-fn check_nvidia_smi(lines: &mut Vec<String>) -> bool {
-    let mut cmd = std::process::Command::new("nvidia-smi");
-    cmd.args(["--query-gpu=name,driver_version", "--format=csv,noheader,nounits"]);
+/// 在 Windows 上获取 nvidia-smi 的完整路径
+fn get_nvidia_smi_path() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        // 常见的 nvidia-smi 路径
+        let candidates = [
+            r"C:\Windows\System32\nvidia-smi.exe",
+            r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+        ];
+        for path in &candidates {
+            if std::path::Path::new(path).exists() {
+                return path.to_string();
+            }
+        }
+        // 如果从 PATH 环境变量也能找到就用 PATH
+        if let Ok(output) = run_hidden_cmd("where", &["nvidia-smi"]) {
+            if let Some(first_line) = output.lines().next() {
+                let trimmed = first_line.trim();
+                if !trimmed.is_empty() && std::path::Path::new(trimmed).exists() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+    "nvidia-smi".to_string()
+}
+
+/// 运行命令并隐藏 Windows 控制台窗口
+fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, ()> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
 
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
     match cmd.output() {
         Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        }
+        _ => Err(()),
+    }
+}
+
+/// 检测 NVIDIA 驱动和 GPU 信息
+fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
+    let smi_path = get_nvidia_smi_path();
+
+    // 查询 GPU 名称和驱动版本
+    match run_hidden_cmd(&smi_path, &["--query-gpu=name,driver_version", "--format=csv,noheader,nounits"]) {
+        Ok(stdout) => {
             if let Some(line) = stdout.lines().next() {
                 let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
                 let gpu_name = parts.first().unwrap_or(&"Unknown");
                 let driver_ver = parts.get(1).unwrap_or(&"Unknown");
-                lines.push(format!("NVIDIA GPU: {} (驱动 {})", gpu_name, driver_ver));
+                lines.push(format!("NVIDIA GPU: {} (驱动 v{})", gpu_name, driver_ver));
             }
 
-            // 获取 CUDA 版本
-            let mut cmd2 = std::process::Command::new("nvidia-smi");
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd2.creation_flags(0x08000000);
-            }
-            if let Ok(full_output) = cmd2.output() {
-                let full_str = String::from_utf8_lossy(&full_output.stdout);
-                if let Some(cuda_pos) = full_str.find("CUDA Version:") {
-                    let cuda_ver = full_str[cuda_pos + 14..].split_whitespace().next().unwrap_or("?");
-                    lines.push(format!("CUDA 版本: {}", cuda_ver));
+            // 查 CUDA 版本（在 nvidia-smi 的完整输出里）
+            if let Ok(full_output) = run_hidden_cmd(&smi_path, &[]) {
+                if let Some(cuda_pos) = full_output.find("CUDA Version:") {
+                    let rest = &full_output[cuda_pos + 14..];
+                    let cuda_ver = rest.split_whitespace().next().unwrap_or("?");
+                    lines.push(format!("CUDA 驱动版本: {}", cuda_ver));
                 }
             }
             true
         }
-        _ => {
+        Err(_) => {
             lines.push("NVIDIA GPU: 未检测到 (nvidia-smi 不可用)".into());
             false
         }
     }
+}
+
+/// 检测 CUDA Toolkit (nvcc)
+fn detect_cuda_toolkit(lines: &mut Vec<String>) {
+    // 尝试 nvcc
+    if let Ok(output) = run_hidden_cmd("nvcc", &["--version"]) {
+        // 解析 "release X.Y" 字样
+        if let Some(pos) = output.find("release ") {
+            let ver = output[pos + 8..].split(',').next().unwrap_or("?").trim();
+            lines.push(format!("CUDA Toolkit: {} (nvcc)", ver));
+            return;
+        }
+    }
+
+    // Windows: 检查常见的 CUDA 安装路径
+    #[cfg(target_os = "windows")]
+    {
+        let cuda_path = std::env::var("CUDA_PATH").ok();
+        if let Some(ref cp) = cuda_path {
+            if std::path::Path::new(cp).exists() {
+                // 尝试从目录名解析版本
+                let ver = std::path::Path::new(cp)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown");
+                lines.push(format!("CUDA Toolkit: {} (CUDA_PATH={})", ver, cp));
+                return;
+            }
+        }
+
+        // 扫描 Program Files
+        if let Ok(entries) = std::fs::read_dir(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA") {
+            let mut versions: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect();
+            versions.sort();
+            if let Some(latest) = versions.last() {
+                lines.push(format!("CUDA Toolkit: {} (已安装)", latest));
+                return;
+            }
+        }
+    }
+
+    lines.push("CUDA Toolkit: 未检测到".into());
 }
 
 /// 自动检测 ONNX 模型的输入信息

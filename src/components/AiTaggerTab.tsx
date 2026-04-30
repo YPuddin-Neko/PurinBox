@@ -300,11 +300,11 @@ export default function AiTaggerTab() {
               <Zap style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} />
               <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>GPU</span>
             </div>
-            <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); setLogs(p => [...p, { time: getTimeStr(), message: '正在检测 CUDA 加速支持...', status: 'info' }]); try { const [ok, detail] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); detail.split('\n').forEach(line => { if (line.trim()) setLogs(p => [...p, { time: getTimeStr(), message: line.trim(), status: ok ? 'success' : 'error' }]); }); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `CUDA 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
+            <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); setLogs(p => [...p, { time: getTimeStr(), message: '正在检测 CUDA 加速支持...', status: 'info' }]); try { const [ok, detail] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); detail.split('\n').forEach(line => { if (line.trim()) setLogs(p => [...p, { time: getTimeStr(), message: line.trim(), status: ok ? 'success' : 'error' }]); }); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `CUDA 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={!useGpu || cudaChecking} style={{ whiteSpace: 'nowrap', opacity: !useGpu ? 0.4 : 1 }} title={!useGpu ? '请先选择 GPU 模式' : 'CUDA 环境检测'}>
               {cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测
             </button>
           </div>
-          {cudaOk !== null && <div style={{ marginTop: 6, fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6, whiteSpace: 'pre-line' }}>{cudaOk ? '✓ CUDA 可用' : '✗ CUDA 不可用 — 详情请查看日志'}</div>}
+          {cudaOk !== null && useGpu && <div style={{ marginTop: 6, fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6, whiteSpace: 'pre-line' }}>{cudaOk ? '✓ CUDA 可用' : '✗ CUDA 不可用 — 详情请查看日志'}</div>}
         </div>
       </div>
 
