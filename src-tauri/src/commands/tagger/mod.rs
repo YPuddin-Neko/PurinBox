@@ -4,7 +4,7 @@ pub mod inference;
 pub mod llm_tagger;
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::{ProcessResult, ProgressEvent};
 
@@ -32,17 +32,6 @@ impl TagCategory {
         }
     }
 
-    pub fn label(&self) -> &str {
-        match self {
-            Self::General => "通用标签",
-            Self::Artist => "作者标签",
-            Self::Copyright => "版权标签",
-            Self::Character => "角色标签",
-            Self::Meta => "元信息标签",
-            Self::Rating => "评级标签",
-        }
-    }
-
     pub fn key(&self) -> &str {
         match self {
             Self::General => "general",
@@ -53,14 +42,6 @@ impl TagCategory {
             Self::Rating => "rating",
         }
     }
-}
-
-/// 单个标签
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TagItem {
-    pub name: String,
-    pub category: String,
-    pub confidence: f32,
 }
 
 /// 打标选项
