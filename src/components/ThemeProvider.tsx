@@ -2,21 +2,30 @@ import { createContext, useContext, useState, useEffect, ReactNode } from 'react
 
 type ThemeMode = 'dark' | 'light' | 'system';
 
-interface ThemeContextType {
+interface AppSettingsContextType {
   mode: ThemeMode;
   setMode: (m: ThemeMode) => void;
   resolved: 'dark' | 'light';
+  monitorInterval: number;
+  setMonitorInterval: (ms: number) => void;
 }
 
-const ThemeContext = createContext<ThemeContextType>({
+const AppSettingsContext = createContext<AppSettingsContextType>({
   mode: 'dark', setMode: () => {}, resolved: 'dark',
+  monitorInterval: 3000, setMonitorInterval: () => {},
 });
 
-export function useTheme() { return useContext(ThemeContext); }
+export function useTheme() { return useContext(AppSettingsContext); }
+export function useAppSettings() { return useContext(AppSettingsContext); }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [mode, setModeRaw] = useState<ThemeMode>(() => {
     return (localStorage.getItem('theme') as ThemeMode) || 'dark';
+  });
+
+  const [monitorInterval, setMonitorIntervalRaw] = useState<number>(() => {
+    const saved = localStorage.getItem('monitorInterval');
+    return saved ? Number(saved) : 3000;
   });
 
   const [systemDark, setSystemDark] = useState(
@@ -35,6 +44,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('theme', m);
   };
 
+  const setMonitorInterval = (ms: number) => {
+    setMonitorIntervalRaw(ms);
+    localStorage.setItem('monitorInterval', String(ms));
+  };
+
   const resolved = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode;
 
   useEffect(() => {
@@ -42,8 +56,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [resolved]);
 
   return (
-    <ThemeContext.Provider value={{ mode, setMode, resolved }}>
+    <AppSettingsContext.Provider value={{ mode, setMode, resolved, monitorInterval, setMonitorInterval }}>
       {children}
-    </ThemeContext.Provider>
+    </AppSettingsContext.Provider>
   );
 }

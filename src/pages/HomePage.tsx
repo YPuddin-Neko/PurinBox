@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { useAppSettings } from '../components/ThemeProvider';
 import {
   Scaling, FlipHorizontal2, ScanSearch, FileCheck2, FileType,
   Layers, TextCursorInput, Tags, Crop, MonitorDot, Zap,
@@ -61,8 +62,10 @@ function getUsageColor(pct: number) {
 
 export default function HomePage() {
   const [stats, setStats] = useState<SystemStats | null>(null);
+  const { monitorInterval } = useAppSettings();
 
   useEffect(() => {
+    if (monitorInterval <= 0) { setStats(null); return; }
     let alive = true;
     const poll = async () => {
       try {
@@ -71,9 +74,9 @@ export default function HomePage() {
       } catch {}
     };
     poll();
-    const timer = setInterval(poll, 3000);
+    const timer = setInterval(poll, monitorInterval);
     return () => { alive = false; clearInterval(timer); };
-  }, []);
+  }, [monitorInterval]);
 
   const trainingTools = tools.filter(t => t.category === '数据集预处理');
   const processingTools = tools.filter(t => t.category === '数据集处理');

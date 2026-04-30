@@ -61,12 +61,13 @@ function getUsageColor(pct: number) {
 export default function Header() {
   const location = useLocation();
   const currentRoute = routeNames[location.pathname] || { breadcrumb: '未知', title: '未知' };
-  const { mode, setMode } = useTheme();
+  const { mode, setMode, monitorInterval } = useTheme();
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [showTaskPanel, setShowTaskPanel] = useState(false);
 
   // 轮询系统状态
   useEffect(() => {
+    if (monitorInterval <= 0) { setStats(null); return; }
     let alive = true;
     const poll = async () => {
       try {
@@ -75,9 +76,9 @@ export default function Header() {
       } catch {}
     };
     poll();
-    const timer = setInterval(poll, 3000);
+    const timer = setInterval(poll, monitorInterval);
     return () => { alive = false; clearInterval(timer); };
-  }, []);
+  }, [monitorInterval]);
 
   const cycleTheme = () => {
     const next: Record<string, 'light' | 'dark' | 'system'> = { dark: 'light', light: 'system', system: 'dark' };
