@@ -4,12 +4,11 @@ use ort::session::Session;
 use std::path::Path;
 use tauri::Emitter;
 
-use super::{TagCategory, TagDefinition, TaggerOptions, ProcessResult, ProgressEvent};
+use super::{TagCategory, TagDefinition, TaggerOptions, ProcessResult, ProgressEvent, OnnxModelInfo};
 use crate::commands::collect_image_files;
 
 /// 检测 CUDA 是否可用，返回 (可用, 详情)
 pub fn check_cuda() -> (bool, String) {
-    // 检查 ONNX Runtime 是否成功加载
     let rt_info = format!("ONNX Runtime: {}", ort::info());
 
     match ort::execution_providers::CUDAExecutionProvider::default().is_available() {
@@ -26,6 +25,61 @@ pub fn check_cuda() -> (bool, String) {
             rt_info, e
         )),
     }
+}
+
+/// 自动检测 ONNX 模型的输入信息
+pub fn detect_model_info(model_path: &str) -> Result<OnnxModelInfo, String> {
+    let session = Session::builder()
+        .map_err(|e| format!("创建会话失败: {}", e))?
+        .commit_from_file(model_path)
+        .map_err(|e| format!("加载模型失败: {}\n\n请确认文件是有效的 ONNX 模型", e))?;
+
+    let inputs = session.inputs();
+    if inputs.is_empty() {
+        return Err("模型没有输入节点".into());
+    }
+
+    let input = &inputs[0];
+    let dtype = input.dtype();
+
+    // 从 ValueType::Tensor 提取 shape
+    let shape_ref = dtype.tensor_shape()
+        .ok_or("输入不是 Tensor 类型")?;
+
+    // Shape 是 SmallVec<i64>
+    let shape: Vec<i64> = shape_ref.iter().copied().collect();
+
+    if shape.len() != 4 {
+        return Err(format!(
+            "不支持的输入形状: {:?}\n预期 4 维 [Batch, H, W, C] 或 [Batch, C, H, W]",
+            shape
+        ));
+    }
+
+    // 判断 NHWC 还是 NCHW
+    // NHWC: [1, H, W, 3]  -> shape[3] == 3
+    // NCHW: [1, 3, H, W]  -> shape[1] == 3
+    let (input_format, input_size, channels) = if shape[3] == 3 || shape[3] == 1 {
+        // NHWC
+        ("NHWC".to_string(), shape[1] as u32, shape[3])
+    } else if shape[1] == 3 || shape[1] == 1 {
+        // NCHW
+        ("NCHW".to_string(), shape[2] as u32, shape[1])
+    } else {
+        // 猜测：取较小维度作为 channels
+        if shape[1] < shape[3] {
+            ("NCHW".to_string(), shape[2] as u32, shape[1])
+        } else {
+            ("NHWC".to_string(), shape[1] as u32, shape[3])
+        }
+    };
+
+    Ok(OnnxModelInfo {
+        input_size,
+        input_format,
+        input_shape: shape,
+        channels,
+    })
 }
 
 /// 从 CSV 文件加载标签定义
@@ -47,7 +101,7 @@ pub fn load_tags(csv_path: &Path) -> Result<Vec<TagDefinition>, String> {
     Ok(tags)
 }
 
-/// 从 JSON 文件加载标签定义 (CL Tagger 格式: {"index": {"tag": "name", "category": "Category"}})
+/// 从 JSON 文件加载标签定义 (CL Tagger 格式)
 pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
     let content = std::fs::read_to_string(json_path)
         .map_err(|e| format!("无法读取标签文件: {}", e))?;
@@ -75,13 +129,12 @@ pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
         tags.push((idx, TagDefinition { name: tag_name, category }));
     }
 
-    // 按索引排序
     tags.sort_by_key(|(idx, _)| *idx);
     Ok(tags.into_iter().map(|(_, td)| td).collect())
 }
 
-/// 预处理图片: [1, size, size, 3] BGR float32 [0,255]
-fn preprocess_image(img_path: &Path, target_size: u32) -> Result<Vec<f32>, String> {
+/// 预处理图片 NHWC: [1, size, size, 3] BGR float32 [0,255]
+fn preprocess_image_nhwc(img_path: &Path, target_size: u32) -> Result<(Vec<i64>, Vec<f32>), String> {
     let img = image::open(img_path).map_err(|e| format!("无法打开图片: {}", e))?;
     let (w, h) = img.dimensions();
     let size = target_size;
@@ -109,7 +162,41 @@ fn preprocess_image(img_path: &Path, target_size: u32) -> Result<Vec<f32>, Strin
             input[idx + 2] = px[0] as f32; // R
         }
     }
-    Ok(input)
+    let s = size as i64;
+    Ok((vec![1, s, s, 3], input))
+}
+
+/// 预处理图片 NCHW: [1, 3, size, size] BGR float32 [0,255]
+fn preprocess_image_nchw(img_path: &Path, target_size: u32) -> Result<(Vec<i64>, Vec<f32>), String> {
+    let img = image::open(img_path).map_err(|e| format!("无法打开图片: {}", e))?;
+    let (w, h) = img.dimensions();
+    let size = target_size;
+
+    let scale = (size as f32 / w as f32).min(size as f32 / h as f32);
+    let new_w = (w as f32 * scale) as u32;
+    let new_h = (h as f32 * scale) as u32;
+    let pad_x = (size - new_w) / 2;
+    let pad_y = (size - new_h) / 2;
+
+    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
+    let rgb = resized.to_rgb8();
+
+    let plane = (size * size) as usize;
+    let mut input = vec![255.0f32; plane * 3]; // white padding (3 channels)
+
+    for y in 0..new_h {
+        for x in 0..new_w {
+            let px = rgb.get_pixel(x, y);
+            let out_x = (x + pad_x) as usize;
+            let out_y = (y + pad_y) as usize;
+            let pixel_idx = out_y * size as usize + out_x;
+            input[pixel_idx] = px[2] as f32;             // B channel (plane 0)
+            input[plane + pixel_idx] = px[1] as f32;     // G channel (plane 1)
+            input[plane * 2 + pixel_idx] = px[0] as f32; // R channel (plane 2)
+        }
+    }
+    let s = size as i64;
+    Ok((vec![1, 3, s, s], input))
 }
 
 /// 执行批量打标
@@ -119,11 +206,14 @@ pub fn run_tagging(
     model_path: &Path,
     tag_defs: &[TagDefinition],
     input_size: u32,
+    is_nchw: bool,
 ) -> Result<ProcessResult, String> {
+    let fmt_label = if is_nchw { "NCHW" } else { "NHWC" };
     let _ = app.emit("tagger-progress", ProgressEvent {
         current: 0, total: 0, filename: String::new(),
         status: "info".to_string(),
-        message: format!("正在加载模型 (GPU: {})...", if options.use_gpu { "启用" } else { "禁用" }),
+        message: format!("正在加载模型 (GPU: {}, 格式: {})...",
+            if options.use_gpu { "启用" } else { "禁用" }, fmt_label),
     });
 
     let mut builder = Session::builder()
@@ -179,7 +269,7 @@ pub fn run_tagging(
             message: format!("正在处理: {} ({}/{})", filename, i + 1, total),
         });
 
-        match tag_single_image(&mut session, file_path, tag_defs, input_size, options, &enabled_cats) {
+        match tag_single_image(&mut session, file_path, tag_defs, input_size, options, &enabled_cats, is_nchw) {
             Ok(tag_count) => {
                 success_count += 1;
                 let _ = app.emit("tagger-progress", ProgressEvent {
@@ -219,12 +309,15 @@ fn tag_single_image(
     input_size: u32,
     options: &TaggerOptions,
     enabled_cats: &[&str],
+    is_nchw: bool,
 ) -> Result<usize, String> {
-    let input_data = preprocess_image(img_path, input_size)?;
-    let size = input_size as i64;
+    let (shape, input_data) = if is_nchw {
+        preprocess_image_nchw(img_path, input_size)?
+    } else {
+        preprocess_image_nhwc(img_path, input_size)?
+    };
 
-    // 使用 Tensor::from_array 创建输入 [1, size, size, 3]
-    let input_tensor = ort::value::Tensor::from_array((vec![1i64, size, size, 3], input_data))
+    let input_tensor = ort::value::Tensor::from_array((shape, input_data))
         .map_err(|e| format!("创建输入张量失败: {}", e))?;
 
     let outputs = session.run(ort::inputs![input_tensor])

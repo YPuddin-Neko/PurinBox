@@ -8,7 +8,8 @@ use commands::format_convert::convert_format;
 use commands::alpha_convert::convert_alpha;
 use commands::batch_rename::{preview_rename, execute_rename};
 use commands::tagger::{
-    get_tagger_models, add_custom_tagger_model,
+    get_tagger_models, detect_onnx_model_info,
+    import_local_tagger_model, remove_custom_tagger_model,
     check_cuda_available, start_tagging,
 };
 use commands::tagger::llm_tagger::start_llm_tagging;
@@ -30,7 +31,9 @@ pub fn run() {
             preview_rename,
             execute_rename,
             get_tagger_models,
-            add_custom_tagger_model,
+            detect_onnx_model_info,
+            import_local_tagger_model,
+            remove_custom_tagger_model,
             check_cuda_available,
             start_tagging,
             start_llm_tagging,

@@ -2,12 +2,13 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { FolderOpen, Play, Loader2, Cpu, Zap, Download, Plus, Check, RefreshCw, ChevronDown } from 'lucide-react';
+import { FolderOpen, Play, Loader2, Cpu, Zap, Download, Plus, Check, RefreshCw, ChevronDown, Trash2, Search, FileUp } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
 
-interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; }
+interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
+interface OnnxModelInfo { input_size: number; input_format: string; input_shape: number[]; channels: number; }
 
 const cats = [
   { key: 'general', label: '通用标签', default: true },
@@ -35,8 +36,15 @@ export default function AiTaggerTab() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
+  // 导入模型
   const [showAdd, setShowAdd] = useState(false);
-  const [nId, setNId] = useState(''); const [nName, setNName] = useState(''); const [nRepo, setNRepo] = useState(''); const [nSize, setNSize] = useState(448);
+  const [nName, setNName] = useState('');
+  const [nModelPath, setNModelPath] = useState('');
+  const [nTagsPath, setNTagsPath] = useState('');
+  const [nSize, setNSize] = useState(448);
+  const [nFormat, setNFormat] = useState('NHWC');
+  const [detecting, setDetecting] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const load = useCallback(async () => {
     try { const l = await invoke<ModelInfo[]>('get_tagger_models'); setModels(l); if (l.length > 0 && !selectedModel) setSelectedModel(l[0].id); } catch {}
@@ -68,6 +76,58 @@ export default function AiTaggerTab() {
     finally { setProcessing(false); }
   };
 
+  const browseOnnx = async () => {
+    const f = await open({ multiple: false, filters: [{ name: 'ONNX Model', extensions: ['onnx'] }] });
+    if (f) setNModelPath(f as string);
+  };
+  const browseTags = async () => {
+    const f = await open({ multiple: false, filters: [{ name: '标签文件', extensions: ['csv', 'json'] }] });
+    if (f) setNTagsPath(f as string);
+  };
+
+  const autoDetect = async () => {
+    if (!nModelPath) { setLogs(p => [...p, { time: getTimeStr(), message: '请先选择模型文件 (.onnx)', status: 'error' }]); return; }
+    setDetecting(true);
+    try {
+      const info = await invoke<OnnxModelInfo>('detect_onnx_model_info', { modelPath: nModelPath });
+      setNSize(info.input_size);
+      setNFormat(info.input_format);
+      setLogs(p => [...p, { time: getTimeStr(), message: `✓ 自动检测成功 | 输入尺寸: ${info.input_size}px | 通道格式: ${info.input_format} | 形状: [${info.input_shape.join(', ')}]`, status: 'success' }]);
+    } catch (e: any) {
+      setLogs(p => [...p, { time: getTimeStr(), message: `自动检测失败: ${String(e)}`, status: 'error' }]);
+    }
+    setDetecting(false);
+  };
+
+  const handleImport = async () => {
+    if (!nName || !nModelPath || !nTagsPath) {
+      setLogs(p => [...p, { time: getTimeStr(), message: '请填写名称并选择模型文件和标签文件', status: 'error' }]);
+      return;
+    }
+    setImporting(true);
+    try {
+      await invoke<string>('import_local_tagger_model', { name: nName, modelPath: nModelPath, tagsPath: nTagsPath, inputSize: nSize, inputFormat: nFormat });
+      setLogs(p => [...p, { time: getTimeStr(), message: `✓ 模型 "${nName}" 导入成功`, status: 'success' }]);
+      setShowAdd(false); setNName(''); setNModelPath(''); setNTagsPath(''); setNSize(448); setNFormat('NHWC');
+      await load();
+    } catch (e: any) {
+      setLogs(p => [...p, { time: getTimeStr(), message: `导入失败: ${String(e)}`, status: 'error' }]);
+    }
+    setImporting(false);
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`确认删除自定义模型 "${name}" 吗？\n模型文件也会被删除。`)) return;
+    try {
+      await invoke('remove_custom_tagger_model', { id });
+      setLogs(p => [...p, { time: getTimeStr(), message: `已删除模型: ${name}`, status: 'info' }]);
+      if (selectedModel === id) setSelectedModel('');
+      await load();
+    } catch (e: any) {
+      setLogs(p => [...p, { time: getTimeStr(), message: `删除失败: ${String(e)}`, status: 'error' }]);
+    }
+  };
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-5)' }}>
       {/* 左栏 */}
@@ -81,25 +141,68 @@ export default function AiTaggerTab() {
           </div>
         </div>
 
-        {/* 模型选择 - 下拉 */}
+        {/* 模型选择 */}
         <div className="tool-panel">
           <div className="tool-panel-header">
             <span className="tool-panel-title">打标模型</span>
-            <button className="btn btn-ghost btn-sm" onClick={() => setShowAdd(!showAdd)}><Plus style={{ width: 14, height: 14 }} /> 添加</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowAdd(!showAdd)}>
+              {showAdd ? '✕ 关闭' : <><Plus style={{ width: 14, height: 14 }} /> 导入模型</>}
+            </button>
           </div>
+
+          {/* 导入本地模型面板 */}
           {showAdd && (
-            <div style={{ padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', background: 'rgba(245,158,11,0.04)', border: '1px solid rgba(245,158,11,0.12)', marginBottom: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-              <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                <input className="form-input" placeholder="模型ID" value={nId} onChange={e => setNId(e.target.value)} style={{ flex: 1 }} />
-                <input className="form-input" placeholder="名称" value={nName} onChange={e => setNName(e.target.value)} style={{ flex: 1 }} />
+            <div style={{ padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', background: 'rgba(124,92,252,0.04)', border: '1px solid rgba(124,92,252,0.15)', marginBottom: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+              {/* 名称 */}
+              <div>
+                <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>名称：</label>
+                <input className="form-input" placeholder="例如: My Custom Tagger" value={nName} onChange={e => setNName(e.target.value)} style={{ width: '100%' }} />
               </div>
-              <input className="form-input" placeholder="HuggingFace Repo (user/model)" value={nRepo} onChange={e => setNRepo(e.target.value)} />
-              <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
-                <input className="form-input" type="number" value={nSize} onChange={e => setNSize(Number(e.target.value))} style={{ width: 100 }} />
-                <button className="btn btn-primary btn-sm" onClick={async () => { if (!nId||!nName||!nRepo) return; try { await invoke('add_custom_tagger_model', { id: nId, name: nName, repoId: nRepo, inputSize: nSize }); setShowAdd(false); setNId(''); setNName(''); setNRepo(''); await load(); } catch(e:any) { setLogs(p => [...p, { time: getTimeStr(), message: String(e), status: 'error' }]); } }}>添加</button>
+              {/* 模型文件 */}
+              <div>
+                <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>模型文件 (.onnx)：</label>
+                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                  <input className="form-input" placeholder="选择 .onnx 文件..." value={nModelPath} onChange={e => setNModelPath(e.target.value)} style={{ flex: 1 }} readOnly />
+                  <button className="btn btn-secondary btn-sm" onClick={browseOnnx}><FileUp style={{ width: 14, height: 14 }} /> 浏览...</button>
+                </div>
+              </div>
+              {/* 标签映射 */}
+              <div>
+                <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>标签映射 (.csv / .json)：</label>
+                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                  <input className="form-input" placeholder="选择标签文件..." value={nTagsPath} onChange={e => setNTagsPath(e.target.value)} style={{ flex: 1 }} readOnly />
+                  <button className="btn btn-secondary btn-sm" onClick={browseTags}><FileUp style={{ width: 14, height: 14 }} /> 浏览...</button>
+                </div>
+              </div>
+              {/* 通道格式 + 尺寸 + 自动检测 */}
+              <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
+                <div>
+                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>输入通道：</label>
+                  <div style={{ position: 'relative' }}>
+                    <select className="form-input" value={nFormat} onChange={e => setNFormat(e.target.value)} style={{ width: 90, appearance: 'none', paddingRight: 24, cursor: 'pointer' }}>
+                      <option value="NHWC">NHWC</option>
+                      <option value="NCHW">NCHW</option>
+                    </select>
+                    <ChevronDown style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', width: 12, height: 12, color: 'var(--color-text-tertiary)', pointerEvents: 'none' }} />
+                  </div>
+                </div>
+                <div>
+                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>输入尺寸：</label>
+                  <input className="form-input" type="number" value={nSize} onChange={e => setNSize(Number(e.target.value))} style={{ width: 80 }} />
+                </div>
+                <button className="btn btn-secondary btn-sm" onClick={autoDetect} disabled={detecting || !nModelPath} style={{ height: 34, whiteSpace: 'nowrap' }}>
+                  {detecting ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Search style={{ width: 14, height: 14 }} />} 自动识别
+                </button>
+                <button className="btn btn-primary btn-sm" onClick={handleImport} disabled={importing || !nName || !nModelPath || !nTagsPath} style={{ height: 34 }}>
+                  {importing ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Plus style={{ width: 14, height: 14 }} />} 添加
+                </button>
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }}>
+                💡 <b>输入通道</b>：NHWC = [批次,高,宽,通道数]（TensorFlow 风格），NCHW = [批次,通道数,高,宽]（PyTorch 风格）。选错会导致结果异常，建议使用「自动识别」。
               </div>
             </div>
           )}
+
           <div style={{ position: 'relative' }}>
             <select className="form-input" value={selectedModel} onChange={e => setSelectedModel(e.target.value)}
               style={{ width: '100%', appearance: 'none', paddingRight: 32, cursor: 'pointer' }}>
@@ -115,11 +218,20 @@ export default function AiTaggerTab() {
               <span style={{ padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: cur.is_downloaded ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)', color: cur.is_downloaded ? '#4ade80' : '#fbbf24' }}>
                 {cur.is_downloaded ? '已下载' : '待下载'}
               </span>
+              <span style={{ padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: 'rgba(124,92,252,0.1)', color: '#a78bfa' }}>
+                {cur.input_format} · {cur.input_size}px
+              </span>
+              {!cur.is_builtin && (
+                <button className="btn btn-ghost btn-sm" onClick={() => handleDelete(cur.id, cur.name)}
+                  style={{ marginLeft: 'auto', padding: '2px 6px', color: '#f87171' }}>
+                  <Trash2 style={{ width: 12, height: 12 }} /> 删除
+                </button>
+              )}
             </div>
           )}
         </div>
 
-        {/* 标签分类 + 阈值 紧凑排列 */}
+        {/* 标签分类 + 阈值 */}
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">标签分类与阈值</span></div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginBottom: 'var(--space-3)' }}>
@@ -186,7 +298,7 @@ export default function AiTaggerTab() {
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">当前设置</span></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'var(--font-size-sm)' }}>
-            {[['模型', cur?.name || '未选择', '#f59e0b'], ['状态', cur?.is_downloaded ? '已下载' : '首次使用自动下载', cur?.is_downloaded ? '#4ade80' : '#fbbf24'], ['分类', `${enabled.size} 类`, 'var(--color-text-primary)'], ['加速', useGpu ? 'GPU CUDA' : 'CPU', useGpu ? '#4ade80' : '#60a5fa'], ['通用阈值', genTh.toFixed(2), '#f59e0b'], ['角色阈值', charTh.toFixed(2), '#f59e0b']].map(([k, v, c]) => (
+            {[['模型', cur?.name || '未选择', '#f59e0b'], ['状态', cur?.is_downloaded ? '已下载' : '首次使用自动下载', cur?.is_downloaded ? '#4ade80' : '#fbbf24'], ['格式', cur ? `${cur.input_format} · ${cur.input_size}px` : '-', '#a78bfa'], ['分类', `${enabled.size} 类`, 'var(--color-text-primary)'], ['加速', useGpu ? 'GPU CUDA' : 'CPU', useGpu ? '#4ade80' : '#60a5fa'], ['通用阈值', genTh.toFixed(2), '#f59e0b'], ['角色阈值', charTh.toFixed(2), '#f59e0b']].map(([k, v, c]) => (
               <div key={k as string} style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--color-text-tertiary)' }}>{k}</span>
                 <span style={{ fontWeight: 600, color: c as string }}>{v}</span>

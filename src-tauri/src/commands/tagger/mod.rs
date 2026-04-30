@@ -65,6 +65,7 @@ pub struct TaggerModelInfo {
     pub is_builtin: bool,
     pub is_downloaded: bool,
     pub repo_id: String,
+    pub input_format: String,
 }
 
 /// 标签定义（从 CSV 解析）
@@ -72,6 +73,15 @@ pub struct TaggerModelInfo {
 pub struct TagDefinition {
     pub name: String,
     pub category: TagCategory,
+}
+
+/// ONNX 模型自动检测结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnnxModelInfo {
+    pub input_size: u32,
+    pub input_format: String,
+    pub input_shape: Vec<i64>,
+    pub channels: i64,
 }
 
 /// 获取模型存储根目录
@@ -120,6 +130,10 @@ pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
             .to_string();
         let is_downloaded = model_dir.join("model.onnx").exists()
             && model_dir.join(&tags_basename).exists();
+        let fmt_str = match m.input_format {
+            models::InputFormat::NHWC => "NHWC",
+            models::InputFormat::NCHW => "NCHW",
+        };
         result.push(TaggerModelInfo {
             id: m.id.clone(),
             name: m.name.clone(),
@@ -128,20 +142,42 @@ pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
             is_builtin: m.is_builtin,
             is_downloaded,
             repo_id: m.repo_id.clone(),
+            input_format: fmt_str.to_string(),
         });
     }
     Ok(result)
 }
 
-/// 添加自定义模型
+/// 自动检测 ONNX 模型的输入尺寸和通道格式
 #[tauri::command]
-pub async fn add_custom_tagger_model(
-    id: String,
+pub async fn detect_onnx_model_info(model_path: String) -> Result<OnnxModelInfo, String> {
+    tokio::task::spawn_blocking(move || {
+        inference::detect_model_info(&model_path)
+    })
+    .await
+    .map_err(|e| format!("检测失败: {}", e))?
+}
+
+/// 导入本地模型
+#[tauri::command]
+pub async fn import_local_tagger_model(
     name: String,
-    repo_id: String,
+    model_path: String,
+    tags_path: String,
     input_size: u32,
-) -> Result<(), String> {
-    models::add_custom_model(id, name, repo_id, input_size)
+    input_format: String,
+) -> Result<String, String> {
+    let fmt = match input_format.as_str() {
+        "NCHW" => models::InputFormat::NCHW,
+        _ => models::InputFormat::NHWC,
+    };
+    models::add_local_model(name, model_path, tags_path, input_size, fmt)
+}
+
+/// 删除自定义模型
+#[tauri::command]
+pub async fn remove_custom_tagger_model(id: String) -> Result<(), String> {
+    models::remove_custom_model(&id)
 }
 
 /// 检测 CUDA 是否可用，返回 (可用, 详情信息)
@@ -191,10 +227,11 @@ pub async fn start_tagging(
     };
 
     // 4. 执行推理
+    let is_nchw = model_def.input_format == models::InputFormat::NCHW;
     let app_clone = app.clone();
     let opts = options.clone();
     tokio::task::spawn_blocking(move || {
-        inference::run_tagging(&app_clone, &opts, &model_path, &tag_defs, model_def.input_size)
+        inference::run_tagging(&app_clone, &opts, &model_path, &tag_defs, model_def.input_size, is_nchw)
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
