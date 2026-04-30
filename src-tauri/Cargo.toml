@@ -1,0 +1,49 @@
+[package]
+name = "tauri-app"
+version = "0.1.0"
+description = "AI Train Tools - AI训练数据处理工具箱"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "tauri_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = "0.25"
+walkdir = "2"
+psd = "0.3"
+tokio = { version = "1", features = ["rt", "sync", "fs", "io-util"] }
+rand = "0.9"
+ort = "2.0.0-rc.12"
+reqwest = { version = "0.12", features = ["stream", "rustls-tls", "json"] }
+futures-util = "0.3"
+csv = "1"
+ndarray = "0.16"
+base64 = "0.22"
+
+# Dev 模式下优化图像处理库，避免逐像素操作极慢
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.psd]
+opt-level = 3
+
+[profile.dev.package.ort]
+opt-level = 3
+
+[profile.dev.package.ndarray]
+opt-level = 3
