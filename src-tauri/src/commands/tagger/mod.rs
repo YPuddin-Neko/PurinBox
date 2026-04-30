@@ -113,8 +113,13 @@ pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
     let mut result = Vec::new();
     for m in &all {
         let model_dir = get_model_dir(&m.id);
+        let tags_basename = std::path::Path::new(&m.tags_filename)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let is_downloaded = model_dir.join("model.onnx").exists()
-            && model_dir.join("selected_tags.csv").exists();
+            && model_dir.join(&tags_basename).exists();
         result.push(TaggerModelInfo {
             id: m.id.clone(),
             name: m.name.clone(),
@@ -159,7 +164,12 @@ pub async fn start_tagging(
 
     let model_dir = get_model_dir(&model_def.id);
     let model_path = model_dir.join("model.onnx");
-    let tags_path = model_dir.join("selected_tags.csv");
+    let tags_basename = std::path::Path::new(&model_def.tags_filename)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let tags_path = model_dir.join(&tags_basename);
 
     // 2. 如果未下载，先下载
     if !model_path.exists() || !tags_path.exists() {
@@ -173,8 +183,12 @@ pub async fn start_tagging(
         download::download_model(&app, &model_def).await?;
     }
 
-    // 3. 加载标签定义
-    let tag_defs = inference::load_tags(&tags_path)?;
+    // 3. 加载标签定义（支持 CSV 和 JSON 格式）
+    let tag_defs = if tags_basename.ends_with(".json") {
+        inference::load_tags_json(&tags_path)?
+    } else {
+        inference::load_tags(&tags_path)?
+    };
 
     // 4. 执行推理
     let app_clone = app.clone();

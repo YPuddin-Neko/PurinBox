@@ -47,6 +47,39 @@ pub fn load_tags(csv_path: &Path) -> Result<Vec<TagDefinition>, String> {
     Ok(tags)
 }
 
+/// 从 JSON 文件加载标签定义 (CL Tagger 格式: {"index": {"tag": "name", "category": "Category"}})
+pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
+    let content = std::fs::read_to_string(json_path)
+        .map_err(|e| format!("无法读取标签文件: {}", e))?;
+
+    let map: std::collections::BTreeMap<String, serde_json::Value> =
+        serde_json::from_str(&content)
+            .map_err(|e| format!("JSON 解析错误: {}", e))?;
+
+    let mut tags: Vec<(usize, TagDefinition)> = Vec::new();
+    for (idx_str, val) in &map {
+        let idx: usize = idx_str.parse().unwrap_or(0);
+        let tag_name = val.get("tag").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let cat_str = val.get("category").and_then(|v| v.as_str()).unwrap_or("General");
+
+        let category = match cat_str {
+            "General" => TagCategory::General,
+            "Artist" => TagCategory::Artist,
+            "Copyright" => TagCategory::Copyright,
+            "Character" => TagCategory::Character,
+            "Meta" => TagCategory::Meta,
+            "Rating" => TagCategory::Rating,
+            _ => TagCategory::General,
+        };
+
+        tags.push((idx, TagDefinition { name: tag_name, category }));
+    }
+
+    // 按索引排序
+    tags.sort_by_key(|(idx, _)| *idx);
+    Ok(tags.into_iter().map(|(_, td)| td).collect())
+}
+
 /// 预处理图片: [1, size, size, 3] BGR float32 [0,255]
 fn preprocess_image(img_path: &Path, target_size: u32) -> Result<Vec<f32>, String> {
     let img = image::open(img_path).map_err(|e| format!("无法打开图片: {}", e))?;

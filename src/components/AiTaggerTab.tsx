@@ -104,7 +104,7 @@ export default function AiTaggerTab() {
             <select className="form-input" value={selectedModel} onChange={e => setSelectedModel(e.target.value)}
               style={{ width: '100%', appearance: 'none', paddingRight: 32, cursor: 'pointer' }}>
               {models.map(m => (
-                <option key={m.id} value={m.id}>{m.name} ({m.input_size}px) {m.is_downloaded ? '✓' : '⬇'}</option>
+                <option key={m.id} value={m.id}>{m.name} {m.is_downloaded ? '✓' : '⬇'}</option>
               ))}
             </select>
             <ChevronDown style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', width: 16, height: 16, color: 'var(--color-text-tertiary)', pointerEvents: 'none' }} />
