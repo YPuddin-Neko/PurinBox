@@ -92,10 +92,20 @@ export default function AiTaggerTab() {
 
   const cur = models.find(m => m.id === selectedModel);
 
+  const handleCancel = async () => {
+    try { await invoke('cancel_tagging'); } catch {}
+  };
+
   const handleStart = async () => {
     if (!inputPath || !selectedModel || enabled.size === 0) return;
+    // 如果正在打标，先取消上一次
+    if (processing) {
+      await handleCancel();
+      // 等一小会让上一个任务退出
+      await new Promise(r => setTimeout(r, 300));
+    }
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
-    setLogs([{ time: getTimeStr(), message: `开始打标 | 模型: ${cur?.name} | GPU: ${useGpu ? '是' : '否'}`, status: 'info' }]);
+    setLogs([{ time: getTimeStr(), message: `开始打标 | 模型: ${cur?.name} | 硬件: ${useGpu ? 'GPU' : 'CPU'}`, status: 'info' }]);
     try {
       await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu } });
       await load();
@@ -345,11 +355,18 @@ export default function AiTaggerTab() {
 
       {/* 右栏 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        <button className="btn btn-primary btn-lg" style={{ width: '100%', height: 48 }} onClick={handleStart}
-          disabled={processing || !inputPath || !selectedModel || enabled.size === 0}>
-          {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 打标中...</> :
-            cur && !cur.is_downloaded ? <><Download style={{ width: 18, height: 18 }} /> 下载并打标</> : <><Play style={{ width: 18, height: 18 }} /> 开始打标</>}
-        </button>
+        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+          <button className="btn btn-primary btn-lg" style={{ flex: 1, height: 48 }} onClick={handleStart}
+            disabled={!inputPath || !selectedModel || enabled.size === 0}>
+            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 打标中...</> :
+              cur && !cur.is_downloaded ? <><Download style={{ width: 18, height: 18 }} /> 下载并打标</> : <><Play style={{ width: 18, height: 18 }} /> 开始打标</>}
+          </button>
+          {processing && (
+            <button className="btn btn-secondary btn-lg" style={{ height: 48, color: '#f87171' }} onClick={handleCancel}>
+              <X style={{ width: 18, height: 18 }} /> 取消
+            </button>
+          )}
+        </div>
 
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">当前设置</span></div>

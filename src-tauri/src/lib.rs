@@ -12,18 +12,13 @@ use commands::tagger::{
     import_local_tagger_model, remove_custom_tagger_model,
     check_cuda_available, start_tagging, cancel_tagger_download,
     get_gpu_runtime_status, download_gpu_runtime, cancel_gpu_runtime_download,
+    cancel_tagging,
 };
 use commands::tagger::llm_tagger::start_llm_tagging;
 use commands::{scan_images, get_system_stats};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // 启动时检查是否有 GPU Runtime，有则设置 ORT_DYLIB_PATH
-    let gpu_pref = std::env::var("AIT_USE_GPU").unwrap_or_default();
-    if gpu_pref == "1" {
-        commands::tagger::gpu_runtime::setup_gpu_runtime_env();
-    }
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -47,6 +42,7 @@ pub fn run() {
             get_gpu_runtime_status,
             download_gpu_runtime,
             cancel_gpu_runtime_download,
+            cancel_tagging,
             start_llm_tagging,
             get_system_stats,
         ])

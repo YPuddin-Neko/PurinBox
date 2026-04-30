@@ -39,7 +39,6 @@ ndarray = "0.16"
 base64 = "0.22"
 sysinfo = "0.35"
 zip = "2"
-dirs-next = "2"
 
 # Dev 模式下优化图像处理库，避免逐像素操作极慢
 [profile.dev.package.image]

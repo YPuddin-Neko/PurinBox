@@ -21,11 +21,14 @@ pub struct GpuRuntimeStatus {
     pub files: Vec<String>,
 }
 
-/// 获取 GPU Runtime 存储目录
+/// 获取 GPU Runtime 存储目录（软件根目录/runtime/ort-gpu/）
 pub fn get_gpu_runtime_dir() -> PathBuf {
-    let base = dirs_next::data_local_dir()
+    // 使用可执行文件所在目录
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("AiTrainTools").join("ort-gpu")
+    exe_dir.join("runtime").join("ort-gpu")
 }
 
 /// 检查 GPU Runtime 是否已下载

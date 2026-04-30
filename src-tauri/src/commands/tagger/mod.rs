@@ -311,12 +311,25 @@ pub fn cancel_gpu_runtime_download() {
     gpu_runtime::cancel_gpu_download();
 }
 
+/// 取消打标
+#[tauri::command]
+pub fn cancel_tagging() {
+    inference::cancel_tagging();
+}
+
 /// 开始打标
 #[tauri::command]
 pub async fn start_tagging(
     app: tauri::AppHandle,
     options: TaggerOptions,
 ) -> Result<ProcessResult, String> {
+    // 重置取消标志
+    inference::reset_tagging_cancel();
+
+    // 如果使用 GPU，设置 ORT_DYLIB_PATH
+    if options.use_gpu {
+        gpu_runtime::setup_gpu_runtime_env();
+    }
     // 1. 查找模型
     let model_def = models::find_model(&options.model_id)
         .ok_or_else(|| format!("模型不存在: {}", options.model_id))?;

@@ -2,10 +2,29 @@ use image::GenericImageView;
 use ort::ep::ExecutionProvider;
 use ort::session::Session;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use super::{TagCategory, TagDefinition, TaggerOptions, ProcessResult, ProgressEvent, OnnxModelInfo};
 use crate::commands::collect_image_files;
+
+/// 全局打标取消标志
+static TAGGING_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+/// 取消打标
+pub fn cancel_tagging() {
+    TAGGING_CANCELLED.store(true, Ordering::SeqCst);
+}
+
+/// 重置取消标志（开始新任务前调用）
+pub fn reset_tagging_cancel() {
+    TAGGING_CANCELLED.store(false, Ordering::SeqCst);
+}
+
+/// 检查是否已取消
+pub fn is_tagging_cancelled() -> bool {
+    TAGGING_CANCELLED.load(Ordering::SeqCst)
+}
 
 /// 检测 CUDA 是否可用，返回 (可用, 详情)
 pub fn check_cuda() -> (bool, String) {
@@ -435,6 +454,23 @@ pub fn run_tagging(
     let enabled_cats: Vec<&str> = options.enabled_categories.iter().map(|s| s.as_str()).collect();
 
     for (i, file_path) in files.iter().enumerate() {
+        // 检查取消
+        if is_tagging_cancelled() {
+            let _ = app.emit("tagger-progress", ProgressEvent {
+                current: i as u32, total,
+                filename: String::new(),
+                status: "error".to_string(),
+                message: format!("打标已取消（已完成 {}/{}）", i, total),
+            });
+            let _ = app.emit("tagger-progress", ProgressEvent {
+                current: i as u32, total,
+                filename: String::new(),
+                status: "done".to_string(),
+                message: format!("打标已取消: 成功 {}, 失败 {}", success_count, fail_count),
+            });
+            return Ok(ProcessResult { success_count, fail_count, total, errors });
+        }
+
         let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
         let _ = app.emit("tagger-progress", ProgressEvent {
