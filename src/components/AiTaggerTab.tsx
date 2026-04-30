@@ -279,7 +279,7 @@ export default function AiTaggerTab() {
               <Zap style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} />
               <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>GPU</span>
             </div>
-            <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok, detail] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); setLogs(p => [...p, { time: getTimeStr(), message: detail, status: ok ? 'success' : 'error' }]); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: String(e), status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
+            <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); setLogs(p => [...p, { time: getTimeStr(), message: '正在检测 CUDA 加速支持...', status: 'info' }]); try { const [ok, detail] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); detail.split('\n').forEach(line => { if (line.trim()) setLogs(p => [...p, { time: getTimeStr(), message: line.trim(), status: ok ? 'success' : 'error' }]); }); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `CUDA 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
               {cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测
             </button>
           </div>
@@ -298,7 +298,7 @@ export default function AiTaggerTab() {
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">当前设置</span></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'var(--font-size-sm)' }}>
-            {[['模型', cur?.name || '未选择', '#f59e0b'], ['状态', cur?.is_downloaded ? '已下载' : '首次使用自动下载', cur?.is_downloaded ? '#4ade80' : '#fbbf24'], ['格式', cur ? `${cur.input_format} · ${cur.input_size}px` : '-', '#a78bfa'], ['分类', `${enabled.size} 类`, 'var(--color-text-primary)'], ['加速', useGpu ? 'GPU CUDA' : 'CPU', useGpu ? '#4ade80' : '#60a5fa'], ['通用阈值', genTh.toFixed(2), '#f59e0b'], ['角色阈值', charTh.toFixed(2), '#f59e0b']].map(([k, v, c]) => (
+            {[['模型', cur?.name || '未选择', '#f59e0b'], ['状态', cur?.is_downloaded ? '已下载' : '首次使用自动下载', cur?.is_downloaded ? '#4ade80' : '#fbbf24'], ['格式', cur ? `${cur.input_format} · ${cur.input_size}px` : '-', '#a78bfa'], ['分类', `${enabled.size} 类`, 'var(--color-text-primary)'], ['加速', useGpu ? 'CUDA' : 'CPU', useGpu ? '#4ade80' : '#60a5fa'], ['通用阈值', genTh.toFixed(2), '#f59e0b'], ['角色阈值', charTh.toFixed(2), '#f59e0b']].map(([k, v, c]) => (
               <div key={k as string} style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--color-text-tertiary)' }}>{k}</span>
                 <span style={{ fontWeight: 600, color: c as string }}>{v}</span>
@@ -307,7 +307,7 @@ export default function AiTaggerTab() {
           </div>
         </div>
 
-        {(logs.length > 0 || processing) && (
+        {logs.length > 0 && (
           <ProgressLog progress={progress} current={pCur} total={pTot} logs={logs} isDone={isDone} hasError={hasErr} onClearLogs={() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); }} />
         )}
       </div>
