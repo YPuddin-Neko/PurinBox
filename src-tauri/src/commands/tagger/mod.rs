@@ -196,6 +196,12 @@ pub async fn check_cuda_available() -> Result<(bool, String), String> {
     }
 }
 
+/// 取消正在进行的下载
+#[tauri::command]
+pub fn cancel_tagger_download() {
+    download::cancel_download();
+}
+
 /// 开始打标
 #[tauri::command]
 pub async fn start_tagging(

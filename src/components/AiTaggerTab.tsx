@@ -2,13 +2,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { FolderOpen, Play, Loader2, Cpu, Zap, Download, Plus, Check, RefreshCw, ChevronDown, Trash2, Search, FileUp } from 'lucide-react';
+import { FolderOpen, Play, Loader2, Cpu, Zap, Download, Plus, Check, RefreshCw, ChevronDown, Trash2, Search, FileUp, X } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
 
 interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 interface OnnxModelInfo { input_size: number; input_format: string; input_shape: number[]; channels: number; }
+interface DownloadPayload { filename: string; downloaded: number; total: number; percent: number; speed_mbps: number; status: string; message: string; }
 
 const cats = [
   { key: 'general', label: '通用标签', default: true },
@@ -36,6 +37,8 @@ export default function AiTaggerTab() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
+  // 下载进度
+  const [dlProgress, setDlProgress] = useState<DownloadPayload | null>(null);
   // 导入模型
   const [showAdd, setShowAdd] = useState(false);
   const [nName, setNName] = useState('');
@@ -51,6 +54,7 @@ export default function AiTaggerTab() {
   }, [selectedModel]);
   useEffect(() => { load(); }, []);
 
+  // 打标进度事件
   useEffect(() => {
     let u: UnlistenFn | null = null;
     listen<ProgressPayload>('tagger-progress', (e) => {
@@ -59,6 +63,23 @@ export default function AiTaggerTab() {
       if (p.status === 'done') setIsDone(true);
       if (p.status === 'error') setHasErr(true);
       setLogs(prev => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }]);
+    }).then(fn => { u = fn; });
+    return () => { u?.(); };
+  }, []);
+
+  // 下载进度事件（独立，不刷日志）
+  useEffect(() => {
+    let u: UnlistenFn | null = null;
+    listen<DownloadPayload>('tagger-download', (e) => {
+      const d = e.payload;
+      if (d.status === 'done' || d.status === 'cancelled' || d.status === 'error') {
+        setDlProgress(null);
+        if (d.status === 'error') {
+          setLogs(p => [...p, { time: getTimeStr(), message: `下载失败: ${d.message}`, status: 'error' }]);
+        }
+      } else {
+        setDlProgress(d);
+      }
     }).then(fn => { u = fn; });
     return () => { u?.(); };
   }, []);
@@ -306,6 +327,31 @@ export default function AiTaggerTab() {
             ))}
           </div>
         </div>
+
+        {/* 下载进度条 */}
+        {dlProgress && (
+          <div className="tool-panel" style={{ padding: 'var(--space-4)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Download style={{ width: 14, height: 14, color: '#60a5fa', animation: 'pulse 1.5s infinite' }} />
+                <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>下载模型</span>
+              </div>
+              <button onClick={async () => { try { await invoke('cancel_tagger_download'); } catch {} }}
+                style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(248,113,113,0.3)', background: 'rgba(248,113,113,0.06)', color: '#f87171', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                <X style={{ width: 12, height: 12 }} /> 取消
+              </button>
+            </div>
+            <div style={{ marginBottom: 6 }}>
+              <div style={{ height: 6, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
+                <div style={{ height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #7c5cfc, #60a5fa)', width: `${dlProgress.percent}%`, transition: 'width 0.3s ease' }} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+              <span>{dlProgress.message}</span>
+              <span style={{ fontWeight: 700, fontFamily: 'monospace', color: '#60a5fa' }}>{dlProgress.percent.toFixed(1)}%</span>
+            </div>
+          </div>
+        )}
 
         {logs.length > 0 && (
           <ProgressLog progress={progress} current={pCur} total={pTot} logs={logs} isDone={isDone} hasError={hasErr} onClearLogs={() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); }} />

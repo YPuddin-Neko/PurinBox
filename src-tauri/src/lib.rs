@@ -10,7 +10,7 @@ use commands::batch_rename::{preview_rename, execute_rename};
 use commands::tagger::{
     get_tagger_models, detect_onnx_model_info,
     import_local_tagger_model, remove_custom_tagger_model,
-    check_cuda_available, start_tagging,
+    check_cuda_available, start_tagging, cancel_tagger_download,
 };
 use commands::tagger::llm_tagger::start_llm_tagging;
 use commands::{scan_images, get_system_stats};
@@ -36,6 +36,7 @@ pub fn run() {
             remove_custom_tagger_model,
             check_cuda_available,
             start_tagging,
+            cancel_tagger_download,
             start_llm_tagging,
             get_system_stats,
         ])
