@@ -91,8 +91,8 @@ fn get_nvidia_smi_path() -> String {
     "nvidia-smi".to_string()
 }
 
-/// 运行命令并隐藏 Windows 控制台窗口
-fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, ()> {
+/// 运行命令并隐藏 Windows 控制台窗口，返回 stdout 或错误信息
+fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd = std::process::Command::new(program);
     cmd.args(args);
 
@@ -106,13 +106,18 @@ fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, ()> {
         Ok(output) if output.status.success() => {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         }
-        _ => Err(()),
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            Err(format!("exit code: {:?}, stderr: {}", output.status.code(), stderr))
+        }
+        Err(e) => Err(format!("{}", e)),
     }
 }
 
 /// 检测 NVIDIA 驱动和 GPU 信息
 fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
     let smi_path = get_nvidia_smi_path();
+    lines.push(format!("nvidia-smi 路径: {}", smi_path));
 
     // 查询 GPU 名称和驱动版本
     match run_hidden_cmd(&smi_path, &["--query-gpu=name,driver_version", "--format=csv,noheader,nounits"]) {
@@ -134,8 +139,8 @@ fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
             }
             true
         }
-        Err(_) => {
-            lines.push("NVIDIA GPU: 未检测到 (nvidia-smi 不可用)".into());
+        Err(err) => {
+            lines.push(format!("NVIDIA GPU: 未检测到 ({})", err));
             false
         }
     }

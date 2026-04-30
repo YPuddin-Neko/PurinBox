@@ -14,7 +14,7 @@ interface DownloadPayload { filename: string; downloaded: number; total: number;
 const cats = [
   { key: 'general', label: '通用标签', default: true },
   { key: 'character', label: '角色标签', default: true },
-  { key: 'rating', label: '评级标签', default: true },
+  { key: 'rating', label: '评级标签', default: false },
   { key: 'artist', label: '作者标签', default: false },
   { key: 'copyright', label: '版权标签', default: false },
   { key: 'meta', label: '元信息标签', default: false },
@@ -24,7 +24,7 @@ export default function AiTaggerTab() {
   const [inputPath, setInputPath] = useState('');
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
-  const [genTh, setGenTh] = useState(0.35);
+  const [genTh, setGenTh] = useState(0.55);
   const [charTh, setCharTh] = useState(0.85);
   const [enabled, setEnabled] = useState<Set<string>>(new Set(cats.filter(c => c.default).map(c => c.key)));
   const [useGpu, setUseGpu] = useState(false);
@@ -290,7 +290,7 @@ export default function AiTaggerTab() {
 
         {/* GPU */}
         <div className="tool-panel">
-          <div className="tool-panel-header"><span className="tool-panel-title">加速设置</span></div>
+          <div className="tool-panel-header"><span className="tool-panel-title">硬件设置</span></div>
           <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
             <div onClick={() => setUseGpu(false)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1px solid ${!useGpu ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: !useGpu ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: 'pointer' }}>
               <Cpu style={{ width: 16, height: 16, color: !useGpu ? '#60a5fa' : 'var(--color-text-tertiary)' }} />
@@ -319,7 +319,7 @@ export default function AiTaggerTab() {
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">当前设置</span></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'var(--font-size-sm)' }}>
-            {[['模型', cur?.name || '未选择', '#f59e0b'], ['状态', cur?.is_downloaded ? '已下载' : '首次使用自动下载', cur?.is_downloaded ? '#4ade80' : '#fbbf24'], ['格式', cur ? `${cur.input_format} · ${cur.input_size}px` : '-', '#a78bfa'], ['分类', `${enabled.size} 类`, 'var(--color-text-primary)'], ['加速', useGpu ? 'CUDA' : 'CPU', useGpu ? '#4ade80' : '#60a5fa'], ['通用阈值', genTh.toFixed(2), '#f59e0b'], ['角色阈值', charTh.toFixed(2), '#f59e0b']].map(([k, v, c]) => (
+            {[['模型', cur?.name || '未选择', '#f59e0b'], ['状态', cur?.is_downloaded ? '已下载' : '首次使用自动下载', cur?.is_downloaded ? '#4ade80' : '#fbbf24'], ['格式', cur ? `${cur.input_format} · ${cur.input_size}px` : '-', '#a78bfa'], ['分类', `${enabled.size} 类`, 'var(--color-text-primary)'], ['硬件', useGpu ? 'CUDA' : 'CPU', useGpu ? '#4ade80' : '#60a5fa'], ['通用阈值', genTh.toFixed(2), '#f59e0b'], ['角色阈值', charTh.toFixed(2), '#f59e0b']].map(([k, v, c]) => (
               <div key={k as string} style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--color-text-tertiary)' }}>{k}</span>
                 <span style={{ fontWeight: 600, color: c as string }}>{v}</span>

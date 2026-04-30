@@ -119,11 +119,21 @@ export default function Header() {
             {stats.gpu_usage >= 0 ? (
               <>
                 <div className="header-stat-divider" />
-                <div className="header-stat-item" title={stats.gpu_name}>
+                <div className="header-stat-item" title={`${stats.gpu_name}\nGPU: ${stats.gpu_usage.toFixed(0)}%`}>
                   <MonitorDot style={{ width: 13, height: 13, color: getUsageColor(stats.gpu_usage) }} />
                   <span className="header-stat-value" style={{ color: getUsageColor(stats.gpu_usage) }}>{stats.gpu_usage.toFixed(0)}%</span>
                   <MiniBar value={stats.gpu_usage} color={getUsageColor(stats.gpu_usage)} />
                 </div>
+                {stats.vram_percent >= 0 && stats.vram_total > 0 && (
+                  <>
+                    <div className="header-stat-divider" />
+                    <div className="header-stat-item" title={`显存: ${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}`}>
+                      <MemoryStick style={{ width: 13, height: 13, color: getUsageColor(stats.vram_percent) }} />
+                      <span className="header-stat-value" style={{ color: getUsageColor(stats.vram_percent) }}>{stats.vram_percent.toFixed(0)}%</span>
+                      <MiniBar value={stats.vram_percent} color={getUsageColor(stats.vram_percent)} />
+                    </div>
+                  </>
+                )}
               </>
             ) : stats.gpu_name && !stats.gpu_name.includes('未检测') ? (
               <>
