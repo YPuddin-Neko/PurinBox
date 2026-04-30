@@ -414,24 +414,29 @@ pub fn run_tagging(
         .map_err(|e| format!("创建会话失败: {}", e))?;
 
     if options.use_gpu {
-        let (cuda_ok, cuda_detail) = check_cuda();
-        if cuda_ok {
-            builder = builder
-                .with_execution_providers([
-                    ort::execution_providers::CUDAExecutionProvider::default().build()
-                ])
-                .map_err(|e| format!("CUDA 初始化失败: {}", e))?;
-            let _ = app.emit("tagger-progress", ProgressEvent {
-                current: 0, total: 0, filename: String::new(),
-                status: "success".to_string(),
-                message: "✓ CUDA 加速已启用".to_string(),
-            });
-        } else {
-            let _ = app.emit("tagger-progress", ProgressEvent {
-                current: 0, total: 0, filename: String::new(),
-                status: "error".to_string(),
-                message: format!("✗ CUDA 不可用，使用 CPU\n{}", cuda_detail),
-            });
+        // 直接尝试注册 CUDA EP，不再调用 check_cuda（避免 ort::info() 卡死）
+        let cuda_builder = builder.with_execution_providers([
+            ort::execution_providers::CUDAExecutionProvider::default().build()
+        ]);
+        match cuda_builder {
+            Ok(b) => {
+                builder = b;
+                let _ = app.emit("tagger-progress", ProgressEvent {
+                    current: 0, total: 0, filename: String::new(),
+                    status: "success".to_string(),
+                    message: "✓ 已注册 CUDA ExecutionProvider".to_string(),
+                });
+            }
+            Err(e) => {
+                let _ = app.emit("tagger-progress", ProgressEvent {
+                    current: 0, total: 0, filename: String::new(),
+                    status: "error".to_string(),
+                    message: format!("✗ CUDA 注册失败，回退 CPU: {}", e),
+                });
+                // 重新创建 builder（上一个已被 move）
+                builder = Session::builder()
+                    .map_err(|e2| format!("创建会话失败: {}", e2))?;
+            }
         }
     }
 

@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, Play, Loader2, Cpu, Zap, Download, Plus, Check, RefreshCw, ChevronDown, Trash2, Search, FileUp, X } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
+import { useTaskQueue } from './TaskContext';
 
 interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
@@ -90,6 +91,7 @@ export default function AiTaggerTab() {
     return () => { active = false; unlistenPromise.then(fn => fn()); };
   }, []);
 
+  const { addTask, updateTask } = useTaskQueue();
   const cur = models.find(m => m.id === selectedModel);
 
   const handleCancel = async () => {
@@ -101,15 +103,20 @@ export default function AiTaggerTab() {
     // 如果正在打标，先取消上一次
     if (processing) {
       await handleCancel();
-      // 等一小会让上一个任务退出
       await new Promise(r => setTimeout(r, 300));
     }
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
     setLogs([{ time: getTimeStr(), message: `开始打标 | 模型: ${cur?.name} | 硬件: ${useGpu ? 'GPU' : 'CPU'}`, status: 'info' }]);
+    addTask('tagger', `AI 打标 - ${cur?.name || '未知'}`);
     try {
       await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu } });
+      updateTask('tagger', { status: 'done' });
       await load();
-    } catch (e: any) { setLogs(p => [...p, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]); setHasErr(true); setIsDone(true); }
+    } catch (e: any) {
+      setLogs(p => [...p, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setHasErr(true); setIsDone(true);
+      updateTask('tagger', { status: 'error', message: String(e) });
+    }
     finally { setProcessing(false); }
   };
 

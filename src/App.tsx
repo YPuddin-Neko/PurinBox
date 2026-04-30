@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { ThemeProvider } from './components/ThemeProvider';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -21,35 +21,68 @@ import './styles/global.css';
 import './styles/sidebar.css';
 import './styles/layout.css';
 import './styles/progress.css';
+import { TaskProvider } from './components/TaskContext';
+
+// 需要保持状态的页面（重型页面）用 display:none 隐藏而非卸载
+const persistentPages = [
+  { path: '/tagger', component: TaggerPage },
+];
+
+// 普通页面走 Routes
+const routePages = [
+  { path: '/', component: HomePage },
+  { path: '/scale', component: ScalePage },
+  { path: '/flip', component: FlipPage },
+  { path: '/filter', component: FilterPage },
+  { path: '/file-keeper', component: FileKeeperPage },
+  { path: '/format-convert', component: FormatConvertPage },
+  { path: '/alpha-convert', component: AlphaConvertPage },
+  { path: '/batch-rename', component: BatchRenamePage },
+  { path: '/labeling', component: LabelingPage },
+  { path: '/crop', component: CropPage },
+  { path: '/convert', component: ConvertPage },
+  { path: '/augment', component: AugmentPage },
+  { path: '/organize', component: OrganizePage },
+  { path: '/settings', component: SettingsPage },
+];
+
+function AppContent() {
+  const location = useLocation();
+  const currentPath = location.pathname;
+
+  return (
+    <div className="main-layout">
+      <Header />
+      <main className="main-content">
+        {/* 持久化页面 - 始终挂载，通过 display 控制显示 */}
+        {persistentPages.map(({ path, component: Component }) => (
+          <div key={path} style={{ display: currentPath === path ? 'block' : 'none', height: '100%' }}>
+            <Component />
+          </div>
+        ))}
+
+        {/* 非持久化页面 - 正常路由 */}
+        {!persistentPages.some(p => p.path === currentPath) && (
+          <Routes>
+            {routePages.map(({ path, component: Component }) => (
+              <Route key={path} path={path} element={<Component />} />
+            ))}
+          </Routes>
+        )}
+      </main>
+    </div>
+  );
+}
 
 export default function App() {
   return (
     <ThemeProvider>
-      <BrowserRouter>
-        <Sidebar />
-        <div className="main-layout">
-          <Header />
-          <main className="main-content">
-            <Routes>
-              <Route path="/" element={<HomePage />} />
-              <Route path="/scale" element={<ScalePage />} />
-              <Route path="/flip" element={<FlipPage />} />
-              <Route path="/filter" element={<FilterPage />} />
-              <Route path="/file-keeper" element={<FileKeeperPage />} />
-              <Route path="/format-convert" element={<FormatConvertPage />} />
-              <Route path="/alpha-convert" element={<AlphaConvertPage />} />
-              <Route path="/batch-rename" element={<BatchRenamePage />} />
-              <Route path="/tagger" element={<TaggerPage />} />
-              <Route path="/labeling" element={<LabelingPage />} />
-              <Route path="/crop" element={<CropPage />} />
-              <Route path="/convert" element={<ConvertPage />} />
-              <Route path="/augment" element={<AugmentPage />} />
-              <Route path="/organize" element={<OrganizePage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Routes>
-          </main>
-        </div>
-      </BrowserRouter>
+      <TaskProvider>
+        <BrowserRouter>
+          <Sidebar />
+          <AppContent />
+        </BrowserRouter>
+      </TaskProvider>
     </ThemeProvider>
   );
 }
