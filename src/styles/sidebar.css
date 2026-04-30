@@ -237,3 +237,16 @@
   opacity: 0;
   width: 0;
 }
+
+/* ---- Light Theme Overrides ---- */
+[data-theme="light"] .sidebar-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+[data-theme="light"] .sidebar-toggle-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .sidebar-item.active {
+  background: rgba(124, 92, 252, 0.08);
+}

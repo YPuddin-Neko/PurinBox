@@ -109,3 +109,62 @@ pub struct ProcessResult {
     pub total: u32,
     pub errors: Vec<String>,
 }
+
+/// 系统性能指标
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemStats {
+    pub cpu_usage: f32,
+    pub cpu_name: String,
+    pub cpu_cores: usize,
+    pub memory_used: u64,
+    pub memory_total: u64,
+    pub memory_percent: f32,
+    pub gpu_name: String,
+    pub gpu_usage: f32,
+    pub vram_used: u64,
+    pub vram_total: u64,
+    pub vram_percent: f32,
+}
+
+/// 获取系统性能指标
+#[tauri::command]
+pub async fn get_system_stats() -> Result<SystemStats, String> {
+    use sysinfo::System;
+
+    tokio::task::spawn_blocking(|| {
+        let mut sys = System::new_all();
+        // 需要短暂等待以获取准确的 CPU 数据
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        sys.refresh_all();
+
+        let cpu_usage = sys.global_cpu_usage();
+        let cpu_name = sys.cpus().first()
+            .map(|c| c.brand().to_string())
+            .unwrap_or_else(|| "Unknown".into());
+        let cpu_cores = sys.cpus().len();
+
+        let memory_total = sys.total_memory();
+        let memory_used = sys.used_memory();
+        let memory_percent = if memory_total > 0 {
+            (memory_used as f64 / memory_total as f64 * 100.0) as f32
+        } else { 0.0 };
+
+        // GPU 信息需要平台特定实现，这里暂时返回 N/A
+        // 后续可以通过 NVML 获取 NVIDIA 显卡信息
+        Ok(SystemStats {
+            cpu_usage,
+            cpu_name,
+            cpu_cores,
+            memory_used,
+            memory_total,
+            memory_percent,
+            gpu_name: "检测中...".into(),
+            gpu_usage: -1.0,
+            vram_used: 0,
+            vram_total: 0,
+            vram_percent: -1.0,
+        })
+    })
+    .await
+    .map_err(|e| format!("获取系统信息失败: {}", e))?
+}

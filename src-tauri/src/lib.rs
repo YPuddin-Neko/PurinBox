@@ -13,7 +13,7 @@ use commands::tagger::{
     check_cuda_available, start_tagging,
 };
 use commands::tagger::llm_tagger::start_llm_tagging;
-use commands::scan_images;
+use commands::{scan_images, get_system_stats};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -37,6 +37,7 @@ pub fn run() {
             check_cuda_available,
             start_tagging,
             start_llm_tagging,
+            get_system_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

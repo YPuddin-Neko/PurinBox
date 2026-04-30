@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { ThemeProvider } from './components/ThemeProvider';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import HomePage from './pages/HomePage';
@@ -23,30 +24,32 @@ import './styles/progress.css';
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Sidebar />
-      <div className="main-layout">
-        <Header />
-        <main className="main-content">
-          <Routes>
-            <Route path="/" element={<HomePage />} />
-            <Route path="/scale" element={<ScalePage />} />
-            <Route path="/flip" element={<FlipPage />} />
-            <Route path="/filter" element={<FilterPage />} />
-            <Route path="/file-keeper" element={<FileKeeperPage />} />
-            <Route path="/format-convert" element={<FormatConvertPage />} />
-            <Route path="/alpha-convert" element={<AlphaConvertPage />} />
-            <Route path="/batch-rename" element={<BatchRenamePage />} />
-            <Route path="/tagger" element={<TaggerPage />} />
-            <Route path="/labeling" element={<LabelingPage />} />
-            <Route path="/crop" element={<CropPage />} />
-            <Route path="/convert" element={<ConvertPage />} />
-            <Route path="/augment" element={<AugmentPage />} />
-            <Route path="/organize" element={<OrganizePage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Routes>
-        </main>
-      </div>
-    </BrowserRouter>
+    <ThemeProvider>
+      <BrowserRouter>
+        <Sidebar />
+        <div className="main-layout">
+          <Header />
+          <main className="main-content">
+            <Routes>
+              <Route path="/" element={<HomePage />} />
+              <Route path="/scale" element={<ScalePage />} />
+              <Route path="/flip" element={<FlipPage />} />
+              <Route path="/filter" element={<FilterPage />} />
+              <Route path="/file-keeper" element={<FileKeeperPage />} />
+              <Route path="/format-convert" element={<FormatConvertPage />} />
+              <Route path="/alpha-convert" element={<AlphaConvertPage />} />
+              <Route path="/batch-rename" element={<BatchRenamePage />} />
+              <Route path="/tagger" element={<TaggerPage />} />
+              <Route path="/labeling" element={<LabelingPage />} />
+              <Route path="/crop" element={<CropPage />} />
+              <Route path="/convert" element={<ConvertPage />} />
+              <Route path="/augment" element={<AugmentPage />} />
+              <Route path="/organize" element={<OrganizePage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+            </Routes>
+          </main>
+        </div>
+      </BrowserRouter>
+    </ThemeProvider>
   );
 }

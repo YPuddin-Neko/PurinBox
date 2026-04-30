@@ -87,6 +87,35 @@
   --header-height: 52px;
 }
 
+/* ---- Light Theme ---- */
+[data-theme="light"] {
+  --color-bg-primary: #f5f6fa;
+  --color-bg-secondary: #ebedf5;
+  --color-bg-tertiary: #e2e5ef;
+  --color-bg-card: #ffffff;
+  --color-bg-card-hover: #f8f9fc;
+  --color-bg-input: #f0f1f6;
+  --color-bg-elevated: #ffffff;
+
+  --color-gradient-card: linear-gradient(145deg, rgba(124, 92, 252, 0.04) 0%, rgba(0, 212, 255, 0.02) 100%);
+  --color-gradient-sidebar: linear-gradient(180deg, #f0f1f6 0%, #e8e9f0 100%);
+
+  --color-text-primary: #1a1d2e;
+  --color-text-secondary: #5a5e78;
+  --color-text-tertiary: #8b8fa8;
+  --color-text-on-accent: #ffffff;
+
+  --color-border: rgba(0, 0, 0, 0.08);
+  --color-border-hover: rgba(124, 92, 252, 0.25);
+  --color-border-active: rgba(124, 92, 252, 0.5);
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.1);
+  --shadow-glow: 0 0 20px rgba(124, 92, 252, 0.08);
+  --shadow-glow-strong: 0 0 40px rgba(124, 92, 252, 0.12);
+}
+
 /* ---- Scrollbar ---- */
 ::-webkit-scrollbar {
   width: 6px;
@@ -104,4 +133,12 @@
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.2);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
 }

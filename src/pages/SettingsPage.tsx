@@ -1,10 +1,14 @@
-import { Settings, Monitor, Palette, Globe, Info } from 'lucide-react';
-import { useState } from 'react';
+import { Settings, Palette, Globe, Info, Sun, Moon, Monitor, Check } from 'lucide-react';
+import { useTheme } from '../components/ThemeProvider';
 
 export default function SettingsPage() {
-  const [theme, setTheme] = useState('dark');
-  const [language, setLanguage] = useState('zh-CN');
-  const [outputDir, setOutputDir] = useState('');
+  const { mode, setMode } = useTheme();
+
+  const themeOptions = [
+    { value: 'dark' as const, label: '深色模式', icon: <Moon style={{ width: 16, height: 16 }} />, desc: '深色背景，护眼模式' },
+    { value: 'light' as const, label: '浅色模式', icon: <Sun style={{ width: 16, height: 16 }} />, desc: '浅色背景，明亮清晰' },
+    { value: 'system' as const, label: '跟随系统', icon: <Monitor style={{ width: 16, height: 16 }} />, desc: '自动跟随操作系统设置' },
+  ];
 
   return (
     <div className="page">
@@ -25,13 +29,30 @@ export default function SettingsPage() {
               <span className="tool-panel-title">外观</span>
             </div>
           </div>
-          <div className="form-group" style={{ marginBottom: 'var(--space-4)' }}>
-            <label className="form-label">主题</label>
-            <select className="form-select" value={theme} onChange={(e) => setTheme(e.target.value)}>
-              <option value="dark">深色模式</option>
-              <option value="light">浅色模式 (即将推出)</option>
-              <option value="system">跟随系统</option>
-            </select>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 'var(--space-3)' }}>
+            {themeOptions.map(opt => {
+              const active = mode === opt.value;
+              return (
+                <div key={opt.value} onClick={() => setMode(opt.value)} style={{
+                  padding: 'var(--space-4)', borderRadius: 'var(--radius-md)',
+                  border: `1.5px solid ${active ? 'var(--color-accent-primary)' : 'var(--color-border)'}`,
+                  background: active ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)',
+                  cursor: 'pointer', transition: 'all 0.2s', position: 'relative',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)',
+                }}>
+                  {active && (
+                    <div style={{ position: 'absolute', top: 8, right: 8, width: 18, height: 18, borderRadius: '50%', background: 'var(--color-accent-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Check style={{ width: 11, height: 11, color: '#fff' }} />
+                    </div>
+                  )}
+                  <div style={{ width: 36, height: 36, borderRadius: 'var(--radius-sm)', background: active ? 'rgba(124,92,252,0.12)' : 'rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: active ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)' }}>
+                    {opt.icon}
+                  </div>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{opt.label}</span>
+                  <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center' }}>{opt.desc}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -45,25 +66,11 @@ export default function SettingsPage() {
           </div>
           <div className="form-group">
             <label className="form-label">界面语言</label>
-            <select className="form-select" value={language} onChange={(e) => setLanguage(e.target.value)}>
+            <select className="form-select" defaultValue="zh-CN">
               <option value="zh-CN">简体中文</option>
               <option value="en">English</option>
               <option value="ja">日本語</option>
             </select>
-          </div>
-        </div>
-
-        {/* Output */}
-        <div className="tool-panel">
-          <div className="tool-panel-header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-              <Monitor style={{ width: 16, height: 16, color: 'var(--color-accent-tertiary)' }} />
-              <span className="tool-panel-title">输出设置</span>
-            </div>
-          </div>
-          <div className="form-group">
-            <label className="form-label">默认输出目录</label>
-            <input className="form-input" placeholder="选择默认输出文件夹路径..." value={outputDir} onChange={(e) => setOutputDir(e.target.value)} />
           </div>
         </div>
 
