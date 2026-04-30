@@ -114,6 +114,16 @@ fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// 公开接口：检测 NVIDIA 环境
+pub fn detect_nvidia_env_pub(lines: &mut Vec<String>) -> bool {
+    detect_nvidia_env(lines)
+}
+
+/// 公开接口：检测 CUDA Toolkit
+pub fn detect_cuda_toolkit_pub(lines: &mut Vec<String>) {
+    detect_cuda_toolkit(lines)
+}
+
 /// 检测 NVIDIA 驱动和 GPU 信息
 fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
     let smi_path = get_nvidia_smi_path();

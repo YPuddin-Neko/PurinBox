@@ -5,6 +5,7 @@ pub mod llm_tagger;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use ort::execution_providers::ExecutionProvider;
 
 use super::{ProcessResult, ProgressEvent};
 
@@ -183,16 +184,77 @@ pub async fn remove_custom_tagger_model(id: String) -> Result<(), String> {
 /// 检测 CUDA 是否可用，返回 (可用, 详情信息)
 #[tauri::command]
 pub async fn check_cuda_available() -> Result<(bool, String), String> {
-    let task = tokio::task::spawn_blocking(inference::check_cuda);
+    let mut lines: Vec<String> = Vec::new();
 
-    // 8 秒超时，防止 ort 加载 DLL 时卡死
-    match tokio::time::timeout(std::time::Duration::from_secs(8), task).await {
-        Ok(Ok(result)) => Ok(result),
-        Ok(Err(e)) => Err(format!("检测失败: {}", e)),
-        Err(_) => Ok((false, "CUDA 检测超时 (8秒)\n\n可能原因:\n\
-            1. ONNX Runtime 正在尝试加载 CUDA 库但卡住了\n\
-            2. CUDA 驱动异常\n\
-            3. 请尝试重启应用".into())),
+    // 1. 检测 ONNX Runtime 版本（快速，不会卡）
+    let rt_info = std::panic::catch_unwind(|| {
+        format!("ONNX Runtime: {}", ort::info())
+    }).unwrap_or_else(|_| "ONNX Runtime: 信息获取失败".into());
+    lines.push(rt_info);
+
+    // 2. 检测 nvidia-smi 和 CUDA Toolkit（快速，通过系统命令）
+    let nvidia_ok = tokio::task::spawn_blocking(|| {
+        let mut env_lines: Vec<String> = Vec::new();
+        let ok = inference::detect_nvidia_env_pub(&mut env_lines);
+        inference::detect_cuda_toolkit_pub(&mut env_lines);
+        (ok, env_lines)
+    }).await.map_err(|e| format!("检测失败: {}", e))?;
+
+    let (has_nvidia, env_lines) = nvidia_ok;
+    lines.extend(env_lines);
+
+    // 3. 检测 ort CUDA EP（可能卡住，单独超时 5 秒）
+    let ep_task = tokio::task::spawn_blocking(|| {
+        std::panic::catch_unwind(|| {
+            ort::execution_providers::CUDAExecutionProvider::default().is_available()
+        })
+    });
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), ep_task).await {
+        Ok(Ok(Ok(Ok(true)))) => {
+            lines.push("CUDA ExecutionProvider: ✓ 可用".into());
+            lines.insert(0, "✓ CUDA 加速已启用".into());
+            Ok((true, lines.join("\n")))
+        }
+        Ok(Ok(Ok(Ok(false)))) => {
+            lines.push("CUDA ExecutionProvider: ✗ 不可用".into());
+            lines.push("  → 当前 ONNX Runtime 为 CPU 版本".into());
+            add_summary(&mut lines, has_nvidia);
+            Ok((false, lines.join("\n")))
+        }
+        Ok(Ok(Ok(Err(e)))) => {
+            lines.push(format!("CUDA ExecutionProvider: 异常 ({})", e));
+            add_summary(&mut lines, has_nvidia);
+            Ok((false, lines.join("\n")))
+        }
+        Ok(Ok(Err(_))) => {
+            lines.push("CUDA ExecutionProvider: 内部 panic".into());
+            add_summary(&mut lines, has_nvidia);
+            Ok((false, lines.join("\n")))
+        }
+        Ok(Err(e)) => {
+            lines.push(format!("CUDA ExecutionProvider: 线程异常 ({})", e));
+            add_summary(&mut lines, has_nvidia);
+            Ok((false, lines.join("\n")))
+        }
+        Err(_) => {
+            lines.push("CUDA ExecutionProvider: ⚠ 检测超时 (5秒)".into());
+            lines.push("  → ONNX Runtime 尝试加载 CUDA 库时卡住了".into());
+            lines.push("  → 这通常说明系统有 CUDA 但 ort 库版本不兼容".into());
+            add_summary(&mut lines, has_nvidia);
+            Ok((false, lines.join("\n")))
+        }
+    }
+}
+
+fn add_summary(lines: &mut Vec<String>, has_nvidia: bool) {
+    lines.push("".into());
+    if has_nvidia {
+        lines.push("结论: 系统已安装 NVIDIA 驱动和 CUDA".into());
+        lines.push("但当前 ONNX Runtime 为 CPU 版本，不支持 GPU 加速".into());
+        lines.push("CPU 推理仍可正常使用所有打标功能".into());
+    } else {
+        lines.push("结论: 未检测到 NVIDIA GPU，将使用 CPU 推理".into());
     }
 }
 
