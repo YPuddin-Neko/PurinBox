@@ -270,26 +270,15 @@ pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
 
 /// 查找 Python 可执行文件
 fn find_python() -> Result<String, String> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-
-    // 1. 优先检查应用目录下的 python_env
-    #[cfg(target_os = "windows")]
-    let venv_python = exe_dir.join("python_env/Scripts/python.exe");
-    #[cfg(not(target_os = "windows"))]
-    let venv_python = exe_dir.join("python_env/bin/python3");
-
-    if venv_python.exists() {
-        return Ok(venv_python.to_string_lossy().to_string());
+    // 1. 优先使用 python_env 模块管理的环境
+    if let Some(python) = super::python_env::get_python_exe() {
+        return Ok(python);
     }
 
-    // 2. 检查系统 Python
+    // 2. 检查系统 Python（需要有 onnxruntime）
     for name in &["python3", "python"] {
         if let Ok(output) = run_hidden_cmd(name, &["--version"]) {
             if output.contains("Python 3") {
-                // 确认 onnxruntime 可用
                 if run_hidden_cmd(name, &["-c", "import onnxruntime"]).is_ok() {
                     return Ok(name.to_string());
                 }
@@ -311,7 +300,7 @@ fn find_python() -> Result<String, String> {
         }
     }
 
-    Err("未找到可用的 Python 3 环境。\n\n请安装 Python 3.10+ 并运行:\n  pip install onnxruntime numpy pillow".into())
+    Err("未找到可用的 Python 3 环境".into())
 }
 
 /// 获取推理脚本路径

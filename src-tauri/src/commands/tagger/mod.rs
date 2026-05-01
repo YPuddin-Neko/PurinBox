@@ -3,6 +3,7 @@ pub mod download;
 pub mod inference;
 pub mod llm_tagger;
 pub mod gpu_runtime;
+pub mod python_env;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -284,12 +285,13 @@ pub fn cancel_gpu_runtime_download() {
     gpu_runtime::cancel_ort_download();
 }
 
-/// 取消打标（同时取消可能正在进行的模型下载）
+/// 取消打标（同时取消可能正在进行的下载/安装）
 #[tauri::command]
 pub fn cancel_tagging() {
     inference::cancel_tagging();
     download::cancel_download();
     gpu_runtime::cancel_ort_download();
+    python_env::cancel_setup();
 }
 
 /// 开始打标
@@ -303,7 +305,7 @@ pub async fn start_tagging(
     // 重置取消标志
     inference::reset_tagging_cancel();
 
-    // 检查 Python 环境
+    // 检查 Python 环境，没有则自动安装
     let python_check = tokio::task::spawn_blocking(|| {
         inference::check_python_env()
     }).await.map_err(|e| format!("检测线程异常: {}", e))?;
@@ -316,8 +318,14 @@ pub async fn start_tagging(
                 message: format!("Python onnxruntime v{} ({})", ver, providers),
             });
         }
-        Err(e) => {
-            return Err(e.clone());
+        Err(_) => {
+            // Python 环境不可用，自动安装
+            let _ = app.emit("tagger-progress", ProgressEvent {
+                current: 0, total: 0, filename: String::new(),
+                status: "info".to_string(),
+                message: "未检测到 Python 推理环境，正在自动安装...".to_string(),
+            });
+            python_env::setup_python_env(&app).await?;
         }
     }
 
