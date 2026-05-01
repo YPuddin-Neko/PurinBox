@@ -223,7 +223,7 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
         inference::check_python_env()
     }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
 
-    let cuda_ok = match python_check {
+    let (mut cuda_ok, python_ok) = match python_check {
         Ok((ort_ver, providers)) => {
             let msg = format!("Python onnxruntime v{}", ort_ver);
             emit_line(&msg, "success");
@@ -239,21 +239,49 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
             } else {
                 emit_line("CUDA ExecutionProvider 不可用", "info");
             }
-            has_cuda
+            (has_cuda, true) // (cuda_ok, python_ok)
         }
         Err(e) => {
             emit_line(&e, "error");
             summary_lines.push(e);
-            false
+            (false, false)
         }
     };
 
-    // 3. 总结
+    // 3. 如果有 NVIDIA 但没有 CUDA EP，自动安装 onnxruntime-gpu
+    if !cuda_ok && has_nvidia && python_ok {
+        emit_line("正在自动安装 GPU 版 onnxruntime...", "info");
+        let app_ref = app.clone();
+        let install_result = tokio::task::spawn_blocking(move || {
+            python_env::install_gpu_deps(&app_ref)
+        }).await.unwrap_or_else(|_| Err("安装线程异常".into()));
+
+        match install_result {
+            Ok(()) => {
+                emit_line("✓ onnxruntime-gpu 已安装", "success");
+                // 重新检测
+                let recheck = tokio::task::spawn_blocking(|| {
+                    inference::check_python_env()
+                }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
+                if let Ok((_, providers)) = recheck {
+                    cuda_ok = providers.contains("CUDAExecutionProvider");
+                    if cuda_ok {
+                        emit_line("✓ CUDA 加速已启用", "success");
+                    }
+                }
+            }
+            Err(e) => {
+                emit_line(&format!("GPU 版安装失败: {}", e), "error");
+                emit_line("将使用 CPU 推理", "info");
+            }
+        }
+    }
+
+    // 4. 总结
     if cuda_ok {
         emit_line("✓ CUDA 加速已就绪", "success");
     } else if has_nvidia {
-        emit_line("系统已安装 NVIDIA 驱动", "info");
-        emit_line("如需 GPU 加速，请安装: pip install onnxruntime-gpu", "info");
+        emit_line("将使用 CPU 推理", "info");
     } else {
         emit_line("未检测到 NVIDIA GPU，将使用 CPU 推理", "info");
     }

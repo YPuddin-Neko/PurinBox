@@ -66,7 +66,17 @@ export default function AiTaggerTab() {
       if (p.total > 0) setProgress((p.current / p.total) * 100);
       if (p.status === 'done') setIsDone(true);
       if (p.status === 'error') setHasErr(true);
-      setLogs(prev => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }]);
+      if (p.status === 'download-progress') {
+        // 原地更新最后一行（进度条效果）
+        setLogs(prev => {
+          if (prev.length > 0 && prev[prev.length - 1].status === 'info' && prev[prev.length - 1].message.startsWith('⬇')) {
+            return [...prev.slice(0, -1), { time: getTimeStr(), message: p.message, status: 'info' }];
+          }
+          return [...prev, { time: getTimeStr(), message: p.message, status: 'info' }];
+        });
+      } else {
+        setLogs(prev => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }]);
+      }
     });
     return () => { active = false; unlistenPromise.then(fn => fn()); };
   }, []);

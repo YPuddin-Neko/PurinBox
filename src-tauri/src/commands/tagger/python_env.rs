@@ -245,7 +245,7 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
             last_pct = pct;
             let mb = downloaded as f64 / 1024.0 / 1024.0;
             let total_mb = total_size as f64 / 1024.0 / 1024.0;
-            emit_progress(app, &format!("下载 Python: {:.1}/{:.1} MB ({}%)", mb, total_mb, pct), "info");
+            emit_progress(app, &format!("⬇ 下载 Python: {:.1}/{:.1} MB ({}%)", mb, total_mb, pct), "download-progress");
         }
     }
 
@@ -319,12 +319,23 @@ fn create_venv(app: &tauri::AppHandle) -> Result<(), String> {
 
 /// 安装依赖
 fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
+    pip_install(app, &["onnxruntime", "numpy", "pillow"])
+}
+
+/// 安装 GPU 版 onnxruntime（替换 CPU 版）
+pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
+    emit_progress(app, "正在安装 GPU 版 onnxruntime...", "info");
+    pip_install(app, &["onnxruntime-gpu"])
+}
+
+/// 通用 pip install
+fn pip_install(app: &tauri::AppHandle, deps: &[&str]) -> Result<(), String> {
     let pip = get_venv_pip();
+    if !pip.exists() {
+        return Err("Python 环境未就绪，pip 不存在".into());
+    }
 
-    // 安装 onnxruntime, numpy, pillow
-    let deps = ["onnxruntime", "numpy", "pillow"];
-
-    for dep in &deps {
+    for dep in deps {
         if is_cancelled() {
             return Err("已取消".into());
         }

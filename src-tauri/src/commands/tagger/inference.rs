@@ -310,28 +310,30 @@ fn get_script_path() -> Result<std::path::PathBuf, String> {
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    // 开发模式：脚本在 src-tauri/scripts/
-    let dev_path = exe_dir.join("../../scripts/tagger_inference.py");
-    if dev_path.exists() {
-        return Ok(dev_path.canonicalize().unwrap_or(dev_path));
+    // 搜索路径列表
+    let candidates = vec![
+        // 开发模式: CARGO_MANIFEST_DIR/scripts/
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/tagger_inference.py"),
+        // 生产模式 Windows/Linux: exe 同级 scripts/
+        exe_dir.join("scripts/tagger_inference.py"),
+        // 生产模式 Windows NSIS: exe 同级
+        exe_dir.join("tagger_inference.py"),
+        // macOS .app bundle: Resources/scripts/
+        exe_dir.join("../Resources/scripts/tagger_inference.py"),
+    ];
+
+    for path in &candidates {
+        if path.exists() {
+            return Ok(path.canonicalize().unwrap_or_else(|_| path.clone()));
+        }
     }
 
-    // 也尝试从 exe 同级的 scripts/ 目录找
-    let prod_path = exe_dir.join("scripts/tagger_inference.py");
-    if prod_path.exists() {
-        return Ok(prod_path);
-    }
-
-    // macOS .app bundle
-    let bundle_path = exe_dir.join("../Resources/scripts/tagger_inference.py");
-    if bundle_path.exists() {
-        return Ok(bundle_path.canonicalize().unwrap_or(bundle_path));
-    }
-
-    Err(format!(
-        "推理脚本未找到。\n搜索路径:\n  1. {}\n  2. {}\n  3. {}",
-        dev_path.display(), prod_path.display(), bundle_path.display()
-    ))
+    let paths_str = candidates.iter()
+        .enumerate()
+        .map(|(i, p)| format!("  {}. {}", i + 1, p.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(format!("推理脚本未找到。\n搜索路径:\n{}", paths_str))
 }
 
 /// 检查 Python 环境是否满足要求
