@@ -152,15 +152,42 @@ def main():
                 except PermissionError:
                     pass
 
-        # 1. CUDA 路径：从环境变量读取 (CUDA_PATH, CUDA_PATH_V12_9, CUDA_HOME 等)
+        def read_reg_env(name):
+            """从 Windows 注册表读取环境变量（GUI 进程可能没有最新值）"""
+            import subprocess
+            for root in [r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", r"HKCU\Environment"]:
+                try:
+                    result = subprocess.run(["reg", "query", root, "/v", name],
+                                          capture_output=True, text=True, creationflags=0x08000000)
+                    for line in result.stdout.splitlines():
+                        line = line.strip()
+                        if line.startswith(name):
+                            parts = line.split(None, 2)
+                            if len(parts) >= 3:
+                                return parts[2]
+                except Exception:
+                    pass
+            return None
+
+        # 1. CUDA 路径：从环境变量读取 + 注册表回退
+        cuda_paths = {}
         for key, val in os.environ.items():
             if key in ("CUDA_PATH", "CUDA_HOME") or key.startswith("CUDA_PATH_V"):
-                bin_dir = os.path.join(val, "bin")
-                bin_x64 = os.path.join(val, "bin", "x64")  # cuDNN 9.x
-                lib_x64 = os.path.join(val, "lib", "x64")
-                for d in [bin_dir, bin_x64, lib_x64]:
-                    if os.path.isdir(d):
-                        cuda_dirs.add(d)
+                cuda_paths[key] = val
+        # 注册表补充
+        if "CUDA_PATH" not in cuda_paths:
+            reg_val = read_reg_env("CUDA_PATH")
+            if reg_val:
+                cuda_paths["CUDA_PATH"] = reg_val
+                log(f"从注册表读取 CUDA_PATH={reg_val}")
+
+        for key, val in cuda_paths.items():
+            bin_dir = os.path.join(val, "bin")
+            bin_x64 = os.path.join(val, "bin", "x64")  # cuDNN 9.x
+            lib_x64 = os.path.join(val, "lib", "x64")
+            for d in [bin_dir, bin_x64, lib_x64]:
+                if os.path.isdir(d):
+                    cuda_dirs.add(d)
 
         # 2. cuDNN 路径：从环境变量读取
         cudnn_path = os.environ.get("CUDNN_PATH", "")
