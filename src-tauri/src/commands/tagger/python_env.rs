@@ -338,14 +338,14 @@ pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
     eprintln!("[DEBUG] install_gpu_deps: 检测到 cuDNN major={}", cudnn_major);
 
     let pkg = if cudnn_major >= 9 {
-        emit_progress(app, "检测到 cuDNN 9.x，安装 onnxruntime-gpu (最新版)...", "info");
-        "onnxruntime-gpu"
+        emit_progress(app, "检测到 cuDNN 9.x，安装 onnxruntime-gpu==1.25.1...", "info");
+        "onnxruntime-gpu==1.25.1"
     } else if cudnn_major == 8 {
         emit_progress(app, "检测到 cuDNN 8.x，安装 onnxruntime-gpu==1.18.1 (兼容版)...", "info");
         "onnxruntime-gpu==1.18.1"
     } else {
-        emit_progress(app, "未检测到 cuDNN 版本，尝试安装 onnxruntime-gpu...", "info");
-        "onnxruntime-gpu"
+        emit_progress(app, "未检测到 cuDNN 版本，安装 onnxruntime-gpu==1.25.1...", "info");
+        "onnxruntime-gpu==1.25.1"
     };
 
     // 先卸载 CPU 版
