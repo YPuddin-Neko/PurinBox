@@ -31,7 +31,7 @@ walkdir = "2"
 psd = "0.3"
 tokio = { version = "1", features = ["rt", "sync", "fs", "io-util"] }
 rand = "0.9"
-ort = { version = "2.0.0-rc.12", features = ["load-dynamic", "download-binaries"] }
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 reqwest = { version = "0.12", features = ["stream", "rustls-tls", "json"] }
 futures-util = "0.3"
 csv = "1"

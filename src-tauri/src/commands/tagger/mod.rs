@@ -293,22 +293,22 @@ pub fn cancel_tagger_download() {
     download::cancel_download();
 }
 
-/// 获取 GPU Runtime 状态
+/// 获取 ONNX Runtime 状态
 #[tauri::command]
-pub fn get_gpu_runtime_status() -> gpu_runtime::GpuRuntimeStatus {
-    gpu_runtime::check_gpu_runtime()
+pub fn get_gpu_runtime_status() -> gpu_runtime::OrtRuntimeStatus {
+    gpu_runtime::check_ort_runtime()
 }
 
-/// 下载 GPU 版 ONNX Runtime
+/// 下载 ONNX Runtime
 #[tauri::command]
 pub async fn download_gpu_runtime(app: tauri::AppHandle) -> Result<(), String> {
-    gpu_runtime::download_gpu_runtime(&app).await
+    gpu_runtime::download_ort_runtime(&app).await
 }
 
-/// 取消 GPU Runtime 下载
+/// 取消 ONNX Runtime 下载
 #[tauri::command]
 pub fn cancel_gpu_runtime_download() {
-    gpu_runtime::cancel_gpu_download();
+    gpu_runtime::cancel_ort_download();
 }
 
 /// 取消打标
@@ -325,6 +325,12 @@ pub async fn start_tagging(
 ) -> Result<ProcessResult, String> {
     // 重置取消标志
     inference::reset_tagging_cancel();
+
+    // 检查 ONNX Runtime 是否已安装
+    let ort_status = gpu_runtime::check_ort_runtime();
+    if !ort_status.available {
+        return Err("ONNX Runtime 尚未安装。请先在硬件设置中点击「下载 ONNX Runtime」，下载完成后重启应用。".into());
+    }
 
     // 1. 查找模型
     let model_def = models::find_model(&options.model_id)

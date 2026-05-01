@@ -6,34 +6,33 @@ use tauri::Emitter;
 
 use super::ProgressEvent;
 
-/// GPU Runtime 下载取消标志
-static GPU_DL_CANCELLED: AtomicBool = AtomicBool::new(false);
+/// 下载取消标志
+static ORT_DL_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 /// ONNX Runtime 版本（与 ort 2.0.0-rc.12 兼容）
 const ORT_VERSION: &str = "1.22.0";
 
-/// GPU 运行时状态
+/// ONNX Runtime 状态
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GpuRuntimeStatus {
+pub struct OrtRuntimeStatus {
     pub available: bool,
     pub path: String,
     pub version: String,
     pub files: Vec<String>,
 }
 
-/// 获取 GPU Runtime 存储目录（软件根目录/runtime/ort-gpu/）
-pub fn get_gpu_runtime_dir() -> PathBuf {
-    // 使用可执行文件所在目录
+/// 获取 ONNX Runtime 存储目录（软件根目录/runtime/ort/）
+pub fn get_ort_dir() -> PathBuf {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
-    exe_dir.join("runtime").join("ort-gpu")
+    exe_dir.join("runtime").join("ort")
 }
 
-/// 检查 GPU Runtime 是否已下载
-pub fn check_gpu_runtime() -> GpuRuntimeStatus {
-    let dir = get_gpu_runtime_dir();
+/// 检查 ONNX Runtime 是否已下载
+pub fn check_ort_runtime() -> OrtRuntimeStatus {
+    let dir = get_ort_dir();
 
     #[cfg(target_os = "windows")]
     let required_files = vec!["onnxruntime.dll"];
@@ -53,7 +52,6 @@ pub fn check_gpu_runtime() -> GpuRuntimeStatus {
         }
     }
 
-    // 也检查 CUDA provider DLLs
     #[cfg(target_os = "windows")]
     {
         for extra in &["onnxruntime_providers_cuda.dll", "onnxruntime_providers_shared.dll"] {
@@ -63,7 +61,7 @@ pub fn check_gpu_runtime() -> GpuRuntimeStatus {
         }
     }
 
-    GpuRuntimeStatus {
+    OrtRuntimeStatus {
         available: all_found,
         path: dir.to_string_lossy().to_string(),
         version: ORT_VERSION.to_string(),
@@ -71,9 +69,9 @@ pub fn check_gpu_runtime() -> GpuRuntimeStatus {
     }
 }
 
-/// 在 ort 加载前设置环境变量，使其加载 GPU 版
-pub fn setup_gpu_runtime_env() -> bool {
-    let dir = get_gpu_runtime_dir();
+/// 在 ort 加载前设置环境变量
+pub fn setup_ort_env() -> bool {
+    let dir = get_ort_dir();
 
     #[cfg(target_os = "windows")]
     let lib_name = "onnxruntime.dll";
@@ -95,15 +93,15 @@ pub fn setup_gpu_runtime_env() -> bool {
 }
 
 /// 取消下载
-pub fn cancel_gpu_download() {
-    GPU_DL_CANCELLED.store(true, Ordering::SeqCst);
+pub fn cancel_ort_download() {
+    ORT_DL_CANCELLED.store(true, Ordering::SeqCst);
 }
 
-/// 下载 GPU 版 ONNX Runtime
-pub async fn download_gpu_runtime(app: &tauri::AppHandle) -> Result<(), String> {
-    GPU_DL_CANCELLED.store(false, Ordering::SeqCst);
+/// 下载 ONNX Runtime（GPU 版，同时支持 CPU 推理）
+pub async fn download_ort_runtime(app: &tauri::AppHandle) -> Result<(), String> {
+    ORT_DL_CANCELLED.store(false, Ordering::SeqCst);
 
-    let dir = get_gpu_runtime_dir();
+    let dir = get_ort_dir();
     if !dir.exists() {
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("创建目录失败: {}", e))?;
@@ -126,7 +124,7 @@ pub async fn download_gpu_runtime(app: &tauri::AppHandle) -> Result<(), String> 
     let (_url, _archive_name) = ("", "");
 
     #[cfg(target_os = "macos")]
-    return Err("macOS 不需要 GPU 版 ONNX Runtime（Apple Silicon 使用 CoreML）".into());
+    return Err("macOS 使用内置推理引擎，无需下载".into());
 
     #[cfg(not(target_os = "macos"))]
     {
@@ -135,36 +133,33 @@ pub async fn download_gpu_runtime(app: &tauri::AppHandle) -> Result<(), String> 
         let _ = app.emit("tagger-progress", ProgressEvent {
             current: 0, total: 0, filename: String::new(),
             status: "info".to_string(),
-            message: format!("开始下载 GPU 版 ONNX Runtime v{}...", ORT_VERSION),
+            message: format!("开始下载 ONNX Runtime v{}...", ORT_VERSION),
         });
 
-        // 下载压缩包
         download_with_progress(app, &url, &archive_path, &archive_name).await?;
 
-        if GPU_DL_CANCELLED.load(Ordering::SeqCst) {
+        if ORT_DL_CANCELLED.load(Ordering::SeqCst) {
             let _ = std::fs::remove_file(&archive_path);
             return Err("下载已取消".into());
         }
 
-        // 解压
         let _ = app.emit("tagger-progress", ProgressEvent {
             current: 0, total: 0, filename: String::new(),
             status: "info".to_string(),
-            message: "正在解压 ONNX Runtime GPU...".to_string(),
+            message: "正在解压 ONNX Runtime...".to_string(),
         });
 
         extract_runtime(&archive_path, &dir)?;
-
-        // 清理压缩包
         let _ = std::fs::remove_file(&archive_path);
 
-        // 验证
-        let status = check_gpu_runtime();
+        let status = check_ort_runtime();
         if status.available {
+            // 立即设置环境变量（如果是首次下载，需要重启才能生效）
+            setup_ort_env();
             let _ = app.emit("tagger-progress", ProgressEvent {
                 current: 0, total: 0, filename: String::new(),
                 status: "success".to_string(),
-                message: format!("GPU 版 ONNX Runtime v{} 安装成功！重启应用后生效", ORT_VERSION),
+                message: format!("ONNX Runtime v{} 安装成功！重启应用后生效", ORT_VERSION),
             });
             Ok(())
         } else {
@@ -203,7 +198,7 @@ async fn download_with_progress(
     let mut last_report = std::time::Instant::now();
 
     while let Some(chunk) = stream.next().await {
-        if GPU_DL_CANCELLED.load(Ordering::SeqCst) {
+        if ORT_DL_CANCELLED.load(Ordering::SeqCst) {
             drop(file);
             let _ = tokio::fs::remove_file(dest).await;
             return Err("下载已取消".into());

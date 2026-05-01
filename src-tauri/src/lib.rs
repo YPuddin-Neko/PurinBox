@@ -20,12 +20,14 @@ use commands::{scan_images, get_system_stats};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // ！！！必须在任何 ort 调用之前设置！！！
-    // GPU 版 ONNX Runtime 同时支持 CPU 和 GPU 推理，有就优先用
+    // 设置 ORT_DYLIB_PATH 指向下载的 ONNX Runtime（GPU 版，同时支持 CPU）
     // ORT_DYLIB_PATH 只在 ort DLL 首次加载时生效，之后改无效
-    let gpu_loaded = commands::tagger::gpu_runtime::setup_gpu_runtime_env();
-    if gpu_loaded {
-        eprintln!("[AiTrainTools] GPU ONNX Runtime 已设置: {:?}",
+    let ort_loaded = commands::tagger::gpu_runtime::setup_ort_env();
+    if ort_loaded {
+        eprintln!("[AiTrainTools] ONNX Runtime 已设置: {:?}",
             std::env::var("ORT_DYLIB_PATH").unwrap_or_default());
+    } else {
+        eprintln!("[AiTrainTools] ONNX Runtime 未找到，首次打标时需要下载");
     }
 
     tauri::Builder::default()

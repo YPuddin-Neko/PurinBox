@@ -52,8 +52,7 @@ export default function AiTaggerTab() {
   // GPU Runtime
   const [gpuRtAvail, setGpuRtAvail] = useState(false);
   const [gpuRtDownloading, setGpuRtDownloading] = useState(false);
-  const [gpuRtAtStartup, setGpuRtAtStartup] = useState(false); // 启动时就有 GPU runtime
-  const [, setGpuRtNeedRestart] = useState(false); // 下载后需要重启
+  const [gpuRtAtStartup, setGpuRtAtStartup] = useState(false); // 启动时就有
 
   const load = useCallback(async () => {
     try { const l = await invoke<ModelInfo[]>('get_tagger_models'); setModels(l); if (l.length > 0 && !selectedModel) setSelectedModel(l[0].id); } catch {}
@@ -317,9 +316,48 @@ export default function AiTaggerTab() {
           </div>
         </div>
 
-        {/* GPU */}
+        {/* 硬件设置 */}
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">硬件设置</span></div>
+
+          {/* ONNX Runtime 状态 */}
+          {!gpuRtAvail ? (
+            <div style={{ marginBottom: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ fontSize: 11, color: '#fbbf24', padding: '8px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(251,191,36,0.06)', lineHeight: 1.6 }}>
+                ⚠ 首次使用需要下载 ONNX Runtime 推理引擎（约 200MB，支持 CPU + GPU）
+              </div>
+              <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                <button className="btn btn-primary btn-sm" onClick={async () => {
+                  setGpuRtDownloading(true);
+                  try {
+                    await invoke('download_gpu_runtime');
+                    setGpuRtAvail(true);
+                  } catch(e: any) {
+                    setLogs(p => [...p, { time: getTimeStr(), message: `ONNX Runtime 下载失败: ${String(e)}`, status: 'error' }]);
+                  }
+                  setGpuRtDownloading(false);
+                }} disabled={gpuRtDownloading} style={{ whiteSpace: 'nowrap' }}>
+                  {gpuRtDownloading ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 14, height: 14 }} />} 下载 ONNX Runtime
+                </button>
+                {gpuRtDownloading && (
+                  <button className="btn btn-secondary btn-sm" onClick={() => { invoke('cancel_gpu_runtime_download'); setGpuRtDownloading(false); }} style={{ whiteSpace: 'nowrap', color: '#f87171' }}>
+                    <X style={{ width: 14, height: 14 }} /> 取消
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : gpuRtAtStartup ? (
+            <div style={{ marginBottom: 'var(--space-3)', fontSize: 11, color: '#4ade80', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(74,222,128,0.06)' }}>
+              ✓ ONNX Runtime 已就绪
+            </div>
+          ) : (
+            <div style={{ marginBottom: 'var(--space-3)', fontSize: 11, color: '#fbbf24', padding: '8px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(251,191,36,0.06)', lineHeight: 1.8 }}>
+              ✓ ONNX Runtime 已下载<br/>
+              ⚠ <strong>请重启应用</strong>以加载（ONNX Runtime 只在启动时加载一次）
+            </div>
+          )}
+
+          {/* CPU / GPU 切换 */}
           <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
             <div onClick={() => setUseGpu(false)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1px solid ${!useGpu ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: !useGpu ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: 'pointer' }}>
               <Cpu style={{ width: 16, height: 16, color: !useGpu ? '#60a5fa' : 'var(--color-text-tertiary)' }} />
@@ -330,56 +368,14 @@ export default function AiTaggerTab() {
               <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>GPU</span>
             </div>
           </div>
-          {useGpu && (
+          {useGpu && gpuRtAvail && gpuRtAtStartup && (
             <div style={{ marginTop: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {gpuRtAvail ? (
-                <>
-                  {gpuRtAtStartup ? (
-                    <>
-                      <div style={{ fontSize: 11, color: '#4ade80', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(74,222,128,0.06)' }}>
-                        ✓ GPU 版 ONNX Runtime 已加载
-                      </div>
-                      <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                        <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `CUDA 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
-                          {cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测 CUDA
-                        </button>
-                      </div>
-                      {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6 }}>{cudaOk ? '✓ CUDA 可用，GPU 加速已启用' : '✗ CUDA 不可用 — 详情请查看日志'}</div>}
-                    </>
-                  ) : (
-                    <div style={{ fontSize: 11, color: '#fbbf24', padding: '8px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(251,191,36,0.06)', lineHeight: 1.8 }}>
-                      ✓ GPU 版 ONNX Runtime 已下载<br/>
-                      ⚠ <strong>请重启应用</strong>以加载 GPU 版本（ONNX Runtime 只在启动时加载一次）
-                    </div>
-                  )}
-                </>
-              ) : (
-                <>
-                  <div style={{ fontSize: 11, color: '#fbbf24', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(251,191,36,0.06)', lineHeight: 1.6 }}>
-                    ⚠ GPU 加速需要下载 GPU 版 ONNX Runtime（约 200MB）
-                  </div>
-                  <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                    <button className="btn btn-primary btn-sm" onClick={async () => {
-                      setGpuRtDownloading(true);
-                      try {
-                        await invoke('download_gpu_runtime');
-                        setGpuRtAvail(true);
-                        setGpuRtNeedRestart(true);
-                      } catch(e: any) {
-                        setLogs(p => [...p, { time: getTimeStr(), message: `GPU Runtime 下载失败: ${String(e)}`, status: 'error' }]);
-                      }
-                      setGpuRtDownloading(false);
-                    }} disabled={gpuRtDownloading} style={{ whiteSpace: 'nowrap' }}>
-                      {gpuRtDownloading ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 14, height: 14 }} />} 下载 GPU Runtime
-                    </button>
-                    {gpuRtDownloading && (
-                      <button className="btn btn-secondary btn-sm" onClick={() => { invoke('cancel_gpu_runtime_download'); setGpuRtDownloading(false); }} style={{ whiteSpace: 'nowrap', color: '#f87171' }}>
-                        <X style={{ width: 14, height: 14 }} /> 取消
-                      </button>
-                    )}
-                  </div>
-                </>
-              )}
+              <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `CUDA 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
+                  {cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测 CUDA
+                </button>
+              </div>
+              {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6 }}>{cudaOk ? '✓ CUDA 可用，GPU 加速已启用' : '✗ CUDA 不可用 — 详情请查看日志'}</div>}
             </div>
           )}
         </div>
