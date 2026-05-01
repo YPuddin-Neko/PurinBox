@@ -326,10 +326,6 @@ pub async fn start_tagging(
     // 重置取消标志
     inference::reset_tagging_cancel();
 
-    // 如果使用 GPU，设置 ORT_DYLIB_PATH
-    if options.use_gpu {
-        gpu_runtime::setup_gpu_runtime_env();
-    }
     // 1. 查找模型
     let model_def = models::find_model(&options.model_id)
         .ok_or_else(|| format!("模型不存在: {}", options.model_id))?;
