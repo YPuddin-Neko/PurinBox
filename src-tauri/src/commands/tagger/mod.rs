@@ -6,7 +6,6 @@ pub mod gpu_runtime;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use ort::execution_providers::ExecutionProvider;
 
 use super::{ProcessResult, ProgressEvent};
 
@@ -183,7 +182,7 @@ pub async fn remove_custom_tagger_model(id: String) -> Result<(), String> {
 }
 
 /// 检测 CUDA 是否可用，返回 (可用, 详情信息)
-/// 通过 tagger-progress 事件实时输出每一步检测结果
+/// 通过 Python onnxruntime 检测 CUDA 可用性
 #[tauri::command]
 pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String), String> {
     use tauri::Emitter;
@@ -197,28 +196,9 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
         });
     };
 
-    // 先检查 ORT 是否已安装
-    let ort_status = gpu_runtime::check_ort_runtime();
-    if !ort_status.available {
-        emit_line("ONNX Runtime 未安装，无法检测 CUDA", "error");
-        emit_line("请先下载 ONNX Runtime 并重启应用", "info");
-        return Ok((false, "ONNX Runtime 未安装".into()));
-    }
-    emit_line(&format!("ONNX Runtime 路径: {}", ort_status.path), "info");
-    emit_line(&format!("已安装文件: {}", ort_status.files.join(", ")), "info");
-
-    // 检查 ORT_DYLIB_PATH 是否设置
-    match std::env::var("ORT_DYLIB_PATH") {
-        Ok(path) => emit_line(&format!("ORT_DYLIB_PATH: {}", path), "info"),
-        Err(_) => {
-            emit_line("ORT_DYLIB_PATH 未设置（请重启应用）", "error");
-            return Ok((false, "需要重启应用".into()));
-        }
-    }
-
     let mut summary_lines: Vec<String> = Vec::new();
 
-    // 1. nvidia-smi + CUDA Toolkit（纯系统命令，不涉及 ort，不会卡）
+    // 1. nvidia-smi + CUDA Toolkit
     emit_line("正在检测 NVIDIA 驱动...", "info");
 
     let nvidia_result = tokio::task::spawn_blocking(|| {
@@ -235,72 +215,46 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
     }
     summary_lines.extend(env_lines);
 
-    // 2. ONNX Runtime 版本（可能触发 DLL 加载，放 spawn_blocking + 3秒超时）
-    emit_line("正在检测 ONNX Runtime...", "info");
+    // 2. Python onnxruntime 检测
+    emit_line("正在检测 Python onnxruntime...", "info");
 
-    let rt_task = tokio::task::spawn_blocking(|| {
-        std::panic::catch_unwind(|| format!("ONNX Runtime: {}", ort::info()))
-            .unwrap_or_else(|_| "ONNX Runtime: 加载失败".into())
-    });
-    match tokio::time::timeout(std::time::Duration::from_secs(3), rt_task).await {
-        Ok(Ok(info)) => {
-            emit_line(&info, "success");
-            summary_lines.push(info);
-        }
-        _ => {
-            let msg = "ONNX Runtime: 加载超时 (3秒)";
-            emit_line(msg, "error");
-            summary_lines.push(msg.into());
-        }
-    }
+    let python_check = tokio::task::spawn_blocking(|| {
+        inference::check_python_env()
+    }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
 
-    // 3. ort CUDA EP（最可能卡住，5秒超时）
-    emit_line("正在检测 CUDA ExecutionProvider...", "info");
-
-    let ep_task = tokio::task::spawn_blocking(|| {
-        std::panic::catch_unwind(|| {
-            ort::execution_providers::CUDAExecutionProvider::default().is_available()
-        })
-    });
-
-    let cuda_ok = match tokio::time::timeout(std::time::Duration::from_secs(5), ep_task).await {
-        Ok(Ok(Ok(Ok(true)))) => {
-            emit_line("CUDA ExecutionProvider: ✓ 可用", "success");
-            summary_lines.push("CUDA ExecutionProvider: 可用".into());
-            true
-        }
-        Ok(Ok(Ok(Ok(false)))) => {
-            emit_line("CUDA ExecutionProvider: ✗ 不可用 (ONNX Runtime 为 CPU 版本)", "error");
-            summary_lines.push("CUDA ExecutionProvider: 不可用".into());
-            false
-        }
-        Ok(Ok(Ok(Err(e)))) => {
-            let msg = format!("CUDA ExecutionProvider: 异常 ({})", e);
-            emit_line(&msg, "error");
+    let cuda_ok = match python_check {
+        Ok((ort_ver, providers)) => {
+            let msg = format!("Python onnxruntime v{}", ort_ver);
+            emit_line(&msg, "success");
             summary_lines.push(msg);
-            false
+
+            let msg = format!("可用 providers: {}", providers);
+            emit_line(&msg, "info");
+            summary_lines.push(msg);
+
+            let has_cuda = providers.contains("CUDAExecutionProvider");
+            if has_cuda {
+                emit_line("✓ CUDA ExecutionProvider 可用", "success");
+            } else {
+                emit_line("CUDA ExecutionProvider 不可用", "info");
+            }
+            has_cuda
         }
-        Ok(Ok(Err(_))) | Ok(Err(_)) => {
-            emit_line("CUDA ExecutionProvider: 内部错误", "error");
-            summary_lines.push("CUDA ExecutionProvider: 内部错误".into());
-            false
-        }
-        Err(_) => {
-            emit_line("CUDA ExecutionProvider: ⚠ 检测超时 (5秒)", "error");
-            emit_line("  → ONNX Runtime 尝试加载 CUDA 库时卡住", "error");
-            summary_lines.push("CUDA ExecutionProvider: 超时".into());
+        Err(e) => {
+            emit_line(&e, "error");
+            summary_lines.push(e);
             false
         }
     };
 
-    // 4. 总结
+    // 3. 总结
     if cuda_ok {
-        emit_line("✓ CUDA 加速已启用", "success");
+        emit_line("✓ CUDA 加速已就绪", "success");
     } else if has_nvidia {
-        emit_line("结论: 系统已安装 NVIDIA 驱动和 CUDA", "info");
-        emit_line("当前 ONNX Runtime 为 CPU 版本，CPU 推理仍可正常打标", "info");
+        emit_line("系统已安装 NVIDIA 驱动", "info");
+        emit_line("如需 GPU 加速，请安装: pip install onnxruntime-gpu", "info");
     } else {
-        emit_line("结论: 未检测到 NVIDIA GPU，将使用 CPU 推理", "info");
+        emit_line("未检测到 NVIDIA GPU，将使用 CPU 推理", "info");
     }
 
     Ok((cuda_ok, summary_lines.join("\n")))
@@ -312,13 +266,13 @@ pub fn cancel_tagger_download() {
     download::cancel_download();
 }
 
-/// 获取 ONNX Runtime 状态
+/// 获取 ONNX Runtime 状态（Python 环境检测）
 #[tauri::command]
 pub fn get_gpu_runtime_status() -> gpu_runtime::OrtRuntimeStatus {
     gpu_runtime::check_ort_runtime()
 }
 
-/// 下载 ONNX Runtime
+/// 下载 ONNX Runtime（保留兼容性，但实际推荐 pip install）
 #[tauri::command]
 pub async fn download_gpu_runtime(app: tauri::AppHandle) -> Result<(), String> {
     gpu_runtime::download_ort_runtime(&app).await
@@ -330,10 +284,12 @@ pub fn cancel_gpu_runtime_download() {
     gpu_runtime::cancel_ort_download();
 }
 
-/// 取消打标
+/// 取消打标（同时取消可能正在进行的模型下载）
 #[tauri::command]
 pub fn cancel_tagging() {
     inference::cancel_tagging();
+    download::cancel_download();
+    gpu_runtime::cancel_ort_download();
 }
 
 /// 开始打标
@@ -342,82 +298,26 @@ pub async fn start_tagging(
     app: tauri::AppHandle,
     options: TaggerOptions,
 ) -> Result<ProcessResult, String> {
+    use tauri::Emitter;
+
     // 重置取消标志
     inference::reset_tagging_cancel();
 
-    // 检查 ONNX Runtime 是否已安装
-    let ort_status = gpu_runtime::check_ort_runtime();
-    if !ort_status.available {
-        return Err("ONNX Runtime 尚未安装。请先在硬件设置中点击「下载 ONNX Runtime」，下载完成后重启应用。".into());
-    }
+    // 检查 Python 环境
+    let python_check = tokio::task::spawn_blocking(|| {
+        inference::check_python_env()
+    }).await.map_err(|e| format!("检测线程异常: {}", e))?;
 
-    // 检查 ORT_DYLIB_PATH 是否设置
-    let dylib_path = std::env::var("ORT_DYLIB_PATH").unwrap_or_default();
-    if dylib_path.is_empty() {
-        return Err(format!(
-            "ONNX Runtime 已下载但未加载（ORT_DYLIB_PATH 未设置）。\n\
-             文件位置: {}\n\
-             请重启应用以加载 ONNX Runtime。",
-            ort_status.path
-        ));
-    }
-
-    // 验证 DLL 文件存在
-    if !std::path::Path::new(&dylib_path).exists() {
-        return Err(format!(
-            "ORT_DYLIB_PATH 指向的文件不存在: {}\n\
-             请重新下载 ONNX Runtime。",
-            dylib_path
-        ));
-    }
-
-    // 尝试实际加载 ort（捕获 panic，因为 load-dynamic 失败时会 panic）
-    {
-        use tauri::Emitter;
-        let _ = app.emit("tagger-progress", ProgressEvent {
-            current: 0, total: 0, filename: String::new(),
-            status: "info".to_string(),
-            message: format!("正在加载 ONNX Runtime: {}", dylib_path),
-        });
-    }
-
-    let ort_test = tokio::task::spawn_blocking(|| {
-        std::panic::catch_unwind(|| {
-            let info = ort::info();
-            format!("{}", info)
-        })
-    }).await;
-
-    match ort_test {
-        Ok(Ok(info)) => {
-            use tauri::Emitter;
+    match &python_check {
+        Ok((ver, providers)) => {
             let _ = app.emit("tagger-progress", ProgressEvent {
                 current: 0, total: 0, filename: String::new(),
                 status: "success".to_string(),
-                message: format!("✓ ONNX Runtime 加载成功: {}", info),
+                message: format!("Python onnxruntime v{} ({})", ver, providers),
             });
         }
-        Ok(Err(panic_info)) => {
-            let msg = if let Some(s) = panic_info.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = panic_info.downcast_ref::<&str>() {
-                s.to_string()
-            } else {
-                "未知错误".to_string()
-            };
-            return Err(format!(
-                "ONNX Runtime DLL 加载失败!\n\
-                 路径: {}\n\
-                 错误: {}\n\n\
-                 可能原因:\n\
-                 1. DLL 文件损坏，请重新下载\n\
-                 2. 缺少 Visual C++ 运行时\n\
-                 3. 下载的版本与系统不兼容",
-                dylib_path, msg
-            ));
-        }
         Err(e) => {
-            return Err(format!("ONNX Runtime 加载线程异常: {}", e));
+            return Err(e.clone());
         }
     }
 
@@ -444,36 +344,27 @@ pub async fn start_tagging(
         });
 
         download::download_model(&app, &model_def).await?;
+
+        if inference::is_tagging_cancelled() {
+            return Err("已取消".into());
+        }
     }
 
-    // 3. 加载标签定义（支持 CSV 和 JSON 格式）
+    // 3. 加载标签定义（仅用于计数，Python 端会重新加载）
     let tag_defs = if tags_basename.ends_with(".json") {
         inference::load_tags_json(&tags_path)?
     } else {
         inference::load_tags(&tags_path)?
     };
 
-    // 4. 执行推理（catch_unwind 防止 ort panic 导致静默崩溃）
+    // 4. 通过 Python 子进程执行推理
     let is_nchw = model_def.input_format == models::InputFormat::NCHW;
     let app_clone = app.clone();
     let opts = options.clone();
     tokio::task::spawn_blocking(move || {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            inference::run_tagging(&app_clone, &opts, &model_path, &tag_defs, model_def.input_size, is_nchw)
-        })) {
-            Ok(result) => result,
-            Err(panic_info) => {
-                let msg = if let Some(s) = panic_info.downcast_ref::<String>() {
-                    s.clone()
-                } else if let Some(s) = panic_info.downcast_ref::<&str>() {
-                    s.to_string()
-                } else {
-                    "未知内部错误".to_string()
-                };
-                Err(format!("推理引擎崩溃: {}\n\n请检查 ONNX Runtime 是否正确安装。", msg))
-            }
-        }
+        inference::run_tagging(&app_clone, &opts, &model_path, &tag_defs, model_def.input_size, is_nchw)
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
 }
+

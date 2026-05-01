@@ -45,7 +45,10 @@ pub fn check_ort_runtime() -> OrtRuntimeStatus {
     #[cfg(target_os = "windows")]
     let required_files = vec!["onnxruntime.dll"];
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    let required_files = vec!["libonnxruntime.dylib"];
+
+    #[cfg(target_os = "linux")]
     let required_files = vec!["libonnxruntime.so"];
 
     let mut found_files = Vec::new();
@@ -105,7 +108,7 @@ pub fn cancel_ort_download() {
     ORT_DL_CANCELLED.store(true, Ordering::SeqCst);
 }
 
-/// 下载 ONNX Runtime（GPU 版，同时支持 CPU 推理）
+/// 下载 ONNX Runtime
 pub async fn download_ort_runtime(app: &tauri::AppHandle) -> Result<(), String> {
     ORT_DL_CANCELLED.store(false, Ordering::SeqCst);
 
@@ -128,51 +131,53 @@ pub async fn download_ort_runtime(app: &tauri::AppHandle) -> Result<(), String> 
         format!("onnxruntime-linux-x64-gpu-{}.tgz", ORT_VERSION),
     );
 
-    #[cfg(target_os = "macos")]
-    let (_url, _archive_name) = ("", "");
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    let (url, archive_name) = (
+        format!("https://github.com/microsoft/onnxruntime/releases/download/v{}/onnxruntime-osx-arm64-{}.tgz", ORT_VERSION, ORT_VERSION),
+        format!("onnxruntime-osx-arm64-{}.tgz", ORT_VERSION),
+    );
 
-    #[cfg(target_os = "macos")]
-    return Err("macOS 使用内置推理引擎，无需下载".into());
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    let (url, archive_name) = (
+        format!("https://github.com/microsoft/onnxruntime/releases/download/v{}/onnxruntime-osx-x86_64-{}.tgz", ORT_VERSION, ORT_VERSION),
+        format!("onnxruntime-osx-x86_64-{}.tgz", ORT_VERSION),
+    );
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        let archive_path = dir.join(&archive_name);
+    let archive_path = dir.join(&archive_name);
 
-        let _ = app.emit("tagger-progress", ProgressEvent {
-            current: 0, total: 0, filename: String::new(),
-            status: "info".to_string(),
-            message: format!("开始下载 ONNX Runtime v{}...", ORT_VERSION),
-        });
+    let _ = app.emit("tagger-progress", ProgressEvent {
+        current: 0, total: 0, filename: String::new(),
+        status: "info".to_string(),
+        message: format!("开始下载 ONNX Runtime v{}...", ORT_VERSION),
+    });
 
-        download_with_progress(app, &url, &archive_path, &archive_name).await?;
+    download_with_progress(app, &url, &archive_path, &archive_name).await?;
 
-        if ORT_DL_CANCELLED.load(Ordering::SeqCst) {
-            let _ = std::fs::remove_file(&archive_path);
-            return Err("下载已取消".into());
-        }
-
-        let _ = app.emit("tagger-progress", ProgressEvent {
-            current: 0, total: 0, filename: String::new(),
-            status: "info".to_string(),
-            message: "正在解压 ONNX Runtime...".to_string(),
-        });
-
-        extract_runtime(&archive_path, &dir)?;
+    if ORT_DL_CANCELLED.load(Ordering::SeqCst) {
         let _ = std::fs::remove_file(&archive_path);
+        return Err("下载已取消".into());
+    }
 
-        let status = check_ort_runtime();
-        if status.available {
-            // 立即设置环境变量（如果是首次下载，需要重启才能生效）
-            setup_ort_env();
-            let _ = app.emit("tagger-progress", ProgressEvent {
-                current: 0, total: 0, filename: String::new(),
-                status: "success".to_string(),
-                message: format!("ONNX Runtime v{} 安装成功！重启应用后生效", ORT_VERSION),
-            });
-            Ok(())
-        } else {
-            Err("解压后未找到所需文件".into())
-        }
+    let _ = app.emit("tagger-progress", ProgressEvent {
+        current: 0, total: 0, filename: String::new(),
+        status: "info".to_string(),
+        message: "正在解压 ONNX Runtime...".to_string(),
+    });
+
+    extract_runtime(&archive_path, &dir)?;
+    let _ = std::fs::remove_file(&archive_path);
+
+    let status = check_ort_runtime();
+    if status.available {
+        setup_ort_env();
+        let _ = app.emit("tagger-progress", ProgressEvent {
+            current: 0, total: 0, filename: String::new(),
+            status: "success".to_string(),
+            message: format!("ONNX Runtime v{} 安装成功！重启应用后生效", ORT_VERSION),
+        });
+        Ok(())
+    } else {
+        Err("解压后未找到所需文件".into())
     }
 }
 
@@ -294,6 +299,7 @@ fn extract_runtime(archive: &std::path::Path, dest: &std::path::Path) -> Result<
 #[cfg(not(target_os = "windows"))]
 fn extract_runtime(archive: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
     use std::process::Command;
+    // 先解压到 dest（--strip-components=1 去掉顶层目录名）
     let status = Command::new("tar")
         .args(["xzf", &archive.to_string_lossy(), "-C", &dest.to_string_lossy(), "--strip-components=1"])
         .status()
@@ -301,6 +307,19 @@ fn extract_runtime(archive: &std::path::Path, dest: &std::path::Path) -> Result<
 
     if !status.success() {
         return Err("tar 解压失败".into());
+    }
+
+    // 将 lib/ 子目录中的文件移到 dest 根目录
+    let lib_dir = dest.join("lib");
+    if lib_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&lib_dir) {
+            for entry in entries.flatten() {
+                let fname = entry.file_name();
+                let target = dest.join(&fname);
+                let _ = std::fs::rename(entry.path(), &target);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&lib_dir);
     }
     Ok(())
 }

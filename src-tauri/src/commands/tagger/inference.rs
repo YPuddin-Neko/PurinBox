@@ -1,7 +1,8 @@
-use image::GenericImageView;
-use ort::session::Session;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use tauri::Emitter;
 
 use super::{TagCategory, TagDefinition, TaggerOptions, ProcessResult, ProgressEvent, OnnxModelInfo};
@@ -10,9 +11,14 @@ use crate::commands::collect_image_files;
 /// 全局打标取消标志
 static TAGGING_CANCELLED: AtomicBool = AtomicBool::new(false);
 
+/// 全局 Python 进程（切换硬件时会杀死重建）
+static PYTHON_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
+
 /// 取消打标
 pub fn cancel_tagging() {
     TAGGING_CANCELLED.store(true, Ordering::SeqCst);
+    // 杀死正在运行的 Python 进程
+    kill_python_process();
 }
 
 /// 重置取消标志（开始新任务前调用）
@@ -25,12 +31,21 @@ pub fn is_tagging_cancelled() -> bool {
     TAGGING_CANCELLED.load(Ordering::SeqCst)
 }
 
+/// 杀死正在运行的 Python 推理进程
+pub fn kill_python_process() {
+    if let Ok(mut guard) = PYTHON_PROCESS.lock() {
+        if let Some(ref mut child) = *guard {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        *guard = None;
+    }
+}
 
 /// 在 Windows 上获取 nvidia-smi 的完整路径
 fn get_nvidia_smi_path() -> String {
     #[cfg(target_os = "windows")]
     {
-        // 常见的 nvidia-smi 路径
         let candidates = [
             r"C:\Windows\System32\nvidia-smi.exe",
             r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
@@ -40,7 +55,6 @@ fn get_nvidia_smi_path() -> String {
                 return path.to_string();
             }
         }
-        // 如果从 PATH 环境变量也能找到就用 PATH
         if let Ok(output) = run_hidden_cmd("where", &["nvidia-smi"]) {
             if let Some(first_line) = output.lines().next() {
                 let trimmed = first_line.trim();
@@ -55,7 +69,7 @@ fn get_nvidia_smi_path() -> String {
 
 /// 运行命令并隐藏 Windows 控制台窗口，返回 stdout 或错误信息
 fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, String> {
-    let mut cmd = std::process::Command::new(program);
+    let mut cmd = Command::new(program);
     cmd.args(args);
 
     #[cfg(target_os = "windows")]
@@ -91,7 +105,6 @@ fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
     let smi_path = get_nvidia_smi_path();
     lines.push(format!("nvidia-smi 路径: {}", smi_path));
 
-    // 查询 GPU 名称和驱动版本
     match run_hidden_cmd(&smi_path, &["--query-gpu=name,driver_version", "--format=csv,noheader,nounits"]) {
         Ok(stdout) => {
             if let Some(line) = stdout.lines().next() {
@@ -101,7 +114,6 @@ fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
                 lines.push(format!("NVIDIA GPU: {} (驱动 v{})", gpu_name, driver_ver));
             }
 
-            // 查 CUDA 版本（在 nvidia-smi 的完整输出里）
             if let Ok(full_output) = run_hidden_cmd(&smi_path, &[]) {
                 if let Some(cuda_pos) = full_output.find("CUDA Version:") {
                     let rest = &full_output[cuda_pos + 14..];
@@ -120,9 +132,7 @@ fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
 
 /// 检测 CUDA Toolkit (nvcc)
 fn detect_cuda_toolkit(lines: &mut Vec<String>) {
-    // 尝试 nvcc
     if let Ok(output) = run_hidden_cmd("nvcc", &["--version"]) {
-        // 解析 "release X.Y" 字样
         if let Some(pos) = output.find("release ") {
             let ver = output[pos + 8..].split(',').next().unwrap_or("?").trim();
             lines.push(format!("CUDA Toolkit: {} (nvcc)", ver));
@@ -130,13 +140,11 @@ fn detect_cuda_toolkit(lines: &mut Vec<String>) {
         }
     }
 
-    // Windows: 检查常见的 CUDA 安装路径
     #[cfg(target_os = "windows")]
     {
         let cuda_path = std::env::var("CUDA_PATH").ok();
         if let Some(ref cp) = cuda_path {
             if std::path::Path::new(cp).exists() {
-                // 尝试从目录名解析版本
                 let ver = std::path::Path::new(cp)
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -146,7 +154,6 @@ fn detect_cuda_toolkit(lines: &mut Vec<String>) {
             }
         }
 
-        // 扫描 Program Files
         if let Ok(entries) = std::fs::read_dir(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA") {
             let mut versions: Vec<String> = entries
                 .filter_map(|e| e.ok())
@@ -164,59 +171,50 @@ fn detect_cuda_toolkit(lines: &mut Vec<String>) {
     lines.push("CUDA Toolkit: 未检测到".into());
 }
 
-/// 自动检测 ONNX 模型的输入信息
+/// 自动检测 ONNX 模型的输入信息（使用 Python 调用）
 pub fn detect_model_info(model_path: &str) -> Result<OnnxModelInfo, String> {
-    let session = Session::builder()
-        .map_err(|e| format!("创建会话失败: {}", e))?
-        .commit_from_file(model_path)
-        .map_err(|e| format!("加载模型失败: {}\n\n请确认文件是有效的 ONNX 模型", e))?;
+    // 使用 Python 快速检测模型信息
+    let python = find_python()?;
+    let script = get_script_path()?;
 
-    let inputs = session.inputs();
-    if inputs.is_empty() {
-        return Err("模型没有输入节点".into());
+    let mut child = Command::new(&python)
+        .args([script.to_string_lossy().as_ref(), "--detect", model_path])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动 Python 失败: {}", e))?;
+
+    let output = child.wait_with_output()
+        .map_err(|e| format!("等待 Python 失败: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("模型检测失败: {}", stderr));
     }
 
-    let input = &inputs[0];
-    let dtype = input.dtype();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if val.get("type").and_then(|v| v.as_str()) == Some("model_info") {
+                let input_size = val.get("input_size").and_then(|v| v.as_u64()).unwrap_or(448) as u32;
+                let input_format = val.get("input_format").and_then(|v| v.as_str()).unwrap_or("NHWC").to_string();
+                let shape: Vec<i64> = val.get("input_shape")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_i64()).collect())
+                    .unwrap_or_default();
+                let channels = val.get("channels").and_then(|v| v.as_i64()).unwrap_or(3);
 
-    // 从 ValueType::Tensor 提取 shape
-    let shape_ref = dtype.tensor_shape()
-        .ok_or("输入不是 Tensor 类型")?;
-
-    // Shape 是 SmallVec<i64>
-    let shape: Vec<i64> = shape_ref.iter().copied().collect();
-
-    if shape.len() != 4 {
-        return Err(format!(
-            "不支持的输入形状: {:?}\n预期 4 维 [Batch, H, W, C] 或 [Batch, C, H, W]",
-            shape
-        ));
-    }
-
-    // 判断 NHWC 还是 NCHW
-    // NHWC: [1, H, W, 3]  -> shape[3] == 3
-    // NCHW: [1, 3, H, W]  -> shape[1] == 3
-    let (input_format, input_size, channels) = if shape[3] == 3 || shape[3] == 1 {
-        // NHWC
-        ("NHWC".to_string(), shape[1] as u32, shape[3])
-    } else if shape[1] == 3 || shape[1] == 1 {
-        // NCHW
-        ("NCHW".to_string(), shape[2] as u32, shape[1])
-    } else {
-        // 猜测：取较小维度作为 channels
-        if shape[1] < shape[3] {
-            ("NCHW".to_string(), shape[2] as u32, shape[1])
-        } else {
-            ("NHWC".to_string(), shape[1] as u32, shape[3])
+                return Ok(OnnxModelInfo {
+                    input_size,
+                    input_format,
+                    input_shape: shape,
+                    channels,
+                });
+            }
         }
-    };
+    }
 
-    Ok(OnnxModelInfo {
-        input_size,
-        input_format,
-        input_shape: shape,
-        channels,
-    })
+    Err("无法解析模型信息".into())
 }
 
 /// 从 CSV 文件加载标签定义
@@ -270,169 +268,252 @@ pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
     Ok(tags.into_iter().map(|(_, td)| td).collect())
 }
 
-/// 预处理图片 NHWC: [1, size, size, 3] BGR float32 [0,255]
-fn preprocess_image_nhwc(img_path: &Path, target_size: u32) -> Result<(Vec<i64>, Vec<f32>), String> {
-    let img = image::open(img_path).map_err(|e| format!("无法打开图片: {}", e))?;
-    let (w, h) = img.dimensions();
-    let size = target_size;
+/// 查找 Python 可执行文件
+fn find_python() -> Result<String, String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-    let scale = (size as f32 / w as f32).min(size as f32 / h as f32);
-    let new_w = (w as f32 * scale) as u32;
-    let new_h = (h as f32 * scale) as u32;
-    let pad_x = (size - new_w) / 2;
-    let pad_y = (size - new_h) / 2;
+    // 1. 优先检查应用目录下的 python_env
+    #[cfg(target_os = "windows")]
+    let venv_python = exe_dir.join("python_env/Scripts/python.exe");
+    #[cfg(not(target_os = "windows"))]
+    let venv_python = exe_dir.join("python_env/bin/python3");
 
-    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
-    let rgb = resized.to_rgb8();
+    if venv_python.exists() {
+        return Ok(venv_python.to_string_lossy().to_string());
+    }
 
-    let total = (size * size * 3) as usize;
-    let mut input = vec![255.0f32; total]; // white padding
-
-    for y in 0..new_h {
-        for x in 0..new_w {
-            let px = rgb.get_pixel(x, y);
-            let out_x = (x + pad_x) as usize;
-            let out_y = (y + pad_y) as usize;
-            let idx = (out_y * size as usize + out_x) * 3;
-            input[idx] = px[2] as f32;     // B
-            input[idx + 1] = px[1] as f32; // G
-            input[idx + 2] = px[0] as f32; // R
+    // 2. 检查系统 Python
+    for name in &["python3", "python"] {
+        if let Ok(output) = run_hidden_cmd(name, &["--version"]) {
+            if output.contains("Python 3") {
+                // 确认 onnxruntime 可用
+                if run_hidden_cmd(name, &["-c", "import onnxruntime"]).is_ok() {
+                    return Ok(name.to_string());
+                }
+            }
         }
     }
-    let s = size as i64;
-    Ok((vec![1, s, s, 3], input))
-}
 
-/// 预处理图片 NCHW: [1, 3, size, size] BGR float32 [0,255]
-fn preprocess_image_nchw(img_path: &Path, target_size: u32) -> Result<(Vec<i64>, Vec<f32>), String> {
-    let img = image::open(img_path).map_err(|e| format!("无法打开图片: {}", e))?;
-    let (w, h) = img.dimensions();
-    let size = target_size;
-
-    let scale = (size as f32 / w as f32).min(size as f32 / h as f32);
-    let new_w = (w as f32 * scale) as u32;
-    let new_h = (h as f32 * scale) as u32;
-    let pad_x = (size - new_w) / 2;
-    let pad_y = (size - new_h) / 2;
-
-    let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
-    let rgb = resized.to_rgb8();
-
-    let plane = (size * size) as usize;
-    let mut input = vec![255.0f32; plane * 3]; // white padding (3 channels)
-
-    for y in 0..new_h {
-        for x in 0..new_w {
-            let px = rgb.get_pixel(x, y);
-            let out_x = (x + pad_x) as usize;
-            let out_y = (y + pad_y) as usize;
-            let pixel_idx = out_y * size as usize + out_x;
-            input[pixel_idx] = px[2] as f32;             // B channel (plane 0)
-            input[plane + pixel_idx] = px[1] as f32;     // G channel (plane 1)
-            input[plane * 2 + pixel_idx] = px[0] as f32; // R channel (plane 2)
+    #[cfg(target_os = "windows")]
+    {
+        let candidates = [
+            r"C:\Python312\python.exe",
+            r"C:\Python311\python.exe",
+            r"C:\Python310\python.exe",
+        ];
+        for path in &candidates {
+            if std::path::Path::new(path).exists() {
+                return Ok(path.to_string());
+            }
         }
     }
-    let s = size as i64;
-    Ok((vec![1, 3, s, s], input))
+
+    Err("未找到可用的 Python 3 环境。\n\n请安装 Python 3.10+ 并运行:\n  pip install onnxruntime numpy pillow".into())
 }
 
-/// 执行批量打标
+/// 获取推理脚本路径
+fn get_script_path() -> Result<std::path::PathBuf, String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    // 开发模式：脚本在 src-tauri/scripts/
+    let dev_path = exe_dir.join("../../scripts/tagger_inference.py");
+    if dev_path.exists() {
+        return Ok(dev_path.canonicalize().unwrap_or(dev_path));
+    }
+
+    // 也尝试从 exe 同级的 scripts/ 目录找
+    let prod_path = exe_dir.join("scripts/tagger_inference.py");
+    if prod_path.exists() {
+        return Ok(prod_path);
+    }
+
+    // macOS .app bundle
+    let bundle_path = exe_dir.join("../Resources/scripts/tagger_inference.py");
+    if bundle_path.exists() {
+        return Ok(bundle_path.canonicalize().unwrap_or(bundle_path));
+    }
+
+    Err(format!(
+        "推理脚本未找到。\n搜索路径:\n  1. {}\n  2. {}\n  3. {}",
+        dev_path.display(), prod_path.display(), bundle_path.display()
+    ))
+}
+
+/// 检查 Python 环境是否满足要求
+pub fn check_python_env() -> Result<(String, String), String> {
+    let python = find_python()?;
+
+    // 检查 onnxruntime
+    let check_script = "import onnxruntime as ort; print(ort.__version__); print(','.join(ort.get_available_providers()))";
+    let output = run_hidden_cmd(&python, &["-c", check_script]);
+
+    match output {
+        Ok(stdout) => {
+            let lines: Vec<&str> = stdout.trim().lines().collect();
+            let ort_version = lines.first().unwrap_or(&"unknown").to_string();
+            let providers = lines.get(1).unwrap_or(&"CPUExecutionProvider").to_string();
+            Ok((ort_version, providers))
+        }
+        Err(_) => {
+            Err(format!(
+                "onnxruntime 未安装。请运行:\n  {} -m pip install onnxruntime\n\
+                 如需 GPU 加速:\n  {} -m pip install onnxruntime-gpu",
+                python, python
+            ))
+        }
+    }
+}
+
+/// 执行批量打标（通过 Python 子进程）
 pub fn run_tagging(
     app: &tauri::AppHandle,
     options: &TaggerOptions,
     model_path: &Path,
     tag_defs: &[TagDefinition],
-    input_size: u32,
-    is_nchw: bool,
+    _input_size: u32,
+    _is_nchw: bool,
 ) -> Result<ProcessResult, String> {
-    let fmt_label = if is_nchw { "NCHW" } else { "NHWC" };
+    // 杀死之前的进程（如果有）
+    kill_python_process();
+
+    // 查找 Python
+    let python = find_python()?;
+    let script = get_script_path()?;
+
     let _ = app.emit("tagger-progress", ProgressEvent {
         current: 0, total: 0, filename: String::new(),
         status: "info".to_string(),
-        message: format!("正在加载模型 (GPU: {}, 格式: {})...",
-            if options.use_gpu { "启用" } else { "禁用" }, fmt_label),
+        message: format!("启动 Python 推理进程 ({})", python),
     });
-    // 模型加载放子线程，主线程轮询取消标志
-    let use_gpu = options.use_gpu;
-    let model_path_owned = model_path.to_path_buf();
-    let app_for_load = app.clone();
 
-    let (tx, rx) = std::sync::mpsc::channel();
+    // 启动 Python 子进程
+    let mut cmd = Command::new(&python);
+    cmd.arg(script.to_string_lossy().as_ref())
+       .stdin(Stdio::piped())
+       .stdout(Stdio::piped())
+       .stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let mut child = cmd.spawn()
+        .map_err(|e| format!("启动 Python 进程失败: {}", e))?;
+
+    let mut stdin = child.stdin.take().ok_or("无法获取 Python stdin")?;
+    let stdout = child.stdout.take().ok_or("无法获取 Python stdout")?;
+    let stderr = child.stderr.take().ok_or("无法获取 Python stderr")?;
+
+    // 启动 stderr 读取线程（输出到日志）
+    let app_err = app.clone();
     std::thread::spawn(move || {
-        let result = (|| -> Result<Session, String> {
-            let mut builder = Session::builder()
-                .map_err(|e| format!("创建会话失败: {}", e))?;
-
-            if use_gpu {
-                // 尝试注册 CUDA EP
-                let cuda_builder = builder.with_execution_providers([
-                    ort::execution_providers::CUDAExecutionProvider::default().build()
-                ]);
-                match cuda_builder {
-                    Ok(b) => {
-                        builder = b;
-                        let _ = app_for_load.emit("tagger-progress", ProgressEvent {
-                            current: 0, total: 0, filename: String::new(),
-                            status: "success".to_string(),
-                            message: "✓ 已注册 CUDA ExecutionProvider".to_string(),
-                        });
-                    }
-                    Err(e) => {
-                        let _ = app_for_load.emit("tagger-progress", ProgressEvent {
-                            current: 0, total: 0, filename: String::new(),
-                            status: "error".to_string(),
-                            message: format!("✗ CUDA 注册失败，回退 CPU: {}", e),
-                        });
-                        builder = Session::builder()
-                            .map_err(|e2| format!("创建会话失败: {}", e2))?;
-                    }
-                }
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                let _ = app_err.emit("tagger-progress", ProgressEvent {
+                    current: 0, total: 0, filename: String::new(),
+                    status: "error".to_string(),
+                    message: format!("[Python stderr] {}", line),
+                });
             }
-
-            let _ = app_for_load.emit("tagger-progress", ProgressEvent {
-                current: 0, total: 0, filename: String::new(),
-                status: "info".to_string(),
-                message: "正在加载 ONNX 模型文件...".to_string(),
-            });
-
-            builder.commit_from_file(&model_path_owned)
-                .map_err(|e| format!("加载模型失败: {}", e))
-        })();
-        let _ = tx.send(result);
+        }
     });
 
-    // 轮询等待模型加载完成，期间可取消
-    let mut session = loop {
+    // 发送 init 命令
+    let tags_path = model_path.parent()
+        .unwrap_or(Path::new("."))
+        .join(if tag_defs.is_empty() { "selected_tags.csv" } else {
+            // 根据模型目录查找标签文件
+            let dir = model_path.parent().unwrap_or(Path::new("."));
+            let json = dir.join("tag_mapping.json");
+            let csv = dir.join("selected_tags.csv");
+            if json.exists() {
+                "tag_mapping.json"
+            } else if csv.exists() {
+                "selected_tags.csv"
+            } else {
+                "selected_tags.csv"
+            }
+        });
+
+    let init_cmd = serde_json::json!({
+        "cmd": "init",
+        "model_path": model_path.to_string_lossy(),
+        "tags_path": tags_path.to_string_lossy(),
+        "use_gpu": options.use_gpu,
+        "input_size": _input_size,
+    });
+
+    writeln!(stdin, "{}", init_cmd)
+        .map_err(|e| format!("发送 init 命令失败: {}", e))?;
+
+    // 读取 stdout 直到 ready
+    let reader = BufReader::new(stdout);
+    let mut lines_iter = reader.lines();
+
+    let mut ready = false;
+    let timeout = std::time::Instant::now();
+    while let Some(Ok(line)) = lines_iter.next() {
         if is_tagging_cancelled() {
-            let _ = app.emit("tagger-progress", ProgressEvent {
-                current: 0, total: 0, filename: String::new(),
-                status: "error".to_string(),
-                message: "打标已取消（模型加载阶段）".to_string(),
-            });
-            let _ = app.emit("tagger-progress", ProgressEvent {
-                current: 0, total: 0, filename: String::new(),
-                status: "done".to_string(),
-                message: "打标已取消".to_string(),
-            });
+            let _ = child.kill();
             return Ok(ProcessResult { success_count: 0, fail_count: 0, total: 0, errors: vec![] });
         }
-        match rx.try_recv() {
-            Ok(result) => break result?,
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                return Err("模型加载线程异常退出".into());
+
+        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+            let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match msg_type {
+                "log" => {
+                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    let _ = app.emit("tagger-progress", ProgressEvent {
+                        current: 0, total: 0, filename: String::new(),
+                        status: "info".to_string(),
+                        message: text.to_string(),
+                    });
+                }
+                "error" => {
+                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    let _ = app.emit("tagger-progress", ProgressEvent {
+                        current: 0, total: 0, filename: String::new(),
+                        status: "error".to_string(),
+                        message: text.to_string(),
+                    });
+                    let _ = child.kill();
+                    return Err(format!("Python 推理错误: {}", text));
+                }
+                "ready" => {
+                    let info = msg.get("info").and_then(|v| v.as_str()).unwrap_or("ready");
+                    let _ = app.emit("tagger-progress", ProgressEvent {
+                        current: 0, total: 0, filename: String::new(),
+                        status: "success".to_string(),
+                        message: format!("✓ 模型加载完成 ({})", info),
+                    });
+                    ready = true;
+                    break;
+                }
+                _ => {}
             }
         }
-    };
 
-    let _ = app.emit("tagger-progress", ProgressEvent {
-        current: 0, total: 0, filename: String::new(),
-        status: "success".to_string(),
-        message: "模型加载完成，开始打标...".to_string(),
-    });
+        if timeout.elapsed() > std::time::Duration::from_secs(120) {
+            let _ = child.kill();
+            return Err("模型加载超时(120秒)".into());
+        }
+    }
 
+    if !ready {
+        let _ = child.kill();
+        return Err("Python 进程未能成功初始化".into());
+    }
+
+    // 收集图片文件
     let input_dir = Path::new(&options.input_path);
     let files = collect_image_files(input_dir)?;
     let total = files.len() as u32;
@@ -442,8 +523,8 @@ pub fn run_tagging(
 
     let enabled_cats: Vec<&str> = options.enabled_categories.iter().map(|s| s.as_str()).collect();
 
+    // 逐图片发送 tag 命令
     for (i, file_path) in files.iter().enumerate() {
-        // 检查取消
         if is_tagging_cancelled() {
             let _ = app.emit("tagger-progress", ProgressEvent {
                 current: i as u32, total,
@@ -457,11 +538,10 @@ pub fn run_tagging(
                 status: "done".to_string(),
                 message: format!("打标已取消: 成功 {}, 失败 {}", success_count, fail_count),
             });
-            return Ok(ProcessResult { success_count, fail_count, total, errors });
+            break;
         }
 
         let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-
         let _ = app.emit("tagger-progress", ProgressEvent {
             current: i as u32 + 1, total,
             filename: filename.clone(),
@@ -469,29 +549,79 @@ pub fn run_tagging(
             message: format!("正在处理: {} ({}/{})", filename, i + 1, total),
         });
 
-        match tag_single_image(&mut session, file_path, tag_defs, input_size, options, &enabled_cats, is_nchw) {
-            Ok(tag_count) => {
-                success_count += 1;
-                let _ = app.emit("tagger-progress", ProgressEvent {
-                    current: i as u32 + 1, total,
-                    filename: filename.clone(),
-                    status: "success".to_string(),
-                    message: format!("[完成] {} → {} 个标签", filename, tag_count),
-                });
+        let tag_cmd = serde_json::json!({
+            "cmd": "tag",
+            "image_path": file_path.to_string_lossy(),
+            "general_threshold": options.general_threshold,
+            "character_threshold": options.character_threshold,
+            "enabled_categories": enabled_cats,
+        });
+
+        if let Err(e) = writeln!(stdin, "{}", tag_cmd) {
+            fail_count += 1;
+            let err_msg = format!("{}: 发送命令失败: {}", filename, e);
+            errors.push(err_msg.clone());
+            break;
+        }
+
+        // 读取结果
+        match lines_iter.next() {
+            Some(Ok(line)) => {
+                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                    let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    match msg_type {
+                        "result" => {
+                            let tag_count = msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                            success_count += 1;
+                            let _ = app.emit("tagger-progress", ProgressEvent {
+                                current: i as u32 + 1, total,
+                                filename: filename.clone(),
+                                status: "success".to_string(),
+                                message: format!("[完成] {} → {} 个标签", filename, tag_count),
+                            });
+                        }
+                        "error" => {
+                            let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            fail_count += 1;
+                            let err_msg = format!("{}: {}", filename, text);
+                            errors.push(err_msg.clone());
+                            let _ = app.emit("tagger-progress", ProgressEvent {
+                                current: i as u32 + 1, total,
+                                filename: filename.clone(),
+                                status: "error".to_string(),
+                                message: format!("[错误] {}", err_msg),
+                            });
+                        }
+                        "log" => {
+                            // 日志消息，可能需要继续读取 result
+                            let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                            let _ = app.emit("tagger-progress", ProgressEvent {
+                                current: i as u32 + 1, total,
+                                filename: filename.clone(),
+                                status: "info".to_string(),
+                                message: text.to_string(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 fail_count += 1;
-                let err_msg = format!("{}: {}", filename, e);
-                errors.push(err_msg.clone());
-                let _ = app.emit("tagger-progress", ProgressEvent {
-                    current: i as u32 + 1, total,
-                    filename: filename.clone(),
-                    status: "error".to_string(),
-                    message: format!("[错误] {}", err_msg),
-                });
+                errors.push(format!("{}: 读取结果失败: {}", filename, e));
+                break;
+            }
+            None => {
+                fail_count += 1;
+                errors.push(format!("{}: Python 进程意外退出", filename));
+                break;
             }
         }
     }
+
+    // 发送 quit 命令
+    let _ = writeln!(stdin, r#"{{"cmd":"quit"}}"#);
+    let _ = child.wait();
 
     let _ = app.emit("tagger-progress", ProgressEvent {
         current: total, total, filename: String::new(),
@@ -500,61 +630,4 @@ pub fn run_tagging(
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })
-}
-
-fn tag_single_image(
-    session: &mut Session,
-    img_path: &Path,
-    tag_defs: &[TagDefinition],
-    input_size: u32,
-    options: &TaggerOptions,
-    enabled_cats: &[&str],
-    is_nchw: bool,
-) -> Result<usize, String> {
-    let (shape, input_data) = if is_nchw {
-        preprocess_image_nchw(img_path, input_size)?
-    } else {
-        preprocess_image_nhwc(img_path, input_size)?
-    };
-
-    let input_tensor = ort::value::Tensor::from_array((shape, input_data))
-        .map_err(|e| format!("创建输入张量失败: {}", e))?;
-
-    let outputs = session.run(ort::inputs![input_tensor])
-        .map_err(|e| format!("推理失败: {}", e))?;
-
-    // 提取第一个输出
-    let (_, output_value) = outputs.iter().next().ok_or("无输出结果")?;
-    let output_tensor = output_value.try_extract_tensor::<f32>()
-        .map_err(|e| format!("提取输出失败: {}", e))?;
-
-    let pred_slice = output_tensor.1;
-
-    let mut selected_tags: Vec<String> = Vec::new();
-
-    for (idx, &confidence) in pred_slice.iter().enumerate() {
-        if idx >= tag_defs.len() { break; }
-        let tag = &tag_defs[idx];
-        let cat_key = tag.category.key();
-
-        if !enabled_cats.contains(&cat_key) { continue; }
-
-        let threshold = match tag.category {
-            TagCategory::Character => options.character_threshold,
-            _ => options.general_threshold,
-        };
-
-        if confidence >= threshold {
-            selected_tags.push(tag.name.clone());
-        }
-    }
-
-    // 保存到同名 .txt
-    let stem = img_path.file_stem().ok_or("无效的文件名")?.to_string_lossy();
-    let parent = img_path.parent().unwrap_or(Path::new("."));
-    let txt_path = parent.join(format!("{}.txt", stem));
-    let tag_text = selected_tags.join(", ");
-    std::fs::write(&txt_path, &tag_text).map_err(|e| format!("写入标签失败: {}", e))?;
-
-    Ok(selected_tags.len())
 }

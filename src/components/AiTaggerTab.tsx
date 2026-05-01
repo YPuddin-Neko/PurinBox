@@ -49,19 +49,12 @@ export default function AiTaggerTab() {
   const [nFormat, setNFormat] = useState('NHWC');
   const [detecting, setDetecting] = useState(false);
   const [importing, setImporting] = useState(false);
-  // GPU Runtime
-  const [gpuRtAvail, setGpuRtAvail] = useState(false);
-  const [gpuRtDownloading, setGpuRtDownloading] = useState(false);
-  const [gpuRtAtStartup, setGpuRtAtStartup] = useState(false); // 启动时就有
 
   const load = useCallback(async () => {
     try { const l = await invoke<ModelInfo[]>('get_tagger_models'); setModels(l); if (l.length > 0 && !selectedModel) setSelectedModel(l[0].id); } catch {}
-    try { const s = await invoke<{ available: boolean }>('get_gpu_runtime_status'); setGpuRtAvail(s.available); } catch {}
   }, [selectedModel]);
   useEffect(() => {
     load();
-    // 检查启动时 GPU runtime 是否就存在
-    invoke<{ available: boolean }>('get_gpu_runtime_status').then(s => setGpuRtAtStartup(s.available)).catch(() => {});
   }, []);
 
   // 打标进度事件
@@ -101,6 +94,11 @@ export default function AiTaggerTab() {
 
   const handleCancel = async () => {
     try { await invoke('cancel_tagging'); } catch {}
+    try { await invoke('cancel_tagger_download'); } catch {}
+    setDlProgress(null);
+    setProcessing(false);
+    setLogs(p => [...p, { time: getTimeStr(), message: '已取消', status: 'info' }]);
+    updateTask('tagger', { status: 'cancelled' });
   };
 
   const handleStart = async () => {
@@ -320,42 +318,10 @@ export default function AiTaggerTab() {
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">硬件设置</span></div>
 
-          {/* ONNX Runtime 状态 */}
-          {!gpuRtAvail ? (
-            <div style={{ marginBottom: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ fontSize: 11, color: '#fbbf24', padding: '8px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(251,191,36,0.06)', lineHeight: 1.6 }}>
-                ⚠ 首次使用需要下载 ONNX Runtime 推理引擎（约 200MB，支持 CPU + GPU）
-              </div>
-              <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                <button className="btn btn-primary btn-sm" onClick={async () => {
-                  setGpuRtDownloading(true);
-                  try {
-                    await invoke('download_gpu_runtime');
-                    setGpuRtAvail(true);
-                  } catch(e: any) {
-                    setLogs(p => [...p, { time: getTimeStr(), message: `ONNX Runtime 下载失败: ${String(e)}`, status: 'error' }]);
-                  }
-                  setGpuRtDownloading(false);
-                }} disabled={gpuRtDownloading} style={{ whiteSpace: 'nowrap' }}>
-                  {gpuRtDownloading ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 14, height: 14 }} />} 下载 ONNX Runtime
-                </button>
-                {gpuRtDownloading && (
-                  <button className="btn btn-secondary btn-sm" onClick={() => { invoke('cancel_gpu_runtime_download'); setGpuRtDownloading(false); setDlProgress(null); }} style={{ whiteSpace: 'nowrap', color: '#f87171' }}>
-                    <X style={{ width: 14, height: 14 }} /> 取消
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : gpuRtAtStartup ? (
-            <div style={{ marginBottom: 'var(--space-3)', fontSize: 11, color: '#4ade80', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(74,222,128,0.06)' }}>
-              ✓ ONNX Runtime 已就绪
-            </div>
-          ) : (
-            <div style={{ marginBottom: 'var(--space-3)', fontSize: 11, color: '#fbbf24', padding: '8px 10px', borderRadius: 'var(--radius-sm)', background: 'rgba(251,191,36,0.06)', lineHeight: 1.8 }}>
-              ✓ ONNX Runtime 已下载<br/>
-              ⚠ <strong>请重启应用</strong>以加载（ONNX Runtime 只在启动时加载一次）
-            </div>
-          )}
+          <div style={{ marginBottom: 'var(--space-3)', fontSize: 11, color: 'var(--color-text-secondary)', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', lineHeight: 1.6 }}>
+            推理引擎: Python onnxruntime<br/>
+            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>需要: python3 + pip install onnxruntime (CPU) 或 onnxruntime-gpu (GPU)</span>
+          </div>
 
           {/* CPU / GPU 切换 */}
           <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
@@ -368,7 +334,7 @@ export default function AiTaggerTab() {
               <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>GPU</span>
             </div>
           </div>
-          {useGpu && gpuRtAvail && gpuRtAtStartup && (
+          {useGpu && (
             <div style={{ marginTop: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 8 }}>
               <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                 <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `CUDA 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
