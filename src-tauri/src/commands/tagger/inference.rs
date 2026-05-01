@@ -12,6 +12,7 @@ use crate::commands::collect_image_files;
 #[cfg(target_os = "windows")]
 fn read_env_from_registry(name: &str) -> Option<String> {
     use std::process::Command;
+    use std::os::windows::process::CommandExt;
     // 使用 reg query 读取系统环境变量
     let output = Command::new("reg")
         .args(["query", r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "/v", name])
