@@ -229,7 +229,7 @@ def main():
 
                 # GPU 模式下打印 CUDA 诊断
                 if use_gpu:
-                    import os, ctypes, glob
+                    import ctypes, glob
                     # 检查 cuDNN DLL
                     cudnn_found = False
                     for p in os.environ.get("PATH", "").split(os.pathsep):
