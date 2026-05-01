@@ -345,35 +345,6 @@ pub async fn start_tagging(
                 status: "success".to_string(),
                 message: format!("Python onnxruntime v{} ({})", ver, providers),
             });
-
-            // GPU 模式下检查：如果有 CUDA EP 但 cuDNN 版本不匹配，自动修复
-            if options.use_gpu && providers.contains("CUDAExecutionProvider") {
-                let cudnn_major = tokio::task::spawn_blocking(|| {
-                    python_env::detect_cudnn_version()
-                }).await.unwrap_or(0);
-
-                // cuDNN 8 + ort-gpu >= 1.19 → 版本不兼容，需要降级
-                if cudnn_major == 8 {
-                    let ort_major_minor: Vec<u32> = ver.split('.')
-                        .take(2)
-                        .filter_map(|s| s.parse().ok())
-                        .collect();
-                    let needs_downgrade = ort_major_minor.len() == 2
-                        && (ort_major_minor[0] > 1 || (ort_major_minor[0] == 1 && ort_major_minor[1] >= 19));
-
-                    if needs_downgrade {
-                        let _ = app.emit("tagger-progress", ProgressEvent {
-                            current: 0, total: 0, filename: String::new(),
-                            status: "info".to_string(),
-                            message: format!("cuDNN 8.x + onnxruntime {} 不兼容，自动修复中...", ver),
-                        });
-                        let app_ref = app.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            python_env::install_gpu_deps(&app_ref)
-                        }).await;
-                    }
-                }
-            }
         }
         Err(_) => {
             // Python 环境不可用，自动安装

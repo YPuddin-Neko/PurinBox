@@ -325,7 +325,6 @@ fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 /// 安装 GPU 版 onnxruntime（替换 CPU 版）
-/// 根据 cuDNN 版本自动选择兼容的 onnxruntime-gpu 版本
 pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
     // 重置取消标志
     SETUP_CANCELLED.store(false, Ordering::SeqCst);
@@ -333,20 +332,7 @@ pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
     let python = get_active_python()?;
     eprintln!("[DEBUG] install_gpu_deps: 使用 Python: {}", python);
 
-    // 检测 cuDNN 版本
-    let cudnn_major = detect_cudnn_version();
-    eprintln!("[DEBUG] install_gpu_deps: 检测到 cuDNN major={}", cudnn_major);
-
-    let pkg = if cudnn_major >= 9 {
-        emit_progress(app, "检测到 cuDNN 9.x，安装 onnxruntime-gpu==1.25.1...", "info");
-        "onnxruntime-gpu==1.25.1"
-    } else if cudnn_major == 8 {
-        emit_progress(app, "检测到 cuDNN 8.x，安装 onnxruntime-gpu==1.18.1 (兼容版)...", "info");
-        "onnxruntime-gpu==1.18.1"
-    } else {
-        emit_progress(app, "未检测到 cuDNN 版本，安装 onnxruntime-gpu==1.25.1...", "info");
-        "onnxruntime-gpu==1.25.1"
-    };
+    emit_progress(app, "安装 onnxruntime-gpu==1.25.1 (需要 cuDNN 9.x)...", "info");
 
     // 先卸载 CPU 版
     emit_progress(app, "卸载 CPU 版 onnxruntime...", "info");
@@ -358,10 +344,10 @@ pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x08000000);
         }
-        let _ = cmd.output(); // 忽略卸载结果
+        let _ = cmd.output();
     }
 
-    pip_install_with_python(app, &python, &[pkg])
+    pip_install_with_python(app, &python, &["onnxruntime-gpu==1.25.1"])
 }
 
 /// 检测系统安装的 cuDNN 主版本号
