@@ -415,10 +415,67 @@ pub fn run_tagging(
        .env("NO_COLOR", "1")
        .env("PYTHONUNBUFFERED", "1");
 
+    // Windows: 确保 CUDA/cuDNN DLL 路径在 PATH 中
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+        if options.use_gpu {
+            let mut path = std::env::var("PATH").unwrap_or_default();
+            // 添加 CUDA 路径
+            if let Ok(cuda_path) = std::env::var("CUDA_PATH") {
+                let bin = format!("{}/bin", cuda_path);
+                let lib = format!("{}/lib/x64", cuda_path);
+                if !path.contains(&bin) {
+                    path = format!("{};{};{}", bin, lib, path);
+                }
+                eprintln!("[DEBUG] CUDA_PATH={}", cuda_path);
+            }
+            // 常见 CUDA 安装路径
+            for ver in &["12.9", "12.8", "12.6", "12.4", "12.2", "12.1", "12.0"] {
+                let cuda_dir = format!(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v{}", ver);
+                let bin = format!(r"{}\bin", cuda_dir);
+                if std::path::Path::new(&bin).exists() && !path.contains(&bin) {
+                    let lib = format!(r"{}\lib\x64", cuda_dir);
+                    path = format!("{};{};{}", bin, lib, path);
+                    eprintln!("[DEBUG] 添加 CUDA 路径: {}", bin);
+                }
+            }
+            // cuDNN 路径 (如果单独安装到某个目录)
+            if let Ok(cudnn_path) = std::env::var("CUDNN_PATH") {
+                let bin = format!("{}/bin", cudnn_path);
+                if !path.contains(&bin) {
+                    path = format!("{};{}", bin, path);
+                    eprintln!("[DEBUG] CUDNN_PATH={}", cudnn_path);
+                }
+            }
+            // 常见 cuDNN 路径
+            for cudnn_dir in &[
+                r"C:\Program Files\NVIDIA\CUDNN\v9.8",
+                r"C:\Program Files\NVIDIA\CUDNN\v9.7",
+                r"C:\Program Files\NVIDIA\CUDNN\v9.6",
+                r"C:\Program Files\NVIDIA\CUDNN\v9.5",
+                r"C:\Program Files\NVIDIA\CUDNN\v9.4",
+                r"C:\Program Files\NVIDIA\CUDNN\v9.3",
+                r"C:\Program Files\NVIDIA\CUDNN\v9.2",
+                r"C:\Program Files\NVIDIA\CUDNN\v9.1",
+                r"C:\Program Files\NVIDIA\CUDNN\v9.0",
+            ] {
+                let bin = format!(r"{}\bin", cudnn_dir);
+                if std::path::Path::new(&bin).exists() && !path.contains(&bin) {
+                    path = format!("{};{}", bin, path);
+                    eprintln!("[DEBUG] 添加 cuDNN 路径: {}", bin);
+                }
+            }
+            cmd.env("PATH", &path);
+            eprintln!("[DEBUG] 最终 PATH 长度: {} chars", path.len());
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = &options; // avoid unused warning
     }
 
     let mut child = cmd.spawn()

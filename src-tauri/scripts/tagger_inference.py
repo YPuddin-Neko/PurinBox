@@ -176,12 +176,40 @@ def main():
 
                 log(f"加载模型: {model_path}")
 
+                # GPU 模式下打印 CUDA 诊断
+                if use_gpu:
+                    import os, ctypes, glob
+                    # 检查 cuDNN DLL
+                    cudnn_found = False
+                    for p in os.environ.get("PATH", "").split(os.pathsep):
+                        cudnn_dlls = glob.glob(os.path.join(p, "cudnn*.dll")) + glob.glob(os.path.join(p, "libcudnn*"))
+                        if cudnn_dlls:
+                            log(f"cuDNN DLL 路径: {p}")
+                            for dll in cudnn_dlls[:3]:
+                                log(f"  {os.path.basename(dll)}")
+                            cudnn_found = True
+                            break
+                    if not cudnn_found:
+                        log("⚠ 未在 PATH 中找到 cuDNN DLL (cudnn*.dll)")
+                    # 检查 CUDA DLL
+                    cuda_path = os.environ.get("CUDA_PATH", "")
+                    if cuda_path:
+                        log(f"CUDA_PATH: {cuda_path}")
+
                 # 尝试创建 session，CUDA 失败时自动回退 CPU
                 try:
                     session = ort.InferenceSession(model_path, providers=providers)
                 except Exception as e:
                     if "CUDAExecutionProvider" in providers:
-                        log(f"⚠ CUDA 加载失败: {e}")
+                        err_msg = str(e)
+                        log(f"⚠ CUDA 加载失败")
+                        if "cuDNN" in err_msg:
+                            log("原因: 未找到 cuDNN 9.x — 请安装 cuDNN 9.x for CUDA 12.x")
+                            log("下载: https://developer.nvidia.com/cudnn-downloads")
+                        elif "CUDA" in err_msg:
+                            log("原因: CUDA 运行时未找到 — 请确认 CUDA 12.x 已安装且在 PATH 中")
+                        else:
+                            log(f"原因: {err_msg[:200]}")
                         log("自动回退到 CPU 推理")
                         providers = ["CPUExecutionProvider"]
                         session = ort.InferenceSession(model_path, providers=providers)
