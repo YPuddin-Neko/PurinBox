@@ -234,6 +234,24 @@ pub fn detect_cuda_toolkit_pub(lines: &mut Vec<String>) {
     detect_cuda_toolkit(lines)
 }
 
+/// 公开接口：检测 Apple GPU (macOS)
+pub fn detect_apple_gpu_pub(lines: &mut Vec<String>) {
+    detect_apple_gpu(lines)
+}
+
+/// 检测 Apple Silicon GPU 信息 (macOS)
+fn detect_apple_gpu(lines: &mut Vec<String>) {
+    // 获取芯片型号
+    if let Ok(output) = Command::new("sysctl").args(["-n", "machdep.cpu.brand_string"]).output() {
+        if output.status.success() {
+            let chip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            lines.push(format!("GPU: {} (Metal/CoreML)", chip));
+            return;
+        }
+    }
+    lines.push("GPU: Apple Silicon (Metal/CoreML)".into());
+}
+
 /// 检测 NVIDIA 驱动和 GPU 信息
 fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
     let smi_path = get_nvidia_smi_path();

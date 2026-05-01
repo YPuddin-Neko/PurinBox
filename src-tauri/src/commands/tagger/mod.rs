@@ -182,8 +182,7 @@ pub async fn remove_custom_tagger_model(id: String) -> Result<(), String> {
     models::remove_custom_model(&id)
 }
 
-/// 检测 CUDA 是否可用，返回 (可用, 详情信息)
-/// 通过 Python onnxruntime 检测 CUDA 可用性
+/// 检测 GPU 加速是否可用（Windows: CUDA, macOS: CoreML/Metal）
 #[tauri::command]
 pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String), String> {
     use tauri::Emitter;
@@ -198,23 +197,39 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
     };
 
     let mut summary_lines: Vec<String> = Vec::new();
+    let is_macos = cfg!(target_os = "macos");
 
-    // 1. nvidia-smi + CUDA Toolkit
-    emit_line("正在检测 NVIDIA 驱动...", "info");
+    // 1. 硬件检测
+    if is_macos {
+        emit_line("正在检测 GPU...", "info");
+        let gpu_lines = tokio::task::spawn_blocking(|| {
+            let mut lines: Vec<String> = Vec::new();
+            inference::detect_apple_gpu_pub(&mut lines);
+            lines
+        }).await.unwrap_or_else(|_| vec!["检测线程异常".into()]);
 
-    let nvidia_result = tokio::task::spawn_blocking(|| {
-        let mut lines: Vec<String> = Vec::new();
-        let ok = inference::detect_nvidia_env_pub(&mut lines);
-        inference::detect_cuda_toolkit_pub(&mut lines);
-        (ok, lines)
-    }).await.unwrap_or_else(|_| (false, vec!["检测线程异常".into()]));
+        for line in &gpu_lines {
+            emit_line(line, "success");
+        }
+        summary_lines.extend(gpu_lines);
+    } else {
+        // Windows/Linux: NVIDIA 检测
+        emit_line("正在检测 NVIDIA 驱动...", "info");
 
-    let (has_nvidia, env_lines) = nvidia_result;
-    for line in &env_lines {
-        let status = if line.contains("未检测到") { "error" } else { "success" };
-        emit_line(line, status);
+        let nvidia_result = tokio::task::spawn_blocking(|| {
+            let mut lines: Vec<String> = Vec::new();
+            let ok = inference::detect_nvidia_env_pub(&mut lines);
+            inference::detect_cuda_toolkit_pub(&mut lines);
+            (ok, lines)
+        }).await.unwrap_or_else(|_| (false, vec!["检测线程异常".into()]));
+
+        let (_has_nvidia, env_lines) = nvidia_result;
+        for line in &env_lines {
+            let status = if line.contains("未检测到") { "error" } else { "success" };
+            emit_line(line, status);
+        }
+        summary_lines.extend(env_lines);
     }
-    summary_lines.extend(env_lines);
 
     // 2. Python onnxruntime 检测
     emit_line("正在检测 Python onnxruntime...", "info");
@@ -223,7 +238,7 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
         inference::check_python_env()
     }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
 
-    let (mut cuda_ok, python_ok) = match python_check {
+    let (mut gpu_ok, python_ok) = match python_check {
         Ok((ort_ver, providers)) => {
             let msg = format!("Python onnxruntime v{}", ort_ver);
             emit_line(&msg, "success");
@@ -233,13 +248,19 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
             emit_line(&msg, "info");
             summary_lines.push(msg);
 
+            // 检测 GPU provider
             let has_cuda = providers.contains("CUDAExecutionProvider");
+            let has_coreml = providers.contains("CoreMLExecutionProvider");
+            let has_gpu = has_cuda || has_coreml;
+
             if has_cuda {
                 emit_line("✓ CUDA ExecutionProvider 可用", "success");
+            } else if has_coreml {
+                emit_line("✓ CoreML ExecutionProvider 可用", "success");
             } else {
-                emit_line("CUDA ExecutionProvider 不可用", "info");
+                emit_line("GPU ExecutionProvider 不可用", "info");
             }
-            (has_cuda, true) // (cuda_ok, python_ok)
+            (has_gpu, true)
         }
         Err(e) => {
             emit_line(&e, "error");
@@ -248,45 +269,55 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
         }
     };
 
-    // 3. 如果有 NVIDIA 但没有 CUDA EP，自动安装 onnxruntime-gpu
-    if !cuda_ok && has_nvidia && python_ok {
-        emit_line("正在自动安装 GPU 版 onnxruntime...", "info");
-        let app_ref = app.clone();
-        let install_result = tokio::task::spawn_blocking(move || {
-            python_env::install_gpu_deps(&app_ref)
-        }).await.unwrap_or_else(|_| Err("安装线程异常".into()));
+    // 3. Windows: 如果有 NVIDIA 但没有 CUDA EP，自动安装 onnxruntime-gpu
+    #[cfg(target_os = "windows")]
+    if !gpu_ok && python_ok {
+        // 检查是否有 NVIDIA GPU（重新检测一下）
+        let has_nvidia = tokio::task::spawn_blocking(|| {
+            let mut lines = Vec::new();
+            inference::detect_nvidia_env_pub(&mut lines)
+        }).await.unwrap_or(false);
 
-        match install_result {
-            Ok(()) => {
-                emit_line("✓ onnxruntime-gpu 已安装", "success");
-                // 重新检测
-                let recheck = tokio::task::spawn_blocking(|| {
-                    inference::check_python_env()
-                }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
-                if let Ok((_, providers)) = recheck {
-                    cuda_ok = providers.contains("CUDAExecutionProvider");
-                    if cuda_ok {
-                        emit_line("✓ CUDA 加速已启用", "success");
+        if has_nvidia {
+            emit_line("正在自动安装 GPU 版 onnxruntime...", "info");
+            let app_ref = app.clone();
+            let install_result = tokio::task::spawn_blocking(move || {
+                python_env::install_gpu_deps(&app_ref)
+            }).await.unwrap_or_else(|_| Err("安装线程异常".into()));
+
+            match install_result {
+                Ok(()) => {
+                    emit_line("✓ onnxruntime-gpu 已安装", "success");
+                    let recheck = tokio::task::spawn_blocking(|| {
+                        inference::check_python_env()
+                    }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
+                    if let Ok((_, providers)) = recheck {
+                        gpu_ok = providers.contains("CUDAExecutionProvider");
+                        if gpu_ok {
+                            emit_line("✓ CUDA 加速已启用", "success");
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                emit_line(&format!("GPU 版安装失败: {}", e), "error");
-                emit_line("将使用 CPU 推理", "info");
+                Err(e) => {
+                    emit_line(&format!("GPU 版安装失败: {}", e), "error");
+                    emit_line("将使用 CPU 推理", "info");
+                }
             }
         }
     }
 
     // 4. 总结
-    if cuda_ok {
-        emit_line("✓ CUDA 加速已就绪", "success");
-    } else if has_nvidia {
-        emit_line("将使用 CPU 推理", "info");
+    if gpu_ok {
+        if is_macos {
+            emit_line("✓ GPU 加速已就绪 (CoreML/Metal)", "success");
+        } else {
+            emit_line("✓ GPU 加速已就绪 (CUDA)", "success");
+        }
     } else {
-        emit_line("未检测到 NVIDIA GPU，将使用 CPU 推理", "info");
+        emit_line("将使用 CPU 推理", "info");
     }
 
-    Ok((cuda_ok, summary_lines.join("\n")))
+    Ok((gpu_ok, summary_lines.join("\n")))
 }
 
 /// 取消正在进行的模型下载

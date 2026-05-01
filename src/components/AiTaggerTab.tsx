@@ -330,7 +330,7 @@ export default function AiTaggerTab() {
 
           <div style={{ marginBottom: 'var(--space-3)', fontSize: 11, color: 'var(--color-text-secondary)', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', lineHeight: 1.6 }}>
             推理引擎: Python onnxruntime<br/>
-            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>需要: python3 + pip install onnxruntime (CPU) 或 onnxruntime-gpu (GPU)</span>
+            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>macOS: CoreML/Metal 加速 | Windows: CUDA 加速 (需 onnxruntime-gpu)</span>
           </div>
 
           {/* CPU / GPU 切换 */}
@@ -347,11 +347,11 @@ export default function AiTaggerTab() {
           {useGpu && (
             <div style={{ marginTop: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 8 }}>
               <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `CUDA 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
-                  {cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测 CUDA
+                <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `GPU 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
+                  {cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测 GPU
                 </button>
               </div>
-              {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6 }}>{cudaOk ? '✓ CUDA 可用，GPU 加速已启用' : '✗ CUDA 不可用 — 详情请查看日志'}</div>}
+              {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6 }}>{cudaOk ? '✓ GPU 加速可用' : '✗ GPU 加速不可用 — 详情请查看日志'}</div>}
             </div>
           )}
         </div>

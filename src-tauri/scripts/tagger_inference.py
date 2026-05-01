@@ -251,26 +251,34 @@ def main():
                 log(f"Python onnxruntime v{ort.__version__}")
                 log(f"可用 providers: {ort.get_available_providers()}")
 
-                # 选择 providers
-                if use_gpu and "CUDAExecutionProvider" in ort.get_available_providers():
-                    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                    log("使用 GPU (CUDA) 加速")
+                # 选择 providers（根据平台自动适配）
+                available = ort.get_available_providers()
+                gpu_provider = None
+                if use_gpu:
+                    if "CUDAExecutionProvider" in available:
+                        gpu_provider = "CUDAExecutionProvider"
+                        log("使用 GPU (CUDA) 加速")
+                    elif "CoreMLExecutionProvider" in available:
+                        gpu_provider = "CoreMLExecutionProvider"
+                        log("使用 GPU (CoreML/Metal) 加速")
+                    else:
+                        log("GPU 加速不可用，回退到 CPU")
+
+                if gpu_provider:
+                    providers = [gpu_provider, "CPUExecutionProvider"]
                 else:
                     providers = ["CPUExecutionProvider"]
-                    if use_gpu:
-                        log("CUDA 不可用，回退到 CPU")
-                    else:
+                    if not use_gpu:
                         log("使用 CPU 推理")
 
                 log(f"加载模型: {model_path}")
 
-                # GPU 模式下打印 CUDA 诊断
-                if use_gpu:
+                # GPU 模式下打印诊断信息（仅 Windows CUDA）
+                if use_gpu and sys.platform == "win32" and gpu_provider == "CUDAExecutionProvider":
                     import ctypes, glob
-                    # 检查 cuDNN DLL
                     cudnn_found = False
                     for p in os.environ.get("PATH", "").split(os.pathsep):
-                        cudnn_dlls = glob.glob(os.path.join(p, "cudnn*.dll")) + glob.glob(os.path.join(p, "libcudnn*"))
+                        cudnn_dlls = glob.glob(os.path.join(p, "cudnn*.dll"))
                         if cudnn_dlls:
                             log(f"cuDNN DLL 路径: {p}")
                             for dll in cudnn_dlls[:3]:
@@ -279,18 +287,14 @@ def main():
                             break
                     if not cudnn_found:
                         log("⚠ 未在 PATH 中找到 cuDNN DLL (cudnn*.dll)")
-                    # 检查 CUDA DLL
-                    cuda_path = os.environ.get("CUDA_PATH", "")
-                    if cuda_path:
-                        log(f"CUDA_PATH: {cuda_path}")
 
-                # 尝试创建 session，CUDA 失败时自动回退 CPU
+                # 尝试创建 session，GPU 失败时自动回退 CPU
                 try:
                     session = ort.InferenceSession(model_path, providers=providers)
                 except Exception as e:
-                    if "CUDAExecutionProvider" in providers:
+                    if gpu_provider and gpu_provider in providers:
                         err_msg = str(e)
-                        log(f"⚠ CUDA 加载失败")
+                        log(f"⚠ {gpu_provider} 加载失败")
                         if "cuDNN" in err_msg:
                             log("原因: 未找到 cuDNN 9.x — 请安装 cuDNN 9.x for CUDA 12.x")
                             log("下载: https://developer.nvidia.com/cudnn-downloads")
