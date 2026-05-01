@@ -8,6 +8,23 @@ use tauri::Emitter;
 use super::{TagCategory, TagDefinition, TaggerOptions, ProcessResult, ProgressEvent, OnnxModelInfo};
 use crate::commands::collect_image_files;
 
+/// 将目录下的所有子目录添加到 PATH 字符串中（用于 cuDNN 9.x 的 bin/12.x 结构）
+#[cfg(target_os = "windows")]
+fn add_subdirs_to_path(dir: &str, path: &mut String) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                let sub = entry.path();
+                let sub_str = sub.to_string_lossy().to_string();
+                if !path.contains(&sub_str) {
+                    *path = format!("{};{}", sub_str, path);
+                    eprintln!("[DEBUG] 添加子目录: {}", sub_str);
+                }
+            }
+        }
+    }
+}
+
 /// 去除 ANSI 转义序列（颜色码等）
 /// 同时处理 \x1b[...m 和 Windows 下残留的 [0;93m 格式
 fn strip_ansi_codes(s: &str) -> String {
@@ -443,87 +460,56 @@ pub fn run_tagging(
 
         if options.use_gpu {
             let mut path = std::env::var("PATH").unwrap_or_default();
-            // 添加 CUDA 路径
-            if let Ok(cuda_path) = std::env::var("CUDA_PATH") {
-                let bin = format!("{}/bin", cuda_path);
-                let lib = format!("{}/lib/x64", cuda_path);
-                if !path.contains(&bin) {
-                    path = format!("{};{};{}", bin, lib, path);
+
+            // 辅助函数：添加目录到 PATH（含子目录扫描）
+            let mut add_dir = |dir: &str, label: &str| {
+                if std::path::Path::new(dir).exists() && !path.contains(dir) {
+                    path = format!("{};{}", dir, path);
+                    eprintln!("[DEBUG] 添加 {} 路径: {}", label, dir);
                 }
-                eprintln!("[DEBUG] CUDA_PATH={}", cuda_path);
-            }
-            // 常见 CUDA 安装路径
-            for ver in &["12.9", "12.8", "12.6", "12.4", "12.2", "12.1", "12.0"] {
-                let cuda_dir = format!(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v{}", ver);
-                let bin = format!(r"{}\bin", cuda_dir);
-                if std::path::Path::new(&bin).exists() && !path.contains(&bin) {
-                    let lib = format!(r"{}\lib\x64", cuda_dir);
-                    path = format!("{};{};{}", bin, lib, path);
-                    eprintln!("[DEBUG] 添加 CUDA 路径: {}", bin);
+            };
+
+            // 1. CUDA 路径：从环境变量读取
+            //    NVIDIA 安装器会设置 CUDA_PATH, CUDA_PATH_V12_9 等
+            for (key, val) in std::env::vars() {
+                if key == "CUDA_PATH" || key.starts_with("CUDA_PATH_V") || key == "CUDA_HOME" {
+                    let bin = format!(r"{}\bin", val);
+                    let lib = format!(r"{}\lib\x64", val);
+                    add_dir(&bin, &key);
+                    add_dir(&lib, &key);
+                    eprintln!("[DEBUG] {}={}", key, val);
                 }
             }
-            // cuDNN 路径 (如果单独安装到某个目录)
+
+            // 2. cuDNN 路径：从环境变量读取
+            //    CUDNN_PATH 可能指向独立安装目录
             if let Ok(cudnn_path) = std::env::var("CUDNN_PATH") {
+                eprintln!("[DEBUG] CUDNN_PATH={}", cudnn_path);
                 let bin = format!(r"{}\bin", cudnn_path);
-                if !path.contains(&bin) {
-                    path = format!("{};{}", bin, path);
-                    eprintln!("[DEBUG] CUDNN_PATH={}", cudnn_path);
-                }
-                // cuDNN 9.x 可能有 bin\12.x 子目录
-                if let Ok(entries) = std::fs::read_dir(&bin) {
-                    for entry in entries.flatten() {
-                        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                            let sub = entry.path();
-                            let sub_str = sub.to_string_lossy().to_string();
-                            if !path.contains(&sub_str) {
-                                path = format!("{};{}", sub_str, path);
-                                eprintln!("[DEBUG] 添加 cuDNN 子目录: {}", sub_str);
-                            }
-                        }
+                add_dir(&bin, "CUDNN");
+                // cuDNN 9.x 在 bin 下有 12.x 子目录
+                add_subdirs_to_path(&bin, &mut path);
+                // lib 下也可能有 12.x 子目录
+                let lib = format!(r"{}\lib", cudnn_path);
+                add_subdirs_to_path(&lib, &mut path);
+            }
+
+            // 3. 扫描 PATH 中已有的目录，找到包含 cuDNN DLL 的目录
+            //    并自动添加其子目录（cuDNN 9.x 结构）
+            let current_path = path.clone();
+            for dir in current_path.split(';') {
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    let has_cudnn = entries.into_iter().flatten().any(|e| {
+                        let name = e.file_name().to_string_lossy().to_lowercase();
+                        name.contains("cudnn") && name.ends_with(".dll")
+                    });
+                    if has_cudnn {
+                        // 如果有子目录也加上
+                        add_subdirs_to_path(dir, &mut path);
                     }
                 }
             }
-            // 常见 cuDNN 9.x 安装路径（NVIDIA 安装器默认路径）
-            for cudnn_ver in &["9.8", "9.7", "9.6", "9.5", "9.4", "9.3", "9.2", "9.1", "9.0"] {
-                let cudnn_base = format!(r"C:\Program Files\NVIDIA\CUDNN\v{}", cudnn_ver);
-                // cuDNN 9.x: bin\12.x 子目录
-                let bin_dir = format!(r"{}\bin", cudnn_base);
-                if std::path::Path::new(&bin_dir).exists() {
-                    // 添加 bin 目录本身
-                    if !path.contains(&bin_dir) {
-                        path = format!("{};{}", bin_dir, path);
-                        eprintln!("[DEBUG] 添加 cuDNN 路径: {}", bin_dir);
-                    }
-                    // 搜索 bin 下的 CUDA 版本子目录 (如 bin\12.9, bin\12.6)
-                    if let Ok(entries) = std::fs::read_dir(&bin_dir) {
-                        for entry in entries.flatten() {
-                            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                                let sub = entry.path();
-                                let sub_str = sub.to_string_lossy().to_string();
-                                if !path.contains(&sub_str) {
-                                    path = format!("{};{}", sub_str, path);
-                                    eprintln!("[DEBUG] 添加 cuDNN CUDA 子目录: {}", sub_str);
-                                }
-                            }
-                        }
-                    }
-                }
-                // cuDNN 9.x lib 目录 (lib\12.x)
-                let lib_dir = format!(r"{}\lib", cudnn_base);
-                if std::path::Path::new(&lib_dir).exists() {
-                    if let Ok(entries) = std::fs::read_dir(&lib_dir) {
-                        for entry in entries.flatten() {
-                            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                                let sub = entry.path();
-                                let sub_str = sub.to_string_lossy().to_string();
-                                if !path.contains(&sub_str) {
-                                    path = format!("{};{}", sub_str, path);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+
             cmd.env("PATH", &path);
             eprintln!("[DEBUG] 最终 PATH 长度: {} chars", path.len());
         }

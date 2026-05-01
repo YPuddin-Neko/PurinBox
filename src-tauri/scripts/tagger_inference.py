@@ -139,62 +139,45 @@ def main():
     # 否则 onnxruntime_providers_cuda.dll 加载时找不到 CUDA/cuDNN 依赖
     if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
         cuda_dirs = set()
-        # 1. CUDA_PATH 环境变量
-        cuda_path = os.environ.get("CUDA_PATH", "")
-        if cuda_path:
-            bin_dir = os.path.join(cuda_path, "bin")
-            if os.path.isdir(bin_dir):
-                cuda_dirs.add(bin_dir)
-        # 2. 搜索常见 CUDA 安装路径
-        for ver in ["12.9", "12.8", "12.6", "12.4", "12.2", "12.1", "12.0"]:
-            d = rf"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v{ver}\bin"
+
+        def add_dir_with_subdirs(d):
+            """添加目录及其子目录"""
             if os.path.isdir(d):
                 cuda_dirs.add(d)
-        # 3. 搜索 PATH 中包含 CUDA/cuDNN DLL 的目录
+                try:
+                    for sub in os.listdir(d):
+                        sub_path = os.path.join(d, sub)
+                        if os.path.isdir(sub_path):
+                            cuda_dirs.add(sub_path)
+                except PermissionError:
+                    pass
+
+        # 1. CUDA 路径：从环境变量读取 (CUDA_PATH, CUDA_PATH_V12_9, CUDA_HOME 等)
+        for key, val in os.environ.items():
+            if key in ("CUDA_PATH", "CUDA_HOME") or key.startswith("CUDA_PATH_V"):
+                bin_dir = os.path.join(val, "bin")
+                if os.path.isdir(bin_dir):
+                    cuda_dirs.add(bin_dir)
+
+        # 2. cuDNN 路径：从环境变量读取
+        cudnn_path = os.environ.get("CUDNN_PATH", "")
+        if cudnn_path:
+            # cuDNN 9.x 结构: bin/12.x 子目录
+            add_dir_with_subdirs(os.path.join(cudnn_path, "bin"))
+            add_dir_with_subdirs(os.path.join(cudnn_path, "lib"))
+
+        # 3. 搜索 PATH 中包含 CUDA/cuDNN DLL 的目录 + 子目录
         for p in os.environ.get("PATH", "").split(os.pathsep):
             if os.path.isdir(p):
                 try:
                     for f in os.listdir(p):
                         fl = f.lower()
                         if fl.startswith("cudnn") or fl.startswith("cublas") or fl.startswith("cufft") or fl.startswith("nvinfer"):
-                            cuda_dirs.add(p)
+                            add_dir_with_subdirs(p)
                             break
                 except PermissionError:
                     pass
-        # 4. CUDNN_PATH 环境变量
-        cudnn_path = os.environ.get("CUDNN_PATH", "")
-        if cudnn_path:
-            bin_dir = os.path.join(cudnn_path, "bin")
-            if os.path.isdir(bin_dir):
-                cuda_dirs.add(bin_dir)
-                # cuDNN 9.x: bin 下有 12.x 子目录
-                for sub in os.listdir(bin_dir):
-                    sub_path = os.path.join(bin_dir, sub)
-                    if os.path.isdir(sub_path):
-                        cuda_dirs.add(sub_path)
-        # 5. cuDNN 9.x 默认安装路径 (NVIDIA 安装器)
-        for cudnn_ver in ["9.8", "9.7", "9.6", "9.5", "9.4", "9.3", "9.2", "9.1", "9.0"]:
-            cudnn_base = rf"C:\Program Files\NVIDIA\CUDNN\v{cudnn_ver}"
-            bin_dir = os.path.join(cudnn_base, "bin")
-            if os.path.isdir(bin_dir):
-                cuda_dirs.add(bin_dir)
-                # bin\12.x 子目录 (如 bin\12.9)
-                try:
-                    for sub in os.listdir(bin_dir):
-                        sub_path = os.path.join(bin_dir, sub)
-                        if os.path.isdir(sub_path):
-                            cuda_dirs.add(sub_path)
-                except PermissionError:
-                    pass
-            lib_dir = os.path.join(cudnn_base, "lib")
-            if os.path.isdir(lib_dir):
-                try:
-                    for sub in os.listdir(lib_dir):
-                        sub_path = os.path.join(lib_dir, sub)
-                        if os.path.isdir(sub_path):
-                            cuda_dirs.add(sub_path)
-                except PermissionError:
-                    pass
+
         # 注册所有目录
         for d in sorted(cuda_dirs):
             try:

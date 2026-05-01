@@ -377,19 +377,19 @@ pub fn detect_cudnn_version() -> u32 {
             }
         }
         // 2. 搜索 CUDA_PATH/bin（cuDNN 可能手动解压到这里）
-        if let Ok(cuda_path) = std::env::var("CUDA_PATH") {
-            let bin = format!(r"{}\bin", cuda_path);
-            if let Some(v) = scan_dir_for_cudnn(&bin) {
-                return v;
+        for (key, val) in std::env::vars() {
+            if key == "CUDA_PATH" || key.starts_with("CUDA_PATH_V") || key == "CUDA_HOME" {
+                let bin = format!(r"{}\bin", val);
+                if let Some(v) = scan_dir_for_cudnn(&bin) {
+                    return v;
+                }
             }
         }
-        // 3. 搜索 cuDNN 9.x 默认安装路径 (含 bin\12.x 子目录)
-        for cudnn_ver in &["9.8", "9.7", "9.6", "9.5", "9.4", "9.3", "9.2", "9.1", "9.0"] {
-            let cudnn_base = format!(r"C:\Program Files\NVIDIA\CUDNN\v{}", cudnn_ver);
-            let bin_dir = format!(r"{}\bin", cudnn_base);
-            if std::path::Path::new(&bin_dir).exists() {
-                eprintln!("[DEBUG] detect_cudnn: 找到 cuDNN 目录 {} → v9", bin_dir);
-                return 9;
+        // 3. 搜索 CUDNN_PATH 环境变量指向的目录
+        if let Ok(cudnn_path) = std::env::var("CUDNN_PATH") {
+            let bin = format!(r"{}\bin", cudnn_path);
+            if let Some(v) = scan_dir_for_cudnn(&bin) {
+                return v;
             }
         }
     }
