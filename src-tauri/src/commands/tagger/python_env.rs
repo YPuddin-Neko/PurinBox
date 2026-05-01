@@ -319,31 +319,63 @@ fn create_venv(app: &tauri::AppHandle) -> Result<(), String> {
 
 /// 安装依赖
 fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
-    pip_install(app, &["onnxruntime", "numpy", "pillow"])
+    let python = get_venv_python();
+    let python_str = python.to_string_lossy().to_string();
+    pip_install_with_python(app, &python_str, &["onnxruntime", "numpy", "pillow"])
 }
 
 /// 安装 GPU 版 onnxruntime（替换 CPU 版）
 pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
+    // 重置取消标志（避免残留状态影响）
+    SETUP_CANCELLED.store(false, Ordering::SeqCst);
     emit_progress(app, "正在安装 GPU 版 onnxruntime...", "info");
-    pip_install(app, &["onnxruntime-gpu"])
+
+    // 使用当前可用的 Python 执行 pip install
+    let python = get_active_python()?;
+    eprintln!("[DEBUG] install_gpu_deps: 使用 Python: {}", python);
+    pip_install_with_python(app, &python, &["onnxruntime-gpu"])
 }
 
-/// 通用 pip install
-fn pip_install(app: &tauri::AppHandle, deps: &[&str]) -> Result<(), String> {
-    let pip = get_venv_pip();
-    if !pip.exists() {
-        return Err("Python 环境未就绪，pip 不存在".into());
+/// 获取当前可用的 Python 路径（venv 优先，系统其次）
+fn get_active_python() -> Result<String, String> {
+    // 1. 管理的 venv
+    if let Some(p) = get_python_exe() {
+        return Ok(p);
     }
+    // 2. 系统 Python
+    for name in &["python3", "python"] {
+        let mut cmd = std::process::Command::new(name);
+        cmd.args(["--version"]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let ver = String::from_utf8_lossy(&output.stdout);
+                if ver.contains("Python 3") {
+                    return Ok(name.to_string());
+                }
+            }
+        }
+    }
+    Err("未找到可用的 Python".into())
+}
 
+/// 使用指定 Python 执行 pip install
+fn pip_install_with_python(app: &tauri::AppHandle, python: &str, deps: &[&str]) -> Result<(), String> {
     for dep in deps {
+        eprintln!("[DEBUG] pip_install_with_python: dep={}, python={}, cancelled={}", dep, python, is_cancelled());
         if is_cancelled() {
+            eprintln!("[DEBUG] pip_install_with_python: 取消标志为 true，跳过安装");
             return Err("已取消".into());
         }
 
         emit_progress(app, &format!("安装 {}...", dep), "info");
 
-        let mut cmd = std::process::Command::new(&pip);
-        cmd.args(["install", "--disable-pip-version-check", "--no-cache-dir", dep]);
+        let mut cmd = std::process::Command::new(python);
+        cmd.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", dep]);
 
         #[cfg(target_os = "windows")]
         {
@@ -351,9 +383,11 @@ fn pip_install(app: &tauri::AppHandle, deps: &[&str]) -> Result<(), String> {
             cmd.creation_flags(0x08000000);
         }
 
+        eprintln!("[DEBUG] pip_install_with_python: 执行 {} -m pip install {}", python, dep);
         let output = cmd.output().map_err(|e| format!("安装 {} 失败: {}", dep, e))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("[DEBUG] pip_install_with_python: 安装失败 stderr={}", stderr);
             return Err(format!("安装 {} 失败: {}", dep, stderr));
         }
 
