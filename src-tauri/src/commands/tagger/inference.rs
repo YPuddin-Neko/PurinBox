@@ -185,21 +185,33 @@ fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
 
 /// 检测 CUDA Toolkit (nvcc)
 fn detect_cuda_toolkit(lines: &mut Vec<String>) {
-    // 尝试 nvcc 获取版本
-    if let Ok(output) = run_hidden_cmd("nvcc", &["--version"]) {
-        if let Some(pos) = output.find("release ") {
-            let ver = output[pos + 8..].split(',').next().unwrap_or("?").trim();
-            lines.push(format!("CUDA Toolkit: v{}", ver));
-            return;
+    // 1. 尝试 PATH 中的 nvcc
+    if let Some(ver) = try_nvcc_version("nvcc") {
+        lines.push(format!("CUDA Toolkit: v{}", ver));
+        return;
+    }
+
+    // 2. 尝试从 CUDA_PATH/bin/nvcc 获取
+    for (key, val) in std::env::vars() {
+        if key == "CUDA_PATH" || key.starts_with("CUDA_PATH_V") || key == "CUDA_HOME" {
+            let nvcc = format!(r"{}\bin\nvcc.exe", val);
+            if std::path::Path::new(&nvcc).exists() {
+                if let Some(ver) = try_nvcc_version(&nvcc) {
+                    lines.push(format!("CUDA Toolkit: v{}", ver));
+                    return;
+                }
+            }
         }
     }
 
-    // nvcc 不可用时，检查环境变量是否存在
-    if std::env::var("CUDA_PATH").is_ok() || std::env::var("CUDA_HOME").is_ok() {
-        lines.push("CUDA Toolkit: 已安装 (nvcc 未在 PATH 中)".into());
-    } else {
-        lines.push("CUDA Toolkit: 未检测到".into());
-    }
+    lines.push("CUDA Toolkit: 未检测到".into());
+}
+
+/// 运行 nvcc --version 提取版本号
+fn try_nvcc_version(nvcc_path: &str) -> Option<String> {
+    let output = run_hidden_cmd(nvcc_path, &["--version"]).ok()?;
+    let pos = output.find("release ")?;
+    Some(output[pos + 8..].split(',').next()?.trim().to_string())
 }
 
 /// 自动检测 ONNX 模型的输入信息（使用 Python 调用）

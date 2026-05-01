@@ -181,13 +181,20 @@ def main():
                 except PermissionError:
                     pass
 
-        # 注册所有目录
+        # 注册所有目录：同时加到 PATH 和 add_dll_directory
+        # onnxruntime 的 C++ 层用 LoadLibrary 加载 cuDNN，只看 PATH
+        current_path = os.environ.get("PATH", "")
+        new_dirs = []
         for d in sorted(cuda_dirs):
             try:
                 os.add_dll_directory(d)
-                log(f"注册 DLL 目录: {d}")
             except OSError:
                 pass
+            if d not in current_path:
+                new_dirs.append(d)
+                log(f"注册 DLL 目录: {d}")
+        if new_dirs:
+            os.environ["PATH"] = os.pathsep.join(new_dirs) + os.pathsep + current_path
 
     import onnxruntime as ort
 
