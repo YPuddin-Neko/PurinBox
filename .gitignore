@@ -28,3 +28,7 @@ src-tauri/target/
 
 # Models (downloaded at runtime)
 models/
+
+# Runtime (auto-downloaded Python env, models, etc.)
+runtime/
+models/
