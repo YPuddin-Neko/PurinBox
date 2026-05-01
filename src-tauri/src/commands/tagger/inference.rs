@@ -166,57 +166,39 @@ fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
 
     match run_hidden_cmd(&smi_path, &["--query-gpu=name,driver_version", "--format=csv,noheader,nounits"]) {
         Ok(stdout) => {
-            if let Some(line) = stdout.lines().next() {
+            for line in stdout.lines() {
+                let line = line.trim();
+                if line.is_empty() { continue; }
                 let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
                 let gpu_name = parts.first().unwrap_or(&"Unknown");
                 let driver_ver = parts.get(1).unwrap_or(&"Unknown");
-                lines.push(format!("NVIDIA GPU: {} (驱动 v{})", gpu_name, driver_ver));
+                lines.push(format!("GPU: {} (驱动 v{})", gpu_name, driver_ver));
             }
             true
         }
         Err(err) => {
-            lines.push(format!("NVIDIA GPU: 未检测到 ({})", err));
+            lines.push(format!("GPU: 未检测到 ({})", err));
             false
         }
     }
 }
 
-/// 检测 CUDA Toolkit (nvcc + 环境变量)
+/// 检测 CUDA Toolkit (nvcc)
 fn detect_cuda_toolkit(lines: &mut Vec<String>) {
-    // 1. 尝试 nvcc 获取版本
-    let nvcc_ver = if let Ok(output) = run_hidden_cmd("nvcc", &["--version"]) {
-        output.find("release ")
-            .map(|pos| output[pos + 8..].split(',').next().unwrap_or("?").trim().to_string())
-    } else {
-        None
-    };
-
-    // 2. 收集所有 CUDA 相关环境变量
-    let mut cuda_envs: Vec<(String, String)> = Vec::new();
-    for (key, val) in std::env::vars() {
-        if key == "CUDA_PATH" || key.starts_with("CUDA_PATH_V") || key == "CUDA_HOME" {
-            cuda_envs.push((key, val));
+    // 尝试 nvcc 获取版本
+    if let Ok(output) = run_hidden_cmd("nvcc", &["--version"]) {
+        if let Some(pos) = output.find("release ") {
+            let ver = output[pos + 8..].split(',').next().unwrap_or("?").trim();
+            lines.push(format!("CUDA Toolkit: v{}", ver));
+            return;
         }
     }
-    // CUDA_PATH 排最前
-    cuda_envs.sort_by(|a, b| {
-        if a.0 == "CUDA_PATH" { std::cmp::Ordering::Less }
-        else if b.0 == "CUDA_PATH" { std::cmp::Ordering::Greater }
-        else { a.0.cmp(&b.0) }
-    });
 
-    if let Some(ver) = nvcc_ver {
-        lines.push(format!("CUDA Toolkit: v{}", ver));
-    } else if !cuda_envs.is_empty() {
-        lines.push("CUDA Toolkit: nvcc 未找到 (仅检测到环境变量)".into());
+    // nvcc 不可用时，检查环境变量是否存在
+    if std::env::var("CUDA_PATH").is_ok() || std::env::var("CUDA_HOME").is_ok() {
+        lines.push("CUDA Toolkit: 已安装 (nvcc 未在 PATH 中)".into());
     } else {
         lines.push("CUDA Toolkit: 未检测到".into());
-        return;
-    }
-
-    // 输出环境变量
-    for (key, val) in &cuda_envs {
-        lines.push(format!("  {} = {}", key, val));
     }
 }
 
