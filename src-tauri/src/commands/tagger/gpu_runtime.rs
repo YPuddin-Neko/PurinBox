@@ -27,7 +27,15 @@ pub fn get_ort_dir() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
-    exe_dir.join("runtime").join("ort")
+    let new_dir = exe_dir.join("runtime").join("ort");
+    // 兼容旧路径 runtime/ort-gpu/ → runtime/ort/
+    if !new_dir.exists() {
+        let old_dir = exe_dir.join("runtime").join("ort-gpu");
+        if old_dir.exists() {
+            let _ = std::fs::rename(&old_dir, &new_dir);
+        }
+    }
+    new_dir
 }
 
 /// 检查 ONNX Runtime 是否已下载

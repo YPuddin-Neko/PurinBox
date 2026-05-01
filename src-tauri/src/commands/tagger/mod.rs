@@ -197,6 +197,25 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
         });
     };
 
+    // 先检查 ORT 是否已安装
+    let ort_status = gpu_runtime::check_ort_runtime();
+    if !ort_status.available {
+        emit_line("ONNX Runtime 未安装，无法检测 CUDA", "error");
+        emit_line("请先下载 ONNX Runtime 并重启应用", "info");
+        return Ok((false, "ONNX Runtime 未安装".into()));
+    }
+    emit_line(&format!("ONNX Runtime 路径: {}", ort_status.path), "info");
+    emit_line(&format!("已安装文件: {}", ort_status.files.join(", ")), "info");
+
+    // 检查 ORT_DYLIB_PATH 是否设置
+    match std::env::var("ORT_DYLIB_PATH") {
+        Ok(path) => emit_line(&format!("ORT_DYLIB_PATH: {}", path), "info"),
+        Err(_) => {
+            emit_line("ORT_DYLIB_PATH 未设置（请重启应用）", "error");
+            return Ok((false, "需要重启应用".into()));
+        }
+    }
+
     let mut summary_lines: Vec<String> = Vec::new();
 
     // 1. nvidia-smi + CUDA Toolkit（纯系统命令，不涉及 ort，不会卡）

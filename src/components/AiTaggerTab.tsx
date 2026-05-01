@@ -340,7 +340,7 @@ export default function AiTaggerTab() {
                   {gpuRtDownloading ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 14, height: 14 }} />} 下载 ONNX Runtime
                 </button>
                 {gpuRtDownloading && (
-                  <button className="btn btn-secondary btn-sm" onClick={() => { invoke('cancel_gpu_runtime_download'); setGpuRtDownloading(false); }} style={{ whiteSpace: 'nowrap', color: '#f87171' }}>
+                  <button className="btn btn-secondary btn-sm" onClick={() => { invoke('cancel_gpu_runtime_download'); setGpuRtDownloading(false); setDlProgress(null); }} style={{ whiteSpace: 'nowrap', color: '#f87171' }}>
                     <X style={{ width: 14, height: 14 }} /> 取消
                   </button>
                 )}
@@ -416,7 +416,11 @@ export default function AiTaggerTab() {
                 <Download style={{ width: 14, height: 14, color: '#60a5fa', animation: 'pulse 1.5s infinite' }} />
                 <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>下载模型</span>
               </div>
-              <button onClick={async () => { try { await invoke('cancel_tagger_download'); } catch {} }}
+              <button onClick={async () => {
+                  try { await invoke('cancel_tagger_download'); } catch {}
+                  try { await invoke('cancel_gpu_runtime_download'); } catch {}
+                  setDlProgress(null);
+                }}
                 style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(248,113,113,0.3)', background: 'rgba(248,113,113,0.06)', color: '#f87171', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
                 <X style={{ width: 12, height: 12 }} /> 取消
               </button>
