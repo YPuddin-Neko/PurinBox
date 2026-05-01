@@ -8,6 +8,29 @@ use tauri::Emitter;
 use super::{TagCategory, TagDefinition, TaggerOptions, ProcessResult, ProgressEvent, OnnxModelInfo};
 use crate::commands::collect_image_files;
 
+/// 去除 ANSI 转义序列（颜色码等）
+fn strip_ansi_codes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // 跳过 ESC[...m 序列
+            if chars.peek() == Some(&'[') {
+                chars.next(); // skip '['
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// 全局打标取消标志
 static TAGGING_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -388,7 +411,9 @@ pub fn run_tagging(
     cmd.arg(script.to_string_lossy().as_ref())
        .stdin(Stdio::piped())
        .stdout(Stdio::piped())
-       .stderr(Stdio::piped());
+       .stderr(Stdio::piped())
+       .env("NO_COLOR", "1")
+       .env("PYTHONUNBUFFERED", "1");
 
     #[cfg(target_os = "windows")]
     {
@@ -403,16 +428,22 @@ pub fn run_tagging(
     let stdout = child.stdout.take().ok_or("无法获取 Python stdout")?;
     let stderr = child.stderr.take().ok_or("无法获取 Python stderr")?;
 
-    // 启动 stderr 读取线程（输出到日志）
+    // 启动 stderr 读取线程（输出到日志，过滤 ANSI 颜色码）
     let app_err = app.clone();
     std::thread::spawn(move || {
         let reader = BufReader::new(stderr);
         for line in reader.lines() {
             if let Ok(line) = line {
+                // 去除 ANSI 转义序列 (如 \x1b[0;93m)
+                let clean = strip_ansi_codes(&line);
+                let clean = clean.trim();
+                if clean.is_empty() {
+                    continue;
+                }
                 let _ = app_err.emit("tagger-progress", ProgressEvent {
                     current: 0, total: 0, filename: String::new(),
-                    status: "error".to_string(),
-                    message: format!("[Python stderr] {}", line),
+                    status: "warning".to_string(),
+                    message: format!("[Python] {}", clean),
                 });
             }
         }

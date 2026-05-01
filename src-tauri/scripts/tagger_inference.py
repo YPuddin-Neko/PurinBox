@@ -175,7 +175,19 @@ def main():
                         log("使用 CPU 推理")
 
                 log(f"加载模型: {model_path}")
-                session = ort.InferenceSession(model_path, providers=providers)
+
+                # 尝试创建 session，CUDA 失败时自动回退 CPU
+                try:
+                    session = ort.InferenceSession(model_path, providers=providers)
+                except Exception as e:
+                    if "CUDAExecutionProvider" in providers:
+                        log(f"⚠ CUDA 加载失败: {e}")
+                        log("自动回退到 CPU 推理")
+                        providers = ["CPUExecutionProvider"]
+                        session = ort.InferenceSession(model_path, providers=providers)
+                    else:
+                        raise
+
                 actual_providers = session.get_providers()
                 log(f"实际使用 providers: {actual_providers}")
 
