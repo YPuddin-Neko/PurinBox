@@ -156,8 +156,11 @@ def main():
         for key, val in os.environ.items():
             if key in ("CUDA_PATH", "CUDA_HOME") or key.startswith("CUDA_PATH_V"):
                 bin_dir = os.path.join(val, "bin")
-                if os.path.isdir(bin_dir):
-                    cuda_dirs.add(bin_dir)
+                bin_x64 = os.path.join(val, "bin", "x64")  # cuDNN 9.x
+                lib_x64 = os.path.join(val, "lib", "x64")
+                for d in [bin_dir, bin_x64, lib_x64]:
+                    if os.path.isdir(d):
+                        cuda_dirs.add(d)
 
         # 2. cuDNN 路径：从环境变量读取
         cudnn_path = os.environ.get("CUDNN_PATH", "")

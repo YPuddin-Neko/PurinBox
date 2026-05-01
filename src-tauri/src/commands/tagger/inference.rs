@@ -445,8 +445,10 @@ pub fn run_tagging(
             for (key, val) in std::env::vars() {
                 if key == "CUDA_PATH" || key.starts_with("CUDA_PATH_V") || key == "CUDA_HOME" {
                     let bin = format!(r"{}\bin", val);
+                    let bin_x64 = format!(r"{}\bin\x64", val); // cuDNN 9.x
                     let lib = format!(r"{}\lib\x64", val);
                     add_dir(&bin, &key);
+                    add_dir(&bin_x64, &key);
                     add_dir(&lib, &key);
                     eprintln!("[DEBUG] {}={}", key, val);
                 }

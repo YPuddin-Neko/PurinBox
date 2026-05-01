@@ -362,11 +362,15 @@ pub fn detect_cudnn_version() -> u32 {
                 }
             }
         }
-        // 2. 搜索 CUDA_PATH/bin（cuDNN 可能手动解压到这里）
+        // 2. 搜索 CUDA_PATH/bin 和 bin/x64（cuDNN 9.x 解压到此）
         for (key, val) in std::env::vars() {
             if key == "CUDA_PATH" || key.starts_with("CUDA_PATH_V") || key == "CUDA_HOME" {
                 let bin = format!(r"{}\bin", val);
                 if let Some(v) = scan_dir_for_cudnn(&bin) {
+                    return v;
+                }
+                let bin_x64 = format!(r"{}\bin\x64", val);
+                if let Some(v) = scan_dir_for_cudnn(&bin_x64) {
                     return v;
                 }
             }
