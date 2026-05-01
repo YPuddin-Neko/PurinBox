@@ -351,6 +351,76 @@ pub async fn start_tagging(
         return Err("ONNX Runtime 尚未安装。请先在硬件设置中点击「下载 ONNX Runtime」，下载完成后重启应用。".into());
     }
 
+    // 检查 ORT_DYLIB_PATH 是否设置
+    let dylib_path = std::env::var("ORT_DYLIB_PATH").unwrap_or_default();
+    if dylib_path.is_empty() {
+        return Err(format!(
+            "ONNX Runtime 已下载但未加载（ORT_DYLIB_PATH 未设置）。\n\
+             文件位置: {}\n\
+             请重启应用以加载 ONNX Runtime。",
+            ort_status.path
+        ));
+    }
+
+    // 验证 DLL 文件存在
+    if !std::path::Path::new(&dylib_path).exists() {
+        return Err(format!(
+            "ORT_DYLIB_PATH 指向的文件不存在: {}\n\
+             请重新下载 ONNX Runtime。",
+            dylib_path
+        ));
+    }
+
+    // 尝试实际加载 ort（捕获 panic，因为 load-dynamic 失败时会 panic）
+    {
+        use tauri::Emitter;
+        let _ = app.emit("tagger-progress", ProgressEvent {
+            current: 0, total: 0, filename: String::new(),
+            status: "info".to_string(),
+            message: format!("正在加载 ONNX Runtime: {}", dylib_path),
+        });
+    }
+
+    let ort_test = tokio::task::spawn_blocking(|| {
+        std::panic::catch_unwind(|| {
+            let info = ort::info();
+            format!("{}", info)
+        })
+    }).await;
+
+    match ort_test {
+        Ok(Ok(info)) => {
+            use tauri::Emitter;
+            let _ = app.emit("tagger-progress", ProgressEvent {
+                current: 0, total: 0, filename: String::new(),
+                status: "success".to_string(),
+                message: format!("✓ ONNX Runtime 加载成功: {}", info),
+            });
+        }
+        Ok(Err(panic_info)) => {
+            let msg = if let Some(s) = panic_info.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic_info.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "未知错误".to_string()
+            };
+            return Err(format!(
+                "ONNX Runtime DLL 加载失败!\n\
+                 路径: {}\n\
+                 错误: {}\n\n\
+                 可能原因:\n\
+                 1. DLL 文件损坏，请重新下载\n\
+                 2. 缺少 Visual C++ 运行时\n\
+                 3. 下载的版本与系统不兼容",
+                dylib_path, msg
+            ));
+        }
+        Err(e) => {
+            return Err(format!("ONNX Runtime 加载线程异常: {}", e));
+        }
+    }
+
     // 1. 查找模型
     let model_def = models::find_model(&options.model_id)
         .ok_or_else(|| format!("模型不存在: {}", options.model_id))?;
@@ -383,12 +453,26 @@ pub async fn start_tagging(
         inference::load_tags(&tags_path)?
     };
 
-    // 4. 执行推理
+    // 4. 执行推理（catch_unwind 防止 ort panic 导致静默崩溃）
     let is_nchw = model_def.input_format == models::InputFormat::NCHW;
     let app_clone = app.clone();
     let opts = options.clone();
     tokio::task::spawn_blocking(move || {
-        inference::run_tagging(&app_clone, &opts, &model_path, &tag_defs, model_def.input_size, is_nchw)
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            inference::run_tagging(&app_clone, &opts, &model_path, &tag_defs, model_def.input_size, is_nchw)
+        })) {
+            Ok(result) => result,
+            Err(panic_info) => {
+                let msg = if let Some(s) = panic_info.downcast_ref::<String>() {
+                    s.clone()
+                } else if let Some(s) = panic_info.downcast_ref::<&str>() {
+                    s.to_string()
+                } else {
+                    "未知内部错误".to_string()
+                };
+                Err(format!("推理引擎崩溃: {}\n\n请检查 ONNX Runtime 是否正确安装。", msg))
+            }
+        }
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
