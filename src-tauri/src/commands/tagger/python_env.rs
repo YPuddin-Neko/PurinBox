@@ -365,7 +365,7 @@ pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 /// 检测系统安装的 cuDNN 主版本号
-fn detect_cudnn_version() -> u32 {
+pub fn detect_cudnn_version() -> u32 {
     #[cfg(target_os = "windows")]
     {
         // 搜索 PATH 中的 cuDNN DLL 文件名
