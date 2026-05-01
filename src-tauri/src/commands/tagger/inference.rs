@@ -1,5 +1,4 @@
 use image::GenericImageView;
-use ort::ep::ExecutionProvider;
 use ort::session::Session;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,62 +25,6 @@ pub fn is_tagging_cancelled() -> bool {
     TAGGING_CANCELLED.load(Ordering::SeqCst)
 }
 
-/// 检测 CUDA 是否可用，返回 (可用, 详情)
-pub fn check_cuda() -> (bool, String) {
-    let mut lines: Vec<String> = Vec::new();
-
-    // 1. 检测 ONNX Runtime 版本
-    let rt_info = std::panic::catch_unwind(|| {
-        format!("ONNX Runtime: {}", ort::info())
-    }).unwrap_or_else(|_| "ONNX Runtime: 信息获取失败".into());
-    lines.push(rt_info);
-
-    // 2. 通过 nvidia-smi 检测系统 NVIDIA 驱动和 CUDA 版本
-    let nvidia_ok = detect_nvidia_env(&mut lines);
-
-    // 3. 检测 CUDA Toolkit (nvcc)
-    detect_cuda_toolkit(&mut lines);
-
-    // 4. 检测 ort CUDA ExecutionProvider
-    let ep_ok = match std::panic::catch_unwind(|| {
-        ort::execution_providers::CUDAExecutionProvider::default().is_available()
-    }) {
-        Ok(Ok(true)) => {
-            lines.push("CUDA ExecutionProvider: ✓ 可用".into());
-            true
-        }
-        Ok(Ok(false)) => {
-            lines.push("CUDA ExecutionProvider: ✗ 不可用".into());
-            lines.push("  → 当前 ONNX Runtime 为 CPU 版本，不支持 GPU 加速".into());
-            false
-        }
-        Ok(Err(e)) => {
-            lines.push(format!("CUDA ExecutionProvider: 异常 ({})", e));
-            false
-        }
-        Err(_) => {
-            lines.push("CUDA ExecutionProvider: 内部错误".into());
-            false
-        }
-    };
-
-    // 5. 总结
-    if ep_ok {
-        lines.insert(0, "✓ CUDA 加速已启用".into());
-        (true, lines.join("\n"))
-    } else if nvidia_ok {
-        lines.push("".into());
-        lines.push("结论: 系统已安装 NVIDIA 驱动和 CUDA".into());
-        lines.push("但当前打包的 ONNX Runtime 为 CPU 版本".into());
-        lines.push("GPU 加速需要替换为 GPU 版 ONNX Runtime".into());
-        lines.push("CPU 推理仍可正常使用所有打标功能".into());
-        (false, lines.join("\n"))
-    } else {
-        lines.push("".into());
-        lines.push("结论: 未检测到 NVIDIA GPU，将使用 CPU 推理".into());
-        (false, lines.join("\n"))
-    }
-}
 
 /// 在 Windows 上获取 nvidia-smi 的完整路径
 fn get_nvidia_smi_path() -> String {
@@ -409,39 +352,80 @@ pub fn run_tagging(
         message: format!("正在加载模型 (GPU: {}, 格式: {})...",
             if options.use_gpu { "启用" } else { "禁用" }, fmt_label),
     });
+    // 模型加载放子线程，主线程轮询取消标志
+    let use_gpu = options.use_gpu;
+    let model_path_owned = model_path.to_path_buf();
+    let app_for_load = app.clone();
 
-    let mut builder = Session::builder()
-        .map_err(|e| format!("创建会话失败: {}", e))?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<Session, String> {
+            let mut builder = Session::builder()
+                .map_err(|e| format!("创建会话失败: {}", e))?;
 
-    if options.use_gpu {
-        // 直接尝试注册 CUDA EP，不再调用 check_cuda（避免 ort::info() 卡死）
-        let cuda_builder = builder.with_execution_providers([
-            ort::execution_providers::CUDAExecutionProvider::default().build()
-        ]);
-        match cuda_builder {
-            Ok(b) => {
-                builder = b;
-                let _ = app.emit("tagger-progress", ProgressEvent {
-                    current: 0, total: 0, filename: String::new(),
-                    status: "success".to_string(),
-                    message: "✓ 已注册 CUDA ExecutionProvider".to_string(),
-                });
+            if use_gpu {
+                // 尝试注册 CUDA EP
+                let cuda_builder = builder.with_execution_providers([
+                    ort::execution_providers::CUDAExecutionProvider::default().build()
+                ]);
+                match cuda_builder {
+                    Ok(b) => {
+                        builder = b;
+                        let _ = app_for_load.emit("tagger-progress", ProgressEvent {
+                            current: 0, total: 0, filename: String::new(),
+                            status: "success".to_string(),
+                            message: "✓ 已注册 CUDA ExecutionProvider".to_string(),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = app_for_load.emit("tagger-progress", ProgressEvent {
+                            current: 0, total: 0, filename: String::new(),
+                            status: "error".to_string(),
+                            message: format!("✗ CUDA 注册失败，回退 CPU: {}", e),
+                        });
+                        builder = Session::builder()
+                            .map_err(|e2| format!("创建会话失败: {}", e2))?;
+                    }
+                }
             }
-            Err(e) => {
-                let _ = app.emit("tagger-progress", ProgressEvent {
-                    current: 0, total: 0, filename: String::new(),
-                    status: "error".to_string(),
-                    message: format!("✗ CUDA 注册失败，回退 CPU: {}", e),
-                });
-                // 重新创建 builder（上一个已被 move）
-                builder = Session::builder()
-                    .map_err(|e2| format!("创建会话失败: {}", e2))?;
+
+            let _ = app_for_load.emit("tagger-progress", ProgressEvent {
+                current: 0, total: 0, filename: String::new(),
+                status: "info".to_string(),
+                message: "正在加载 ONNX 模型文件...".to_string(),
+            });
+
+            builder.commit_from_file(&model_path_owned)
+                .map_err(|e| format!("加载模型失败: {}", e))
+        })();
+        let _ = tx.send(result);
+    });
+
+    // 轮询等待模型加载完成，期间可取消
+    let mut session = loop {
+        if is_tagging_cancelled() {
+            let _ = app.emit("tagger-progress", ProgressEvent {
+                current: 0, total: 0, filename: String::new(),
+                status: "error".to_string(),
+                message: "打标已取消（模型加载阶段）".to_string(),
+            });
+            let _ = app.emit("tagger-progress", ProgressEvent {
+                current: 0, total: 0, filename: String::new(),
+                status: "done".to_string(),
+                message: "打标已取消".to_string(),
+            });
+            return Ok(ProcessResult { success_count: 0, fail_count: 0, total: 0, errors: vec![] });
+        }
+        match rx.try_recv() {
+            Ok(result) => break result?,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err("模型加载线程异常退出".into());
             }
         }
-    }
-
-    let mut session = builder.commit_from_file(model_path)
-        .map_err(|e| format!("加载模型失败: {}", e))?;
+    };
 
     let _ = app.emit("tagger-progress", ProgressEvent {
         current: 0, total: 0, filename: String::new(),
