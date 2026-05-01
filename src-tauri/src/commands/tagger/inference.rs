@@ -9,6 +9,7 @@ use super::{TagCategory, TagDefinition, TaggerOptions, ProcessResult, ProgressEv
 use crate::commands::collect_image_files;
 
 /// 去除 ANSI 转义序列（颜色码等）
+/// 同时处理 \x1b[...m 和 Windows 下残留的 [0;93m 格式
 fn strip_ansi_codes(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -16,13 +17,32 @@ fn strip_ansi_codes(s: &str) -> String {
         if c == '\x1b' {
             // 跳过 ESC[...m 序列
             if chars.peek() == Some(&'[') {
-                chars.next(); // skip '['
+                chars.next();
                 while let Some(&next) = chars.peek() {
                     chars.next();
-                    if next.is_ascii_alphabetic() {
-                        break;
-                    }
+                    if next.is_ascii_alphabetic() { break; }
                 }
+            }
+        } else if c == '[' {
+            // Windows 下可能 ESC 被吃掉，只剩 [0;93m 这样的
+            // 检查是否是 ANSI 码模式: [数字;数字m 或 [m
+            let mut buf = String::new();
+            let mut is_ansi = false;
+            while let Some(&next) = chars.peek() {
+                if next.is_ascii_digit() || next == ';' {
+                    buf.push(next);
+                    chars.next();
+                } else if next == 'm' && buf.len() <= 10 {
+                    chars.next();
+                    is_ansi = true;
+                    break;
+                } else {
+                    break;
+                }
+            }
+            if !is_ansi {
+                result.push('[');
+                result.push_str(&buf);
             }
         } else {
             result.push(c);

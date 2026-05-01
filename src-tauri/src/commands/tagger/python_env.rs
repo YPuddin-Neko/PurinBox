@@ -325,15 +325,88 @@ fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 /// 安装 GPU 版 onnxruntime（替换 CPU 版）
+/// 根据 cuDNN 版本自动选择兼容的 onnxruntime-gpu 版本
 pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
-    // 重置取消标志（避免残留状态影响）
+    // 重置取消标志
     SETUP_CANCELLED.store(false, Ordering::SeqCst);
-    emit_progress(app, "正在安装 GPU 版 onnxruntime...", "info");
 
-    // 使用当前可用的 Python 执行 pip install
     let python = get_active_python()?;
     eprintln!("[DEBUG] install_gpu_deps: 使用 Python: {}", python);
-    pip_install_with_python(app, &python, &["onnxruntime-gpu"])
+
+    // 检测 cuDNN 版本
+    let cudnn_major = detect_cudnn_version();
+    eprintln!("[DEBUG] install_gpu_deps: 检测到 cuDNN major={}", cudnn_major);
+
+    let pkg = if cudnn_major >= 9 {
+        emit_progress(app, "检测到 cuDNN 9.x，安装 onnxruntime-gpu (最新版)...", "info");
+        "onnxruntime-gpu"
+    } else if cudnn_major == 8 {
+        emit_progress(app, "检测到 cuDNN 8.x，安装 onnxruntime-gpu==1.18.1 (兼容版)...", "info");
+        "onnxruntime-gpu==1.18.1"
+    } else {
+        emit_progress(app, "未检测到 cuDNN 版本，尝试安装 onnxruntime-gpu...", "info");
+        "onnxruntime-gpu"
+    };
+
+    // 先卸载 CPU 版
+    emit_progress(app, "卸载 CPU 版 onnxruntime...", "info");
+    {
+        let mut cmd = std::process::Command::new(&python);
+        cmd.args(["-m", "pip", "uninstall", "-y", "onnxruntime"]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        let _ = cmd.output(); // 忽略卸载结果
+    }
+
+    pip_install_with_python(app, &python, &[pkg])
+}
+
+/// 检测系统安装的 cuDNN 主版本号
+fn detect_cudnn_version() -> u32 {
+    #[cfg(target_os = "windows")]
+    {
+        // 搜索 PATH 中的 cuDNN DLL 文件名
+        if let Ok(path) = std::env::var("PATH") {
+            for dir in path.split(';') {
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_lowercase();
+                        // cudnn64_9.dll = v9, cudnn64_8.dll = v8
+                        if name.starts_with("cudnn64_") || name.starts_with("cudnn_") {
+                            if let Some(ver) = name.split('_').last() {
+                                let ver = ver.trim_end_matches(".dll");
+                                if let Ok(v) = ver.parse::<u32>() {
+                                    eprintln!("[DEBUG] detect_cudnn: 找到 {} → cuDNN v{}", name, v);
+                                    return v;
+                                }
+                            }
+                        }
+                        // cuDNN 9.x 使用 cudnn_graph64_9.dll 等命名
+                        if name.contains("cudnn") && name.contains("_9.") {
+                            eprintln!("[DEBUG] detect_cudnn: 找到 {} → cuDNN v9", name);
+                            return 9;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // macOS/Linux: 检查 libcudnn.so
+        if let Ok(path) = std::env::var("LD_LIBRARY_PATH") {
+            for dir in path.split(':') {
+                let p = std::path::Path::new(dir).join("libcudnn.so.9");
+                if p.exists() { return 9; }
+                let p = std::path::Path::new(dir).join("libcudnn.so.8");
+                if p.exists() { return 8; }
+            }
+        }
+    }
+    0
 }
 
 /// 获取当前可用的 Python 路径（venv 优先，系统其次）
