@@ -464,28 +464,64 @@ pub fn run_tagging(
             }
             // cuDNN 路径 (如果单独安装到某个目录)
             if let Ok(cudnn_path) = std::env::var("CUDNN_PATH") {
-                let bin = format!("{}/bin", cudnn_path);
+                let bin = format!(r"{}\bin", cudnn_path);
                 if !path.contains(&bin) {
                     path = format!("{};{}", bin, path);
                     eprintln!("[DEBUG] CUDNN_PATH={}", cudnn_path);
                 }
+                // cuDNN 9.x 可能有 bin\12.x 子目录
+                if let Ok(entries) = std::fs::read_dir(&bin) {
+                    for entry in entries.flatten() {
+                        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                            let sub = entry.path();
+                            let sub_str = sub.to_string_lossy().to_string();
+                            if !path.contains(&sub_str) {
+                                path = format!("{};{}", sub_str, path);
+                                eprintln!("[DEBUG] 添加 cuDNN 子目录: {}", sub_str);
+                            }
+                        }
+                    }
+                }
             }
-            // 常见 cuDNN 路径
-            for cudnn_dir in &[
-                r"C:\Program Files\NVIDIA\CUDNN\v9.8",
-                r"C:\Program Files\NVIDIA\CUDNN\v9.7",
-                r"C:\Program Files\NVIDIA\CUDNN\v9.6",
-                r"C:\Program Files\NVIDIA\CUDNN\v9.5",
-                r"C:\Program Files\NVIDIA\CUDNN\v9.4",
-                r"C:\Program Files\NVIDIA\CUDNN\v9.3",
-                r"C:\Program Files\NVIDIA\CUDNN\v9.2",
-                r"C:\Program Files\NVIDIA\CUDNN\v9.1",
-                r"C:\Program Files\NVIDIA\CUDNN\v9.0",
-            ] {
-                let bin = format!(r"{}\bin", cudnn_dir);
-                if std::path::Path::new(&bin).exists() && !path.contains(&bin) {
-                    path = format!("{};{}", bin, path);
-                    eprintln!("[DEBUG] 添加 cuDNN 路径: {}", bin);
+            // 常见 cuDNN 9.x 安装路径（NVIDIA 安装器默认路径）
+            for cudnn_ver in &["9.8", "9.7", "9.6", "9.5", "9.4", "9.3", "9.2", "9.1", "9.0"] {
+                let cudnn_base = format!(r"C:\Program Files\NVIDIA\CUDNN\v{}", cudnn_ver);
+                // cuDNN 9.x: bin\12.x 子目录
+                let bin_dir = format!(r"{}\bin", cudnn_base);
+                if std::path::Path::new(&bin_dir).exists() {
+                    // 添加 bin 目录本身
+                    if !path.contains(&bin_dir) {
+                        path = format!("{};{}", bin_dir, path);
+                        eprintln!("[DEBUG] 添加 cuDNN 路径: {}", bin_dir);
+                    }
+                    // 搜索 bin 下的 CUDA 版本子目录 (如 bin\12.9, bin\12.6)
+                    if let Ok(entries) = std::fs::read_dir(&bin_dir) {
+                        for entry in entries.flatten() {
+                            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                                let sub = entry.path();
+                                let sub_str = sub.to_string_lossy().to_string();
+                                if !path.contains(&sub_str) {
+                                    path = format!("{};{}", sub_str, path);
+                                    eprintln!("[DEBUG] 添加 cuDNN CUDA 子目录: {}", sub_str);
+                                }
+                            }
+                        }
+                    }
+                }
+                // cuDNN 9.x lib 目录 (lib\12.x)
+                let lib_dir = format!(r"{}\lib", cudnn_base);
+                if std::path::Path::new(&lib_dir).exists() {
+                    if let Ok(entries) = std::fs::read_dir(&lib_dir) {
+                        for entry in entries.flatten() {
+                            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                                let sub = entry.path();
+                                let sub_str = sub.to_string_lossy().to_string();
+                                if !path.contains(&sub_str) {
+                                    path = format!("{};{}", sub_str, path);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             cmd.env("PATH", &path);

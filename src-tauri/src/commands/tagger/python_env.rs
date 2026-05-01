@@ -368,29 +368,28 @@ pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
 pub fn detect_cudnn_version() -> u32 {
     #[cfg(target_os = "windows")]
     {
-        // 搜索 PATH 中的 cuDNN DLL 文件名
+        // 1. 搜索 PATH 中的 cuDNN DLL 文件名
         if let Ok(path) = std::env::var("PATH") {
             for dir in path.split(';') {
-                if let Ok(entries) = std::fs::read_dir(dir) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name().to_string_lossy().to_lowercase();
-                        // cudnn64_9.dll = v9, cudnn64_8.dll = v8
-                        if name.starts_with("cudnn64_") || name.starts_with("cudnn_") {
-                            if let Some(ver) = name.split('_').last() {
-                                let ver = ver.trim_end_matches(".dll");
-                                if let Ok(v) = ver.parse::<u32>() {
-                                    eprintln!("[DEBUG] detect_cudnn: 找到 {} → cuDNN v{}", name, v);
-                                    return v;
-                                }
-                            }
-                        }
-                        // cuDNN 9.x 使用 cudnn_graph64_9.dll 等命名
-                        if name.contains("cudnn") && name.contains("_9.") {
-                            eprintln!("[DEBUG] detect_cudnn: 找到 {} → cuDNN v9", name);
-                            return 9;
-                        }
-                    }
+                if let Some(v) = scan_dir_for_cudnn(dir) {
+                    return v;
                 }
+            }
+        }
+        // 2. 搜索 CUDA_PATH/bin（cuDNN 可能手动解压到这里）
+        if let Ok(cuda_path) = std::env::var("CUDA_PATH") {
+            let bin = format!(r"{}\bin", cuda_path);
+            if let Some(v) = scan_dir_for_cudnn(&bin) {
+                return v;
+            }
+        }
+        // 3. 搜索 cuDNN 9.x 默认安装路径 (含 bin\12.x 子目录)
+        for cudnn_ver in &["9.8", "9.7", "9.6", "9.5", "9.4", "9.3", "9.2", "9.1", "9.0"] {
+            let cudnn_base = format!(r"C:\Program Files\NVIDIA\CUDNN\v{}", cudnn_ver);
+            let bin_dir = format!(r"{}\bin", cudnn_base);
+            if std::path::Path::new(&bin_dir).exists() {
+                eprintln!("[DEBUG] detect_cudnn: 找到 cuDNN 目录 {} → v9", bin_dir);
+                return 9;
             }
         }
     }
@@ -407,6 +406,45 @@ pub fn detect_cudnn_version() -> u32 {
         }
     }
     0
+}
+
+/// 扫描目录中的 cuDNN DLL，返回主版本号
+#[cfg(target_os = "windows")]
+fn scan_dir_for_cudnn(dir: &str) -> Option<u32> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if !name.contains("cudnn") || !name.ends_with(".dll") {
+            continue;
+        }
+        // cudnn64_8.dll → 8, cudnn64_9.dll → 9
+        if name.starts_with("cudnn64_") {
+            let ver = name.trim_start_matches("cudnn64_").trim_end_matches(".dll");
+            if let Ok(v) = ver.parse::<u32>() {
+                eprintln!("[DEBUG] detect_cudnn: 找到 {} → cuDNN v{}", name, v);
+                return Some(v);
+            }
+        }
+        // cuDNN 9.x: cudnn_graph64_9.dll, cudnn_engines_precompiled64_9.dll
+        for suffix in &["_9.dll", "64_9.dll"] {
+            if name.ends_with(suffix) {
+                eprintln!("[DEBUG] detect_cudnn: 找到 {} → cuDNN v9", name);
+                return Some(9);
+            }
+        }
+    }
+    // cuDNN 9.x 子目录: bin\12.x\cudnn*.dll
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                let sub = entry.path();
+                if let Some(v) = scan_dir_for_cudnn(&sub.to_string_lossy()) {
+                    return Some(v);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// 获取当前可用的 Python 路径（venv 优先，系统其次）

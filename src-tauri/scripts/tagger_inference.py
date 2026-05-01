@@ -135,6 +135,74 @@ def detect_model_format(session):
     return "NHWC", 448
 
 def main():
+    # Windows Python 3.8+: 必须在 import onnxruntime 前注册 CUDA DLL 目录
+    # 否则 onnxruntime_providers_cuda.dll 加载时找不到 CUDA/cuDNN 依赖
+    if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
+        cuda_dirs = set()
+        # 1. CUDA_PATH 环境变量
+        cuda_path = os.environ.get("CUDA_PATH", "")
+        if cuda_path:
+            bin_dir = os.path.join(cuda_path, "bin")
+            if os.path.isdir(bin_dir):
+                cuda_dirs.add(bin_dir)
+        # 2. 搜索常见 CUDA 安装路径
+        for ver in ["12.9", "12.8", "12.6", "12.4", "12.2", "12.1", "12.0"]:
+            d = rf"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v{ver}\bin"
+            if os.path.isdir(d):
+                cuda_dirs.add(d)
+        # 3. 搜索 PATH 中包含 CUDA/cuDNN DLL 的目录
+        for p in os.environ.get("PATH", "").split(os.pathsep):
+            if os.path.isdir(p):
+                try:
+                    for f in os.listdir(p):
+                        fl = f.lower()
+                        if fl.startswith("cudnn") or fl.startswith("cublas") or fl.startswith("cufft") or fl.startswith("nvinfer"):
+                            cuda_dirs.add(p)
+                            break
+                except PermissionError:
+                    pass
+        # 4. CUDNN_PATH 环境变量
+        cudnn_path = os.environ.get("CUDNN_PATH", "")
+        if cudnn_path:
+            bin_dir = os.path.join(cudnn_path, "bin")
+            if os.path.isdir(bin_dir):
+                cuda_dirs.add(bin_dir)
+                # cuDNN 9.x: bin 下有 12.x 子目录
+                for sub in os.listdir(bin_dir):
+                    sub_path = os.path.join(bin_dir, sub)
+                    if os.path.isdir(sub_path):
+                        cuda_dirs.add(sub_path)
+        # 5. cuDNN 9.x 默认安装路径 (NVIDIA 安装器)
+        for cudnn_ver in ["9.8", "9.7", "9.6", "9.5", "9.4", "9.3", "9.2", "9.1", "9.0"]:
+            cudnn_base = rf"C:\Program Files\NVIDIA\CUDNN\v{cudnn_ver}"
+            bin_dir = os.path.join(cudnn_base, "bin")
+            if os.path.isdir(bin_dir):
+                cuda_dirs.add(bin_dir)
+                # bin\12.x 子目录 (如 bin\12.9)
+                try:
+                    for sub in os.listdir(bin_dir):
+                        sub_path = os.path.join(bin_dir, sub)
+                        if os.path.isdir(sub_path):
+                            cuda_dirs.add(sub_path)
+                except PermissionError:
+                    pass
+            lib_dir = os.path.join(cudnn_base, "lib")
+            if os.path.isdir(lib_dir):
+                try:
+                    for sub in os.listdir(lib_dir):
+                        sub_path = os.path.join(lib_dir, sub)
+                        if os.path.isdir(sub_path):
+                            cuda_dirs.add(sub_path)
+                except PermissionError:
+                    pass
+        # 注册所有目录
+        for d in sorted(cuda_dirs):
+            try:
+                os.add_dll_directory(d)
+                log(f"注册 DLL 目录: {d}")
+            except OSError:
+                pass
+
     import onnxruntime as ort
 
     session = None
