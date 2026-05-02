@@ -631,6 +631,13 @@ pub fn run_tagging(
                 if clean.is_empty() {
                     continue;
                 }
+                // 过滤无害的系统警告（macOS CoreML 等）
+                let lower = clean.to_lowercase();
+                if lower.contains("context leak") 
+                    || lower.contains("msgtracer")
+                    || lower.contains("number of partitions supported by coreml") {
+                    continue;
+                }
                 let _ = app_err.emit("tagger-progress", ProgressEvent {
                     current: 0, total: 0, filename: String::new(),
                     status: "warning".to_string(),
