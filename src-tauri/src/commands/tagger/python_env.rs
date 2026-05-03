@@ -74,14 +74,14 @@ fn get_env_dir() -> PathBuf {
     }
 }
 
-/// 获取 Python 安装目录
+/// 获取 Python 安装目录 (standalone 解释器)
 fn get_python_dir() -> PathBuf {
-    get_env_dir().join("python")
+    get_env_dir().join("python").join("base")
 }
 
 /// 获取 venv 目录
 fn get_venv_dir() -> PathBuf {
-    get_env_dir().join("python_env")
+    get_env_dir().join("python").join("venv")
 }
 
 /// 获取 venv 中的 python 可执行文件路径
