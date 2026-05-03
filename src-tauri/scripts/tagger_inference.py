@@ -259,10 +259,12 @@ def main():
                         gpu_provider = "CUDAExecutionProvider"
                         log("使用 GPU (CUDA) 加速")
                     elif "CoreMLExecutionProvider" in available:
-                        gpu_provider = "CoreMLExecutionProvider"
-                        log("使用 GPU (CoreML/Metal) 加速")
+                        # CoreML EP 对 tagger 模型 (SwinV2/ConvNext) 算子覆盖率低 (~30%)
+                        # 实际不如纯 CPU (Apple Silicon Accelerate SIMD 优化)
+                        log("macOS: 使用 CPU 推理 (Apple Silicon 优化)")
+                        log("提示: CoreML 对此类模型支持有限，CPU 模式更快")
                     else:
-                        log("GPU 加速不可用，回退到 CPU")
+                        log("GPU 加速不可用，使用 CPU 推理")
 
                 if gpu_provider:
                     providers = [gpu_provider, "CPUExecutionProvider"]

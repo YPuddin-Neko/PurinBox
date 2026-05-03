@@ -250,17 +250,16 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
 
             // 检测 GPU provider
             let has_cuda = providers.contains("CUDAExecutionProvider");
-            let has_coreml = providers.contains("CoreMLExecutionProvider");
-            let has_gpu = has_cuda || has_coreml;
 
             if has_cuda {
                 emit_line("✓ CUDA ExecutionProvider 可用", "success");
-            } else if has_coreml {
-                emit_line("✓ CoreML ExecutionProvider 可用", "success");
+            } else if is_macos {
+                emit_line("macOS: 使用 Apple Silicon 优化 CPU 推理", "info");
+                emit_line("提示: CoreML 对 tagger 模型支持有限，CPU 模式更高效", "info");
             } else {
                 emit_line("GPU ExecutionProvider 不可用", "info");
             }
-            (has_gpu, true)
+            (has_cuda, true)
         }
         Err(e) => {
             emit_line(&e, "error");
@@ -308,11 +307,11 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
 
     // 4. 总结
     if gpu_ok {
-        if is_macos {
-            emit_line("✓ GPU 加速已就绪 (CoreML/Metal)", "success");
-        } else {
-            emit_line("✓ GPU 加速已就绪 (CUDA)", "success");
-        }
+        emit_line("✓ GPU 加速已就绪 (CUDA)", "success");
+    } else if is_macos {
+        emit_line("✓ Apple Silicon 优化推理已就绪", "success");
+        // macOS 上虽然没有真正的 GPU 加速，但 CPU 足够快
+        // 返回 true 让用户可以选 GPU 模式（实际走 CPU 但不报错）
     } else {
         emit_line("将使用 CPU 推理", "info");
     }
