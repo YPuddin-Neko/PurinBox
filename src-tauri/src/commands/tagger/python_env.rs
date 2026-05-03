@@ -252,16 +252,47 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
     drop(file);
     emit_progress(app, "正在解压 Python...", "info");
 
-    // 解压
+    // 解压到临时目录
+    let extract_tmp = env_dir.join("_python_extract_tmp");
+    if extract_tmp.exists() {
+        let _ = std::fs::remove_dir_all(&extract_tmp);
+    }
+    std::fs::create_dir_all(&extract_tmp)
+        .map_err(|e| format!("创建临时目录失败: {}", e))?;
+
     let archive_path_clone = archive_path.clone();
-    let env_dir_clone = env_dir.clone();
+    let extract_tmp_clone = extract_tmp.clone();
     tokio::task::spawn_blocking(move || {
-        extract_tar_gz(&archive_path_clone, &env_dir_clone)
+        extract_tar_gz(&archive_path_clone, &extract_tmp_clone)
     }).await
     .map_err(|e| format!("解压任务失败: {}", e))??;
 
     // 清理下载文件
     let _ = tokio::fs::remove_file(&archive_path).await;
+
+    // 移动: _python_extract_tmp/python/ → env/python/base/
+    let extracted_python = extract_tmp.join("python");
+    if !extracted_python.exists() {
+        // 尝试查找解压出来的目录
+        let _ = std::fs::remove_dir_all(&extract_tmp);
+        return Err("解压后未找到 python 目录".into());
+    }
+
+    // 确保目标父目录存在
+    let python_parent = get_env_dir().join("python");
+    std::fs::create_dir_all(&python_parent)
+        .map_err(|e| format!("创建 python 目录失败: {}", e))?;
+
+    // 如果 base/ 已存在，先删除
+    if python_dir.exists() {
+        let _ = std::fs::remove_dir_all(&python_dir);
+    }
+
+    std::fs::rename(&extracted_python, &python_dir)
+        .map_err(|e| format!("移动 Python 目录失败: {}", e))?;
+
+    // 清理临时目录
+    let _ = std::fs::remove_dir_all(&extract_tmp);
 
     // 验证
     let python_exe = get_standalone_python();

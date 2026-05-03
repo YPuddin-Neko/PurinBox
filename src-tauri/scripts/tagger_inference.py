@@ -264,8 +264,7 @@ def main():
                     elif sys.platform == "darwin":
                         if is_onnx_model:
                             log("⚠ ONNX 模型不支持 MPS (Metal) 加速")
-                            log("提示: MPS 需要 PyTorch 原生模型格式，ONNX 模型使用 CPU 推理")
-                            log("macOS: 使用 CPU 推理 (Apple Silicon Accelerate 优化)")
+                            log("macOS: 使用 CPU 推理")
                         else:
                             log("macOS: 使用 CPU 推理")
                     else:

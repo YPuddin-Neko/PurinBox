@@ -254,7 +254,7 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
             if has_cuda {
                 emit_line("✓ CUDA ExecutionProvider 可用", "success");
             } else if is_macos {
-                emit_line("macOS: 使用 CPU 推理 (Apple Silicon 优化)", "info");
+                emit_line("macOS: 使用 CPU 推理", "info");
             } else {
                 emit_line("GPU ExecutionProvider 不可用", "info");
             }
@@ -308,8 +308,8 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
     if gpu_ok {
         emit_line("✓ GPU 加速已就绪 (CUDA)", "success");
     } else if is_macos {
-        emit_line("✓ CPU 推理已就绪 (Apple Silicon 优化)", "success");
-        emit_line("提示: ONNX 模型不支持 MPS 加速，使用 PyTorch 原生模型可启用 MPS", "info");
+        emit_line("✓ CPU 推理已就绪", "success");
+        emit_line("提示: ONNX 模型不支持 MPS 加速", "info");
     } else {
         emit_line("将使用 CPU 推理", "info");
     }
