@@ -21,8 +21,6 @@ fn is_cancelled() -> bool {
 /// Python standalone 下载信息
 struct PythonDownloadInfo {
     url: &'static str,
-    /// 解压后的目录名 (tar 内的顶层目录)
-    strip_prefix: &'static str,
 }
 
 fn get_download_info() -> PythonDownloadInfo {
@@ -30,28 +28,28 @@ fn get_download_info() -> PythonDownloadInfo {
     {
         PythonDownloadInfo {
             url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.12.13+20260414-aarch64-apple-darwin-install_only_stripped.tar.gz",
-            strip_prefix: "python",
+
         }
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
         PythonDownloadInfo {
             url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.12.13+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz",
-            strip_prefix: "python",
+
         }
     }
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
         PythonDownloadInfo {
             url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.12.13+20260414-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
-            strip_prefix: "python",
+
         }
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         PythonDownloadInfo {
             url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.12.13+20260414-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
-            strip_prefix: "python",
+
         }
     }
 }
@@ -90,14 +88,6 @@ fn get_venv_python() -> PathBuf {
     { get_venv_dir().join("Scripts").join("python.exe") }
     #[cfg(not(target_os = "windows"))]
     { get_venv_dir().join("bin").join("python3") }
-}
-
-/// 获取 venv 中的 pip 路径
-fn get_venv_pip() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    { get_venv_dir().join("Scripts").join("pip.exe") }
-    #[cfg(not(target_os = "windows"))]
-    { get_venv_dir().join("bin").join("pip3") }
 }
 
 /// 获取 standalone Python 可执行文件路径
@@ -356,6 +346,7 @@ fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 /// 安装 GPU 版 onnxruntime（替换 CPU 版）
+#[cfg(target_os = "windows")]
 pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
     // 重置取消标志
     SETUP_CANCELLED.store(false, Ordering::SeqCst);
@@ -380,92 +371,8 @@ pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
     pip_install_with_python(app, &python, &["onnxruntime-gpu==1.25.1"])
 }
 
-/// 检测系统安装的 cuDNN 主版本号
-pub fn detect_cudnn_version() -> u32 {
-    #[cfg(target_os = "windows")]
-    {
-        // 1. 搜索 PATH 中的 cuDNN DLL 文件名
-        if let Ok(path) = std::env::var("PATH") {
-            for dir in path.split(';') {
-                if let Some(v) = scan_dir_for_cudnn(dir) {
-                    return v;
-                }
-            }
-        }
-        // 2. 搜索 CUDA_PATH/bin 和 bin/x64（cuDNN 9.x 解压到此）
-        for (key, val) in std::env::vars() {
-            if key == "CUDA_PATH" || key.starts_with("CUDA_PATH_V") || key == "CUDA_HOME" {
-                let bin = format!(r"{}\bin", val);
-                if let Some(v) = scan_dir_for_cudnn(&bin) {
-                    return v;
-                }
-                let bin_x64 = format!(r"{}\bin\x64", val);
-                if let Some(v) = scan_dir_for_cudnn(&bin_x64) {
-                    return v;
-                }
-            }
-        }
-        // 3. 搜索 CUDNN_PATH 环境变量指向的目录
-        if let Ok(cudnn_path) = std::env::var("CUDNN_PATH") {
-            let bin = format!(r"{}\bin", cudnn_path);
-            if let Some(v) = scan_dir_for_cudnn(&bin) {
-                return v;
-            }
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // macOS/Linux: 检查 libcudnn.so
-        if let Ok(path) = std::env::var("LD_LIBRARY_PATH") {
-            for dir in path.split(':') {
-                let p = std::path::Path::new(dir).join("libcudnn.so.9");
-                if p.exists() { return 9; }
-                let p = std::path::Path::new(dir).join("libcudnn.so.8");
-                if p.exists() { return 8; }
-            }
-        }
-    }
-    0
-}
-
-/// 扫描目录中的 cuDNN DLL，返回主版本号
-#[cfg(target_os = "windows")]
-fn scan_dir_for_cudnn(dir: &str) -> Option<u32> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        if !name.contains("cudnn") || !name.ends_with(".dll") {
-            continue;
-        }
-        // cudnn64_8.dll → 8, cudnn64_9.dll → 9
-        if name.starts_with("cudnn64_") {
-            let ver = name.trim_start_matches("cudnn64_").trim_end_matches(".dll");
-            if let Ok(v) = ver.parse::<u32>() {
-                return Some(v);
-            }
-        }
-        // cuDNN 9.x: cudnn_graph64_9.dll, cudnn_engines_precompiled64_9.dll
-        for suffix in &["_9.dll", "64_9.dll"] {
-            if name.ends_with(suffix) {
-                return Some(9);
-            }
-        }
-    }
-    // cuDNN 9.x 子目录: bin\12.x\cudnn*.dll
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                let sub = entry.path();
-                if let Some(v) = scan_dir_for_cudnn(&sub.to_string_lossy()) {
-                    return Some(v);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// 获取当前可用的 Python 路径（venv 优先，系统其次）
+#[cfg(target_os = "windows")]
 fn get_active_python() -> Result<String, String> {
     // 1. 管理的 venv
     if let Some(p) = get_python_exe() {
