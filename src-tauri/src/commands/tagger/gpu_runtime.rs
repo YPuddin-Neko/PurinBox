@@ -21,16 +21,16 @@ pub struct OrtRuntimeStatus {
     pub files: Vec<String>,
 }
 
-/// 获取 ONNX Runtime 存储目录（软件根目录/runtime/ort/）
+/// 获取 ONNX Runtime 存储目录（软件根目录/env/ort/）
 pub fn get_ort_dir() -> PathBuf {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
-    let new_dir = exe_dir.join("runtime").join("ort");
-    // 兼容旧路径 runtime/ort-gpu/ → runtime/ort/
+    let new_dir = exe_dir.join("env").join("ort");
+    // 兼容旧路径 env/ort-gpu/ → env/ort/
     if !new_dir.exists() {
-        let old_dir = exe_dir.join("runtime").join("ort-gpu");
+        let old_dir = exe_dir.join("env").join("ort-gpu");
         if old_dir.exists() {
             let _ = std::fs::rename(&old_dir, &new_dir);
         }

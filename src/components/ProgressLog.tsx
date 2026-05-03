@@ -27,11 +27,33 @@ export { getTimeStr };
 
 export default function ProgressLog({ progress, current, total, logs, isDone, hasError, onClearLogs }: ProgressLogProps) {
   const logEndRef = useRef<HTMLDivElement>(null);
+  const startTimeRef = useRef<number | null>(null);
+
+  // 记录开始时间
+  useEffect(() => {
+    if (current === 1 && !startTimeRef.current) {
+      startTimeRef.current = Date.now();
+    }
+    if (current === 0) {
+      startTimeRef.current = null;
+    }
+  }, [current]);
 
   // Auto-scroll to bottom when new logs appear
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs.length]);
+
+  // 计算速度
+  const getSpeed = () => {
+    if (!startTimeRef.current || current <= 0) return '';
+    const elapsed = (Date.now() - startTimeRef.current) / 1000;
+    if (elapsed < 0.5) return '';
+    const speed = current / elapsed;
+    return speed >= 1 ? `${speed.toFixed(1)} it/s` : `${(1 / speed).toFixed(1)} s/it`;
+  };
+
+  const speed = getSpeed();
 
   const statusIcon = (status: LogEntry['status']) => {
     switch (status) {
@@ -54,7 +76,10 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
         <span className="progress-label">
           {isDone ? '处理完成' : '处理进度'}
         </span>
-        <span className="progress-percent">{Math.round(progress)}%</span>
+        <span className="progress-percent">
+          {Math.round(progress)}%
+          {speed && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{speed}</span>}
+        </span>
       </div>
       <div className="progress-bar-lg">
         <div

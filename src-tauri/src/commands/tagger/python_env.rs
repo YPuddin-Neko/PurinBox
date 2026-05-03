@@ -56,8 +56,8 @@ fn get_download_info() -> PythonDownloadInfo {
     }
 }
 
-/// 获取 runtime 根目录
-fn get_runtime_dir() -> PathBuf {
+/// 获取 env 根目录（存放 Python 环境等）
+fn get_env_dir() -> PathBuf {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
@@ -68,20 +68,20 @@ fn get_runtime_dir() -> PathBuf {
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or(exe_dir)
-            .join("runtime")
+            .join("env")
     } else {
-        exe_dir.join("runtime")
+        exe_dir.join("env")
     }
 }
 
 /// 获取 Python 安装目录
 fn get_python_dir() -> PathBuf {
-    get_runtime_dir().join("python")
+    get_env_dir().join("python")
 }
 
 /// 获取 venv 目录
 fn get_venv_dir() -> PathBuf {
-    get_runtime_dir().join("python_env")
+    get_env_dir().join("python_env")
 }
 
 /// 获取 venv 中的 python 可执行文件路径
@@ -197,11 +197,11 @@ pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> 
 async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
     let info = get_download_info();
     let python_dir = get_python_dir();
-    let runtime_dir = get_runtime_dir();
+    let env_dir = get_env_dir();
 
-    if !runtime_dir.exists() {
-        std::fs::create_dir_all(&runtime_dir)
-            .map_err(|e| format!("创建目录失败: {}", e))?;
+    if !env_dir.exists() {
+        std::fs::create_dir_all(&env_dir)
+            .map_err(|e| format!("创建 env 目录失败: {}", e))?;
     }
 
     emit_progress(app, &format!("下载: {}", info.url.split('/').last().unwrap_or("python")), "info");
@@ -217,7 +217,7 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
     }
 
     let total_size = resp.content_length().unwrap_or(0);
-    let archive_path = runtime_dir.join("python_download.tar.gz");
+    let archive_path = env_dir.join("python_download.tar.gz");
 
     // 流式写入
     use futures_util::StreamExt;
@@ -254,9 +254,9 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
 
     // 解压
     let archive_path_clone = archive_path.clone();
-    let runtime_dir_clone = runtime_dir.clone();
+    let env_dir_clone = env_dir.clone();
     tokio::task::spawn_blocking(move || {
-        extract_tar_gz(&archive_path_clone, &runtime_dir_clone)
+        extract_tar_gz(&archive_path_clone, &env_dir_clone)
     }).await
     .map_err(|e| format!("解压任务失败: {}", e))??;
 
