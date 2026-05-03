@@ -52,7 +52,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const resolved = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode;
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', resolved);
+    const el = document.documentElement;
+    el.classList.add('theme-transitioning');
+    el.setAttribute('data-theme', resolved);
+    const timer = setTimeout(() => el.classList.remove('theme-transitioning'), 500);
+    return () => clearTimeout(timer);
   }, [resolved]);
 
   return (

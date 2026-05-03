@@ -252,7 +252,6 @@ fn detect_apple_gpu() -> Option<(String, f32, u64, u64, f32)> {
             .and_then(|gpu| gpu["sppci_model"].as_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
-                // Apple Silicon 的 GPU 名称通常包含芯片名
                 if chip.contains("Apple") { format!("{} GPU", chip.split_whitespace().take(3).collect::<Vec<_>>().join(" ")) }
                 else { "Apple GPU".into() }
             })
@@ -260,9 +259,67 @@ fn detect_apple_gpu() -> Option<(String, f32, u64, u64, f32)> {
         "Apple GPU".into()
     };
 
-    // Apple Silicon 统一内存架构 — GPU 和 CPU 共享内存
-    // 无法单独获取 GPU 使用率和显存（需要 Metal API 或 IOKit）
-    // 返回 -1 表示不支持独立 GPU 监控
-    Some((gpu_name, -1.0, 0, 0, -1.0))
+    // 通过 ioreg 获取 GPU 使用率和显存
+    let gpu_usage = get_apple_gpu_utilization().unwrap_or(-1.0);
+
+    // Apple Silicon 统一内存 — GPU 共享系统 RAM
+    // 从 sysinfo 获取总内存，从 ioreg 获取 GPU 已用显存
+    let (vram_used, vram_total) = get_apple_gpu_memory();
+
+    let vram_percent = if vram_total > 0 {
+        (vram_used as f64 / vram_total as f64 * 100.0) as f32
+    } else { -1.0 };
+
+    Some((gpu_name, gpu_usage, vram_used, vram_total, vram_percent))
+}
+
+/// macOS: 从 ioreg PerformanceStatistics 字典中提取指定 key 的数值
+#[cfg(target_os = "macos")]
+fn extract_ioreg_perf_value(key: &str) -> Option<f64> {
+    let output = std::process::Command::new("ioreg")
+        .args(["-r", "-l", "-c", "IOAccelerator"])
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if !line.contains("PerformanceStatistics") {
+            continue;
+        }
+        // 格式: ..."Device Utilization %"=17,...
+        // 搜索 "key"= 后面的数字
+        let search = format!("\"{}\"=", key);
+        if let Some(pos) = line.find(&search) {
+            let after = &line[pos + search.len()..];
+            // 取到逗号或 } 之前的数字
+            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            if let Ok(val) = num_str.parse::<f64>() {
+                return Some(val);
+            }
+        }
+    }
+    None
+}
+
+/// macOS: 从 ioreg 获取 GPU Device Utilization %
+#[cfg(target_os = "macos")]
+fn get_apple_gpu_utilization() -> Option<f32> {
+    extract_ioreg_perf_value("Device Utilization %").map(|v| v as f32)
+}
+
+/// macOS: 从 ioreg 获取 GPU 显存使用量，返回 (used, total)
+#[cfg(target_os = "macos")]
+fn get_apple_gpu_memory() -> (u64, u64) {
+    let total = {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        sys.total_memory()
+    };
+
+    let used = extract_ioreg_perf_value("In use system memory")
+        .map(|v| v as u64)
+        .unwrap_or(0);
+
+    (used, total)
 }
 

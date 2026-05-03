@@ -127,7 +127,7 @@ export default function Header() {
                   <span className="header-stat-value" style={{ color: getUsageColor(stats.gpu_usage) }}>{stats.gpu_usage.toFixed(0)}%</span>
                   <MiniBar value={stats.gpu_usage} color={getUsageColor(stats.gpu_usage)} />
                 </div>
-                {stats.vram_percent >= 0 && stats.vram_total > 0 && (
+                {stats.vram_percent >= 0 && stats.vram_total > 0 && !stats.gpu_name.includes('Apple') && (
                   <>
                     <div className="header-stat-divider" />
                     <div className="header-stat-item" title={`VRAM: ${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}`}>

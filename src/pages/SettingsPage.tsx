@@ -1,4 +1,4 @@
-import { Settings, Palette, Globe, Info, Sun, Moon, Monitor, Check, Activity } from 'lucide-react';
+import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity } from 'lucide-react';
 import { useTheme } from '../components/ThemeProvider';
 
 const intervalOptions = [
@@ -105,23 +105,6 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Language */}
-        <div className="tool-panel">
-          <div className="tool-panel-header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-              <Globe style={{ width: 16, height: 16, color: 'var(--color-accent-secondary)' }} />
-              <span className="tool-panel-title">语言</span>
-            </div>
-          </div>
-          <div className="form-group">
-            <label className="form-label">界面语言</label>
-            <select className="form-select" defaultValue="zh-CN">
-              <option value="zh-CN">简体中文</option>
-              <option value="en">English</option>
-              <option value="ja">日本語</option>
-            </select>
-          </div>
-        </div>
 
         {/* About */}
         <div className="tool-panel">

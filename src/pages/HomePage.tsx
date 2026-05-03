@@ -15,7 +15,7 @@ const tools = [
   { id: 'format-convert', title: '图片格式转换', desc: '支持 PSD 在内的主流格式转换到 PNG/JPG/WebP 等', icon: <FileType />, color: 'green', path: '/format-convert', tags: ['PSD', '格式', '批量'], category: '数据集预处理' },
   { id: 'alpha-convert', title: '转换透明通道', desc: '检测图片透明通道并转换为不透明图片', icon: <Layers />, color: 'blue', path: '/alpha-convert', tags: ['Alpha', '透明', '背景'], category: '数据集预处理' },
   { id: 'batch-rename', title: '批量重命名', desc: '按规则批量重命名图片，支持自定义前缀、编号和打乱顺序', icon: <TextCursorInput />, color: 'cyan', path: '/batch-rename', tags: ['重命名', '前缀', '编号'], category: '数据集预处理' },
-  { id: 'tagger', title: '图片打标', desc: '使用 AI 模型自动为训练图片生成标签，支持 WD Tagger 等主流模型', icon: <Tags />, color: 'orange', path: '/tagger', tags: ['AI打标', 'WD Tagger', 'ONNX'], category: '数据集处理' },
+  { id: 'tagger', title: '图片打标', desc: '使用 Tagger 模型或大语言模型自动为训练图片生成标签，支持 WD Tagger 等主流模型', icon: <Tags />, color: 'orange', path: '/tagger', tags: ['AI打标', 'WD Tagger', 'ONNX'], category: '数据集处理' },
   { id: 'crop', title: '图像裁切', desc: '智能裁切训练图像，支持自定义比例和批量处理', icon: <Crop />, color: 'green', path: '/crop', tags: ['裁切', '比例', '智能'], category: '更多工具' },
 ];
 
@@ -30,7 +30,7 @@ function formatBytes(bytes: number): string {
   return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
 }
 
-function GaugeRing({ value, color, label, detail, size = 80 }: { value: number; color: string; label: string; detail: string; size?: number }) {
+function GaugeRing({ value, color, label, detail, subtitle, size = 80 }: { value: number; color: string; label: string; detail: string; subtitle?: string; size?: number }) {
   const r = (size - 8) / 2;
   const circ = 2 * Math.PI * r;
   const pct = Math.min(Math.max(value, 0), 100);
@@ -50,6 +50,7 @@ function GaugeRing({ value, color, label, detail, size = 80 }: { value: number; 
       </div>
       <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-primary)' }}>{label}</span>
       <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center', lineHeight: 1.3 }}>{detail}</span>
+      {subtitle && <span style={{ fontSize: 9, color: '#a78bfa', fontWeight: 600 }}>{subtitle}</span>}
     </div>
   );
 }
@@ -113,21 +114,16 @@ export default function HomePage() {
               detail={`${formatBytes(stats.memory_used)} / ${formatBytes(stats.memory_total)}`} />
             {stats.gpu_usage >= 0 ? (
               <>
-                <GaugeRing value={stats.gpu_usage} color={getUsageColor(stats.gpu_usage)} label="GPU" detail={stats.gpu_name} />
-                <GaugeRing value={stats.vram_percent >= 0 ? stats.vram_percent : 0}
-                  color={stats.vram_percent >= 0 ? getUsageColor(stats.vram_percent) : '#5a5e78'}
-                  label="VRAM"
-                  detail={stats.vram_total > 0 ? `${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}` : 'N/A'} />
+                <GaugeRing value={stats.gpu_usage} color={getUsageColor(stats.gpu_usage)} label="GPU"
+                  detail={stats.gpu_name}
+                  subtitle={stats.gpu_name.includes('Apple') ? '统一内存' : undefined} />
+                {!stats.gpu_name.includes('Apple') && (
+                  <GaugeRing value={stats.vram_percent >= 0 ? stats.vram_percent : 0}
+                    color={stats.vram_percent >= 0 ? getUsageColor(stats.vram_percent) : '#5a5e78'}
+                    label="VRAM"
+                    detail={stats.vram_total > 0 ? `${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}` : 'N/A'} />
+                )}
               </>
-            ) : stats.gpu_name && !stats.gpu_name.includes('未检测') ? (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-                <div style={{ width: 80, height: 80, borderRadius: '50%', border: '6px solid rgba(124,92,252,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa' }}>✓</span>
-                </div>
-                <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-primary)' }}>GPU</span>
-                <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center', lineHeight: 1.3, maxWidth: 120 }}>{stats.gpu_name}</span>
-                <span style={{ fontSize: 9, color: '#a78bfa' }}>Unified RAM</span>
-              </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, opacity: 0.5 }}>
                 <div style={{ width: 80, height: 80, borderRadius: '50%', border: '6px solid var(--color-border)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

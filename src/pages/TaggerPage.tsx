@@ -18,7 +18,7 @@ export default function TaggerPage() {
           <Tags style={{ width: 28, height: 28, color: '#f59e0b' }} />
           <h1 className="page-title">图片打标</h1>
         </div>
-        <p className="page-subtitle">使用 AI 模型或大语言模型自动为训练图片生成文本标签</p>
+        <p className="page-subtitle">使用 Tagger 模型或大语言模型自动为训练图片生成文本标签</p>
       </div>
 
       {/* Tab Bar */}

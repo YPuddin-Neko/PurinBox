@@ -726,6 +726,13 @@ pub fn run_tagging(
     let enabled_cats: Vec<&str> = options.enabled_categories.iter().map(|s| s.as_str()).collect();
 
     // 逐图片发送 tag 命令
+    let _ = app.emit("tagger-progress", ProgressEvent {
+        current: 0, total,
+        filename: String::new(),
+        status: "info".to_string(),
+        message: format!("读取到 {} 张图片", total),
+    });
+
     for (i, file_path) in files.iter().enumerate() {
         if is_tagging_cancelled() {
             let _ = app.emit("tagger-progress", ProgressEvent {

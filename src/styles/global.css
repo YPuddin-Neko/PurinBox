@@ -10,6 +10,14 @@
   box-sizing: border-box;
 }
 
+/* 主题切换过渡：只在切换时短暂启用，避免影响正常交互动画 */
+html.theme-transitioning,
+html.theme-transitioning *,
+html.theme-transitioning *::before,
+html.theme-transitioning *::after {
+  transition: background-color 0.4s ease, color 0.4s ease, border-color 0.4s ease, fill 0.4s ease !important;
+}
+
 html, body {
   height: 100%;
   overflow: hidden;

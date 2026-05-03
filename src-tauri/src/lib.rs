@@ -14,7 +14,7 @@ use commands::tagger::{
     get_gpu_runtime_status, download_gpu_runtime, cancel_gpu_runtime_download,
     cancel_tagging,
 };
-use commands::tagger::llm_tagger::start_llm_tagging;
+use commands::tagger::llm_tagger::{start_llm_tagging, fetch_llm_models, cancel_llm_tagging};
 use commands::{scan_images, get_system_stats};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -46,6 +46,8 @@ pub fn run() {
             cancel_gpu_runtime_download,
             cancel_tagging,
             start_llm_tagging,
+            fetch_llm_models,
+            cancel_llm_tagging,
             get_system_stats,
         ])
         .run(tauri::generate_context!())
