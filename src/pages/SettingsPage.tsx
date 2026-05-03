@@ -100,7 +100,7 @@ export default function SettingsPage() {
               })}
             </div>
             <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 8, lineHeight: 1.6 }}>
-              控制顶栏和首页系统性能指标（CPU/内存/GPU）的刷新频率。间隔越短数据越实时，但会略微增加系统开销。选择「关闭」将完全停止检测。
+              控制顶栏和首页系统性能指标（CPU/RAM/GPU）的刷新频率。间隔越短数据越实时，但会略微增加系统开销。选择「关闭」将完全停止检测。
             </p>
           </div>
         </div>

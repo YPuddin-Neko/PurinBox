@@ -4,7 +4,7 @@ import AiTaggerTab from '../components/AiTaggerTab';
 import LlmTaggerTab from '../components/LlmTaggerTab';
 
 const tabs = [
-  { id: 'ai', label: 'AI 模型打标' },
+  { id: 'ai', label: 'Tagger 模型打标' },
   { id: 'llm', label: 'LLM 模型打标' },
 ];
 

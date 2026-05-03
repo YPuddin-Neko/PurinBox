@@ -109,14 +109,14 @@ export default function HomePage() {
         {stats ? (
           <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'flex-start' }}>
             <GaugeRing value={stats.cpu_usage} color={getUsageColor(stats.cpu_usage)} label="CPU" detail={`${stats.cpu_cores} 核心`} />
-            <GaugeRing value={stats.memory_percent} color={getUsageColor(stats.memory_percent)} label="内存"
+            <GaugeRing value={stats.memory_percent} color={getUsageColor(stats.memory_percent)} label="RAM"
               detail={`${formatBytes(stats.memory_used)} / ${formatBytes(stats.memory_total)}`} />
             {stats.gpu_usage >= 0 ? (
               <>
                 <GaugeRing value={stats.gpu_usage} color={getUsageColor(stats.gpu_usage)} label="GPU" detail={stats.gpu_name} />
                 <GaugeRing value={stats.vram_percent >= 0 ? stats.vram_percent : 0}
                   color={stats.vram_percent >= 0 ? getUsageColor(stats.vram_percent) : '#5a5e78'}
-                  label="显存"
+                  label="VRAM"
                   detail={stats.vram_total > 0 ? `${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}` : 'N/A'} />
               </>
             ) : stats.gpu_name && !stats.gpu_name.includes('未检测') ? (
@@ -126,7 +126,7 @@ export default function HomePage() {
                 </div>
                 <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-primary)' }}>GPU</span>
                 <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center', lineHeight: 1.3, maxWidth: 120 }}>{stats.gpu_name}</span>
-                <span style={{ fontSize: 9, color: '#a78bfa' }}>统一内存</span>
+                <span style={{ fontSize: 9, color: '#a78bfa' }}>Unified RAM</span>
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, opacity: 0.5 }}>

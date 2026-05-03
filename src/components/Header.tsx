@@ -130,7 +130,7 @@ export default function Header() {
                 {stats.vram_percent >= 0 && stats.vram_total > 0 && (
                   <>
                     <div className="header-stat-divider" />
-                    <div className="header-stat-item" title={`显存: ${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}`}>
+                    <div className="header-stat-item" title={`VRAM: ${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}`}>
                       <MemoryStick style={{ width: 13, height: 13, color: getUsageColor(stats.vram_percent) }} />
                       <span className="header-stat-value" style={{ color: getUsageColor(stats.vram_percent) }}>{stats.vram_percent.toFixed(0)}%</span>
                       <MiniBar value={stats.vram_percent} color={getUsageColor(stats.vram_percent)} />

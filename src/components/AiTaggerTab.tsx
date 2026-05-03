@@ -188,7 +188,8 @@ export default function AiTaggerTab() {
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-5)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-5)' }}>
       {/* 左栏 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
         {/* 路径 */}
@@ -326,16 +327,27 @@ export default function AiTaggerTab() {
           </div>
         </div>
 
+        {/* 硬件设置 — 从左栏结束 */}
+      </div>
+
+      {/* 右栏 */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+          <button className="btn btn-primary btn-lg" style={{ flex: 1, height: 48 }} onClick={handleStart}
+            disabled={!inputPath || !selectedModel || enabled.size === 0}>
+            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 打标中...</> :
+              cur && !cur.is_downloaded ? <><Download style={{ width: 18, height: 18 }} /> 下载并打标</> : <><Play style={{ width: 18, height: 18 }} /> 开始打标</>}
+          </button>
+          {processing && (
+            <button className="btn btn-secondary btn-lg" style={{ height: 48, color: '#f87171' }} onClick={handleCancel}>
+              <X style={{ width: 18, height: 18 }} /> 取消
+            </button>
+          )}
+        </div>
+
         {/* 硬件设置 */}
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">硬件设置</span></div>
-
-          <div style={{ marginBottom: 'var(--space-3)', fontSize: 11, color: 'var(--color-text-secondary)', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', lineHeight: 1.6 }}>
-            推理引擎: Python onnxruntime<br/>
-            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{isMac ? 'macOS: CPU 推理' : 'Windows: CUDA 加速 (需 onnxruntime-gpu)'}</span>
-          </div>
-
-          {/* CPU / GPU 切换 */}
           <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
             <div onClick={() => setUseGpu(false)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1px solid ${!useGpu ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: !useGpu ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: 'pointer' }}>
               <Cpu style={{ width: 16, height: 16, color: !useGpu ? '#60a5fa' : 'var(--color-text-tertiary)' }} />
@@ -357,34 +369,6 @@ export default function AiTaggerTab() {
               {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6 }}>{cudaOk ? '✓ GPU 加速可用' : '✗ GPU 加速不可用 — 详情请查看日志'}</div>}
             </div>
           )}
-        </div>
-      </div>
-
-      {/* 右栏 */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-          <button className="btn btn-primary btn-lg" style={{ flex: 1, height: 48 }} onClick={handleStart}
-            disabled={!inputPath || !selectedModel || enabled.size === 0}>
-            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 打标中...</> :
-              cur && !cur.is_downloaded ? <><Download style={{ width: 18, height: 18 }} /> 下载并打标</> : <><Play style={{ width: 18, height: 18 }} /> 开始打标</>}
-          </button>
-          {processing && (
-            <button className="btn btn-secondary btn-lg" style={{ height: 48, color: '#f87171' }} onClick={handleCancel}>
-              <X style={{ width: 18, height: 18 }} /> 取消
-            </button>
-          )}
-        </div>
-
-        <div className="tool-panel">
-          <div className="tool-panel-header"><span className="tool-panel-title">当前设置</span></div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'var(--font-size-sm)' }}>
-            {[['模型', cur?.name || '未选择', '#f59e0b'], ['状态', cur?.is_downloaded ? '已下载' : '首次使用自动下载', cur?.is_downloaded ? '#4ade80' : '#fbbf24'], ['格式', cur ? `${cur.input_format} · ${cur.input_size}px` : '-', '#a78bfa'], ['分类', `${enabled.size} 类`, 'var(--color-text-primary)'], ['硬件', useGpu ? 'GPU' : 'CPU', useGpu ? '#4ade80' : '#60a5fa'], ['通用阈值', genTh.toFixed(2), '#f59e0b'], ['角色阈值', charTh.toFixed(2), '#f59e0b']].map(([k, v, c]) => (
-              <div key={k as string} style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--color-text-tertiary)' }}>{k}</span>
-                <span style={{ fontWeight: 600, color: c as string }}>{v}</span>
-              </div>
-            ))}
-          </div>
         </div>
 
         {/* 下载进度条 */}
@@ -415,11 +399,13 @@ export default function AiTaggerTab() {
             </div>
           </div>
         )}
-
-        {logs.length > 0 && (
-          <ProgressLog progress={progress} current={pCur} total={pTot} logs={logs} isDone={isDone} hasError={hasErr} onClearLogs={() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); }} />
-        )}
       </div>
     </div>
+
+    {/* 日志 - 跨栏底部 */}
+    {logs.length > 0 && (
+      <ProgressLog progress={progress} current={pCur} total={pTot} logs={logs} isDone={isDone} hasError={hasErr} onClearLogs={() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); }} />
+    )}
+  </div>
   );
 }
