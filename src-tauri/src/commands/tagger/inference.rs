@@ -757,6 +757,10 @@ pub fn run_tagging(
             "general_threshold": options.general_threshold,
             "character_threshold": options.character_threshold,
             "enabled_categories": enabled_cats,
+            "exclude_tags": options.exclude_tags,
+            "append_tags": options.append_tags,
+            "append_position": options.append_position,
+            "replace_underscore": options.replace_underscore,
         });
 
         if let Err(e) = writeln!(stdin, "{}", tag_cmd) {

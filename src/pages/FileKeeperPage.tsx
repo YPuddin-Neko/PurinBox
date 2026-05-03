@@ -157,32 +157,13 @@ export default function FileKeeperPage() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">当前设置</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>保留类型</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: '#4ade80' }}>{keepExts.size} 种</span>
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                {Array.from(keepExts).map((ext) => (
-                  <span key={ext} style={{ fontSize: 'var(--font-size-xs)', padding: '1px 8px', borderRadius: 'var(--radius-full)', background: 'rgba(124, 92, 252, 0.1)', color: 'var(--color-accent-primary)' }}>.{ext}</span>
-                ))}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>文件夹</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>{folderPath || '未设置'}</span>
-              </div>
-            </div>
-          </div>
 
           <button className="btn btn-danger btn-lg" style={{ width: '100%', height: 48 }} onClick={handleProcess} disabled={processing || !folderPath || keepExts.size === 0}>
             {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 处理中...</> : <><Play style={{ width: 18, height: 18 }} /> 删除其他文件</>}
           </button>
 
-          {(logs.length > 0 || processing) && (
+          
             <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
-          )}
         </div>
       </div>
     </div>

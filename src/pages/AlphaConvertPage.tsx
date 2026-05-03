@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Layers, FolderOpen, Play, Loader2, Info } from 'lucide-react';
+import { Layers, FolderOpen, Play, Loader2 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
@@ -132,45 +132,14 @@ export default function AlphaConvertPage() {
               ))}
             </div>
           </div>
-
-          {/* 说明 */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-3)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', background: 'rgba(192, 132, 252, 0.04)', border: '1px solid rgba(192, 132, 252, 0.1)' }}>
-            <Info style={{ width: 18, height: 18, color: '#c084fc', marginTop: 2, minWidth: 18 }} />
-            <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', lineHeight: 1.7 }}>
-              <strong style={{ color: 'var(--color-text-primary)' }}>用途说明：</strong>许多 AI 训练模型不支持带透明通道的图片。此工具会自动检测图片是否包含透明（Alpha）通道，如果有则将透明区域用指定背景色填充并转换为不透明图片。没有透明通道的图片会原样复制到输出目录。
-            </div>
-          </div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">当前设置</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>背景色</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: '50%', background: background === 'white' ? '#fff' : '#1a1a1a', border: '1px solid var(--color-border)' }} />
-                  <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--color-text-primary)' }}>{background === 'white' ? '白色' : '黑色'}</span>
-                </div>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>输入</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>{inputPath || '未设置'}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>输出</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>{outputPath || '未设置'}</span>
-              </div>
-            </div>
-          </div>
 
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           <button className="btn btn-primary btn-lg" style={{ width: '100%', height: 48 }} onClick={handleProcess} disabled={processing || !inputPath || !outputPath}>
             {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 处理中...</> : <><Play style={{ width: 18, height: 18 }} /> 开始转换</>}
           </button>
-
-          {(logs.length > 0 || processing) && (
-            <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
-          )}
+          <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
         </div>
       </div>
     </div>

@@ -50,8 +50,8 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
   };
 
   useEffect(() => {
-    if (isNearBottomRef.current) {
-      logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (isNearBottomRef.current && logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [logs.length]);
 
@@ -103,7 +103,6 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
       </div>
 
       {/* Log Panel */}
-      {logs.length > 0 && (
         <div className="log-panel" style={{ marginTop: 'var(--space-4)' }}>
           <div className="log-panel-header">
             <div className="log-panel-title">
@@ -125,7 +124,9 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
             </div>
           </div>
           <div className="log-content" ref={logContainerRef} onScroll={handleScroll}>
-            {logs.map((log, i) => (
+            {logs.length === 0 ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>暂无日志</div>
+            ) : logs.map((log, i) => (
               <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
                 <span className="log-entry-time">{log.time}</span>
                 {statusIcon(log.status)}
@@ -135,7 +136,6 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
             <div ref={logEndRef} />
           </div>
         </div>
-      )}
     </div>
   );
 }

@@ -44,7 +44,18 @@ pub struct TaggerOptions {
     pub character_threshold: f32,
     pub enabled_categories: Vec<String>,
     pub use_gpu: bool,
+    #[serde(default)]
+    pub exclude_tags: String,
+    #[serde(default)]
+    pub append_tags: String,
+    #[serde(default = "default_append_position")]
+    pub append_position: String,
+    #[serde(default = "default_true")]
+    pub replace_underscore: bool,
 }
+
+fn default_append_position() -> String { "append".into() }
+fn default_true() -> bool { true }
 
 /// 模型信息（给前端用）
 #[derive(Debug, Clone, Serialize, Deserialize)]

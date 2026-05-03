@@ -51,6 +51,11 @@ export default function AiTaggerTab() {
   const [nFormat, setNFormat] = useState('NHWC');
   const [detecting, setDetecting] = useState(false);
   const [importing, setImporting] = useState(false);
+  // 其他设置
+  const [excludeTags, setExcludeTags] = useState('');
+  const [appendTags, setAppendTags] = useState('');
+  const [appendPosition, setAppendPosition] = useState<'prepend' | 'append'>('append');
+  const [replaceUnderscore, setReplaceUnderscore] = useState(true);
 
   const load = useCallback(async () => {
     try { const l = await invoke<ModelInfo[]>('get_tagger_models'); setModels(l); if (l.length > 0 && !selectedModel) setSelectedModel(l[0].id); } catch {}
@@ -124,7 +129,7 @@ export default function AiTaggerTab() {
     setLogs([{ time: getTimeStr(), message: `开始打标 | 模型: ${cur?.name} | 硬件: ${useGpu ? 'GPU' : 'CPU'}`, status: 'info' }]);
     addTask('tagger', `AI 打标 - ${cur?.name || '未知'}`);
     try {
-      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu } });
+      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore } });
       updateTask('tagger', { status: 'done' });
       await load();
     } catch (e: any) {
@@ -188,11 +193,10 @@ export default function AiTaggerTab() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-5)' }}>
-      {/* 左栏 */}
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-5)', alignItems: 'start' }}>
+      {/* 左栏 - 所有设置 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        {/* 路径 */}
+        {/* 数据集路径 */}
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">数据集路径</span></div>
           <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
@@ -201,7 +205,7 @@ export default function AiTaggerTab() {
           </div>
         </div>
 
-        {/* 模型选择 */}
+        {/* 打标模型 */}
         <div className="tool-panel">
           <div className="tool-panel-header">
             <span className="tool-panel-title">打标模型</span>
@@ -209,203 +213,114 @@ export default function AiTaggerTab() {
               {showAdd ? '✕ 关闭' : <><Plus style={{ width: 14, height: 14 }} /> 导入模型</>}
             </button>
           </div>
-
-          {/* 导入本地模型面板 */}
           {showAdd && (
             <div style={{ padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', background: 'rgba(124,92,252,0.04)', border: '1px solid rgba(124,92,252,0.15)', marginBottom: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              {/* 名称 */}
-              <div>
-                <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>名称：</label>
-                <input className="form-input" placeholder="例如: My Custom Tagger" value={nName} onChange={e => setNName(e.target.value)} style={{ width: '100%' }} />
-              </div>
-              {/* 模型文件 */}
-              <div>
-                <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>模型文件 (.onnx)：</label>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择 .onnx 文件..." value={nModelPath} onChange={e => setNModelPath(e.target.value)} style={{ flex: 1 }} readOnly />
-                  <button className="btn btn-secondary btn-sm" onClick={browseOnnx}><FileUp style={{ width: 14, height: 14 }} /> 浏览...</button>
-                </div>
-              </div>
-              {/* 标签映射 */}
-              <div>
-                <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>标签映射 (.csv / .json)：</label>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择标签文件..." value={nTagsPath} onChange={e => setNTagsPath(e.target.value)} style={{ flex: 1 }} readOnly />
-                  <button className="btn btn-secondary btn-sm" onClick={browseTags}><FileUp style={{ width: 14, height: 14 }} /> 浏览...</button>
-                </div>
-              </div>
-              {/* 通道格式 + 尺寸 + 自动检测 */}
+              <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>名称：</label><input className="form-input" placeholder="例如: My Custom Tagger" value={nName} onChange={e => setNName(e.target.value)} style={{ width: '100%' }} /></div>
+              <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>模型文件 (.onnx)：</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder="选择 .onnx 文件..." value={nModelPath} onChange={e => setNModelPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseOnnx}><FileUp style={{ width: 14, height: 14 }} /> 浏览...</button></div></div>
+              <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>标签映射 (.csv / .json)：</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder="选择标签文件..." value={nTagsPath} onChange={e => setNTagsPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseTags}><FileUp style={{ width: 14, height: 14 }} /> 浏览...</button></div></div>
               <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
-                <div>
-                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>输入通道：</label>
-                  <div style={{ position: 'relative' }}>
-                    <select className="form-input" value={nFormat} onChange={e => setNFormat(e.target.value)} style={{ width: 90, appearance: 'none', paddingRight: 24, cursor: 'pointer' }}>
-                      <option value="NHWC">NHWC</option>
-                      <option value="NCHW">NCHW</option>
-                    </select>
-                    <ChevronDown style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', width: 12, height: 12, color: 'var(--color-text-tertiary)', pointerEvents: 'none' }} />
-                  </div>
-                </div>
-                <div>
-                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>输入尺寸：</label>
-                  <input className="form-input" type="number" value={nSize} onChange={e => setNSize(Number(e.target.value))} style={{ width: 80 }} />
-                </div>
-                <button className="btn btn-secondary btn-sm" onClick={autoDetect} disabled={detecting || !nModelPath} style={{ height: 34, whiteSpace: 'nowrap' }}>
-                  {detecting ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Search style={{ width: 14, height: 14 }} />} 自动识别
-                </button>
-                <button className="btn btn-primary btn-sm" onClick={handleImport} disabled={importing || !nName || !nModelPath || !nTagsPath} style={{ height: 34 }}>
-                  {importing ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Plus style={{ width: 14, height: 14 }} />} 添加
-                </button>
+                <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>输入通道：</label><div style={{ position: 'relative' }}><select className="form-input" value={nFormat} onChange={e => setNFormat(e.target.value)} style={{ width: 90, appearance: 'none', paddingRight: 24, cursor: 'pointer' }}><option value="NHWC">NHWC</option><option value="NCHW">NCHW</option></select><ChevronDown style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', width: 12, height: 12, color: 'var(--color-text-tertiary)', pointerEvents: 'none' }} /></div></div>
+                <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>输入尺寸：</label><input className="form-input" type="number" value={nSize} onChange={e => setNSize(Number(e.target.value))} style={{ width: 80 }} /></div>
+                <button className="btn btn-secondary btn-sm" onClick={autoDetect} disabled={detecting || !nModelPath} style={{ height: 34, whiteSpace: 'nowrap' }}>{detecting ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Search style={{ width: 14, height: 14 }} />} 自动识别</button>
+                <button className="btn btn-primary btn-sm" onClick={handleImport} disabled={importing || !nName || !nModelPath || !nTagsPath} style={{ height: 34 }}>{importing ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Plus style={{ width: 14, height: 14 }} />} 添加</button>
               </div>
-              <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }}>
-                💡 <b>输入通道</b>：NHWC = [批次,高,宽,通道数]（TensorFlow 风格），NCHW = [批次,通道数,高,宽]（PyTorch 风格）。选错会导致结果异常，建议使用「自动识别」。
-              </div>
+              <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }}>💡 <b>输入通道</b>：NHWC = [批次,高,宽,通道数]（TensorFlow），NCHW = [批次,通道数,高,宽]（PyTorch）。建议使用「自动识别」。</div>
             </div>
           )}
-
           <div style={{ position: 'relative' }}>
-            <select className="form-input" value={selectedModel} onChange={e => setSelectedModel(e.target.value)}
-              style={{ width: '100%', appearance: 'none', paddingRight: 32, cursor: 'pointer' }}>
-              {models.map(m => (
-                <option key={m.id} value={m.id}>{m.name} {m.is_downloaded ? '✓' : '⬇'}</option>
-              ))}
+            <select className="form-input" value={selectedModel} onChange={e => setSelectedModel(e.target.value)} style={{ width: '100%', appearance: 'none', paddingRight: 32, cursor: 'pointer' }}>
+              {models.map(m => (<option key={m.id} value={m.id}>{m.name} {m.is_downloaded ? '✓' : '⬇'}</option>))}
             </select>
             <ChevronDown style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', width: 16, height: 16, color: 'var(--color-text-tertiary)', pointerEvents: 'none' }} />
           </div>
           {cur && (
             <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>
               <span>{cur.description}</span>
-              <span style={{ padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: cur.is_downloaded ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)', color: cur.is_downloaded ? '#4ade80' : '#fbbf24' }}>
-                {cur.is_downloaded ? '已下载' : '待下载'}
-              </span>
-              <span style={{ padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: 'rgba(124,92,252,0.1)', color: '#a78bfa' }}>
-                {cur.input_format} · {cur.input_size}px
-              </span>
-              {!cur.is_builtin && (
-                <button className="btn btn-ghost btn-sm" onClick={() => handleDelete(cur.id, cur.name)}
-                  style={{ marginLeft: 'auto', padding: '2px 6px', color: '#f87171' }}>
-                  <Trash2 style={{ width: 12, height: 12 }} /> 删除
-                </button>
-              )}
+              <span style={{ padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: cur.is_downloaded ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)', color: cur.is_downloaded ? '#4ade80' : '#fbbf24' }}>{cur.is_downloaded ? '已下载' : '待下载'}</span>
+              <span style={{ padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: 'rgba(124,92,252,0.1)', color: '#a78bfa' }}>{cur.input_format} · {cur.input_size}px</span>
+              {!cur.is_builtin && (<button className="btn btn-ghost btn-sm" onClick={() => handleDelete(cur.id, cur.name)} style={{ marginLeft: 'auto', padding: '2px 6px', color: '#f87171' }}><Trash2 style={{ width: 12, height: 12 }} /> 删除</button>)}
             </div>
           )}
         </div>
 
-        {/* 标签分类 + 阈值 */}
+        {/* 标签分类与阈值 */}
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">标签分类与阈值</span></div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginBottom: 'var(--space-3)' }}>
-            {cats.map(c => {
-              const on = enabled.has(c.key);
-              return (
-                <div key={c.key} onClick={() => setEnabled(p => { const n = new Set(p); on ? n.delete(c.key) : n.add(c.key); return n; })} style={{
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 'var(--radius-sm)',
-                  border: `1px solid ${on ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                  background: on ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: 'pointer', transition: 'all 0.15s',
-                }}>
-                  <div style={{ width: 14, height: 14, borderRadius: 3, minWidth: 14, border: `2px solid ${on ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: on ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {on && <Check style={{ width: 9, height: 9, color: '#fff' }} />}
-                  </div>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{c.label}</span>
-                </div>
-              );
-            })}
+            {cats.map(c => { const on = enabled.has(c.key); return (
+              <div key={c.key} onClick={() => setEnabled(p => { const n = new Set(p); on ? n.delete(c.key) : n.add(c.key); return n; })} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: `1px solid ${on ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: on ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: 'pointer', transition: 'all 0.15s' }}>
+                <div style={{ width: 14, height: 14, borderRadius: 3, minWidth: 14, border: `2px solid ${on ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: on ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{on && <Check style={{ width: 9, height: 9, color: '#fff' }} />}</div>
+                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{c.label}</span>
+              </div>); })}
           </div>
           <div style={{ display: 'flex', gap: 'var(--space-4)' }}>
-            <div style={{ flex: 1 }}>
-              <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ fontSize: 12 }}>通用阈值</span><span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', fontSize: 12 }}>{genTh.toFixed(2)}</span>
-              </label>
-              <input type="range" min="0.05" max="1" step="0.01" value={genTh} onChange={e => setGenTh(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
-            </div>
-            <div style={{ flex: 1 }}>
-              <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ fontSize: 12 }}>角色阈值</span><span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', fontSize: 12 }}>{charTh.toFixed(2)}</span>
-              </label>
-              <input type="range" min="0.05" max="1" step="0.01" value={charTh} onChange={e => setCharTh(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
-            </div>
+            <div style={{ flex: 1 }}><label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ fontSize: 12 }}>通用阈值</span><span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', fontSize: 12 }}>{genTh.toFixed(2)}</span></label><input type="range" min="0.05" max="1" step="0.01" value={genTh} onChange={e => setGenTh(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} /></div>
+            <div style={{ flex: 1 }}><label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ fontSize: 12 }}>角色阈值</span><span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', fontSize: 12 }}>{charTh.toFixed(2)}</span></label><input type="range" min="0.05" max="1" step="0.01" value={charTh} onChange={e => setCharTh(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} /></div>
           </div>
-        </div>
-
-        {/* 硬件设置 — 从左栏结束 */}
-      </div>
-
-      {/* 右栏 */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-          <button className="btn btn-primary btn-lg" style={{ flex: 1, height: 48 }} onClick={handleStart}
-            disabled={!inputPath || !selectedModel || enabled.size === 0}>
-            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 打标中...</> :
-              cur && !cur.is_downloaded ? <><Download style={{ width: 18, height: 18 }} /> 下载并打标</> : <><Play style={{ width: 18, height: 18 }} /> 开始打标</>}
-          </button>
-          {processing && (
-            <button className="btn btn-secondary btn-lg" style={{ height: 48, color: '#f87171' }} onClick={handleCancel}>
-              <X style={{ width: 18, height: 18 }} /> 取消
-            </button>
-          )}
         </div>
 
         {/* 硬件设置 */}
         <div className="tool-panel">
-          <div className="tool-panel-header"><span className="tool-panel-title">硬件设置</span></div>
-          <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
-            <div onClick={() => setUseGpu(false)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1px solid ${!useGpu ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: !useGpu ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: 'pointer' }}>
-              <Cpu style={{ width: 16, height: 16, color: !useGpu ? '#60a5fa' : 'var(--color-text-tertiary)' }} />
-              <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>CPU</span>
-            </div>
-            <div onClick={() => { if (gpuSupported) setUseGpu(true); }} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1px solid ${useGpu ? 'rgba(74,222,128,0.5)' : 'var(--color-border)'}`, background: useGpu ? 'rgba(74,222,128,0.06)' : 'var(--color-bg-input)', cursor: gpuSupported ? 'pointer' : 'not-allowed', opacity: gpuSupported ? 1 : 0.4 }}>
-              <Zap style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} />
-              <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>GPU</span>
-              {!gpuSupported && <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>(不可用)</span>}
-            </div>
+          <div className="tool-panel-header">
+            <span className="tool-panel-title">硬件设置</span>
+            {gpuSupported && (<button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `CUDA 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>{cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测 CUDA</button>)}
           </div>
-          {useGpu && (
-            <div style={{ marginTop: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                <button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `GPU 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>
-                  {cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测 GPU
-                </button>
-              </div>
-              {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6 }}>{cudaOk ? '✓ GPU 加速可用' : '✗ GPU 加速不可用 — 详情请查看日志'}</div>}
-            </div>
-          )}
+          {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6, marginBottom: 'var(--space-3)' }}>{cudaOk ? '✓ CUDA 可用，GPU 加速已就绪' : '✗ CUDA 不可用 — 详情请查看日志'}</div>}
+          <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+            <div onClick={() => setUseGpu(false)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1px solid ${!useGpu ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: !useGpu ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: 'pointer' }}><Cpu style={{ width: 16, height: 16, color: !useGpu ? '#60a5fa' : 'var(--color-text-tertiary)' }} /><span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>CPU</span></div>
+            <div onClick={() => { if (gpuSupported) setUseGpu(true); }} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1px solid ${useGpu ? 'rgba(74,222,128,0.5)' : 'var(--color-border)'}`, background: useGpu ? 'rgba(74,222,128,0.06)' : 'var(--color-bg-input)', cursor: gpuSupported ? 'pointer' : 'not-allowed', opacity: gpuSupported ? 1 : 0.4 }}><Zap style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} /><span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>GPU</span>{!gpuSupported && <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>(不可用)</span>}</div>
+          </div>
         </div>
 
-        {/* 下载进度条 */}
+        {/* 其他设置 */}
+        <div className="tool-panel">
+          <div className="tool-panel-header"><span className="tool-panel-title">其他设置</span></div>
+          <div onClick={() => setReplaceUnderscore(!replaceUnderscore)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', marginBottom: 'var(--space-3)' }}>
+            <div style={{ width: 16, height: 16, borderRadius: 4, minWidth: 16, border: `2px solid ${replaceUnderscore ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: replaceUnderscore ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{replaceUnderscore && <Check style={{ width: 10, height: 10, color: '#fff' }} />}</div>
+            <span style={{ fontSize: 12, fontWeight: 600 }}>替换下划线为空格</span>
+            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>将标签中的 _ 替换为空格</span>
+          </div>
+          <div style={{ marginBottom: 'var(--space-3)' }}>
+            <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>排除标签</label>
+            <input className="form-input" placeholder="tag1, tag2, tag3 ..." value={excludeTags} onChange={e => setExcludeTags(e.target.value)} style={{ width: '100%' }} />
+            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>打标结果中将排除这些标签，多个用逗号分隔</div>
+          </div>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+              <label className="form-label" style={{ fontSize: 11, margin: 0 }}>额外追加标签</label>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {(['prepend', 'append'] as const).map(pos => (<button key={pos} onClick={() => setAppendPosition(pos)} style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${appendPosition === pos ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: appendPosition === pos ? 'rgba(124,92,252,0.08)' : 'transparent', color: appendPosition === pos ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 10, fontWeight: 600, cursor: 'pointer' }}>{pos === 'prepend' ? '最前面' : '最后面'}</button>))}
+              </div>
+            </div>
+            <input className="form-input" placeholder="tag1, tag2, tag3 ..." value={appendTags} onChange={e => setAppendTags(e.target.value)} style={{ width: '100%' }} />
+            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>打标完成后追加这些标签到每个文件，多个用逗号分隔</div>
+          </div>
+        </div>
+      </div>
+
+      {/* 右栏 - 操作 + 进度 + 日志 */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+          <button className="btn btn-primary btn-lg" style={{ flex: 1, height: 48 }} onClick={handleStart} disabled={!inputPath || !selectedModel || enabled.size === 0}>
+            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 打标中...</> : cur && !cur.is_downloaded ? <><Download style={{ width: 18, height: 18 }} /> 下载并打标</> : <><Play style={{ width: 18, height: 18 }} /> 开始打标</>}
+          </button>
+          {processing && (<button className="btn btn-secondary btn-lg" style={{ height: 48, color: '#f87171' }} onClick={handleCancel}><X style={{ width: 18, height: 18 }} /> 取消</button>)}
+        </div>
+
         {dlProgress && (
           <div className="tool-panel" style={{ padding: 'var(--space-4)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Download style={{ width: 14, height: 14, color: '#60a5fa', animation: 'pulse 1.5s infinite' }} />
-                <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>下载模型</span>
-              </div>
-              <button onClick={async () => {
-                  try { await invoke('cancel_tagger_download'); } catch {}
-                  try { await invoke('cancel_gpu_runtime_download'); } catch {}
-                  setDlProgress(null);
-                }}
-                style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(248,113,113,0.3)', background: 'rgba(248,113,113,0.06)', color: '#f87171', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                <X style={{ width: 12, height: 12 }} /> 取消
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Download style={{ width: 14, height: 14, color: '#60a5fa', animation: 'pulse 1.5s infinite' }} /><span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>下载模型</span></div>
+              <button onClick={async () => { try { await invoke('cancel_tagger_download'); } catch {} try { await invoke('cancel_gpu_runtime_download'); } catch {} setDlProgress(null); }} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(248,113,113,0.3)', background: 'rgba(248,113,113,0.06)', color: '#f87171', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}><X style={{ width: 12, height: 12 }} /> 取消</button>
             </div>
-            <div style={{ marginBottom: 6 }}>
-              <div style={{ height: 6, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
-                <div style={{ height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #7c5cfc, #60a5fa)', width: `${dlProgress.percent}%`, transition: 'width 0.3s ease' }} />
-              </div>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-              <span>{dlProgress.message}</span>
-              <span style={{ fontWeight: 700, fontFamily: 'monospace', color: '#60a5fa' }}>{dlProgress.percent.toFixed(1)}%</span>
-            </div>
+            <div style={{ marginBottom: 6 }}><div style={{ height: 6, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}><div style={{ height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #7c5cfc, #60a5fa)', width: `${dlProgress.percent}%`, transition: 'width 0.3s ease' }} /></div></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--color-text-tertiary)' }}><span>{dlProgress.message}</span><span style={{ fontWeight: 700, fontFamily: 'monospace', color: '#60a5fa' }}>{dlProgress.percent.toFixed(1)}%</span></div>
           </div>
         )}
+
+        <ProgressLog progress={progress} current={pCur} total={pTot} logs={logs} isDone={isDone} hasError={hasErr} onClearLogs={() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); }} />
       </div>
     </div>
-
-    {/* 日志 - 跨栏底部 */}
-    {logs.length > 0 && (
-      <ProgressLog progress={progress} current={pCur} total={pTot} logs={logs} isDone={isDone} hasError={hasErr} onClearLogs={() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); }} />
-    )}
-  </div>
   );
 }
+

@@ -7,7 +7,6 @@ import {
   FlipVertical2,
   FolderOpen,
   Play,
-  Info,
   Loader2,
   RotateCcw,
 } from 'lucide-react';
@@ -102,7 +101,6 @@ export default function FlipPage() {
   };
 
   const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
-  const currentOption = flipOptions.find((o) => o.value === direction)!;
 
   return (
     <div className="page">
@@ -164,43 +162,18 @@ export default function FlipPage() {
               ))}
             </div>
           </div>
-
-          {/* 用途说明 */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-3)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', background: 'rgba(0, 212, 255, 0.04)', border: '1px solid rgba(0, 212, 255, 0.1)' }}>
-            <Info style={{ width: 18, height: 18, color: '#00d4ff', marginTop: 2, minWidth: 18 }} />
-            <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', lineHeight: 1.7 }}>
-              <strong style={{ color: 'var(--color-text-primary)' }}>用途说明：</strong>镜像翻转是一种常用的数据增强手段。通过对训练图片进行翻转可以增加数据多样性，帮助模型学习到更鲁棒的特征，减少过拟合风险。
-            </div>
-          </div>
         </div>
+
 
         {/* 右侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">当前设置</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>翻转方向</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: '#00d4ff', padding: '2px 10px', borderRadius: 'var(--radius-full)', background: 'rgba(0, 212, 255, 0.1)' }}>{currentOption.label}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>输入</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>{inputPath || '未设置'}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>输出</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>{outputPath || '未设置'}</span>
-              </div>
-            </div>
-          </div>
 
           <button className="btn btn-primary btn-lg" style={{ width: '100%', height: 48 }} onClick={handleProcess} disabled={processing || !inputPath || !outputPath}>
             {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 处理中...</> : <><Play style={{ width: 18, height: 18 }} /> 开始处理</>}
           </button>
 
-          {(logs.length > 0 || processing) && (
+          
             <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
-          )}
         </div>
       </div>
     </div>

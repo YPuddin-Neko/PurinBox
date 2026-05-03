@@ -10,7 +10,6 @@ import {
   Loader2,
   Trash2,
   Copy,
-  Filter,
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 
@@ -113,7 +112,6 @@ export default function FilterPage() {
   };
 
   const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
-  const currentCondition = conditionOptions.find((c) => c.value === condition)!;
 
   return (
     <div className="page">
@@ -228,38 +226,7 @@ export default function FilterPage() {
 
         {/* 右侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">当前设置</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>操作</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: action === 'copy' ? '#4ade80' : '#f87171', padding: '2px 10px', borderRadius: 'var(--radius-full)', background: action === 'copy' ? 'rgba(74, 222, 128, 0.1)' : 'rgba(248, 113, 113, 0.1)' }}>
-                  {action === 'copy' ? '输出' : '删除'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>条件</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: '#ff6b9d' }}>{currentCondition.label}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>阈值</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--color-text-primary)' }}>
-                  {needsWidth && needsHeight ? `${width} × ${height}` : needsWidth ? `宽 < ${width}px` : `高 < ${height}px`}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>输入</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>{inputPath || '未设置'}</span>
-              </div>
-            </div>
-          </div>
 
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', background: 'rgba(255, 107, 157, 0.04)', border: '1px solid rgba(255, 107, 157, 0.1)' }}>
-            <Filter style={{ width: 14, height: 14, color: '#ff6b9d', marginTop: 2, minWidth: 14 }} />
-            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-              用于清理训练集中不符合分辨率要求的图片。例如删除过小的图片、筛选出特定尺寸以上的图片用于训练。
-            </span>
-          </div>
 
           <button className={`btn ${action === 'delete' ? 'btn-danger' : 'btn-primary'} btn-lg`} style={{ width: '100%', height: 48 }}
             onClick={handleProcess} disabled={processing || !inputPath || (action === 'copy' && !outputPath)}>
@@ -267,9 +234,8 @@ export default function FilterPage() {
               <><Play style={{ width: 18, height: 18 }} /> {action === 'delete' ? '开始筛选并删除' : '开始筛选并输出'}</>}
           </button>
 
-          {(logs.length > 0 || processing) && (
+          
             <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
-          )}
         </div>
       </div>
     </div>

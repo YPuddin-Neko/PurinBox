@@ -335,6 +335,26 @@ def main():
                 general_threshold = cmd.get("general_threshold", 0.35)
                 character_threshold = cmd.get("character_threshold", 0.85)
                 enabled_categories = set(cmd.get("enabled_categories", ["general", "character"]))
+                replace_underscore = cmd.get("replace_underscore", True)
+                exclude_tags_str = cmd.get("exclude_tags", "")
+                append_tags_str = cmd.get("append_tags", "")
+                append_position = cmd.get("append_position", "append")
+
+                # 解析排除标签集合
+                exclude_set = set()
+                if exclude_tags_str.strip():
+                    for t in exclude_tags_str.split(","):
+                        t = t.strip()
+                        if t:
+                            exclude_set.add(t)
+
+                # 解析追加标签列表
+                append_list = []
+                if append_tags_str.strip():
+                    for t in append_tags_str.split(","):
+                        t = t.strip()
+                        if t:
+                            append_list.append(t)
 
                 # 预处理
                 img_data = preprocess_image(image_path, input_size, input_format)
@@ -360,7 +380,21 @@ def main():
 
                     threshold = character_threshold if cat == "character" else general_threshold
                     if float(prob) >= threshold:
-                        selected_tags.append(tag["name"])
+                        tag_name = tag["name"]
+                        # 替换下划线
+                        if replace_underscore:
+                            tag_name = tag_name.replace("_", " ")
+                        # 排除检查
+                        if tag_name in exclude_set or tag["name"] in exclude_set:
+                            continue
+                        selected_tags.append(tag_name)
+
+                # 追加标签
+                if append_list:
+                    if append_position == "prepend":
+                        selected_tags = append_list + selected_tags
+                    else:
+                        selected_tags = selected_tags + append_list
 
                 # 写入 txt 文件
                 stem = Path(image_path).stem

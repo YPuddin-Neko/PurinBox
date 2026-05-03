@@ -225,31 +225,6 @@ export default function ScalePage() {
 
         {/* 右侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          {/* 摘要 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">当前设置</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>模式</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: mode === 'upscale' ? '#4ade80' : '#60a5fa', padding: '2px 10px', borderRadius: 'var(--radius-full)', background: mode === 'upscale' ? 'rgba(74, 222, 128, 0.1)' : 'rgba(96, 165, 250, 0.1)' }}>
-                  {mode === 'upscale' ? '上采样' : '下采样'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>目标尺寸</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--color-text-primary)' }}>{targetWidth} × {targetHeight}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>输入</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'right' }}>{inputPath || '未设置'}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>输出</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl', textAlign: 'right' }}>{outputPath || '未设置'}</span>
-              </div>
-            </div>
-          </div>
-
           {/* 执行按钮 */}
           <button className="btn btn-primary btn-lg" style={{ width: '100%', height: 48 }} onClick={handleProcess} disabled={processing || !inputPath || !outputPath}>
             {processing ? (
@@ -260,17 +235,15 @@ export default function ScalePage() {
           </button>
 
           {/* 进度条和日志 */}
-          {(logs.length > 0 || processing) && (
-            <ProgressLog
-              progress={progress}
-              current={progressCurrent}
-              total={progressTotal}
-              logs={logs}
-              isDone={isDone}
-              hasError={hasError}
-              onClearLogs={clearLogs}
-            />
-          )}
+          <ProgressLog
+            progress={progress}
+            current={progressCurrent}
+            total={progressTotal}
+            logs={logs}
+            isDone={isDone}
+            hasError={hasError}
+            onClearLogs={clearLogs}
+          />
         </div>
       </div>
     </div>

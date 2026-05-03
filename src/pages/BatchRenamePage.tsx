@@ -230,56 +230,15 @@ export default function BatchRenamePage() {
 
         {/* 右侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">当前设置</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>前缀</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: '#38bdf8', fontFamily: 'monospace' }}>{prefix || '(无)'}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>起始编号</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--color-text-primary)' }}>{startNumber}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>编号位数</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--color-text-primary)' }}>{digitCount} 位</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>打乱顺序</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: shuffleOrder ? '#fbbf24' : 'var(--color-text-tertiary)' }}>{shuffleOrder ? '是' : '否'}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>预览数量</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: 'var(--color-text-primary)' }}>{previews.length} 个</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>文件夹</span>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', direction: 'rtl' }}>{inputPath || '未设置'}</span>
-              </div>
-            </div>
-          </div>
 
           <button className="btn btn-primary btn-lg" style={{ width: '100%', height: 48 }} onClick={handleExecute}
             disabled={processing || !inputPath || previews.length === 0}>
             {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 重命名中...</> : <><Play style={{ width: 18, height: 18 }} /> 执行重命名</>}
           </button>
 
-          {previews.length === 0 && !processing && (
-            <div style={{
-              padding: 'var(--space-3) var(--space-4)',
-              borderRadius: 'var(--radius-md)',
-              background: 'rgba(56, 189, 248, 0.04)',
-              border: '1px solid rgba(56, 189, 248, 0.1)',
-              fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', lineHeight: 1.6,
-            }}>
-              💡 请先点击「生成预览」查看重命名结果，确认无误后再执行重命名。重命名将直接修改原文件名。
-            </div>
-          )}
 
-          {(logs.length > 0 || processing) && (
+          
             <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
-          )}
         </div>
       </div>
     </div>
