@@ -277,7 +277,45 @@ def main():
 
                     log(f"加载模型: {model_path}")
                     onnx_model = onnx.load(model_path)
-                    torch_model = onnx2torch_convert(onnx_model)
+
+                    # onnx2torch 对高版本 opset (19+) 支持不完整
+                    # 降级到 opset 14 以确保兼容
+                    current_opset = onnx_model.opset_import[0].version if onnx_model.opset_import else 0
+                    if current_opset > 14:
+                        log(f"ONNX opset {current_opset} → 降级到 14 (onnx2torch 兼容)")
+                        try:
+                            from onnx import version_converter
+                            onnx_model = version_converter.convert_version(onnx_model, 14)
+                        except Exception as e:
+                            log(f"⚠ opset 降级失败: {e}")
+
+                    try:
+                        torch_model = onnx2torch_convert(onnx_model)
+                    except Exception as e:
+                        log(f"⚠ ONNX→PyTorch 转换失败: {e}")
+                        log("回退到 CPU (ONNX Runtime) 推理")
+                        backend = "ort"
+                        import onnxruntime as ort
+                        session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+                        input_name = session.get_inputs()[0].name
+                        input_format, detected_size = detect_model_format(session)
+                        actual_info = f"onnxruntime {ort.__version__}, providers: {session.get_providers()}"
+                        log(f"实际使用 providers: {session.get_providers()}")
+                        # 跳过后续 torch 设置，直接到共通部分
+                        override_size = cmd.get("input_size", 0)
+                        if override_size and override_size > 0:
+                            input_size = override_size
+                        else:
+                            input_size = detected_size if detected_size > 0 else 448
+                        log(f"输入格式: {input_format}, 输入大小: {input_size}x{input_size} (检测: {detected_size})")
+                        if tags_path.endswith(".json"):
+                            tags = load_tags_json(tags_path)
+                        else:
+                            tags = load_tags_csv(tags_path)
+                        log(f"已加载 {len(tags)} 个标签定义")
+                        result({"type": "ready", "info": actual_info, "input_format": input_format, "input_size": input_size, "tag_count": len(tags)})
+                        continue
+
                     torch_model = torch_model.to(torch_device)
                     torch_model.eval()
 

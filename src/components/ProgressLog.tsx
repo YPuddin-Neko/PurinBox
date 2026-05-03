@@ -77,8 +77,8 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
           {isDone ? '处理完成' : '处理进度'}
         </span>
         <span className="progress-percent">
+          {speed && <span style={{ marginRight: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{speed}</span>}
           {Math.round(progress)}%
-          {speed && <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{speed}</span>}
         </span>
       </div>
       <div className="progress-bar-lg">
