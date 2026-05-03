@@ -254,12 +254,11 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
             if has_cuda {
                 emit_line("✓ CUDA ExecutionProvider 可用", "success");
             } else if is_macos {
-                // macOS: 检测 PyTorch MPS 可用性
-                emit_line("macOS: 使用 PyTorch + MPS 加速", "info");
+                emit_line("macOS: 使用 CPU 推理 (Apple Silicon 优化)", "info");
             } else {
                 emit_line("GPU ExecutionProvider 不可用", "info");
             }
-            (has_cuda || is_macos, true)
+            (has_cuda, true)
         }
         Err(e) => {
             emit_line(&e, "error");
@@ -305,69 +304,16 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
         }
     }
 
-    // 4. macOS: 检测 PyTorch MPS
-    if is_macos && gpu_ok {
-        emit_line("正在检测 PyTorch MPS...", "info");
-        let mps_check = tokio::task::spawn_blocking(|| {
-            inference::check_torch_mps()
-        }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
-
-        match mps_check {
-            Ok((has_mps, torch_ver)) => {
-                let msg = format!("PyTorch v{}", torch_ver);
-                emit_line(&msg, "success");
-                summary_lines.push(msg);
-                if has_mps {
-                    emit_line("✓ MPS (Metal) GPU 加速可用", "success");
-                } else {
-                    emit_line("MPS 不可用，将使用 CPU 推理", "info");
-                    gpu_ok = false;
-                }
-            }
-            Err(e) => {
-                emit_line(&format!("PyTorch 未就绪: {}", e), "error");
-                emit_line("正在安装 PyTorch 依赖...", "info");
-                // 自动安装
-                let app_ref = app.clone();
-                let install_result = tokio::task::spawn_blocking(move || {
-                    python_env::install_torch_deps(&app_ref)
-                }).await.unwrap_or_else(|_| Err("安装线程异常".into()));
-                match install_result {
-                    Ok(()) => {
-                        emit_line("✓ PyTorch 依赖已安装", "success");
-                        // 重新检测
-                        let recheck = tokio::task::spawn_blocking(|| {
-                            inference::check_torch_mps()
-                        }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
-                        if let Ok((has_mps, _)) = recheck {
-                            if has_mps {
-                                emit_line("✓ MPS (Metal) GPU 加速已启用", "success");
-                            } else {
-                                gpu_ok = false;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        emit_line(&format!("PyTorch 安装失败: {}", e), "error");
-                        gpu_ok = false;
-                    }
-                }
-            }
-        }
-    }
-
-    // 5. 总结
+    // 4. 总结
     if gpu_ok {
-        if is_macos {
-            emit_line("✓ GPU 加速已就绪 (MPS/Metal)", "success");
-        } else {
-            emit_line("✓ GPU 加速已就绪 (CUDA)", "success");
-        }
+        emit_line("✓ GPU 加速已就绪 (CUDA)", "success");
+    } else if is_macos {
+        emit_line("✓ CPU 推理已就绪 (Apple Silicon 优化)", "success");
     } else {
         emit_line("将使用 CPU 推理", "info");
     }
 
-    Ok((gpu_ok, summary_lines.join("\n")))
+    Ok((gpu_ok || is_macos, summary_lines.join("\n")))
 }
 
 /// 取消正在进行的模型下载

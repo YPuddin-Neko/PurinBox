@@ -39,9 +39,20 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
     }
   }, [current]);
 
-  // Auto-scroll to bottom when new logs appear
+  // Auto-scroll to bottom only if user is near bottom
+  const logContainerRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
+
+  const handleScroll = () => {
+    const el = logContainerRef.current;
+    if (!el) return;
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  };
+
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (isNearBottomRef.current) {
+      logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [logs.length]);
 
   // 计算速度
@@ -113,7 +124,7 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
               )}
             </div>
           </div>
-          <div className="log-content">
+          <div className="log-content" ref={logContainerRef} onScroll={handleScroll}>
             {logs.map((log, i) => (
               <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
                 <span className="log-entry-time">{log.time}</span>
