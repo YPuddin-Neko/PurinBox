@@ -113,8 +113,6 @@ pub fn get_model_dir(model_id: &str) -> PathBuf {
 
 // ===== Tauri Commands =====
 
-use tauri::Emitter;
-
 /// 获取可用模型列表
 #[tauri::command]
 pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
@@ -238,7 +236,8 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
         inference::check_python_env()
     }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
 
-    let (mut gpu_ok, _python_ok) = match python_check {
+    #[allow(unused_variables)]
+    let (mut gpu_ok, python_ok) = match python_check {
         Ok((ort_ver, providers)) => {
             emit_line(&format!("✓ 推理环境就绪 (onnxruntime v{})", ort_ver), "success");
 

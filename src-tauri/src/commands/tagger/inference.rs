@@ -284,7 +284,7 @@ fn detect_cuda_toolkit(lines: &mut Vec<String>) {
     // 2. 尝试从 CUDA 环境变量（含注册表回退）中找 nvcc
     #[cfg(target_os = "windows")]
     {
-        for (key, val) in get_cuda_env_vars() {
+        for (_key, val) in get_cuda_env_vars() {
             let nvcc = format!(r"{}\bin\nvcc.exe", val);
             if std::path::Path::new(&nvcc).exists() {
                 if let Some(ver) = try_nvcc_version(&nvcc) {
@@ -327,7 +327,7 @@ pub fn detect_model_info(model_path: &str) -> Result<OnnxModelInfo, String> {
     let python = find_python()?;
     let script = get_script_path()?;
 
-    let mut child = Command::new(&python)
+    let child = Command::new(&python)
         .args([script.to_string_lossy().as_ref(), "--detect", model_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -547,7 +547,7 @@ pub fn run_tagging(
             let mut path = std::env::var("PATH").unwrap_or_default();
 
             // 辅助函数：添加目录到 PATH（含子目录扫描）
-            let mut add_dir = |dir: &str, label: &str| {
+            let mut add_dir = |dir: &str, _label: &str| {
                 if std::path::Path::new(dir).exists() && !path.contains(dir) {
                     path = format!("{};{}", dir, path);
                 }
