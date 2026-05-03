@@ -29,6 +29,8 @@ export default function AiTaggerTab() {
   const [charTh, setCharTh] = useState(0.85);
   const [enabled, setEnabled] = useState<Set<string>>(new Set(cats.filter(c => c.default).map(c => c.key)));
   const [useGpu, setUseGpu] = useState(false);
+  const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
+  const gpuSupported = !isMac; // macOS 无 NVIDIA GPU，不支持 GPU 加速
   const [cudaOk, setCudaOk] = useState<boolean | null>(null);
   const [cudaChecking, setCudaChecking] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -330,7 +332,7 @@ export default function AiTaggerTab() {
 
           <div style={{ marginBottom: 'var(--space-3)', fontSize: 11, color: 'var(--color-text-secondary)', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-elevated)', lineHeight: 1.6 }}>
             推理引擎: Python onnxruntime<br/>
-            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>macOS: CoreML/Metal 加速 | Windows: CUDA 加速 (需 onnxruntime-gpu)</span>
+            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{isMac ? 'macOS: CPU 推理' : 'Windows: CUDA 加速 (需 onnxruntime-gpu)'}</span>
           </div>
 
           {/* CPU / GPU 切换 */}
@@ -339,9 +341,10 @@ export default function AiTaggerTab() {
               <Cpu style={{ width: 16, height: 16, color: !useGpu ? '#60a5fa' : 'var(--color-text-tertiary)' }} />
               <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>CPU</span>
             </div>
-            <div onClick={() => setUseGpu(true)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1px solid ${useGpu ? 'rgba(74,222,128,0.5)' : 'var(--color-border)'}`, background: useGpu ? 'rgba(74,222,128,0.06)' : 'var(--color-bg-input)', cursor: 'pointer' }}>
+            <div onClick={() => { if (gpuSupported) setUseGpu(true); }} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1px solid ${useGpu ? 'rgba(74,222,128,0.5)' : 'var(--color-border)'}`, background: useGpu ? 'rgba(74,222,128,0.06)' : 'var(--color-bg-input)', cursor: gpuSupported ? 'pointer' : 'not-allowed', opacity: gpuSupported ? 1 : 0.4 }}>
               <Zap style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} />
               <span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>GPU</span>
+              {!gpuSupported && <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>(不可用)</span>}
             </div>
           </div>
           {useGpu && (

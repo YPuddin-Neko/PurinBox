@@ -248,9 +248,6 @@ def main():
                 tags_path = cmd["tags_path"]
                 use_gpu = cmd.get("use_gpu", False)
 
-                # 检测模型格式
-                is_onnx_model = model_path.lower().endswith(".onnx")
-
                 # === ONNX Runtime 后端 ===
                 log(f"Python onnxruntime v{ort.__version__}")
                 log(f"可用 providers: {ort.get_available_providers()}")
@@ -261,12 +258,6 @@ def main():
                     if "CUDAExecutionProvider" in available:
                         gpu_provider = "CUDAExecutionProvider"
                         log("使用 GPU (CUDA) 加速")
-                    elif sys.platform == "darwin":
-                        if is_onnx_model:
-                            log("⚠ ONNX 模型不支持 MPS (Metal) 加速")
-                            log("macOS: 使用 CPU 推理")
-                        else:
-                            log("macOS: 使用 CPU 推理")
                     else:
                         log("GPU 加速不可用，使用 CPU 推理")
 
