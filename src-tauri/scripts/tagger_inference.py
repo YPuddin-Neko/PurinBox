@@ -225,7 +225,11 @@ def main():
 
     import onnxruntime as ort
 
-    session = None
+    # 推理后端变量
+    backend = None  # "ort" 或 "torch"
+    session = None   # ort.InferenceSession (ort 后端)
+    torch_model = None  # PyTorch 模型 (torch 后端)
+    torch_device = None  # torch.device (torch 后端)
     tags = []
     input_format = "NHWC"
     input_size = 448
@@ -248,75 +252,118 @@ def main():
                 tags_path = cmd["tags_path"]
                 use_gpu = cmd.get("use_gpu", False)
 
-                log(f"Python onnxruntime v{ort.__version__}")
-                log(f"可用 providers: {ort.get_available_providers()}")
+                # 决定后端: macOS GPU → PyTorch MPS, 其他 → ONNX Runtime
+                use_torch_mps = use_gpu and sys.platform == "darwin"
 
-                # 选择 providers（根据平台自动适配）
-                available = ort.get_available_providers()
-                gpu_provider = None
-                if use_gpu:
-                    if "CUDAExecutionProvider" in available:
-                        gpu_provider = "CUDAExecutionProvider"
-                        log("使用 GPU (CUDA) 加速")
-                    elif "CoreMLExecutionProvider" in available:
-                        # CoreML EP 对 tagger 模型 (SwinV2/ConvNext) 算子覆盖率低 (~30%)
-                        # 实际不如纯 CPU (Apple Silicon Accelerate SIMD 优化)
-                        log("macOS: 使用 CPU 推理 (Apple Silicon 优化)")
-                        log("提示: CoreML 对此类模型支持有限，CPU 模式更快")
+                if use_torch_mps:
+                    # === PyTorch + MPS 后端 (macOS) ===
+                    backend = "torch"
+                    try:
+                        import torch
+                        import onnx
+                        from onnx2torch import convert as onnx2torch_convert
+                    except ImportError as ie:
+                        error(f"缺少依赖: {ie}。请确保已安装 torch, onnx, onnx2torch")
+                        continue
+
+                    log(f"PyTorch v{torch.__version__}")
+
+                    if torch.backends.mps.is_available():
+                        torch_device = torch.device("mps")
+                        log("使用 GPU (MPS/Metal) 加速")
                     else:
-                        log("GPU 加速不可用，使用 CPU 推理")
+                        torch_device = torch.device("cpu")
+                        log("MPS 不可用，使用 CPU 推理")
 
-                if gpu_provider:
-                    providers = [gpu_provider, "CPUExecutionProvider"]
-                else:
-                    providers = ["CPUExecutionProvider"]
-                    if not use_gpu:
-                        log("使用 CPU 推理")
+                    log(f"加载模型: {model_path}")
+                    onnx_model = onnx.load(model_path)
+                    torch_model = onnx2torch_convert(onnx_model)
+                    torch_model = torch_model.to(torch_device)
+                    torch_model.eval()
 
-                log(f"加载模型: {model_path}")
-
-                # GPU 模式下打印诊断信息（仅 Windows CUDA）
-                if use_gpu and sys.platform == "win32" and gpu_provider == "CUDAExecutionProvider":
-                    import ctypes, glob
-                    cudnn_found = False
-                    for p in os.environ.get("PATH", "").split(os.pathsep):
-                        cudnn_dlls = glob.glob(os.path.join(p, "cudnn*.dll"))
-                        if cudnn_dlls:
-                            log(f"cuDNN DLL 路径: {p}")
-                            for dll in cudnn_dlls[:3]:
-                                log(f"  {os.path.basename(dll)}")
-                            cudnn_found = True
-                            break
-                    if not cudnn_found:
-                        log("⚠ 未在 PATH 中找到 cuDNN DLL (cudnn*.dll)")
-
-                # 尝试创建 session，GPU 失败时自动回退 CPU
-                try:
-                    session = ort.InferenceSession(model_path, providers=providers)
-                except Exception as e:
-                    if gpu_provider and gpu_provider in providers:
-                        err_msg = str(e)
-                        log(f"⚠ {gpu_provider} 加载失败")
-                        if "cuDNN" in err_msg:
-                            log("原因: 未找到 cuDNN 9.x — 请安装 cuDNN 9.x for CUDA 12.x")
-                            log("下载: https://developer.nvidia.com/cudnn-downloads")
-                        elif "CUDA" in err_msg:
-                            log("原因: CUDA 运行时未找到 — 请确认 CUDA 12.x 已安装且在 PATH 中")
+                    # 从 ONNX 模型检测输入格式
+                    inp = onnx_model.graph.input[0]
+                    input_name = inp.name
+                    shape = [d.dim_value for d in inp.type.tensor_type.shape.dim]
+                    if len(shape) == 4:
+                        if shape[1] == 3 or shape[1] == 1:
+                            input_format = "NCHW"
+                            input_size = shape[2] if shape[2] > 0 else 448
                         else:
-                            log(f"原因: {err_msg[:200]}")
-                        log("自动回退到 CPU 推理")
-                        providers = ["CPUExecutionProvider"]
-                        session = ort.InferenceSession(model_path, providers=providers)
+                            input_format = "NHWC"
+                            input_size = shape[1] if shape[1] > 0 else 448
+                    detected_size = input_size
+                    actual_info = f"PyTorch {torch.__version__}, device: {torch_device}"
+                    log(f"实际使用设备: {torch_device}")
+
+                else:
+                    # === ONNX Runtime 后端 ===
+                    backend = "ort"
+                    log(f"Python onnxruntime v{ort.__version__}")
+                    log(f"可用 providers: {ort.get_available_providers()}")
+
+                    available = ort.get_available_providers()
+                    gpu_provider = None
+                    if use_gpu:
+                        if "CUDAExecutionProvider" in available:
+                            gpu_provider = "CUDAExecutionProvider"
+                            log("使用 GPU (CUDA) 加速")
+                        else:
+                            log("GPU 加速不可用，使用 CPU 推理")
+
+                    if gpu_provider:
+                        providers = [gpu_provider, "CPUExecutionProvider"]
                     else:
-                        raise
+                        providers = ["CPUExecutionProvider"]
+                        if not use_gpu:
+                            log("使用 CPU 推理")
 
-                actual_providers = session.get_providers()
-                log(f"实际使用 providers: {actual_providers}")
+                    log(f"加载模型: {model_path}")
 
-                # 检测输入格式
-                input_name = session.get_inputs()[0].name
-                input_format, detected_size = detect_model_format(session)
-                # 优先使用外部传入的 input_size（模型定义中的值），自动检测可能为动态维度
+                    # GPU 模式下打印诊断信息（仅 Windows CUDA）
+                    if use_gpu and sys.platform == "win32" and gpu_provider == "CUDAExecutionProvider":
+                        import ctypes, glob
+                        cudnn_found = False
+                        for p in os.environ.get("PATH", "").split(os.pathsep):
+                            cudnn_dlls = glob.glob(os.path.join(p, "cudnn*.dll"))
+                            if cudnn_dlls:
+                                log(f"cuDNN DLL 路径: {p}")
+                                for dll in cudnn_dlls[:3]:
+                                    log(f"  {os.path.basename(dll)}")
+                                cudnn_found = True
+                                break
+                        if not cudnn_found:
+                            log("⚠ 未在 PATH 中找到 cuDNN DLL (cudnn*.dll)")
+
+                    # 尝试创建 session，GPU 失败时自动回退 CPU
+                    try:
+                        session = ort.InferenceSession(model_path, providers=providers)
+                    except Exception as e:
+                        if gpu_provider and gpu_provider in providers:
+                            err_msg = str(e)
+                            log(f"⚠ {gpu_provider} 加载失败")
+                            if "cuDNN" in err_msg:
+                                log("原因: 未找到 cuDNN 9.x — 请安装 cuDNN 9.x for CUDA 12.x")
+                                log("下载: https://developer.nvidia.com/cudnn-downloads")
+                            elif "CUDA" in err_msg:
+                                log("原因: CUDA 运行时未找到 — 请确认 CUDA 12.x 已安装且在 PATH 中")
+                            else:
+                                log(f"原因: {err_msg[:200]}")
+                            log("自动回退到 CPU 推理")
+                            providers = ["CPUExecutionProvider"]
+                            session = ort.InferenceSession(model_path, providers=providers)
+                        else:
+                            raise
+
+                    actual_providers = session.get_providers()
+                    log(f"实际使用 providers: {actual_providers}")
+
+                    # 检测输入格式
+                    input_name = session.get_inputs()[0].name
+                    input_format, detected_size = detect_model_format(session)
+                    actual_info = f"onnxruntime {ort.__version__}, providers: {actual_providers}"
+
+                # 共通：input_size 和标签加载
                 override_size = cmd.get("input_size", 0)
                 if override_size and override_size > 0:
                     input_size = override_size
@@ -333,14 +380,14 @@ def main():
 
                 result({
                     "type": "ready",
-                    "info": f"onnxruntime {ort.__version__}, providers: {actual_providers}",
+                    "info": actual_info,
                     "input_format": input_format,
                     "input_size": input_size,
                     "tag_count": len(tags),
                 })
 
             elif cmd["cmd"] == "tag":
-                if session is None:
+                if backend is None:
                     error("模型未初始化，请先发送 init 命令")
                     continue
 
@@ -352,9 +399,18 @@ def main():
                 # 预处理
                 img_data = preprocess_image(image_path, input_size, input_format)
 
-                # 推理
-                outputs = session.run(None, {input_name: img_data})
-                probs = outputs[0][0]  # shape: [num_tags]
+                # 推理（根据后端分发）
+                if backend == "torch":
+                    import torch
+                    with torch.no_grad():
+                        tensor = torch.from_numpy(img_data).to(torch_device)
+                        output = torch_model(tensor)
+                        if isinstance(output, (list, tuple)):
+                            output = output[0]
+                        probs = output.cpu().numpy()[0]
+                else:
+                    outputs = session.run(None, {input_name: img_data})
+                    probs = outputs[0][0]  # shape: [num_tags]
 
                 # 对 NCHW 模型的输出可能需要 sigmoid
                 if input_format == "NCHW":

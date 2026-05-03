@@ -317,11 +317,22 @@ fn create_venv(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 安装依赖
+/// 安装依赖（根据平台自动适配）
 fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
     let python = get_venv_python();
     let python_str = python.to_string_lossy().to_string();
-    pip_install_with_python(app, &python_str, &["onnxruntime", "numpy", "pillow"])
+
+    // 基础依赖
+    pip_install_with_python(app, &python_str, &["onnxruntime", "numpy", "pillow"])?;
+
+    // macOS: 额外安装 PyTorch + onnx2torch 用于 MPS 加速
+    #[cfg(target_os = "macos")]
+    {
+        emit_progress(app, "安装 PyTorch + MPS 加速依赖...", "info");
+        pip_install_with_python(app, &python_str, &["torch", "onnx", "onnx2torch"])?;
+    }
+
+    Ok(())
 }
 
 /// 安装 GPU 版 onnxruntime（替换 CPU 版）
@@ -462,6 +473,18 @@ fn get_active_python() -> Result<String, String> {
         }
     }
     Err("未找到可用的 Python".into())
+}
+
+/// 公开接口：获取当前可用的 Python 路径
+pub fn get_active_python_pub() -> Result<String, String> {
+    get_active_python()
+}
+
+/// 安装 PyTorch + onnx2torch 依赖 (macOS MPS 加速)
+pub fn install_torch_deps(app: &tauri::AppHandle) -> Result<(), String> {
+    let python = get_active_python()?;
+    emit_progress(app, "安装 PyTorch + MPS 加速依赖...", "info");
+    pip_install_with_python(app, &python, &["torch", "onnx", "onnx2torch"])
 }
 
 /// 使用指定 Python 执行 pip install

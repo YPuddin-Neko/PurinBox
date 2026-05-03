@@ -245,11 +245,46 @@ fn detect_apple_gpu(lines: &mut Vec<String>) {
     if let Ok(output) = Command::new("sysctl").args(["-n", "machdep.cpu.brand_string"]).output() {
         if output.status.success() {
             let chip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            lines.push(format!("GPU: {} (Metal/CoreML)", chip));
+            lines.push(format!("GPU: {} (Metal/MPS)", chip));
             return;
         }
     }
-    lines.push("GPU: Apple Silicon (Metal/CoreML)".into());
+    lines.push("GPU: Apple Silicon (Metal/MPS)".into());
+}
+
+/// 检测 PyTorch MPS 可用性（通过 Python 子进程）
+/// 返回 (MPS可用, PyTorch版本)
+pub fn check_torch_mps() -> Result<(bool, String), String> {
+    let python = super::python_env::get_active_python_pub()?;
+    let script = r#"
+import torch, json, sys
+info = {
+    "version": torch.__version__,
+    "mps_available": torch.backends.mps.is_available(),
+    "mps_built": torch.backends.mps.is_built(),
+}
+print(json.dumps(info))
+"#;
+    let mut cmd = Command::new(&python);
+    cmd.args(["-c", script])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let output = cmd.output().map_err(|e| format!("执行 Python 失败: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("PyTorch 未安装或不可用: {}", stderr.trim()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let info: serde_json::Value = serde_json::from_str(stdout.trim())
+        .map_err(|e| format!("解析 PyTorch 信息失败: {}", e))?;
+
+    let version = info["version"].as_str().unwrap_or("unknown").to_string();
+    let mps_available = info["mps_available"].as_bool().unwrap_or(false);
+
+    Ok((mps_available, version))
 }
 
 /// 检测 NVIDIA 驱动和 GPU 信息
