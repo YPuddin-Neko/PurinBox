@@ -179,7 +179,6 @@ def main():
             reg_val = read_reg_env("CUDA_PATH")
             if reg_val:
                 cuda_paths["CUDA_PATH"] = reg_val
-                log(f"从注册表读取 CUDA_PATH={reg_val}")
 
         for key, val in cuda_paths.items():
             bin_dir = os.path.join(val, "bin")
@@ -219,7 +218,6 @@ def main():
                 pass
             if d not in current_path:
                 new_dirs.append(d)
-                log(f"注册 DLL 目录: {d}")
         if new_dirs:
             os.environ["PATH"] = os.pathsep.join(new_dirs) + os.pathsep + current_path
 
