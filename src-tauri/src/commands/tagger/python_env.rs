@@ -361,7 +361,6 @@ pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
     SETUP_CANCELLED.store(false, Ordering::SeqCst);
 
     let python = get_active_python()?;
-    eprintln!("[DEBUG] install_gpu_deps: 使用 Python: {}", python);
 
     emit_progress(app, "安装 onnxruntime-gpu==1.25.1 (需要 cuDNN 9.x)...", "info");
 
@@ -442,14 +441,12 @@ fn scan_dir_for_cudnn(dir: &str) -> Option<u32> {
         if name.starts_with("cudnn64_") {
             let ver = name.trim_start_matches("cudnn64_").trim_end_matches(".dll");
             if let Ok(v) = ver.parse::<u32>() {
-                eprintln!("[DEBUG] detect_cudnn: 找到 {} → cuDNN v{}", name, v);
                 return Some(v);
             }
         }
         // cuDNN 9.x: cudnn_graph64_9.dll, cudnn_engines_precompiled64_9.dll
         for suffix in &["_9.dll", "64_9.dll"] {
             if name.ends_with(suffix) {
-                eprintln!("[DEBUG] detect_cudnn: 找到 {} → cuDNN v9", name);
                 return Some(9);
             }
         }
@@ -498,9 +495,7 @@ fn get_active_python() -> Result<String, String> {
 /// 使用指定 Python 执行 pip install
 fn pip_install_with_python(app: &tauri::AppHandle, python: &str, deps: &[&str]) -> Result<(), String> {
     for dep in deps {
-        eprintln!("[DEBUG] pip_install_with_python: dep={}, python={}, cancelled={}", dep, python, is_cancelled());
         if is_cancelled() {
-            eprintln!("[DEBUG] pip_install_with_python: 取消标志为 true，跳过安装");
             return Err("已取消".into());
         }
 
@@ -515,11 +510,9 @@ fn pip_install_with_python(app: &tauri::AppHandle, python: &str, deps: &[&str]) 
             cmd.creation_flags(0x08000000);
         }
 
-        eprintln!("[DEBUG] pip_install_with_python: 执行 {} -m pip install {}", python, dep);
         let output = cmd.output().map_err(|e| format!("安装 {} 失败: {}", dep, e))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("[DEBUG] pip_install_with_python: 安装失败 stderr={}", stderr);
             return Err(format!("安装 {} 失败: {}", dep, stderr));
         }
 

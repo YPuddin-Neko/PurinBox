@@ -20,7 +20,6 @@ use commands::{scan_images, get_system_stats};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Python 子进程方式推理，无需在 Rust 侧初始化 ONNX Runtime
-    eprintln!("[AiTrainTools] 使用 Python onnxruntime 进行推理");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

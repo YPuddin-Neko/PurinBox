@@ -249,9 +249,6 @@ def main():
                 use_gpu = cmd.get("use_gpu", False)
 
                 # === ONNX Runtime 后端 ===
-                log(f"Python onnxruntime v{ort.__version__}")
-                log(f"可用 providers: {ort.get_available_providers()}")
-
                 available = ort.get_available_providers()
                 gpu_provider = None
                 if use_gpu:
@@ -268,8 +265,6 @@ def main():
                     if not use_gpu:
                         log("使用 CPU 推理")
 
-                log(f"加载模型: {model_path}")
-
                 # GPU 模式下打印诊断信息（仅 Windows CUDA）
                 if use_gpu and sys.platform == "win32" and gpu_provider == "CUDAExecutionProvider":
                     import ctypes, glob
@@ -277,9 +272,6 @@ def main():
                     for p in os.environ.get("PATH", "").split(os.pathsep):
                         cudnn_dlls = glob.glob(os.path.join(p, "cudnn*.dll"))
                         if cudnn_dlls:
-                            log(f"cuDNN DLL 路径: {p}")
-                            for dll in cudnn_dlls[:3]:
-                                log(f"  {os.path.basename(dll)}")
                             cudnn_found = True
                             break
                     if not cudnn_found:
@@ -305,28 +297,26 @@ def main():
                     else:
                         raise
 
-                actual_providers = session.get_providers()
-                log(f"实际使用 providers: {actual_providers}")
-
                 # 检测输入格式
                 input_name = session.get_inputs()[0].name
                 input_format, detected_size = detect_model_format(session)
+                actual_providers = session.get_providers()
                 actual_info = f"onnxruntime {ort.__version__}, providers: {actual_providers}"
 
-                # 共通：input_size 和标签加载
+                # input_size
                 override_size = cmd.get("input_size", 0)
                 if override_size and override_size > 0:
                     input_size = override_size
                 else:
                     input_size = detected_size if detected_size > 0 else 448
-                log(f"输入格式: {input_format}, 输入大小: {input_size}x{input_size} (检测: {detected_size})")
 
                 # 加载标签
                 if tags_path.endswith(".json"):
                     tags = load_tags_json(tags_path)
                 else:
                     tags = load_tags_csv(tags_path)
-                log(f"已加载 {len(tags)} 个标签定义")
+
+                log(f"✓ 模型已就绪 ({len(tags)} 标签, {input_size}x{input_size})")
 
                 result({
                     "type": "ready",

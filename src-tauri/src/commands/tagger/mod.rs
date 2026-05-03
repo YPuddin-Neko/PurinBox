@@ -232,21 +232,15 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
     }
 
     // 2. Python onnxruntime 检测
-    emit_line("正在检测 Python onnxruntime...", "info");
+    emit_line("正在检测推理环境...", "info");
 
     let python_check = tokio::task::spawn_blocking(|| {
         inference::check_python_env()
     }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
 
-    let (mut gpu_ok, python_ok) = match python_check {
+    let (mut gpu_ok, _python_ok) = match python_check {
         Ok((ort_ver, providers)) => {
-            let msg = format!("Python onnxruntime v{}", ort_ver);
-            emit_line(&msg, "success");
-            summary_lines.push(msg);
-
-            let msg = format!("可用 providers: {}", providers);
-            emit_line(&msg, "info");
-            summary_lines.push(msg);
+            emit_line(&format!("✓ 推理环境就绪 (onnxruntime v{})", ort_ver), "success");
 
             // 检测 GPU provider
             let has_cuda = providers.contains("CUDAExecutionProvider");
@@ -362,12 +356,8 @@ pub async fn start_tagging(
     }).await.map_err(|e| format!("检测线程异常: {}", e))?;
 
     match &python_check {
-        Ok((ver, providers)) => {
-            let _ = app.emit("tagger-progress", ProgressEvent {
-                current: 0, total: 0, filename: String::new(),
-                status: "success".to_string(),
-                message: format!("Python onnxruntime v{} ({})", ver, providers),
-            });
+        Ok((_ver, _providers)) => {
+            // Python 环境已就绪，无需额外日志
         }
         Err(_) => {
             // Python 环境不可用，自动安装

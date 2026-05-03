@@ -65,7 +65,6 @@ fn get_cuda_env_vars() -> Vec<(String, String)> {
     // 2. 如果进程中没有 CUDA_PATH，尝试从注册表读取
     if !result.contains_key("CUDA_PATH") {
         if let Some(val) = read_env_from_registry("CUDA_PATH") {
-            eprintln!("[DEBUG] 从注册表读取 CUDA_PATH={}", val);
             result.insert("CUDA_PATH".to_string(), val);
         }
     }
@@ -92,7 +91,6 @@ fn add_subdirs_to_path(dir: &str, path: &mut String) {
                 let sub_str = sub.to_string_lossy().to_string();
                 if !path.contains(&sub_str) {
                     *path = format!("{};{}", sub_str, path);
-                    eprintln!("[DEBUG] 添加子目录: {}", sub_str);
                 }
             }
         }
@@ -295,7 +293,6 @@ fn detect_cuda_toolkit(lines: &mut Vec<String>) {
                 }
             }
             // 也记录一下找到了 CUDA 但 nvcc 不在
-            eprintln!("[DEBUG] detect_cuda: {}={} (nvcc not at {})", key, val, nvcc);
         }
     }
 
@@ -530,11 +527,6 @@ pub fn run_tagging(
     let python = find_python()?;
     let script = get_script_path()?;
 
-    let _ = app.emit("tagger-progress", ProgressEvent {
-        current: 0, total: 0, filename: String::new(),
-        status: "info".to_string(),
-        message: format!("启动 Python 推理进程 ({})", python),
-    });
 
     // 启动 Python 子进程
     let mut cmd = Command::new(&python);
@@ -558,7 +550,6 @@ pub fn run_tagging(
             let mut add_dir = |dir: &str, label: &str| {
                 if std::path::Path::new(dir).exists() && !path.contains(dir) {
                     path = format!("{};{}", dir, path);
-                    eprintln!("[DEBUG] 添加 {} 路径: {}", label, dir);
                 }
             };
 
@@ -570,13 +561,11 @@ pub fn run_tagging(
                 add_dir(&bin, &key);
                 add_dir(&bin_x64, &key);
                 add_dir(&lib, &key);
-                eprintln!("[DEBUG] {}={}", key, val);
             }
 
             // 2. cuDNN 路径：从环境变量读取
             //    CUDNN_PATH 可能指向独立安装目录
             if let Ok(cudnn_path) = std::env::var("CUDNN_PATH") {
-                eprintln!("[DEBUG] CUDNN_PATH={}", cudnn_path);
                 let bin = format!(r"{}\bin", cudnn_path);
                 add_dir(&bin, "CUDNN");
                 // cuDNN 9.x 在 bin 下有 12.x 子目录
@@ -603,7 +592,6 @@ pub fn run_tagging(
             }
 
             cmd.env("PATH", &path);
-            eprintln!("[DEBUG] 最终 PATH 长度: {} chars", path.len());
         }
     }
 
@@ -709,12 +697,6 @@ pub fn run_tagging(
                     return Err(format!("Python 推理错误: {}", text));
                 }
                 "ready" => {
-                    let info = msg.get("info").and_then(|v| v.as_str()).unwrap_or("ready");
-                    let _ = app.emit("tagger-progress", ProgressEvent {
-                        current: 0, total: 0, filename: String::new(),
-                        status: "success".to_string(),
-                        message: format!("✓ 模型加载完成 ({})", info),
-                    });
                     ready = true;
                     break;
                 }
