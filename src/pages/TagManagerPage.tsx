@@ -122,6 +122,8 @@ export default function TagManagerPage() {
   const [showReplaceModal, setShowReplaceModal] = useState(false);
   const [replaceFrom, setReplaceFrom] = useState('');
   const [replaceTo, setReplaceTo] = useState('');
+  const [replaceSearch, setReplaceSearch] = useState('');
+  const [replaceDropOpen, setReplaceDropOpen] = useState(false);
   const [tagFilterActive, setTagFilterActive] = useState(false);
   const [translations, setTranslations] = useState<Record<string, string>>({});
   const [translating, setTranslating] = useState(false);
@@ -199,9 +201,8 @@ export default function TagManagerPage() {
     if (dirtyItems.length === 0) return;
     setSaving(true);
     try {
-      const saved = await invoke<number>('save_all_tag_files', { items: dirtyItems });
+      await invoke<number>('save_all_tag_files', { items: dirtyItems });
       setImages(prev => prev.map(img => img.dirty ? { ...img, dirty: false } : img));
-      console.log(`已保存 ${saved} 个文件`);
     } catch (e: any) {
       console.error('保存失败:', e);
     } finally {
@@ -279,7 +280,7 @@ export default function TagManagerPage() {
 
   // ── 批量添加标签 ──
   const handleBatchAdd = () => {
-    const tags = addTagInput.split(',').map(t => t.trim().toLowerCase().replace(/[^a-z0-9_]/g,'')).filter(Boolean);
+    const tags = addTagInput.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
     if (tags.length === 0) return;
     setImages(p => p.map(img => {
       let newTags = [...img.tags];
@@ -311,7 +312,7 @@ export default function TagManagerPage() {
   // ── 标签替换 ──
   const handleReplace = () => {
     const from = replaceFrom.trim();
-    const to = replaceTo.trim().toLowerCase().replace(/[^a-z0-9_]/g,'');
+    const to = replaceTo.trim().toLowerCase();
     if (!from || !to || from === to) return;
     setImages(p => p.map(img => {
       const idx = img.tags.indexOf(from);
@@ -696,9 +697,9 @@ export default function TagManagerPage() {
       {showAddModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setShowAddModal(false)}>
         <div style={{background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',padding:20,width:380,maxWidth:'90vw'}} onClick={e=>e.stopPropagation()}>
           <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>批量添加标签</h3>
-          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>标签内容（逗号分隔，仅小写字母）</label>
-          <input className="form-input" placeholder="1girl,solo,smile" value={addTagInput}
-            onChange={e=>setAddTagInput(e.target.value.replace(/[^a-z0-9_,\s]/g,''))}
+          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>标签内容（逗号分隔）</label>
+          <input className="form-input" placeholder="1girl, solo, smile" value={addTagInput}
+            onChange={e=>setAddTagInput(e.target.value)}
             style={{fontSize:12,marginBottom:12}} />
           <div style={{display:'flex',gap:12,marginBottom:12}}>
             <label style={{fontSize:11,color:'var(--color-text-secondary)',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}>
@@ -720,17 +721,48 @@ export default function TagManagerPage() {
       </div>}
 
       {/* ═ 替换弹窗 ═ */}
-      {showReplaceModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setShowReplaceModal(false)}>
+      {showReplaceModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>{setShowReplaceModal(false);setReplaceDropOpen(false);}}>
         <div style={{background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',padding:20,width:380,maxWidth:'90vw'}} onClick={e=>e.stopPropagation()}>
           <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>标签替换</h3>
           <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>原标签</label>
-          <input className="form-input" placeholder="原标签名" value={replaceFrom} onChange={e=>setReplaceFrom(e.target.value)} style={{fontSize:12,marginBottom:10}} />
+          <div style={{position:'relative',marginBottom:10}}>
+            <input className="form-input" placeholder="搜索并选择原标签..." value={replaceDropOpen ? replaceSearch : replaceFrom}
+              onFocus={()=>{setReplaceDropOpen(true);setReplaceSearch('');}}
+              onChange={e=>{setReplaceSearch(e.target.value);setReplaceDropOpen(true);}}
+              style={{fontSize:12}} />
+            {replaceFrom && !replaceDropOpen && (
+              <button onClick={()=>{setReplaceFrom('');setReplaceSearch('');}} style={{position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',cursor:'pointer',color:'var(--color-text-tertiary)',padding:0,display:'flex'}}>
+                <X style={{width:12,height:12}} />
+              </button>
+            )}
+            {replaceDropOpen && (
+              <div style={{position:'absolute',top:'100%',left:0,right:0,maxHeight:180,overflow:'auto',background:'var(--color-bg-elevated)',border:'1px solid var(--color-border)',borderRadius:6,marginTop:2,zIndex:10,boxShadow:'var(--shadow-md)'}}>
+                {tagStats
+                  .filter(([tag])=>!replaceSearch || tag.includes(replaceSearch.toLowerCase()))
+                  .slice(0,50)
+                  .map(([tag,count])=>(
+                    <div key={tag} onClick={()=>{setReplaceFrom(tag);setReplaceSearch('');setReplaceDropOpen(false);}}
+                      style={{padding:'6px 10px',fontSize:11,cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center',
+                        background:replaceFrom===tag?'rgba(124,92,252,0.1)':'transparent',
+                        color:'var(--color-text-primary)'}}
+                      onMouseEnter={e=>e.currentTarget.style.background='var(--color-bg-hover)'}
+                      onMouseLeave={e=>e.currentTarget.style.background=replaceFrom===tag?'rgba(124,92,252,0.1)':'transparent'}>
+                      <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{tag}</span>
+                      <span style={{fontSize:9,color:'var(--color-text-tertiary)',flexShrink:0,marginLeft:8}}>{count}</span>
+                    </div>
+                  ))}
+                {tagStats.filter(([tag])=>!replaceSearch || tag.includes(replaceSearch.toLowerCase())).length===0 && (
+                  <div style={{padding:'12px 10px',fontSize:11,color:'var(--color-text-tertiary)',textAlign:'center'}}>无匹配标签</div>
+                )}
+              </div>
+            )}
+          </div>
           <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>替换为</label>
-          <input className="form-input" placeholder="新标签名（仅小写字母）" value={replaceTo}
-            onChange={e=>setReplaceTo(e.target.value.replace(/[^a-z0-9_]/g,''))}
+          <input className="form-input" placeholder="新标签" value={replaceTo}
+            onChange={e=>setReplaceTo(e.target.value)}
             style={{fontSize:12,marginBottom:16}} />
           <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
-            <button className="btn btn-secondary" style={{height:30,fontSize:11}} onClick={()=>setShowReplaceModal(false)}>取消</button>
+            <button className="btn btn-secondary" style={{height:30,fontSize:11}} onClick={()=>{setShowReplaceModal(false);setReplaceDropOpen(false);}}>取消</button>
             <button className="btn btn-primary" style={{height:30,fontSize:11}} onClick={handleReplace} disabled={!replaceFrom.trim()||!replaceTo.trim()}>替换全部</button>
           </div>
         </div>

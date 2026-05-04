@@ -189,7 +189,7 @@ async fn download_with_progress(
     label: &str,
 ) -> Result<(), String> {
     let client = reqwest::Client::builder()
-        .user_agent("AiTrainTools/0.1.0")
+        .user_agent("PurinBox/0.1.3")
         .timeout(std::time::Duration::from_secs(1800))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;

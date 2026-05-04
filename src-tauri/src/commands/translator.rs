@@ -1,17 +1,42 @@
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
-/// 翻译缓存数据库路径
-static DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+/// 翻译缓存数据库路径（可运行时修改）
+static DB_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// 获取软件根目录（exe 所在目录，macOS .app 则取 bundle 外层）
+fn get_exe_root() -> PathBuf {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let exe_dir = exe.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+    // macOS .app bundle: …/Foo.app/Contents/MacOS/exe → 取 Foo.app 所在目录
+    if cfg!(target_os = "macos") {
+        if let Some(contents) = exe_dir.parent() {
+            if let Some(app_bundle) = contents.parent() {
+                if app_bundle.extension().map(|e| e == "app").unwrap_or(false) {
+                    return app_bundle.parent().unwrap_or(&exe_dir).to_path_buf();
+                }
+            }
+        }
+    }
+    exe_dir
+}
+
+fn default_cache_dir() -> PathBuf {
+    get_exe_root().join("tagcache")
+}
 
 fn get_db_path() -> PathBuf {
-    DB_PATH.get().cloned().unwrap_or_else(|| PathBuf::from("tag_translations.db"))
+    let guard = DB_PATH.lock().unwrap();
+    guard.clone().unwrap_or_else(|| default_cache_dir().join("tag_translations.db"))
 }
 
 fn open_db() -> Result<Connection, String> {
     let path = get_db_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     let conn = Connection::open(&path)
         .map_err(|e| format!("打开翻译缓存数据库失败: {}", e))?;
     conn.execute_batch(
@@ -26,12 +51,40 @@ fn open_db() -> Result<Connection, String> {
 }
 
 /// 初始化翻译缓存数据库路径（在 app 启动时调用）
-pub fn init_db_path(app_data_dir: PathBuf) {
-    let db_path = app_data_dir.join("tag_translations.db");
+pub fn init_db_path(custom_dir: Option<String>) {
+    let cache_dir = match custom_dir {
+        Some(ref p) if !p.is_empty() => PathBuf::from(p),
+        _ => default_cache_dir(),
+    };
+    let db_path = cache_dir.join("tag_translations.db");
     if let Some(parent) = db_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = DB_PATH.set(db_path);
+    let mut guard = DB_PATH.lock().unwrap();
+    *guard = Some(db_path);
+}
+
+/// 获取当前缓存路径
+#[tauri::command]
+pub fn get_cache_path() -> String {
+    let path = get_db_path();
+    path.parent().unwrap_or(path.as_path()).to_string_lossy().to_string()
+}
+
+/// 修改缓存路径（空字符串则重置为默认路径）
+#[tauri::command]
+pub fn set_cache_path(path: String) -> Result<String, String> {
+    let cache_dir = if path.is_empty() {
+        default_cache_dir()
+    } else {
+        PathBuf::from(&path)
+    };
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| format!("创建缓存目录失败: {}", e))?;
+    let db_path = cache_dir.join("tag_translations.db");
+    let mut guard = DB_PATH.lock().unwrap();
+    *guard = Some(db_path);
+    Ok(cache_dir.to_string_lossy().to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

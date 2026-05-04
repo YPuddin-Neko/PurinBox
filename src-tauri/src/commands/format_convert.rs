@@ -103,6 +103,20 @@ fn convert_format_sync(app: &tauri::AppHandle, options: &FormatConvertOptions) -
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
 
+        // 跳过已经是目标格式的文件（jpg 和 jpeg 视为同一格式）
+        let src_normalized = match src_ext.as_str() { "jpeg" => "jpg", other => other };
+        let tgt_normalized = match target_ext.as_str() { "jpeg" => "jpg", other => other };
+        if src_normalized == tgt_normalized {
+            let _ = app.emit("convert-progress", ProgressEvent {
+                current: i as u32 + 1,
+                total,
+                filename: filename.clone(),
+                status: "skipped".to_string(),
+                message: format!("[跳过] {} (已是 .{} 格式)", filename, target_ext),
+            });
+            continue;
+        }
+
         let _ = app.emit("convert-progress", ProgressEvent {
             current: i as u32 + 1,
             total,

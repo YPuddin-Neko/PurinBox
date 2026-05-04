@@ -1,7 +1,9 @@
-import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap } from 'lucide-react';
+import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw } from 'lucide-react';
 import { useTheme } from '../components/ThemeProvider';
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
+import { getVersion } from '@tauri-apps/api/app';
 
 const intervalOptions = [
   { value: 1000, label: '1 秒', desc: '实时' },
@@ -40,6 +42,8 @@ export default function SettingsPage() {
   const [clearing, setClearing] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [cachePath, setCachePath] = useState<string>('');
+  const [appVersion, setAppVersion] = useState('');
 
   const toggleTranslate = (val: boolean) => { setTranslateEnabled(val); localStorage.setItem('translate_enabled', String(val)); };
   const changeProvider = (val: string) => { setProvider(val); localStorage.setItem('translate_provider', val); };
@@ -76,7 +80,30 @@ export default function SettingsPage() {
     try { await invoke('clear_translation_cache'); await loadCacheStats(); } catch (e) { console.error(e); } finally { setClearing(false); }
   };
 
-  useEffect(() => { loadCacheStats(); }, []);
+  useEffect(() => { loadCacheStats(); loadCachePath(); getVersion().then(v => setAppVersion(v)).catch(() => {}); }, []);
+
+  const loadCachePath = async () => {
+    try { setCachePath(await invoke<string>('get_cache_path')); } catch (e) { console.error(e); }
+  };
+
+  const handleChangeCachePath = async () => {
+    const selected = await open({ directory: true, title: '选择翻译缓存目录' });
+    if (selected && typeof selected === 'string') {
+      try {
+        await invoke('set_cache_path', { path: selected });
+        setCachePath(selected);
+        await loadCacheStats();
+      } catch (e: any) { alert(`设置缓存路径失败: ${e?.message || e}`); }
+    }
+  };
+
+  const handleResetCachePath = async () => {
+    try {
+      await invoke<string>('set_cache_path', { path: '' });
+      setCachePath(await invoke<string>('get_cache_path'));
+      await loadCacheStats();
+    } catch (e: any) { alert(`重置失败: ${e?.message || e}`); }
+  };
 
   const formatSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
@@ -306,6 +333,26 @@ export default function SettingsPage() {
                 </div>
               )}
 
+              {/* 缓存路径 */}
+              <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>缓存路径</div>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button className="btn btn-secondary" onClick={handleChangeCachePath}
+                      style={{ fontSize: 10, height: 24, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3 }}>
+                      <FolderOpen style={{ width: 10, height: 10 }} />修改
+                    </button>
+                    <button className="btn btn-secondary" onClick={handleResetCachePath} title="重置为默认路径"
+                      style={{ fontSize: 10, height: 24, padding: '0 6px', display: 'flex', alignItems: 'center' }}>
+                      <RotateCcw style={{ width: 10, height: 10 }} />
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', wordBreak: 'break-all', lineHeight: 1.5, background: 'var(--color-bg-secondary)', padding: '6px 8px', borderRadius: 4 }}>
+                  {cachePath || '加载中...'}
+                </div>
+              </div>
+
               {/* 缓存管理 */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                 <div>
@@ -332,9 +379,14 @@ export default function SettingsPage() {
               </div>
             </div>
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', lineHeight: 1.8 }}>
-              <p><strong>AI Train Tools</strong> · v0.1.2</p>
+              <p><strong>PurinBox</strong> · v{appVersion}</p>
               <p>基于 Tauri 2 + React + TypeScript 构建</p>
-              <p style={{ color: 'var(--color-text-tertiary)' }}>高性能 AI 训练数据处理工具箱</p>
+              <p style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <a href="https://github.com/YPuddin-Neko/PurinBox" target="_blank" rel="noreferrer"
+                  style={{ color: '#60a5fa', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  GitHub <ExternalLink style={{ width: 12, height: 12 }} />
+                </a>
+              </p>
             </div>
           </div>
         </div>

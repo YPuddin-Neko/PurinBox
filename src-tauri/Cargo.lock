@@ -3632,6 +3632,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "purinbox"
+version = "0.1.3"
+dependencies = [
+ "base64 0.22.1",
+ "csv",
+ "futures-util",
+ "hex",
+ "image",
+ "md5",
+ "psd",
+ "rand 0.9.4",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tokio",
+ "urlencoding",
+ "walkdir",
+ "zip",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4938,34 +4966,6 @@ dependencies = [
  "webview2-com",
  "window-vibrancy",
  "windows",
-]
-
-[[package]]
-name = "tauri-app"
-version = "0.1.2"
-dependencies = [
- "base64 0.22.1",
- "csv",
- "futures-util",
- "hex",
- "image",
- "md5",
- "psd",
- "rand 0.9.4",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "sysinfo",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tokio",
- "urlencoding",
- "walkdir",
- "zip",
 ]
 
 [[package]]

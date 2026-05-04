@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   Home,
@@ -13,18 +13,16 @@ import {
   List,
   Settings,
   PanelLeftClose,
-  Sparkles,
 } from 'lucide-react';
 import '../styles/sidebar.css';
+import { getVersion } from '@tauri-apps/api/app';
 
 interface NavItem { id: string; label: string; icon: React.ReactNode; path: string; }
 interface NavSection { title: string; items: NavItem[]; }
 
+const homeItem: NavItem = { id: 'home', label: '首页', icon: <Home />, path: '/' };
+
 const navSections: NavSection[] = [
-  {
-    title: '概览',
-    items: [{ id: 'home', label: '工作台', icon: <Home />, path: '/' }],
-  },
   {
     title: '数据集预处理',
     items: [
@@ -52,13 +50,19 @@ const navSections: NavSection[] = [
 
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
+  const [appVersion, setAppVersion] = useState('');
+  useEffect(() => { getVersion().then(v => setAppVersion(v)).catch(() => {}); }, []);
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
-      <div className="sidebar-logo">
-        <div className="sidebar-logo-icon"><Sparkles /></div>
-        <div className="sidebar-logo-text"><h1>AI Train Tools</h1><span>AI 训练工具箱</span></div>
-      </div>
       <nav className="sidebar-nav">
+        <div className="sidebar-section">
+          <NavLink to={homeItem.path}
+            className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
+            end>
+            <span className="sidebar-item-icon">{homeItem.icon}</span>
+            <span className="sidebar-item-label">{homeItem.label}</span>
+          </NavLink>
+        </div>
         {navSections.map((section) => (
           <div key={section.title} className="sidebar-section">
             <div className="sidebar-section-title">{section.title}</div>
@@ -73,9 +77,9 @@ export default function Sidebar() {
           </div>
         ))}
       </nav>
-      <div className="sidebar-version"><div className="sidebar-version-dot" /><span>v0.1.1 · Preview</span></div>
+      <div className="sidebar-version"><div className="sidebar-version-dot" /><span>v{appVersion} · Preview</span></div>
       <div className="sidebar-toggle">
-        <button className="sidebar-toggle-btn" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开菜单' : '折叠菜单'}><PanelLeftClose /></button>
+        <button className="sidebar-toggle-btn" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开菜单' : '折叠菜单'}><PanelLeftClose /><span className="sidebar-item-label">{collapsed ? '展开' : '收起'}</span></button>
       </div>
     </aside>
   );

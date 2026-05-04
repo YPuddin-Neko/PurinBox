@@ -7,7 +7,7 @@ import { useTaskQueue } from './TaskContext';
 import '../styles/layout.css';
 
 const routeNames: Record<string, { breadcrumb: string; title: string }> = {
-  '/': { breadcrumb: '工作台', title: '工作台' },
+  '/': { breadcrumb: '首页', title: '首页' },
   '/scale': { breadcrumb: '图片缩放', title: '图片缩放' },
   '/flip': { breadcrumb: '图片处理', title: '图片处理' },
   '/filter': { breadcrumb: '分辨率筛选', title: '分辨率筛选' },
@@ -19,7 +19,7 @@ const routeNames: Record<string, { breadcrumb: string; title: string }> = {
   '/tag-manager': { breadcrumb: '标签管理', title: '标签管理' },
   '/labeling': { breadcrumb: '数据集打标', title: '数据集打标' },
   '/crop': { breadcrumb: '图像裁切', title: '图像裁切' },
-  '/resize': { breadcrumb: '尺寸调整', title: '尺寸调整' },
+
   '/convert': { breadcrumb: '格式转换', title: '格式转换' },
   '/augment': { breadcrumb: '数据增强', title: '数据增强' },
   '/organize': { breadcrumb: '数据集管理', title: '数据集管理' },
@@ -99,7 +99,7 @@ export default function Header() {
     <header className="main-header">
       <div className="header-left">
         <div className="header-breadcrumb">
-          <span className="header-breadcrumb-item">AI Train Tools</span>
+          <span className="header-breadcrumb-item">PurinBox</span>
           <span className="header-breadcrumb-separator">/</span>
           <span className="header-breadcrumb-current">{currentRoute.breadcrumb}</span>
         </div>

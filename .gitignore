@@ -34,3 +34,15 @@ env/
 
 # Legacy (renamed to env/)
 runtime/
+
+# Translation cache (SQLite DB, generated at runtime)
+tagcache/
+*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# ONNX models (large binary files)
+*.onnx

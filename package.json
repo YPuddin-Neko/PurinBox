@@ -1,13 +1,15 @@
 {
-  "name": "tauri-app",
+  "name": "purinbox",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "sync-version": "node scripts/sync-version.js",
+    "pretauri": "node scripts/sync-version.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -1,23 +1,7 @@
-import { Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppSettings } from '../components/ThemeProvider';
-import {
-  Scaling, FlipHorizontal2, ScanSearch, FileCheck2, FileType,
-  Layers, TextCursorInput, Tags, List, MonitorDot, Zap,
-} from 'lucide-react';
-
-const tools = [
-  { id: 'scale', title: '图片缩放', desc: '批量上采样或下采样图片到目标分辨率，适配模型训练需求', icon: <Scaling />, color: 'purple', path: '/scale', tags: ['上采样', '下采样', '批量'], category: '数据集预处理' },
-  { id: 'flip', title: '图片处理', desc: '对图片进行水平或垂直镜像翻转，用于数据增强', icon: <FlipHorizontal2 />, color: 'cyan', path: '/flip', tags: ['水平翻转', '垂直翻转', '批量'], category: '数据集预处理' },
-  { id: 'filter', title: '分辨率筛选', desc: '根据分辨率条件筛选图片，支持删除或输出匹配的图片', icon: <ScanSearch />, color: 'pink', path: '/filter', tags: ['筛选', '分辨率', '清理'], category: '数据集预处理' },
-  { id: 'file-keeper', title: '保留指定文件', desc: '勾选要保留的文件类型，一键删除其他文件', icon: <FileCheck2 />, color: 'orange', path: '/file-keeper', tags: ['清理', '后缀', '保留'], category: '数据集预处理' },
-  { id: 'format-convert', title: '图片格式转换', desc: '支持 PSD 在内的主流格式转换到 PNG/JPG/WebP 等', icon: <FileType />, color: 'green', path: '/format-convert', tags: ['PSD', '格式', '批量'], category: '数据集预处理' },
-  { id: 'alpha-convert', title: '转换透明通道', desc: '检测图片透明通道并转换为不透明图片', icon: <Layers />, color: 'blue', path: '/alpha-convert', tags: ['Alpha', '透明', '背景'], category: '数据集预处理' },
-  { id: 'batch-rename', title: '批量重命名', desc: '按规则批量重命名图片，支持自定义前缀、编号和打乱顺序', icon: <TextCursorInput />, color: 'cyan', path: '/batch-rename', tags: ['重命名', '前缀', '编号'], category: '数据集预处理' },
-  { id: 'tagger', title: '图片打标', desc: '使用 Tagger 模型或大语言模型自动为训练图片生成标签，支持 WD Tagger 等主流模型', icon: <Tags />, color: 'orange', path: '/tagger', tags: ['AI打标', 'WD Tagger', 'ONNX'], category: '数据集处理' },
-  { id: 'tag-manager', title: '标签管理', desc: '可视化管理训练图片的标签，支持批量编辑、替换、拖拽排序和翻译', icon: <List />, color: 'purple', path: '/tag-manager', tags: ['标签编辑', '批量操作', '翻译'], category: '数据集处理' },
-];
+import { MonitorDot } from 'lucide-react';
 
 interface SystemStats {
   cpu_usage: number; cpu_name: string; cpu_cores: number;
@@ -79,22 +63,17 @@ export default function HomePage() {
     return () => { alive = false; clearInterval(timer); };
   }, [monitorInterval]);
 
-  const trainingTools = tools.filter(t => t.category === '数据集预处理');
-  const processingTools = tools.filter(t => t.category === '数据集处理');
-
   return (
     <div className="page">
-      {/* Page Header */}
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px' }}>
-          <Zap style={{ width: 28, height: 28, color: 'var(--color-accent-primary)' }} />
-          <h1 className="page-title">工作台</h1>
-        </div>
-        <p className="page-subtitle">AI 训练数据处理工具集，助力高效准备训练数据</p>
+      {/* Logo */}
+      <div style={{ display: 'flex', justifyContent: 'center', marginTop: '-8px', marginBottom: '16px' }}>
+        <img src="/logo.png" alt="PurinBox"
+          style={{ maxWidth: 340, width: '100%', height: 'auto', objectFit: 'contain', userSelect: 'none', pointerEvents: 'none' }}
+          draggable={false} />
       </div>
 
       {/* System Monitor */}
-      <div className="tool-panel" style={{ marginBottom: 'var(--space-8)', padding: 'var(--space-5) var(--space-6)' }}>
+      <div className="tool-panel" style={{ padding: 'var(--space-5) var(--space-6)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-4)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
             <MonitorDot style={{ width: 16, height: 16, color: 'var(--color-accent-secondary)' }} />
@@ -139,56 +118,6 @@ export default function HomePage() {
           </div>
         )}
       </div>
-
-      {/* 数据集预处理 */}
-      <SectionHeader title="数据集预处理" gradient="var(--color-gradient-primary)" />
-      <div className="tools-grid" style={{ marginBottom: 'var(--space-8)' }}>
-        {trainingTools.map((tool, index) => (
-          <Link key={tool.id} to={tool.path} className="tool-card" style={{ animationDelay: `${index * 0.05}s` }}>
-            <div className={`tool-card-icon ${tool.color}`}>{tool.icon}</div>
-            <div>
-              <div className="tool-card-title">{tool.title}</div>
-              <div className="tool-card-desc">{tool.desc}</div>
-            </div>
-            <div className="tool-card-tags">
-              {tool.tags.map(tag => (<span key={tag} className="tool-card-tag">{tag}</span>))}
-            </div>
-          </Link>
-        ))}
-      </div>
-
-      {/* 数据集处理 */}
-      <SectionHeader title="数据集处理" gradient="linear-gradient(135deg, #f59e0b, #f97316)" />
-      <div className="tools-grid" style={{ marginBottom: 'var(--space-8)' }}>
-        {processingTools.map((tool, index) => (
-          <Link key={tool.id} to={tool.path} className="tool-card" style={{ animationDelay: `${index * 0.05}s` }}>
-            <div className={`tool-card-icon ${tool.color}`}>{tool.icon}</div>
-            <div>
-              <div className="tool-card-title">{tool.title}</div>
-              <div className="tool-card-desc">{tool.desc}</div>
-            </div>
-            <div className="tool-card-tags">
-              {tool.tags.map(tag => (<span key={tag} className="tool-card-tag">{tag}</span>))}
-            </div>
-          </Link>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function SectionHeader({ title, gradient }: { title: string; gradient: string }) {
-  return (
-    <div style={{ marginBottom: 'var(--space-4)' }}>
-      <h2 style={{
-        fontSize: 'var(--font-size-lg)', fontWeight: 700,
-        color: 'var(--color-text-primary)', marginBottom: 'var(--space-5)',
-        letterSpacing: '-0.01em',
-        display: 'flex', alignItems: 'center', gap: 'var(--space-2)',
-      }}>
-        <span style={{ width: 3, height: 18, borderRadius: 2, background: gradient, display: 'inline-block' }} />
-        {title}
-      </h2>
     </div>
   );
 }
