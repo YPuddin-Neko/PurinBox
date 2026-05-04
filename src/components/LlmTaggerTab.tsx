@@ -4,6 +4,7 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, Play, Loader2, Globe, Key, MessageSquare, Bot, RefreshCw, ChevronDown, Thermometer, Hash, StopCircle } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
+import { useTaskQueue } from './TaskContext';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -65,9 +66,12 @@ export default function LlmTaggerTab() {
     }
   };
 
+  const { addTask } = useTaskQueue();
+
   const handleStart = async () => {
     if (!inputPath || !endpoint || !modelName) return;
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
+    addTask('llm-tagger', 'LLM 打标');
     setLogs([{ time: getTimeStr(), message: `开始 LLM 打标 | 模型: ${modelName} | API: ${endpoint}`, status: 'info' }]);
     try {
       await invoke<ProcessResult>('start_llm_tagging', {

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
+import { useTaskQueue } from '../components/TaskContext';
 import { Layers, FolderOpen, Play, Loader2 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 
@@ -51,9 +52,12 @@ export default function AlphaConvertPage() {
     if (selected) setOutputPath(selected as string);
   };
 
+  const { addTask } = useTaskQueue();
+
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
     setProcessing(true);
+    addTask('alpha', '转换透明通道');
     setProgress(0); setProgressCurrent(0); setProgressTotal(0);
     setIsDone(false); setHasError(false);
     setLogs([{ time: getTimeStr(), message: `开始检测并转换透明通道 (背景: ${background === 'white' ? '白色' : '黑色'})`, status: 'info' }]);

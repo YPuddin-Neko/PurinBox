@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
+import { useTaskQueue } from '../components/TaskContext';
 import { FileType, FolderOpen, Play, Loader2, Info } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 
@@ -56,9 +57,12 @@ export default function FormatConvertPage() {
     if (selected) setOutputPath(selected as string);
   };
 
+  const { addTask } = useTaskQueue();
+
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
     setProcessing(true);
+    addTask('convert', '图片格式转换');
     setProgress(0); setProgressCurrent(0); setProgressTotal(0);
     setIsDone(false); setHasError(false);
     setLogs([{ time: getTimeStr(), message: `开始转换到 .${targetFormat} 格式`, status: 'info' }]);

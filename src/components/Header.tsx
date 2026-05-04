@@ -16,6 +16,7 @@ const routeNames: Record<string, { breadcrumb: string; title: string }> = {
   '/alpha-convert': { breadcrumb: '转换透明通道', title: '转换透明通道' },
   '/batch-rename': { breadcrumb: '批量重命名', title: '批量重命名' },
   '/tagger': { breadcrumb: '图片打标', title: '图片打标' },
+  '/tag-manager': { breadcrumb: '标签管理', title: '标签管理' },
   '/labeling': { breadcrumb: '数据集打标', title: '数据集打标' },
   '/crop': { breadcrumb: '图像裁切', title: '图像裁切' },
   '/resize': { breadcrumb: '尺寸调整', title: '尺寸调整' },

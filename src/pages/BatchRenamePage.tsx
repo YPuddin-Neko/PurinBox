@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
+import { useTaskQueue } from '../components/TaskContext';
 import {
   TextCursorInput,
   FolderOpen,
@@ -91,9 +92,12 @@ export default function BatchRenamePage() {
     }
   };
 
+  const { addTask } = useTaskQueue();
+
   const handleExecute = async () => {
     if (!inputPath || previews.length === 0) return;
     setProcessing(true);
+    addTask('rename', '批量重命名');
     setProgress(0); setProgressCurrent(0); setProgressTotal(0);
     setIsDone(false); setHasError(false);
     setLogs([{ time: getTimeStr(), message: `开始重命名: 前缀="${prefix}", 起始=${startNumber}, 位数=${digitCount}`, status: 'info' }]);

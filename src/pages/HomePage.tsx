@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppSettings } from '../components/ThemeProvider';
 import {
   Scaling, FlipHorizontal2, ScanSearch, FileCheck2, FileType,
-  Layers, TextCursorInput, Tags, Crop, MonitorDot, Zap,
+  Layers, TextCursorInput, Tags, List, MonitorDot, Zap,
 } from 'lucide-react';
 
 const tools = [
@@ -16,7 +16,7 @@ const tools = [
   { id: 'alpha-convert', title: '转换透明通道', desc: '检测图片透明通道并转换为不透明图片', icon: <Layers />, color: 'blue', path: '/alpha-convert', tags: ['Alpha', '透明', '背景'], category: '数据集预处理' },
   { id: 'batch-rename', title: '批量重命名', desc: '按规则批量重命名图片，支持自定义前缀、编号和打乱顺序', icon: <TextCursorInput />, color: 'cyan', path: '/batch-rename', tags: ['重命名', '前缀', '编号'], category: '数据集预处理' },
   { id: 'tagger', title: '图片打标', desc: '使用 Tagger 模型或大语言模型自动为训练图片生成标签，支持 WD Tagger 等主流模型', icon: <Tags />, color: 'orange', path: '/tagger', tags: ['AI打标', 'WD Tagger', 'ONNX'], category: '数据集处理' },
-  { id: 'crop', title: '图像裁切', desc: '智能裁切训练图像，支持自定义比例和批量处理', icon: <Crop />, color: 'green', path: '/crop', tags: ['裁切', '比例', '智能'], category: '更多工具' },
+  { id: 'tag-manager', title: '标签管理', desc: '可视化管理训练图片的标签，支持批量编辑、替换、拖拽排序和翻译', icon: <List />, color: 'purple', path: '/tag-manager', tags: ['标签编辑', '批量操作', '翻译'], category: '数据集处理' },
 ];
 
 interface SystemStats {
@@ -81,7 +81,6 @@ export default function HomePage() {
 
   const trainingTools = tools.filter(t => t.category === '数据集预处理');
   const processingTools = tools.filter(t => t.category === '数据集处理');
-  const otherTools = tools.filter(t => t.category === '更多工具');
 
   return (
     <div className="page">
@@ -162,23 +161,6 @@ export default function HomePage() {
       <SectionHeader title="数据集处理" gradient="linear-gradient(135deg, #f59e0b, #f97316)" />
       <div className="tools-grid" style={{ marginBottom: 'var(--space-8)' }}>
         {processingTools.map((tool, index) => (
-          <Link key={tool.id} to={tool.path} className="tool-card" style={{ animationDelay: `${index * 0.05}s` }}>
-            <div className={`tool-card-icon ${tool.color}`}>{tool.icon}</div>
-            <div>
-              <div className="tool-card-title">{tool.title}</div>
-              <div className="tool-card-desc">{tool.desc}</div>
-            </div>
-            <div className="tool-card-tags">
-              {tool.tags.map(tag => (<span key={tag} className="tool-card-tag">{tag}</span>))}
-            </div>
-          </Link>
-        ))}
-      </div>
-
-      {/* 更多工具 */}
-      <SectionHeader title="更多工具" gradient="var(--color-gradient-secondary)" />
-      <div className="tools-grid">
-        {otherTools.map((tool, index) => (
           <Link key={tool.id} to={tool.path} className="tool-card" style={{ animationDelay: `${index * 0.05}s` }}>
             <div className={`tool-card-icon ${tool.color}`}>{tool.icon}</div>
             <div>

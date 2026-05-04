@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
+import { useTaskQueue } from '../components/TaskContext';
 import {
   FlipHorizontal2,
   FlipVertical2,
@@ -77,9 +78,12 @@ export default function FlipPage() {
     if (selected) setOutputPath(selected as string);
   };
 
+  const { addTask } = useTaskQueue();
+
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
     setProcessing(true);
+    addTask('flip', '图片处理');
     setProgress(0);
     setProgressCurrent(0);
     setProgressTotal(0);

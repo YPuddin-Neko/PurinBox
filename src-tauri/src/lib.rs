@@ -1,4 +1,5 @@
 mod commands;
+use tauri::Manager;
 
 use commands::image_scale::scale_images;
 use commands::image_flip::flip_images;
@@ -15,6 +16,8 @@ use commands::tagger::{
     cancel_tagging,
 };
 use commands::tagger::llm_tagger::{start_llm_tagging, fetch_llm_models, cancel_llm_tagging};
+use commands::tag_manager::{load_tag_dataset, save_single_tag_file, save_all_tag_files};
+use commands::translator::{translate_tags, get_translation_cache_stats, clear_translation_cache, test_translation};
 use commands::{scan_images, get_system_stats};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -49,7 +52,20 @@ pub fn run() {
             fetch_llm_models,
             cancel_llm_tagging,
             get_system_stats,
+            load_tag_dataset,
+            save_single_tag_file,
+            save_all_tag_files,
+            translate_tags,
+            get_translation_cache_stats,
+            clear_translation_cache,
+            test_translation,
         ])
+        .setup(|app| {
+            // 初始化翻译缓存数据库路径
+            let app_data = app.path().app_data_dir().expect("无法获取 app data 目录");
+            commands::translator::init_db_path(app_data);
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

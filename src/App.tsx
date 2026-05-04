@@ -11,11 +11,7 @@ import FormatConvertPage from './pages/FormatConvertPage';
 import AlphaConvertPage from './pages/AlphaConvertPage';
 import BatchRenamePage from './pages/BatchRenamePage';
 import TaggerPage from './pages/TaggerPage';
-import LabelingPage from './pages/LabelingPage';
-import CropPage from './pages/CropPage';
-import ConvertPage from './pages/ConvertPage';
-import AugmentPage from './pages/AugmentPage';
-import OrganizePage from './pages/OrganizePage';
+import TagManagerPage from './pages/TagManagerPage';
 import SettingsPage from './pages/SettingsPage';
 import './styles/global.css';
 import './styles/sidebar.css';
@@ -26,6 +22,7 @@ import { TaskProvider } from './components/TaskContext';
 // 需要保持状态的页面（重型页面）用 display:none 隐藏而非卸载
 const persistentPages = [
   { path: '/tagger', component: TaggerPage },
+  { path: '/tag-manager', component: TagManagerPage },
 ];
 
 // 普通页面走 Routes
@@ -38,11 +35,6 @@ const routePages = [
   { path: '/format-convert', component: FormatConvertPage },
   { path: '/alpha-convert', component: AlphaConvertPage },
   { path: '/batch-rename', component: BatchRenamePage },
-  { path: '/labeling', component: LabelingPage },
-  { path: '/crop', component: CropPage },
-  { path: '/convert', component: ConvertPage },
-  { path: '/augment', component: AugmentPage },
-  { path: '/organize', component: OrganizePage },
   { path: '/settings', component: SettingsPage },
 ];
 

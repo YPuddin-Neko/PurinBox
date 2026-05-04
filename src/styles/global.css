@@ -8,6 +8,14 @@
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 输入框和文本框保留文字选中能力 */
+input, textarea, [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* 主题切换过渡：只在切换时短暂启用，避免影响正常交互动画 */
@@ -60,6 +68,26 @@ input, textarea, select {
   outline: none;
   border: none;
   background: none;
+}
+
+select {
+  color-scheme: dark light;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px !important;
+}
+
+select:focus {
+  box-shadow: none;
+  border-color: var(--color-accent-primary);
+}
+
+select option {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
 }
 
 /* Hide number input spinners */

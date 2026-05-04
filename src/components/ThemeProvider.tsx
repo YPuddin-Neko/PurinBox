@@ -20,7 +20,7 @@ export function useAppSettings() { return useContext(AppSettingsContext); }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [mode, setModeRaw] = useState<ThemeMode>(() => {
-    return (localStorage.getItem('theme') as ThemeMode) || 'dark';
+    return (localStorage.getItem('theme') as ThemeMode) || 'system';
   });
 
   const [monitorInterval, setMonitorIntervalRaw] = useState<number>(() => {

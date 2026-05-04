@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
+import { useTaskQueue } from '../components/TaskContext';
 import { FileCheck2, FolderOpen, Play, Loader2, Shield } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 
@@ -61,9 +62,12 @@ export default function FileKeeperPage() {
     if (selected) setFolderPath(selected as string);
   };
 
+  const { addTask } = useTaskQueue();
+
   const handleProcess = async () => {
     if (!folderPath || keepExts.size === 0) return;
     setProcessing(true);
+    addTask('keeper', '保留指定文件');
     setProgress(0); setProgressCurrent(0); setProgressTotal(0);
     setIsDone(false); setHasError(false);
     setLogs([{ time: getTimeStr(), message: `开始处理, 保留: ${Array.from(keepExts).join(', ')}`, status: 'info' }]);

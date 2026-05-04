@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
+import { useTaskQueue } from '../components/TaskContext';
 import {
   ScanSearch,
   FolderOpen,
@@ -87,10 +88,13 @@ export default function FilterPage() {
     if (selected) setOutputPath(selected as string);
   };
 
+  const { addTask } = useTaskQueue();
+
   const handleProcess = async () => {
     if (!inputPath) return;
     if (action === 'copy' && !outputPath) return;
     setProcessing(true);
+    addTask('filter', '分辨率筛选');
     setProgress(0);
     setProgressCurrent(0);
     setProgressTotal(0);

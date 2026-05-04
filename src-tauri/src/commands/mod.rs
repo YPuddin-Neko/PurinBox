@@ -9,6 +9,8 @@ pub mod format_convert;
 pub mod alpha_convert;
 pub mod batch_rename;
 pub mod tagger;
+pub mod tag_manager;
+pub mod translator;
 
 /// 进度事件 payload
 #[derive(Debug, Clone, Serialize, Deserialize)]

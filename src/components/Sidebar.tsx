@@ -10,9 +10,7 @@ import {
   Layers,
   TextCursorInput,
   Tags,
-  Crop,
-  ImagePlus,
-  FolderSync,
+  List,
   Settings,
   PanelLeftClose,
   Sparkles,
@@ -43,14 +41,7 @@ const navSections: NavSection[] = [
     title: '数据集处理',
     items: [
       { id: 'tagger', label: '图片打标', icon: <Tags />, path: '/tagger' },
-    ],
-  },
-  {
-    title: '更多工具',
-    items: [
-      { id: 'crop', label: '图像裁切', icon: <Crop />, path: '/crop' },
-      { id: 'augment', label: '数据增强', icon: <ImagePlus />, path: '/augment' },
-      { id: 'organize', label: '数据集管理', icon: <FolderSync />, path: '/organize' },
+      { id: 'tag-manager', label: '标签管理', icon: <List />, path: '/tag-manager' },
     ],
   },
   {
@@ -82,7 +73,7 @@ export default function Sidebar() {
           </div>
         ))}
       </nav>
-      <div className="sidebar-version"><div className="sidebar-version-dot" /><span>v0.1.0 · Preview</span></div>
+      <div className="sidebar-version"><div className="sidebar-version-dot" /><span>v0.1.1 · Preview</span></div>
       <div className="sidebar-toggle">
         <button className="sidebar-toggle-btn" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开菜单' : '折叠菜单'}><PanelLeftClose /></button>
       </div>

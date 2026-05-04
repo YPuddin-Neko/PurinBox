@@ -238,6 +238,16 @@
   width: 0;
 }
 
+.sidebar.collapsed .sidebar-version {
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: var(--space-3) 0;
+  margin: 0;
+  gap: 0;
+  width: 100%;
+}
+
 /* ---- Light Theme Overrides ---- */
 [data-theme="light"] .sidebar-item:hover {
   background: rgba(0, 0, 0, 0.04);

@@ -127,7 +127,7 @@ export default function AiTaggerTab() {
     }
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
     setLogs([{ time: getTimeStr(), message: `开始打标 | 模型: ${cur?.name} | 硬件: ${useGpu ? 'GPU' : 'CPU'}`, status: 'info' }]);
-    addTask('tagger', `AI 打标 - ${cur?.name || '未知'}`);
+    addTask('tagger', `Tagger 打标 - ${cur?.name || '未知'}`);
     try {
       await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore } });
       updateTask('tagger', { status: 'done' });

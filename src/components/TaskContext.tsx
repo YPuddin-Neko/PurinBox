@@ -30,12 +30,24 @@ export function useTaskQueue() {
   return useContext(TaskContext);
 }
 
+// 事件名 → 任务 ID 映射
+const EVENT_TASK_MAP: Record<string, string> = {
+  'scale-progress': 'scale',
+  'flip-progress': 'flip',
+  'filter-progress': 'filter',
+  'keeper-progress': 'keeper',
+  'convert-progress': 'convert',
+  'alpha-progress': 'alpha',
+  'rename-progress': 'rename',
+  'tagger-progress': 'tagger',
+  'llm-tagger-progress': 'llm-tagger',
+};
+
 export function TaskProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
 
   const addTask = useCallback((id: string, name: string) => {
     setTasks(prev => {
-      // 替换同 ID 的旧任务
       const filtered = prev.filter(t => t.id !== id);
       return [...filtered, { id, name, status: 'running', progress: 0, current: 0, total: 0, message: '准备中...', startTime: Date.now() }];
     });
@@ -49,23 +61,34 @@ export function TaskProvider({ children }: { children: ReactNode }) {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
   }, []);
 
-  // 监听 tagger-progress 事件，自动更新对应任务
+  // 集中监听所有功能的进度事件
   useEffect(() => {
     let active = true;
-    const unlistenPromise = listen<{
-      current: number; total: number; filename: string; status: string; message: string;
-    }>('tagger-progress', (e) => {
-      if (!active) return;
-      const p = e.payload;
-      setTasks(prev => {
-        const task = prev.find(t => t.id === 'tagger');
-        if (!task) return prev;
-        const progress = p.total > 0 ? (p.current / p.total) * 100 : 0;
-        const status: TaskInfo['status'] = p.status === 'done' ? 'done' : p.status === 'error' && p.message.includes('已取消') ? 'cancelled' : task.status;
-        return prev.map(t => t.id === 'tagger' ? { ...t, progress, current: p.current, total: p.total, message: p.message, status } : t);
+    const unlisteners: Promise<() => void>[] = [];
+
+    for (const [eventName, taskId] of Object.entries(EVENT_TASK_MAP)) {
+      const unlistenPromise = listen<{
+        current: number; total: number; filename: string; status: string; message: string;
+      }>(eventName, (e) => {
+        if (!active) return;
+        const p = e.payload;
+        setTasks(prev => {
+          const task = prev.find(t => t.id === taskId);
+          if (!task) return prev;
+          const progress = p.total > 0 ? (p.current / p.total) * 100 : 0;
+          let status: TaskInfo['status'] = task.status;
+          if (p.status === 'done') status = 'done';
+          else if (p.status === 'error' && p.message.includes('已取消')) status = 'cancelled';
+          return prev.map(t => t.id === taskId ? { ...t, progress, current: p.current, total: p.total, message: p.message, status } : t);
+        });
       });
-    });
-    return () => { active = false; unlistenPromise.then(fn => fn()); };
+      unlisteners.push(unlistenPromise);
+    }
+
+    return () => {
+      active = false;
+      unlisteners.forEach(p => p.then(fn => fn()));
+    };
   }, []);
 
   return (
@@ -74,3 +97,4 @@ export function TaskProvider({ children }: { children: ReactNode }) {
     </TaskContext.Provider>
   );
 }
+
