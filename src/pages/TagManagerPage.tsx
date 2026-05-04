@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { listen } from '@tauri-apps/api/event';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import {
   Tags, FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,
@@ -124,6 +125,9 @@ export default function TagManagerPage() {
   const [tagFilterActive, setTagFilterActive] = useState(false);
   const [translations, setTranslations] = useState<Record<string, string>>({});
   const [translating, setTranslating] = useState(false);
+  const [translateProgress, setTranslateProgress] = useState<{ current: number; total: number } | null>(null);
+  const [showTranslateBar, setShowTranslateBar] = useState(false);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── 手动翻译标签 ──
   const handleTranslate = useCallback(async () => {
@@ -133,6 +137,14 @@ export default function TagManagerPage() {
     if (allTags.length === 0) return;
     const provider = localStorage.getItem('translate_provider') || 'google';
     setTranslating(true);
+    setTranslateProgress({ current: 0, total: allTags.length });
+    setShowTranslateBar(true);
+    if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
+
+    const unlisten = await listen<{ current: number; total: number }>('translate-progress', (e) => {
+      setTranslateProgress({ current: e.payload.current, total: e.payload.total });
+    });
+
     try {
       const result = await invoke<{ translations: { source: string; translated: string }[]; cached_count: number; translated_count: number }>('translate_tags', {
         tags: allTags,
@@ -150,11 +162,16 @@ export default function TagManagerPage() {
         result.translations.forEach(item => { if (item.translated) next[item.source] = item.translated; });
         return next;
       });
+      setTranslateProgress({ current: allTags.length, total: allTags.length });
+      hideTimerRef.current = setTimeout(() => { setShowTranslateBar(false); setTranslateProgress(null); }, 3000);
     } catch (e: any) {
       console.error('翻译失败:', e);
       alert(`翻译失败:\n${e?.message || e}`);
+      setShowTranslateBar(false);
+      setTranslateProgress(null);
     } finally {
       setTranslating(false);
+      unlisten();
     }
   }, [images]);
 
@@ -583,11 +600,10 @@ export default function TagManagerPage() {
                 <BarChart3 style={{width:14,height:14,color:'#60a5fa'}} />
                 <span style={ptitle}>{tagListMode==='common'?'公共标签':'全部标签'}</span>
                 <span style={{fontSize:10,padding:'1px 8px',borderRadius:10,background:'rgba(96,165,250,0.1)',color:'#60a5fa',fontWeight:600}}>{filteredStats.length}</span>
-                {translating&&<Loader2 style={{width:12,height:12,color:'#60a5fa',animation:'spin 1s linear infinite'}} />}
               </div>
               <div style={{display:'flex',alignItems:'center',gap:4}}>
                 <button className="btn btn-ghost btn-sm" title="翻译标签（需在设置中启用）" style={{width:22,height:22,padding:0,display:'flex',alignItems:'center',justifyContent:'center',color:Object.keys(translations).length>0?'#60a5fa':undefined}} onClick={handleTranslate} disabled={images.length===0||localStorage.getItem('translate_enabled')!=='true'||translating}>
-                  {translating?<Loader2 style={{width:12,height:12,animation:'spin 1s linear infinite'}} />:<Languages style={{width:12,height:12}} />}
+                  <Languages style={{width:12,height:12}} />
                 </button>
                 <button className="btn btn-ghost btn-sm" style={{fontSize:9,height:22,padding:'0 6px'}} onClick={()=>setTagListMode(m=>m==='all'?'common':'all')} disabled={images.length===0}>
                   {tagListMode==='all'?'公共':'全部'}
@@ -638,6 +654,22 @@ export default function TagManagerPage() {
               {selectedTags.size>0?<span style={{color:'#a78bfa'}}>已选 {selectedTags.size} 个</span>:<span>{tagStats.length} 种标签</span>}
               <span>{taggedN}/{images.length} 已标注</span>
             </div>
+            {showTranslateBar && translateProgress && (
+              <div style={{padding:'5px 12px',borderTop:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:8,background:'rgba(96,165,250,0.04)'}}>
+                <span style={{fontSize:10,fontWeight:600,color:'#60a5fa',flexShrink:0}}>翻译进度</span>
+                <div style={{flex:1,height:3,borderRadius:2,background:'var(--color-border)',overflow:'hidden'}}>
+                  <div style={{
+                    width:`${translateProgress.total > 0 ? (translateProgress.current / translateProgress.total) * 100 : 0}%`,
+                    height:'100%',borderRadius:2,
+                    background: translateProgress.current >= translateProgress.total ? '#4ade80' : 'linear-gradient(90deg, #7c5cfc, #00d4ff)',
+                    transition:'width 0.3s ease'
+                  }} />
+                </div>
+                <span style={{fontSize:10,color: translateProgress.current >= translateProgress.total ? '#4ade80' : 'var(--color-text-tertiary)',whiteSpace:'nowrap',fontVariantNumeric:'tabular-nums'}}>
+                  {translateProgress.current >= translateProgress.total ? '✓ ' : ''}{translateProgress.current}/{translateProgress.total}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* 工具栏 */}

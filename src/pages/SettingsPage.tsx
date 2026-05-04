@@ -332,7 +332,7 @@ export default function SettingsPage() {
               </div>
             </div>
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', lineHeight: 1.8 }}>
-              <p><strong>AI Train Tools</strong> · v0.1.1</p>
+              <p><strong>AI Train Tools</strong> · v0.1.2</p>
               <p>基于 Tauri 2 + React + TypeScript 构建</p>
               <p style={{ color: 'var(--color-text-tertiary)' }}>高性能 AI 训练数据处理工具箱</p>
             </div>

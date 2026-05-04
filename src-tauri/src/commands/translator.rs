@@ -381,6 +381,7 @@ async fn translate_bing(
 
 #[tauri::command]
 pub async fn translate_tags(
+    app: tauri::AppHandle,
     tags: Vec<String>,
     target_lang: String,
     provider: String,
@@ -412,7 +413,17 @@ pub async fn translate_tags(
     }
 
     let cached_count = cached.len();
+    let total_count = tags.len();
     let mut translated_count = 0;
+
+    // 发送初始进度（已缓存的部分）
+    {
+        use tauri::Emitter;
+        let _ = app.emit("translate-progress", serde_json::json!({
+            "current": cached_count,
+            "total": total_count
+        }));
+    }
 
     // 2. 翻译未缓存的
     if !uncached.is_empty() {
@@ -490,6 +501,15 @@ pub async fn translate_tags(
 
                 cached.insert(original.clone(), final_tr);
                 translated_count += 1;
+            }
+
+            // 发送翻译批次进度
+            {
+                use tauri::Emitter;
+                let _ = app.emit("translate-progress", serde_json::json!({
+                    "current": cached_count + translated_count,
+                    "total": total_count
+                }));
             }
         }
     }
