@@ -124,9 +124,11 @@ struct BaiduTransItem {
     dst: String,
 }
 
-fn md5_hex(input: &str) -> String {
+// 百度翻译 API 签名要求使用 MD5（非安全/加密用途，仅用于 API 请求签名）
+// See: https://fanyi-api.baidu.com/doc/21
+fn baidu_sign(input: &str) -> String {
     use std::fmt::Write;
-    let digest = md5::compute(input.as_bytes());
+    let digest = md5::compute(input.as_bytes()); // lgtm[rust/weak-cryptographic-algorithm]
     let mut s = String::with_capacity(32);
     for byte in digest.iter() {
         write!(s, "{:02x}", byte).unwrap();
@@ -147,7 +149,7 @@ async fn translate_baidu(
         .as_millis());
 
     let sign_str = format!("{}{}{}{}", appid, &text, &salt, secret_key);
-    let sign = md5_hex(&sign_str);
+    let sign = baidu_sign(&sign_str);
 
     let params = [
         ("q", text.as_str()),

@@ -73,7 +73,6 @@ pub async fn start_llm_tagging(
     let mut errors = Vec::new();
 
     let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
@@ -288,7 +287,6 @@ pub async fn fetch_llm_models(
     api_key: String,
 ) -> Result<Vec<String>, String> {
     let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
