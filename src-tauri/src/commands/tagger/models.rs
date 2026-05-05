@@ -3,16 +3,16 @@ use super::get_models_dir;
 
 /// 输入数据格式
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum InputFormat {
     /// [Batch, Height, Width, Channels] — TensorFlow 风格
+    #[default]
     NHWC,
     /// [Batch, Channels, Height, Width] — PyTorch 风格
     NCHW,
 }
 
-impl Default for InputFormat {
-    fn default() -> Self { Self::NHWC }
-}
 
 /// 模型定义
 #[derive(Debug, Clone, Serialize, Deserialize)]

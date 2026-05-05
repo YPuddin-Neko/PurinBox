@@ -24,23 +24,30 @@ import App from './App';
   const createMenu = async (x: number, y: number, target: HTMLInputElement | HTMLTextAreaElement) => {
     closeMenu();
 
-    // 检测剪贴板是否有文本
-    let clipboardHasText = false;
-    try {
-      const text = await navigator.clipboard.readText();
-      clipboardHasText = text.length > 0;
-    } catch { clipboardHasText = false; }
+    // 用 Tauri 原生插件读取剪贴板（不会弹浏览器权限窗）
+    const { readText, writeText } = await import('@tauri-apps/plugin-clipboard-manager');
+    let clipboardText = '';
+    try { clipboardText = await readText() ?? ''; } catch {}
+
+    const hasSelection = (target.selectionStart ?? 0) !== (target.selectionEnd ?? 0);
 
     menu = document.createElement('div');
     menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:99999;min-width:120px;padding:4px;background:var(--color-bg-secondary);border:1px solid var(--color-border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.25);`;
 
     menu.appendChild(createMenuItem('全选', () => { target.focus(); target.select(); }));
-    menu.appendChild(createMenuItem('复制', () => document.execCommand('copy')));
+    menu.appendChild(createMenuItem('复制', async () => {
+      const sel = target.value.substring(target.selectionStart ?? 0, target.selectionEnd ?? 0);
+      if (sel) await writeText(sel);
+    }, !hasSelection));
     menu.appendChild(createMenuItem('粘贴', async () => {
-      target.focus();
-      const t = await navigator.clipboard.readText();
-      document.execCommand('insertText', false, t);
-    }, !clipboardHasText));
+      try {
+        const t = await readText();
+        if (t) {
+          target.focus();
+          document.execCommand('insertText', false, t);
+        }
+      } catch {}
+    }, !clipboardText));
 
     document.body.appendChild(menu);
 

@@ -1,6 +1,6 @@
 [package]
 name = "purinbox"
-version = "0.1.5"
+version = "0.1.6"
 description = "PurinBox - AI训练数据处理工具箱"
 authors = ["you"]
 edition = "2021"
@@ -44,6 +44,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 md5 = "0.7"
 sha2 = "0.10"
 hex = "0.4"
+tauri-plugin-clipboard-manager = "2.3.2"
 
 # Dev 模式下优化图像处理库，避免逐像素操作极慢
 [profile.dev.package.image]

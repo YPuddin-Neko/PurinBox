@@ -409,7 +409,7 @@ async fn translate_bing(
                     401000 => "请求未授权，请检查设置中的必应翻译订阅密钥",
                     401001 => "订阅密钥无效，请检查设置中的必应翻译订阅密钥",
                     403001 => "请求超出免费额度，请升级订阅计划",
-                    429000 | 429001 | 429002 => "请求过于频繁，请稍后重试",
+                    429000..=429002 => "请求过于频繁，请稍后重试",
                     _ => "请参考微软翻译 API 文档",
                 };
                 return Err(format!("必应翻译错误 [{}]: {}\n{}", 
@@ -435,6 +435,7 @@ async fn translate_bing(
 // ═══════════════════════════════════════
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn translate_tags(
     app: tauri::AppHandle,
     tags: Vec<String>,
@@ -514,7 +515,7 @@ pub async fn translate_tags(
                     if appid.is_empty() || key.is_empty() {
                         return Err("百度翻译需要配置 APP ID 和密钥\n请在「设置 → 翻译设置」中填写".to_string());
                     }
-                    translate_baidu(&client, &chunk.to_vec(), appid, key).await?
+                    translate_baidu(&client, chunk, appid, key).await?
                 }
                 "youdao" => {
                     let app_key = youdao_app_key.as_deref().unwrap_or("");
@@ -522,7 +523,7 @@ pub async fn translate_tags(
                     if app_key.is_empty() || app_secret.is_empty() {
                         return Err("有道翻译需要配置应用 ID 和应用密钥\n请在「设置 → 翻译设置」中填写".to_string());
                     }
-                    translate_youdao(&client, &chunk.to_vec(), app_key, app_secret).await?
+                    translate_youdao(&client, chunk, app_key, app_secret).await?
                 }
                 "bing" => {
                     let key = bing_key.as_deref().unwrap_or("");
@@ -530,10 +531,10 @@ pub async fn translate_tags(
                         return Err("必应翻译需要配置订阅密钥\n请在「设置 → 翻译设置」中填写".to_string());
                     }
                     let region = bing_region.as_deref().unwrap_or("");
-                    translate_bing(&client, &chunk.to_vec(), key, region).await?
+                    translate_bing(&client, chunk, key, region).await?
                 }
                 _ => {
-                    translate_google(&client, &chunk.to_vec(), &target_lang).await?
+                    translate_google(&client, chunk, &target_lang).await?
                 }
             };
 

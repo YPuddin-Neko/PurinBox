@@ -18,6 +18,7 @@ const routeNames: Record<string, { breadcrumb: string; title: string }> = {
   '/tagger': { breadcrumb: '图片打标', title: '图片打标' },
   '/tag-manager': { breadcrumb: '标签管理', title: '标签管理' },
   '/tag-sort': { breadcrumb: '标签排序', title: '标签排序' },
+  '/bucket-preview': { breadcrumb: '分桶预览', title: '分桶预览' },
   '/settings': { breadcrumb: '设置', title: '设置' },
 };
 

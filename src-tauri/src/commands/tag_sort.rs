@@ -141,6 +141,10 @@ pub async fn start_tag_sorting(
     let errors: Arc<tokio::sync::Mutex<Vec<String>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let cancelled = Arc::new(AtomicBool::new(false));
 
+    // 收集出错和有警告的源文件路径
+    let error_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let warning_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
     let mut handles = Vec::new();
@@ -163,6 +167,8 @@ pub async fn start_tag_sorting(
         let processed = processed.clone();
         let errors = errors.clone();
         let cancelled = cancelled.clone();
+        let error_files = error_files.clone();
+        let warning_files = warning_files.clone();
 
         let handle = tokio::spawn(async move {
             // 等待信号量前检查取消
@@ -234,6 +240,9 @@ pub async fn start_tag_sorting(
                 FileResult::Success { filename, original_count, sorted_count, changed, warnings, elapsed_ms } => {
                     success_count.fetch_add(1, Ordering::SeqCst);
                     let has_warn = !warnings.is_empty();
+                    if has_warn {
+                        warning_files.lock().await.push(file_path.clone());
+                    }
                     let elapsed_str = if elapsed_ms >= 1000 {
                         format!("{:.1}s", elapsed_ms as f64 / 1000.0)
                     } else {
@@ -264,6 +273,7 @@ pub async fn start_tag_sorting(
                 }
                 FileResult::Error { filename, message } => {
                     fail_count.fetch_add(1, Ordering::SeqCst);
+                    error_files.lock().await.push(file_path.clone());
                     errors.lock().await.push(format!("{}: {}", filename, message));
                     let _ = app.emit("tag-sort-progress", ProgressEvent {
                         current: cur, total,
@@ -288,14 +298,44 @@ pub async fn start_tag_sorting(
     let errs = errors.lock().await.clone();
     let was_cancelled = cancelled.load(Ordering::SeqCst) || TAG_SORT_CANCELLED.load(Ordering::SeqCst);
 
+    // 将出错和有警告的源文件复制到对应子文件夹
+    let err_files = error_files.lock().await.clone();
+    let warn_files = warning_files.lock().await.clone();
+    let mut copy_msg = String::new();
+
+    if !err_files.is_empty() {
+        let err_dir = output_dir_path.join("_errors");
+        if std::fs::create_dir_all(&err_dir).is_ok() {
+            let mut copied = 0u32;
+            for src in &err_files {
+                if let Some(name) = src.file_name() {
+                    let _ = std::fs::copy(src, err_dir.join(name)).map(|_| copied += 1);
+                }
+            }
+            copy_msg.push_str(&format!("，{} 个错误文件已复制到 _errors/", copied));
+        }
+    }
+    if !warn_files.is_empty() {
+        let warn_dir = output_dir_path.join("_warnings");
+        if std::fs::create_dir_all(&warn_dir).is_ok() {
+            let mut copied = 0u32;
+            for src in &warn_files {
+                if let Some(name) = src.file_name() {
+                    let _ = std::fs::copy(src, warn_dir.join(name)).map(|_| copied += 1);
+                }
+            }
+            copy_msg.push_str(&format!("，{} 个警告文件已复制到 _warnings/", copied));
+        }
+    }
+
     let _ = app.emit("tag-sort-progress", ProgressEvent {
         current: total, total,
         filename: String::new(),
         status: "done".to_string(),
         message: if was_cancelled {
-            format!("已取消: 成功 {}, 失败 {}, 共处理 {}/{}", sc, fc, sc + fc, total)
+            format!("已取消: 成功 {}, 失败 {}, 共处理 {}/{}{}", sc, fc, sc + fc, total, copy_msg)
         } else {
-            format!("标签排序完成: 成功 {}, 失败 {}, 共 {}", sc, fc, total)
+            format!("标签排序完成: 成功 {}, 失败 {}, 共 {}{}", sc, fc, total, copy_msg)
         },
     });
 

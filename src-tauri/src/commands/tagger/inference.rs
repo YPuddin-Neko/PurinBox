@@ -428,11 +428,10 @@ fn find_python() -> Result<String, String> {
     // 2. 检查系统 Python（需要有 onnxruntime）
     for name in &["python3", "python"] {
         if let Ok(output) = run_hidden_cmd(name, &["--version"]) {
-            if output.contains("Python 3") {
-                if run_hidden_cmd(name, &["-c", "import onnxruntime"]).is_ok() {
+            if output.contains("Python 3")
+                && run_hidden_cmd(name, &["-c", "import onnxruntime"]).is_ok() {
                     return Ok(name.to_string());
                 }
-            }
         }
     }
 
@@ -611,27 +610,25 @@ pub fn run_tagging(
     let app_err = app.clone();
     std::thread::spawn(move || {
         let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                // 去除 ANSI 转义序列 (如 \x1b[0;93m)
-                let clean = strip_ansi_codes(&line);
-                let clean = clean.trim();
-                if clean.is_empty() {
-                    continue;
-                }
-                // 过滤无害的系统警告（macOS CoreML 等）
-                let lower = clean.to_lowercase();
-                if lower.contains("context leak") 
-                    || lower.contains("msgtracer")
-                    || lower.contains("number of partitions supported by coreml") {
-                    continue;
-                }
-                let _ = app_err.emit("tagger-progress", ProgressEvent {
-                    current: 0, total: 0, filename: String::new(),
-                    status: "warning".to_string(),
-                    message: format!("[Python] {}", clean),
-                });
+        let mut lines = reader.lines();
+        while let Some(Ok(line)) = lines.next() {
+            let clean = strip_ansi_codes(&line);
+            let clean = clean.trim();
+            if clean.is_empty() {
+                continue;
             }
+            // 过滤无害的系统警告（macOS CoreML 等）
+            let lower = clean.to_lowercase();
+            if lower.contains("context leak") 
+                || lower.contains("msgtracer")
+                || lower.contains("number of partitions supported by coreml") {
+                continue;
+            }
+            let _ = app_err.emit("tagger-progress", ProgressEvent {
+                current: 0, total: 0, filename: String::new(),
+                status: "warning".to_string(),
+                message: format!("[Python] {}", clean),
+            });
         }
     });
 
@@ -639,14 +636,9 @@ pub fn run_tagging(
     let tags_path = model_path.parent()
         .unwrap_or(Path::new("."))
         .join(if tag_defs.is_empty() { "selected_tags.csv" } else {
-            // 根据模型目录查找标签文件
             let dir = model_path.parent().unwrap_or(Path::new("."));
-            let json = dir.join("tag_mapping.json");
-            let csv = dir.join("selected_tags.csv");
-            if json.exists() {
+            if dir.join("tag_mapping.json").exists() {
                 "tag_mapping.json"
-            } else if csv.exists() {
-                "selected_tags.csv"
             } else {
                 "selected_tags.csv"
             }

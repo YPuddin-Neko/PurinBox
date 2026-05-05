@@ -50,7 +50,7 @@ export default function SettingsPage() {
 
   // 代理设置
   const [proxyEnabled, setProxyEnabled] = useState(false);
-  const [llmProxy, setLlmProxy] = useState(true);
+  const [llmProxy, setLlmProxy] = useState(false);
   const [proxyType, setProxyType] = useState('http');
   const [proxyHost, setProxyHost] = useState('127.0.0.1');
   const [proxyPort, setProxyPort] = useState(7890);
@@ -299,7 +299,7 @@ export default function SettingsPage() {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>LLM 代理</div>
-                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>LLM 接口走代理</div>
+                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>允许LLM接口是否走代理</div>
                   </div>
                   <div onClick={() => setLlmProxy(!llmProxy)} style={{
                     width: 36, height: 20, borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s',

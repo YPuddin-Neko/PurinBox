@@ -12,6 +12,7 @@ import {
   Tags,
   List,
   ArrowUpDown,
+  Grid3X3,
   Settings,
   PanelLeftClose,
 } from 'lucide-react';
@@ -47,6 +48,7 @@ const navSections: NavSection[] = [
     title: '高级工具',
     items: [
       { id: 'tag-sort', label: '标签排序', icon: <ArrowUpDown />, path: '/tag-sort' },
+      { id: 'bucket-preview', label: '分桶预览', icon: <Grid3X3 />, path: '/bucket-preview' },
     ],
   },
   {

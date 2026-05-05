@@ -20,6 +20,7 @@ use commands::translator::{translate_tags, get_translation_cache_stats, clear_tr
 use commands::tag_sort::{start_tag_sorting, cancel_tag_sorting};
 use commands::api_config::{save_api_config, load_api_config};
 use commands::proxy_config::{save_proxy_config, load_proxy_config};
+use commands::bucket_preview::{analyze_buckets, export_buckets};
 use commands::{scan_images, get_system_stats};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -29,6 +30,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             scan_images,
             scale_images,
@@ -69,6 +71,8 @@ pub fn run() {
             load_api_config,
             save_proxy_config,
             load_proxy_config,
+            analyze_buckets,
+            export_buckets,
         ])
         .setup(|app| {
             // 初始化翻译缓存数据库路径（默认使用 exe 根目录/tagcache/）

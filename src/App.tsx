@@ -13,6 +13,7 @@ import BatchRenamePage from './pages/BatchRenamePage';
 import TaggerPage from './pages/TaggerPage';
 import TagManagerPage from './pages/TagManagerPage';
 import TagSortPage from './pages/TagSortPage';
+import BucketPreviewPage from './pages/BucketPreviewPage';
 import SettingsPage from './pages/SettingsPage';
 import './styles/global.css';
 import './styles/sidebar.css';
@@ -32,6 +33,7 @@ const persistentPages = [
   { path: '/tagger', component: TaggerPage },
   { path: '/tag-manager', component: TagManagerPage },
   { path: '/tag-sort', component: TagSortPage },
+  { path: '/bucket-preview', component: BucketPreviewPage },
 ];
 
 // 无状态页面走 Routes

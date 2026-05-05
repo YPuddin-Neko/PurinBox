@@ -25,7 +25,7 @@ impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            llm_proxy: true,
+            llm_proxy: false,
             proxy_type: "http".to_string(),
             host: "127.0.0.1".to_string(),
             port: 7890,
@@ -105,6 +105,7 @@ pub fn save_proxy_config(
 
 /// 加载代理配置
 #[tauri::command]
+#[allow(clippy::type_complexity)]
 pub fn load_proxy_config() -> Result<(bool, bool, String, String, u16, String, String), String> {
     let path = config_path();
     if !path.exists() {

@@ -194,7 +194,7 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
             .map_err(|e| format!("创建 env 目录失败: {}", e))?;
     }
 
-    emit_progress(app, &format!("下载: {}", info.url.split('/').last().unwrap_or("python")), "info");
+    emit_progress(app, &format!("下载: {}", info.url.split('/').next_back().unwrap_or("python")), "info");
 
     // 下载
     let client = crate::commands::proxy_config::build_http_client()

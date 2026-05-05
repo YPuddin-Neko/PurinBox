@@ -14,6 +14,7 @@ pub mod translator;
 pub mod tag_sort;
 pub mod api_config;
 pub mod proxy_config;
+pub mod bucket_preview;
 
 /// 进度事件 payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
