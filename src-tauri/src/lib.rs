@@ -67,9 +67,30 @@ pub fn run() {
             save_api_config,
             load_api_config,
         ])
-        .setup(|_app| {
+        .setup(|app| {
             // 初始化翻译缓存数据库路径（默认使用 exe 根目录/tagcache/）
             commands::translator::init_db_path(None);
+
+            // Windows: 禁用 WebView2 的默认右键菜单（前端已有自定义右键菜单）
+            #[cfg(target_os = "windows")]
+            {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.with_webview(|webview| {
+                        unsafe {
+                            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings;
+                            let core = webview.controller().CoreWebView2().unwrap();
+                            let settings: ICoreWebView2Settings = core.Settings().unwrap();
+                            settings.SetAreDefaultContextMenusEnabled(false).unwrap_or(());
+                        }
+                    });
+                }
+            }
+
+            // 所有平台: 禁用 WebView 缩放快捷键（Ctrl+滚轮/Ctrl++/-），防止意外缩放
+            #[cfg(not(target_os = "windows"))]
+            let _ = app;
+
             Ok(())
         })
         .run(tauri::generate_context!())

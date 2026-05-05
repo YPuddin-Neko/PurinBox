@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { AlertModal } from '../components/Modal';
 import {
   Tags, FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,
   Trash2, Image as ImageIcon, BarChart3, CheckCircle2, Loader2,
@@ -55,6 +56,7 @@ export default function TagManagerPage() {
   const [dragOverIdx, setDragOverIdx] = useState<number|null>(null);
   const [dropSide, setDropSide] = useState<'before'|'after'>('before');
   const [savingSingle, setSavingSingle] = useState(false);
+  const [alertMsg, setAlertMsg] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -168,7 +170,7 @@ export default function TagManagerPage() {
       hideTimerRef.current = setTimeout(() => { setShowTranslateBar(false); setTranslateProgress(null); }, 3000);
     } catch (e: any) {
       console.error('翻译失败:', e);
-      alert(`翻译失败:\n${e?.message || e}`);
+      setAlertMsg(`翻译失败:\n${e?.message || e}`);
       setShowTranslateBar(false);
       setTranslateProgress(null);
     } finally {
@@ -444,6 +446,7 @@ export default function TagManagerPage() {
   const dirtyCount = images.filter(i=>i.dirty).length;
 
   return (
+    <>
     <div className="page" style={{height:'100%',display:'flex',flexDirection:'column',overflow:'hidden',gap:0}} onKeyDown={handleKeyDown} tabIndex={0}>
       {/* ═ Toolbar ═ */}
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 0',flexShrink:0}}>
@@ -768,5 +771,13 @@ export default function TagManagerPage() {
         </div>
       </div>}
     </div>
+
+      <AlertModal
+        open={!!alertMsg}
+        onClose={() => setAlertMsg('')}
+        title="错误"
+        message={alertMsg}
+      />
+    </>
   );
 }

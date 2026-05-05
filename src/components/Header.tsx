@@ -1,4 +1,4 @@
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Sun, Moon, Monitor, ListTodo, Cpu, MemoryStick, MonitorDot } from 'lucide-react';
@@ -25,6 +25,20 @@ const routeNames: Record<string, { breadcrumb: string; title: string }> = {
   '/augment': { breadcrumb: '数据增强', title: '数据增强' },
   '/organize': { breadcrumb: '数据集管理', title: '数据集管理' },
   '/settings': { breadcrumb: '设置', title: '设置' },
+};
+
+// 任务 ID → 路由路径映射
+const TASK_ROUTE_MAP: Record<string, string> = {
+  scale: '/scale',
+  flip: '/flip',
+  filter: '/filter',
+  keeper: '/file-keeper',
+  convert: '/format-convert',
+  alpha: '/alpha-convert',
+  rename: '/batch-rename',
+  tagger: '/tagger',
+  'llm-tagger': '/tagger',
+  'tag-sort': '/tag-sort',
 };
 
 interface SystemStats {
@@ -63,6 +77,7 @@ function getUsageColor(pct: number) {
 
 export default function Header() {
   const location = useLocation();
+  const navigate = useNavigate();
   const currentRoute = routeNames[location.pathname] || { breadcrumb: '未知', title: '未知' };
   const { mode, setMode, monitorInterval } = useTheme();
   const { tasks: allTasks } = useTaskQueue();
@@ -175,7 +190,12 @@ export default function Header() {
               ) : (
                 <div style={{ maxHeight: 300, overflowY: 'auto' }}>
                   {allTasks.map(task => (
-                    <div key={task.id} style={{ padding: '10px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div key={task.id}
+                      onClick={() => { const route = TASK_ROUTE_MAP[task.id]; if (route) { navigate(route); setShowTaskPanel(false); } }}
+                      style={{ padding: '10px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 4, cursor: TASK_ROUTE_MAP[task.id] ? 'pointer' : 'default', transition: 'background 0.15s' }}
+                      onMouseEnter={e => { if (TASK_ROUTE_MAP[task.id]) (e.currentTarget as HTMLDivElement).style.background = 'var(--color-bg-hover)'; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = ''; }}
+                    >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span style={{ fontSize: 12, fontWeight: 600 }}>{task.name}</span>
                         <span style={{

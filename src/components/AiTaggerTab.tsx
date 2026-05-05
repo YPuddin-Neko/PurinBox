@@ -5,6 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { FolderOpen, Play, Loader2, Cpu, Zap, Download, Plus, Check, RefreshCw, ChevronDown, Trash2, Search, FileUp, X } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
 import { useTaskQueue } from './TaskContext';
+import { ConfirmModal } from './Modal';
 
 interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
@@ -56,6 +57,7 @@ export default function AiTaggerTab() {
   const [appendTags, setAppendTags] = useState('');
   const [appendPosition, setAppendPosition] = useState<'prepend' | 'append'>('append');
   const [replaceUnderscore, setReplaceUnderscore] = useState(true);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
 
   const load = useCallback(async () => {
     try { const l = await invoke<ModelInfo[]>('get_tagger_models'); setModels(l); if (l.length > 0 && !selectedModel) setSelectedModel(l[0].id); } catch {}
@@ -181,7 +183,6 @@ export default function AiTaggerTab() {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`确认删除自定义模型 "${name}" 吗？\n模型文件也会被删除。`)) return;
     try {
       await invoke('remove_custom_tagger_model', { id });
       setLogs(p => [...p, { time: getTimeStr(), message: `已删除模型: ${name}`, status: 'info' }]);
@@ -238,7 +239,7 @@ export default function AiTaggerTab() {
               <span>{cur.description}</span>
               <span style={{ padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: cur.is_downloaded ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)', color: cur.is_downloaded ? '#4ade80' : '#fbbf24' }}>{cur.is_downloaded ? '已下载' : '待下载'}</span>
               <span style={{ padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: 'rgba(124,92,252,0.1)', color: '#a78bfa' }}>{cur.input_format} · {cur.input_size}px</span>
-              {!cur.is_builtin && (<button className="btn btn-ghost btn-sm" onClick={() => handleDelete(cur.id, cur.name)} style={{ marginLeft: 'auto', padding: '2px 6px', color: '#f87171' }}><Trash2 style={{ width: 12, height: 12 }} /> 删除</button>)}
+              {!cur.is_builtin && (<button className="btn btn-ghost btn-sm" onClick={() => setDeleteConfirm({ id: cur.id, name: cur.name })} style={{ marginLeft: 'auto', padding: '2px 6px', color: '#f87171' }}><Trash2 style={{ width: 12, height: 12 }} /> 删除</button>)}
             </div>
           )}
         </div>
@@ -320,6 +321,16 @@ export default function AiTaggerTab() {
 
         <ProgressLog progress={progress} current={pCur} total={pTot} logs={logs} isDone={isDone} hasError={hasErr} onClearLogs={() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); }} />
       </div>
+
+      <ConfirmModal
+        open={!!deleteConfirm}
+        onClose={() => setDeleteConfirm(null)}
+        onConfirm={() => { if (deleteConfirm) handleDelete(deleteConfirm.id, deleteConfirm.name); }}
+        title="删除模型"
+        message={`确认删除自定义模型 "${deleteConfirm?.name}" 吗？\n模型文件也会被删除。`}
+        confirmText="删除"
+        variant="error"
+      />
     </div>
   );
 }

@@ -69,6 +69,20 @@ import App from './App';
   window.addEventListener('blur', () => closeMenu());
 })();
 
+// 禁止拖放文件到 WebView（Windows 上会导致页面导航）
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => e.preventDefault());
+
+// 禁止 Ctrl+滚轮 / Ctrl+加减号 缩放页面
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '-' || e.key === '=' || e.key === '0')) {
+    e.preventDefault();
+  }
+});
+document.addEventListener('wheel', (e) => {
+  if (e.ctrlKey || e.metaKey) e.preventDefault();
+}, { passive: false });
+
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     <App />

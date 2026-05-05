@@ -20,16 +20,8 @@ import './styles/layout.css';
 import './styles/progress.css';
 import { TaskProvider } from './components/TaskContext';
 
-// 需要保持状态的页面（重型页面）用 display:none 隐藏而非卸载
+// 所有功能页面持久化（用 display:none 隐藏而非卸载，切换页面不丢失状态）
 const persistentPages = [
-  { path: '/tagger', component: TaggerPage },
-  { path: '/tag-manager', component: TagManagerPage },
-  { path: '/tag-sort', component: TagSortPage },
-];
-
-// 普通页面走 Routes
-const routePages = [
-  { path: '/', component: HomePage },
   { path: '/scale', component: ScalePage },
   { path: '/flip', component: FlipPage },
   { path: '/filter', component: FilterPage },
@@ -37,6 +29,14 @@ const routePages = [
   { path: '/format-convert', component: FormatConvertPage },
   { path: '/alpha-convert', component: AlphaConvertPage },
   { path: '/batch-rename', component: BatchRenamePage },
+  { path: '/tagger', component: TaggerPage },
+  { path: '/tag-manager', component: TagManagerPage },
+  { path: '/tag-sort', component: TagSortPage },
+];
+
+// 无状态页面走 Routes
+const routePages = [
+  { path: '/', component: HomePage },
   { path: '/settings', component: SettingsPage },
 ];
 

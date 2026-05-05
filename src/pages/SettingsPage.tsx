@@ -1,6 +1,7 @@
 import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw } from 'lucide-react';
 import { useTheme } from '../components/ThemeProvider';
 import { useState, useEffect } from 'react';
+import { ConfirmModal, AlertModal } from '../components/Modal';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
@@ -44,6 +45,8 @@ export default function SettingsPage() {
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [cachePath, setCachePath] = useState<string>('');
   const [appVersion, setAppVersion] = useState('');
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [alertMsg, setAlertMsg] = useState('');
 
   const toggleTranslate = (val: boolean) => { setTranslateEnabled(val); localStorage.setItem('translate_enabled', String(val)); };
   const changeProvider = (val: string) => { setProvider(val); localStorage.setItem('translate_provider', val); };
@@ -75,7 +78,9 @@ export default function SettingsPage() {
   };
 
   const handleClearCache = async () => {
-    if (!confirm('确定清空所有翻译缓存？下次翻译将重新请求翻译接口。')) return;
+    setClearConfirmOpen(true);
+  };
+  const doClearCache = async () => {
     setClearing(true);
     try { await invoke('clear_translation_cache'); await loadCacheStats(); } catch (e) { console.error(e); } finally { setClearing(false); }
   };
@@ -93,7 +98,7 @@ export default function SettingsPage() {
         await invoke('set_cache_path', { path: selected });
         setCachePath(selected);
         await loadCacheStats();
-      } catch (e: any) { alert(`设置缓存路径失败: ${e?.message || e}`); }
+      } catch (e: any) { setAlertMsg(`设置缓存路径失败: ${e?.message || e}`); }
     }
   };
 
@@ -102,7 +107,7 @@ export default function SettingsPage() {
       await invoke<string>('set_cache_path', { path: '' });
       setCachePath(await invoke<string>('get_cache_path'));
       await loadCacheStats();
-    } catch (e: any) { alert(`重置失败: ${e?.message || e}`); }
+    } catch (e: any) { setAlertMsg(`重置失败: ${e?.message || e}`); }
   };
 
   const formatSize = (bytes: number) => {
@@ -142,6 +147,7 @@ export default function SettingsPage() {
   );
 
   return (
+    <>
     <div className="page" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <div style={{ width: '100%', maxWidth: 640 }}>
         <div className="page-header">
@@ -392,5 +398,22 @@ export default function SettingsPage() {
         </div>
       </div>
     </div>
+
+      <ConfirmModal
+        open={clearConfirmOpen}
+        onClose={() => setClearConfirmOpen(false)}
+        onConfirm={doClearCache}
+        title="清空缓存"
+        message="确定清空所有翻译缓存？下次翻译将重新请求翻译接口。"
+        confirmText="清空"
+        variant="warning"
+      />
+      <AlertModal
+        open={!!alertMsg}
+        onClose={() => setAlertMsg('')}
+        title="错误"
+        message={alertMsg}
+      />
+    </>
   );
 }
