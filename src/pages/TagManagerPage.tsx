@@ -282,7 +282,7 @@ export default function TagManagerPage() {
 
   // ── 批量添加标签 ──
   const handleBatchAdd = () => {
-    const tags = addTagInput.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+    const tags = addTagInput.split(',').map(t => t.trim().toLowerCase().replace(/_/g,' ')).filter(Boolean);
     if (tags.length === 0) return;
     setImages(p => p.map(img => {
       let newTags = [...img.tags];
@@ -353,7 +353,7 @@ export default function TagManagerPage() {
   // ── tag ops ──
   const addTag = () => {
     if (selectedIdx < 0) return;
-    const t=newTag.trim().toLowerCase().replace(/\s+/g,'_');
+    const t=newTag.trim().toLowerCase().replace(/_/g,' ');
     if(!t||cur?.tags.includes(t)){setNewTag('');return;}
     setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,tags:[...img.tags,t],dirty:true}:img));
     setNewTag(''); newTagRef.current?.focus();
