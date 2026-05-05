@@ -197,7 +197,9 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
     emit_progress(app, &format!("下载: {}", info.url.split('/').last().unwrap_or("python")), "info");
 
     // 下载
-    let client = reqwest::Client::new();
+    let client = crate::commands::proxy_config::build_http_client()
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
     let resp = client.get(info.url)
         .send().await
         .map_err(|e| format!("下载失败: {}", e))?;

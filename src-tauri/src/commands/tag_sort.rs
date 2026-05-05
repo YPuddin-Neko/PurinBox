@@ -122,7 +122,7 @@ pub async fn start_tag_sorting(
     std::fs::create_dir_all(&output_dir_path)
         .map_err(|e| format!("创建输出目录失败: {}", e))?;
 
-    let client = reqwest::Client::builder()
+    let client = super::proxy_config::build_http_client_for_llm()
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 

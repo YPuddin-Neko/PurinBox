@@ -1,4 +1,4 @@
-import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw } from 'lucide-react';
+import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save } from 'lucide-react';
 import { useTheme } from '../components/ThemeProvider';
 import { useState, useEffect } from 'react';
 import { ConfirmModal, AlertModal } from '../components/Modal';
@@ -48,6 +48,18 @@ export default function SettingsPage() {
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [alertMsg, setAlertMsg] = useState('');
 
+  // 代理设置
+  const [proxyEnabled, setProxyEnabled] = useState(false);
+  const [llmProxy, setLlmProxy] = useState(true);
+  const [proxyType, setProxyType] = useState('http');
+  const [proxyHost, setProxyHost] = useState('127.0.0.1');
+  const [proxyPort, setProxyPort] = useState(7890);
+  const [proxyUser, setProxyUser] = useState('');
+  const [proxyPass, setProxyPass] = useState('');
+  const [showProxyPass, setShowProxyPass] = useState(false);
+  const [proxySaving, setProxySaving] = useState(false);
+  const [proxySaveMsg, setProxySaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
   const toggleTranslate = (val: boolean) => { setTranslateEnabled(val); localStorage.setItem('translate_enabled', String(val)); };
   const changeProvider = (val: string) => { setProvider(val); localStorage.setItem('translate_provider', val); };
 
@@ -85,7 +97,23 @@ export default function SettingsPage() {
     try { await invoke('clear_translation_cache'); await loadCacheStats(); } catch (e) { console.error(e); } finally { setClearing(false); }
   };
 
-  useEffect(() => { loadCacheStats(); loadCachePath(); getVersion().then(v => setAppVersion(v)).catch(() => {}); }, []);
+  useEffect(() => { loadCacheStats(); loadCachePath(); getVersion().then(v => setAppVersion(v)).catch(() => {}); loadProxySettings(); }, []);
+
+  const loadProxySettings = async () => {
+    try {
+      const [enabled, llm, ptype, host, port, user, pass] = await invoke<[boolean, boolean, string, string, number, string, string]>('load_proxy_config');
+      setProxyEnabled(enabled); setLlmProxy(llm); setProxyType(ptype); setProxyHost(host); setProxyPort(port); setProxyUser(user); setProxyPass(pass);
+    } catch {}
+  };
+
+  const handleSaveProxy = async () => {
+    setProxySaving(true); setProxySaveMsg(null);
+    try {
+      await invoke('save_proxy_config', { enabled: proxyEnabled, llmProxy, proxyType, host: proxyHost, port: proxyPort, username: proxyUser, password: proxyPass });
+      setProxySaveMsg({ text: '保存成功', ok: true });
+    } catch (e: any) { setProxySaveMsg({ text: e?.message || String(e), ok: false }); }
+    finally { setProxySaving(false); setTimeout(() => setProxySaveMsg(null), 3000); }
+  };
 
   const loadCachePath = async () => {
     try { setCachePath(await invoke<string>('get_cache_path')); } catch (e) { console.error(e); }
@@ -230,6 +258,107 @@ export default function SettingsPage() {
               </div>
               <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 8, lineHeight: 1.6 }}>
                 控制顶栏和首页系统性能指标（CPU/RAM/GPU）的刷新频率。间隔越短数据越实时，但会略微增加系统开销。选择「关闭」将完全停止检测。
+              </p>
+            </div>
+          </div>
+
+          {/* Proxy */}
+          <div className="tool-panel">
+            <div className="tool-panel-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                <Globe style={{ width: 16, height: 16, color: '#f59e0b' }} />
+                <span className="tool-panel-title">网络代理</span>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {proxySaveMsg && <span style={{ fontSize: 10, color: proxySaveMsg.ok ? '#4ade80' : '#f87171' }}>{proxySaveMsg.text}</span>}
+                <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }} onClick={handleSaveProxy} disabled={proxySaving}>
+                  <Save style={{ width: 12, height: 12 }} /> {proxySaving ? '保存中...' : '保存'}
+                </button>
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+              {/* 启用开关 + LLM 开关 + 代理类型 */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>启用代理</div>
+                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>全局网络代理</div>
+                  </div>
+                  <div onClick={() => setProxyEnabled(!proxyEnabled)} style={{
+                    width: 36, height: 20, borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s',
+                    background: proxyEnabled ? 'var(--color-accent-primary)' : 'var(--color-border)',
+                    position: 'relative',
+                  }}>
+                    <div style={{
+                      width: 14, height: 14, borderRadius: '50%', background: '#fff',
+                      position: 'absolute', top: 3,
+                      left: proxyEnabled ? 19 : 3, transition: 'left 0.2s',
+                    }} />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>LLM 代理</div>
+                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>LLM 接口走代理</div>
+                  </div>
+                  <div onClick={() => setLlmProxy(!llmProxy)} style={{
+                    width: 36, height: 20, borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s',
+                    background: llmProxy ? 'var(--color-accent-primary)' : 'var(--color-border)',
+                    position: 'relative',
+                  }}>
+                    <div style={{
+                      width: 14, height: 14, borderRadius: '50%', background: '#fff',
+                      position: 'absolute', top: 3,
+                      left: llmProxy ? 19 : 3, transition: 'left 0.2s',
+                    }} />
+                  </div>
+                </div>
+                <div style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 5 }}>代理类型</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {(['http', 'socks5'] as const).map(t => (
+                      <button key={t} onClick={() => setProxyType(t)} style={{
+                        flex: 1, padding: '4px 0', borderRadius: 'var(--radius-sm)', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                        border: `1.5px solid ${proxyType === t ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                        background: proxyType === t ? 'rgba(124,92,252,0.08)' : 'transparent',
+                        color: proxyType === t ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
+                      }}>{t.toUpperCase()}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* 地址 + 端口 */}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+                <div style={{ flex: 1 }}>
+                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>代理地址</label>
+                  <input className="form-input" placeholder="127.0.0.1" value={proxyHost} onChange={e => setProxyHost(e.target.value)} style={{ height: 32 }} />
+                </div>
+                <div style={{ width: 90 }}>
+                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>端口</label>
+                  <input className="form-input" type="number" placeholder="7890" value={proxyPort} onChange={e => setProxyPort(Number(e.target.value))} style={{ height: 32 }} />
+                </div>
+              </div>
+
+              {/* 认证（可选） */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <div>
+                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>用户名（可选）</label>
+                  <input className="form-input" placeholder="无需认证留空" value={proxyUser} onChange={e => setProxyUser(e.target.value)} style={{ height: 32 }} />
+                </div>
+                <div>
+                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>密码（可选）</label>
+                  <div style={{ position: 'relative' }}>
+                    <input className="form-input" type={showProxyPass ? 'text' : 'password'} placeholder="无需认证留空" value={proxyPass} onChange={e => setProxyPass(e.target.value)} style={{ paddingRight: 32, height: 32 }} />
+                    <button onClick={() => setShowProxyPass(!showProxyPass)} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', display: 'flex', padding: 2 }}>
+                      {showProxyPass ? <EyeOff style={{ width: 13, height: 13 }} /> : <Eye style={{ width: 13, height: 13 }} />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.6, margin: 0 }}>
+                代理将应用于所有网络请求，包括翻译 API、LLM 接口、模型下载等。修改后请点击“保存”，新任务将自动使用新配置。
               </p>
             </div>
           </div>

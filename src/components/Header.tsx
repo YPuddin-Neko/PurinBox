@@ -18,12 +18,6 @@ const routeNames: Record<string, { breadcrumb: string; title: string }> = {
   '/tagger': { breadcrumb: '图片打标', title: '图片打标' },
   '/tag-manager': { breadcrumb: '标签管理', title: '标签管理' },
   '/tag-sort': { breadcrumb: '标签排序', title: '标签排序' },
-  '/labeling': { breadcrumb: '数据集打标', title: '数据集打标' },
-  '/crop': { breadcrumb: '图像裁切', title: '图像裁切' },
-
-  '/convert': { breadcrumb: '格式转换', title: '格式转换' },
-  '/augment': { breadcrumb: '数据增强', title: '数据增强' },
-  '/organize': { breadcrumb: '数据集管理', title: '数据集管理' },
   '/settings': { breadcrumb: '设置', title: '设置' },
 };
 

@@ -13,6 +13,7 @@ pub mod tag_manager;
 pub mod translator;
 pub mod tag_sort;
 pub mod api_config;
+pub mod proxy_config;
 
 /// 进度事件 payload
 #[derive(Debug, Clone, Serialize, Deserialize)]

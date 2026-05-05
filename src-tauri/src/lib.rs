@@ -19,6 +19,7 @@ use commands::tag_manager::{load_tag_dataset, save_single_tag_file, save_all_tag
 use commands::translator::{translate_tags, get_translation_cache_stats, clear_translation_cache, test_translation, get_cache_path, set_cache_path};
 use commands::tag_sort::{start_tag_sorting, cancel_tag_sorting};
 use commands::api_config::{save_api_config, load_api_config};
+use commands::proxy_config::{save_proxy_config, load_proxy_config};
 use commands::{scan_images, get_system_stats};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -66,6 +67,8 @@ pub fn run() {
             cancel_tag_sorting,
             save_api_config,
             load_api_config,
+            save_proxy_config,
+            load_proxy_config,
         ])
         .setup(|app| {
             // 初始化翻译缓存数据库路径（默认使用 exe 根目录/tagcache/）

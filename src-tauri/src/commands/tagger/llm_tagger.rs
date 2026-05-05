@@ -72,7 +72,7 @@ pub async fn start_llm_tagging(
     let mut fail_count = 0u32;
     let mut errors = Vec::new();
 
-    let client = reqwest::Client::builder()
+    let client = crate::commands::proxy_config::build_http_client_for_llm()
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
@@ -286,7 +286,7 @@ pub async fn fetch_llm_models(
     api_endpoint: String,
     api_key: String,
 ) -> Result<Vec<String>, String> {
-    let client = reqwest::Client::builder()
+    let client = crate::commands::proxy_config::build_http_client_for_llm()
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 

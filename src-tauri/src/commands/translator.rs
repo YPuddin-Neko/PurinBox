@@ -484,7 +484,7 @@ pub async fn translate_tags(
     if !uncached.is_empty() {
         let prepared: Vec<String> = uncached.iter().map(|t| t.replace('_', " ")).collect();
 
-        let client = reqwest::Client::builder()
+        let client = super::proxy_config::build_http_client()
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
@@ -615,7 +615,7 @@ pub async fn test_translation(
     bing_key: Option<String>,
     bing_region: Option<String>,
 ) -> Result<String, String> {
-    let client = reqwest::Client::builder()
+    let client = super::proxy_config::build_http_client()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;

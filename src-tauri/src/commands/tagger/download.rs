@@ -101,8 +101,8 @@ async fn download_file(
     dest: &std::path::Path,
     label: &str,
 ) -> Result<(), String> {
-    let client = reqwest::Client::builder()
-        .user_agent("PurinBox/0.1.3")
+    let client = crate::commands::proxy_config::build_http_client()
+        .user_agent("PurinBox/0.1.5")
         .timeout(std::time::Duration::from_secs(600))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
