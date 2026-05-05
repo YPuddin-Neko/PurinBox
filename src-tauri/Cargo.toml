@@ -52,4 +52,6 @@ opt-level = 3
 [profile.dev.package.psd]
 opt-level = 3
 
-
+# Windows: 禁用 WebView2 默认右键菜单需要此依赖
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "0.38"
