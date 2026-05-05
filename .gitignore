@@ -46,3 +46,6 @@ __pycache__/
 
 # ONNX models (large binary files)
 *.onnx
+
+# API config (contains encoded API keys, generated at runtime)
+config/

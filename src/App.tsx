@@ -12,6 +12,7 @@ import AlphaConvertPage from './pages/AlphaConvertPage';
 import BatchRenamePage from './pages/BatchRenamePage';
 import TaggerPage from './pages/TaggerPage';
 import TagManagerPage from './pages/TagManagerPage';
+import TagSortPage from './pages/TagSortPage';
 import SettingsPage from './pages/SettingsPage';
 import './styles/global.css';
 import './styles/sidebar.css';
@@ -23,6 +24,7 @@ import { TaskProvider } from './components/TaskContext';
 const persistentPages = [
   { path: '/tagger', component: TaggerPage },
   { path: '/tag-manager', component: TagManagerPage },
+  { path: '/tag-sort', component: TagSortPage },
 ];
 
 // 普通页面走 Routes

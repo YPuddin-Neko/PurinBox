@@ -11,6 +11,8 @@ pub mod batch_rename;
 pub mod tagger;
 pub mod tag_manager;
 pub mod translator;
+pub mod tag_sort;
+pub mod api_config;
 
 /// 进度事件 payload
 #[derive(Debug, Clone, Serialize, Deserialize)]

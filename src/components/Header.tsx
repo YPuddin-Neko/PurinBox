@@ -17,6 +17,7 @@ const routeNames: Record<string, { breadcrumb: string; title: string }> = {
   '/batch-rename': { breadcrumb: '批量重命名', title: '批量重命名' },
   '/tagger': { breadcrumb: '图片打标', title: '图片打标' },
   '/tag-manager': { breadcrumb: '标签管理', title: '标签管理' },
+  '/tag-sort': { breadcrumb: '标签排序', title: '标签排序' },
   '/labeling': { breadcrumb: '数据集打标', title: '数据集打标' },
   '/crop': { breadcrumb: '图像裁切', title: '图像裁切' },
 

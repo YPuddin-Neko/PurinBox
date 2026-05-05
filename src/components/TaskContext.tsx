@@ -41,6 +41,7 @@ const EVENT_TASK_MAP: Record<string, string> = {
   'rename-progress': 'rename',
   'tagger-progress': 'tagger',
   'llm-tagger-progress': 'llm-tagger',
+  'tag-sort-progress': 'tag-sort',
 };
 
 export function TaskProvider({ children }: { children: ReactNode }) {

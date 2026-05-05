@@ -11,6 +11,7 @@ import {
   TextCursorInput,
   Tags,
   List,
+  ArrowUpDown,
   Settings,
   PanelLeftClose,
 } from 'lucide-react';
@@ -40,6 +41,12 @@ const navSections: NavSection[] = [
     items: [
       { id: 'tagger', label: '图片打标', icon: <Tags />, path: '/tagger' },
       { id: 'tag-manager', label: '标签管理', icon: <List />, path: '/tag-manager' },
+    ],
+  },
+  {
+    title: '高级工具',
+    items: [
+      { id: 'tag-sort', label: '标签排序', icon: <ArrowUpDown />, path: '/tag-sort' },
     ],
   },
   {

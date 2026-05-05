@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { FolderOpen, Play, Loader2, Globe, Key, MessageSquare, Bot, RefreshCw, ChevronDown, Thermometer, Hash, StopCircle } from 'lucide-react';
+import { FolderOpen, Play, Loader2, Globe, Key, MessageSquare, Bot, RefreshCw, ChevronDown, Thermometer, Hash, StopCircle, Save } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
 import { useTaskQueue } from './TaskContext';
 
@@ -14,9 +14,10 @@ const defaultUserPrompt = `Please analyze this image and provide descriptive tag
 
 export default function LlmTaggerTab() {
   const [inputPath, setInputPath] = useState('');
-  const [endpoint, setEndpoint] = useState('https://api.openai.com/v1/');
+  const [preset, setPreset] = useState('openai');
+  const [customEndpoint, setCustomEndpoint] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const [modelName, setModelName] = useState('gpt-4o');
+  const [modelName, setModelName] = useState('');
   const [modelList, setModelList] = useState<string[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchMsg, setFetchMsg] = useState<{ text: string; ok: boolean } | null>(null);
@@ -31,6 +32,35 @@ export default function LlmTaggerTab() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
+  const PRESETS: Record<string, { label: string; url: string }> = {
+    openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
+    gemini: { label: 'Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/' },
+    deepseek: { label: 'DeepSeek', url: 'https://api.deepseek.com/v1/' },
+    custom: { label: '自定义', url: '' },
+  };
+
+  const endpoint = preset === 'custom' ? customEndpoint : (PRESETS[preset]?.url || '');
+
+  // 加载保存的配置
+  useEffect(() => {
+    invoke<[string, string, string]>('load_api_config').then(([p, ce, key]) => {
+      if (p) setPreset(p);
+      if (ce) setCustomEndpoint(ce);
+      if (key) setApiKey(key);
+    }).catch(() => {});
+  }, []);
+
+  const handleSaveConfig = async () => {
+    try {
+      await invoke('save_api_config', { preset, customEndpoint, apiKey });
+      setSaveMsg({ text: '配置已保存', ok: true });
+    } catch (e: any) {
+      setSaveMsg({ text: `保存失败: ${String(e)}`, ok: false });
+    }
+    setTimeout(() => setSaveMsg(null), 2000);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -100,11 +130,31 @@ export default function LlmTaggerTab() {
 
         {/* API 设置 */}
         <div className="tool-panel">
-          <div className="tool-panel-header"><span className="tool-panel-title">API 设置</span></div>
+          <div className="tool-panel-header">
+            <span className="tool-panel-title">API 设置</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              {saveMsg && <span style={{ fontSize: 11, color: saveMsg.ok ? '#4ade80' : '#f87171' }}>{saveMsg.ok ? '✓' : '✗'} {saveMsg.text}</span>}
+              <button className="btn btn-ghost btn-sm" onClick={handleSaveConfig} style={{ padding: '2px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Save style={{ width: 12, height: 12 }} /> 保存配置
+              </button>
+            </div>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Globe style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> API 端点</label>
-              <input className="form-input" placeholder="https://api.openai.com/v1/" value={endpoint} onChange={e => setEndpoint(e.target.value)} />
+              <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                {Object.entries(PRESETS).map(([key, { label }]) => (
+                  <button key={key} className={`btn btn-sm ${preset === key ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setPreset(key)} style={{ flex: 1, fontSize: 11 }}>{label}</button>
+                ))}
+              </div>
+              {preset === 'custom' && (
+                <input className="form-input" placeholder="输入自定义 API 端点 URL..." value={customEndpoint}
+                  onChange={e => setCustomEndpoint(e.target.value)} style={{ marginTop: 6 }} />
+              )}
+              {preset !== 'custom' && (
+                <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{endpoint}</div>
+              )}
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Key style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> API Key</label>
@@ -126,7 +176,7 @@ export default function LlmTaggerTab() {
                   <ChevronDown style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, color: 'var(--color-text-tertiary)', pointerEvents: 'none' }} />
                 </div>
               ) : (
-                <input className="form-input" placeholder="gpt-4o / gpt-4o-mini / ..." value={modelName} onChange={e => setModelName(e.target.value)} />
+                <input className="form-input" placeholder="模型名称..." value={modelName} onChange={e => setModelName(e.target.value)} />
               )}
               {fetchMsg && (
                 <div style={{ fontSize: 11, marginTop: 4, color: fetchMsg.ok ? '#4ade80' : '#f87171' }}>
