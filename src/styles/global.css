@@ -18,14 +18,42 @@ input, textarea, [contenteditable="true"] {
   -webkit-user-select: text;
 }
 
-/* 主题切换过渡：只在切换时短暂启用，避免影响正常交互动画 */
-html.theme-transitioning,
-html.theme-transitioning *,
-html.theme-transitioning *::before,
-html.theme-transitioning *::after {
-  transition: background-color 0.4s ease, color 0.4s ease, border-color 0.4s ease, fill 0.4s ease !important;
+/* ── 主题切换波纹动画 (View Transitions API) ── */
+
+/* 禁用默认的淡入淡出 */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
 }
 
+/* 浅→深：新的深色主题从按钮位置向外扩散 */
+.theme-darkening::view-transition-old(root) {
+  z-index: 9999;
+}
+.theme-darkening::view-transition-new(root) {
+  z-index: 99999;
+  animation: ripple-expand 0.55s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* 深→浅：旧的深色主题收缩到按钮位置 */
+.theme-lightening::view-transition-old(root) {
+  z-index: 99999;
+  animation: ripple-shrink 0.55s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+.theme-lightening::view-transition-new(root) {
+  z-index: 9999;
+}
+
+@keyframes ripple-expand {
+  from { clip-path: circle(0px at var(--ripple-x) var(--ripple-y)); }
+  to   { clip-path: circle(var(--ripple-r) at var(--ripple-x) var(--ripple-y)); }
+}
+
+@keyframes ripple-shrink {
+  from { clip-path: circle(var(--ripple-r) at var(--ripple-x) var(--ripple-y)); }
+  to   { clip-path: circle(0px at var(--ripple-x) var(--ripple-y)); }
+}
 html, body {
   height: 100%;
   overflow: hidden;

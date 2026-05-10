@@ -447,24 +447,29 @@ pub async fn translate_tags(
     youdao_app_secret: Option<String>,
     bing_key: Option<String>,
     bing_region: Option<String>,
+    skip_cache: Option<bool>,
 ) -> Result<TranslateResult, String> {
     if tags.is_empty() {
         return Ok(TranslateResult { translations: vec![], cached_count: 0, translated_count: 0 });
     }
 
-    let conn = open_db()?;
+    let conn = if skip_cache.unwrap_or(false) { None } else { Some(open_db()?) };
 
     // 1. 查缓存
     let mut cached: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut uncached: Vec<String> = Vec::new();
 
     for tag in &tags {
-        let mut stmt = conn.prepare("SELECT translated FROM translations WHERE tag = ?1 AND lang = ?2")
-            .map_err(|e| format!("查询缓存失败: {}", e))?;
-        let result: Result<String, _> = stmt.query_row(rusqlite::params![tag, &target_lang], |row| row.get(0));
-        match result {
-            Ok(tr) => { cached.insert(tag.clone(), tr); },
-            Err(_) => { uncached.push(tag.clone()); },
+        if let Some(ref db) = conn {
+            let mut stmt = db.prepare("SELECT translated FROM translations WHERE tag = ?1 AND lang = ?2")
+                .map_err(|e| format!("查询缓存失败: {}", e))?;
+            let result: Result<String, _> = stmt.query_row(rusqlite::params![tag, &target_lang], |row| row.get(0));
+            match result {
+                Ok(tr) => { cached.insert(tag.clone(), tr); },
+                Err(_) => { uncached.push(tag.clone()); },
+            }
+        } else {
+            uncached.push(tag.clone());
         }
     }
 
@@ -550,10 +555,12 @@ pub async fn translate_tags(
                     tr
                 };
 
-                let _ = conn.execute(
-                    "INSERT OR REPLACE INTO translations (tag, translated, lang) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![original, &final_tr, &target_lang],
-                );
+                if let Some(ref db) = conn {
+                    let _ = db.execute(
+                        "INSERT OR REPLACE INTO translations (tag, translated, lang) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![original, &final_tr, &target_lang],
+                    );
+                }
 
                 cached.insert(original.clone(), final_tr);
                 translated_count += 1;

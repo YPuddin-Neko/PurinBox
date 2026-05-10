@@ -5,7 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import {
   ArrowUpDown, FolderOpen, FolderOutput, Play, Loader2, Globe, Key, Bot,
   RefreshCw, ChevronDown, MessageSquare, StopCircle, Timer, Layers,
-  CheckCircle2, XCircle, Info, ScrollText, Trash2, AlertTriangle, Save
+  CheckCircle2, XCircle, Info, ScrollText, Trash2, AlertTriangle, Save, Thermometer
 } from 'lucide-react';
 import { LogEntry, getTimeStr } from '../components/ProgressLog';
 import { useTaskQueue } from '../components/TaskContext';
@@ -37,6 +37,8 @@ export default function TagSortPage() {
   const [prompt, setPrompt] = useState(defaultPrompt);
   const [intervalSec, setIntervalSec] = useState('-1');
   const [concurrency, setConcurrency] = useState('1');
+  const [temperature, setTemperature] = useState('0');
+  const [topP, setTopP] = useState('0');
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [pCur, setPCur] = useState(0);
@@ -161,10 +163,11 @@ export default function TagSortPage() {
           api_key: apiKey,
           model_name: modelName,
           prompt: prompt,
-          temperature: 1.0,
+          temperature: parseFloat(temperature) || 0,
           max_tokens: -1,
           request_interval_ms: intervalMs,
           concurrency: threads,
+          top_p: parseFloat(topP) || 0,
         },
       });
     } catch (e: any) {
@@ -288,8 +291,14 @@ export default function TagSortPage() {
                   ))}
                 </div>
                 {preset === 'custom' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 6 }}>
+                    <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>API 地址</span>
+                    <span title="仅支持 OpenAI 格式" style={{ cursor: 'help', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, borderRadius: '50%', fontSize: 9, fontWeight: 700, color: 'var(--color-text-tertiary)', border: '1px solid var(--color-border)' }}>?</span>
+                  </div>
+                )}
+                {preset === 'custom' && (
                   <input className="form-input" placeholder="输入自定义 API 端点 URL..." value={customEndpoint}
-                    onChange={e => setCustomEndpoint(e.target.value)} style={{ marginTop: 6 }} />
+                    onChange={e => setCustomEndpoint(e.target.value)} style={{ marginTop: 4 }} />
                 )}
                 {preset !== 'custom' && (
                   <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{endpoint}</div>
@@ -335,6 +344,26 @@ export default function TagSortPage() {
                     title="同时处理的文件数" />
                 </div>
               </div>
+              <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+                <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
+                  <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Thermometer style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> 温度</span>
+                    <span style={{ fontSize: 11, color: 'var(--color-accent-primary)', fontFamily: 'monospace' }}>{temperature}</span>
+                  </label>
+                  <input type="range" min="0" max="2" step="0.05" value={temperature}
+                    onChange={e => setTemperature(e.target.value)}
+                    style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
+                  <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span>Top P</span>
+                    <span style={{ fontSize: 11, color: 'var(--color-accent-primary)', fontFamily: 'monospace' }}>{topP || '0'}</span>
+                  </label>
+                  <input type="range" min="0" max="1" step="0.05" value={topP || '0'}
+                    onChange={e => setTopP(e.target.value === '0' ? '' : e.target.value)}
+                    style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
+                </div>
+              </div>
             </div>
           </div>
 
@@ -346,7 +375,7 @@ export default function TagSortPage() {
           {/* 提示词 */}
           <div className="tool-panel">
             <div className="tool-panel-header">
-              <span className="tool-panel-title">排序提示词</span>
+              <span className="tool-panel-title">模型提示词</span>
               <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }} onClick={() => setPrompt(defaultPrompt)}>恢复默认</button>
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>

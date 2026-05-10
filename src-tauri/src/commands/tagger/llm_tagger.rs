@@ -19,7 +19,18 @@ pub struct LlmTaggerOptions {
     pub user_prompt: String,
     pub temperature: f32,
     pub max_tokens: i32,
+    /// 发送图片的最大边长（默认 1024，超出会等比缩放）
+    #[serde(default = "default_image_size")]
+    pub image_size: u32,
+    /// Top P 采样参数（0~1，为 0 或负数时不发送）
+    #[serde(default)]
+    pub top_p: f64,
+    /// 是否跳过已有 .txt 描述文件的图片
+    #[serde(default)]
+    pub skip_existing: bool,
 }
+
+fn default_image_size() -> u32 { 1024 }
 
 #[derive(Serialize)]
 struct ChatMessage {
@@ -34,6 +45,8 @@ struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +109,26 @@ pub async fn start_llm_tagging(
         }
 
         let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+        // 跳过已有描述文件的图片
+        if options.skip_existing {
+            let stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
+            let parent = file_path.parent().unwrap_or(Path::new("."));
+            let txt_path = parent.join(format!("{}.txt", stem));
+            if txt_path.exists() {
+                let content = std::fs::read_to_string(&txt_path).unwrap_or_default();
+                if !content.trim().is_empty() {
+                    success_count += 1;
+                    let _ = app.emit("llm-tagger-progress", ProgressEvent {
+                        current: i as u32 + 1, total,
+                        filename: filename.clone(),
+                        status: "success".to_string(),
+                        message: format!("[跳过] {} (已有描述)", filename),
+                    });
+                    continue;
+                }
+            }
+        }
 
         let _ = app.emit("llm-tagger-progress", ProgressEvent {
             current: i as u32 + 1, total,
@@ -186,24 +219,23 @@ async fn tag_with_llm(
     img_path: &Path,
     options: &LlmTaggerOptions,
 ) -> Result<String, String> {
-    // Read image and encode to base64
-    let img_bytes = std::fs::read(img_path)
+    // 读取并缩放图片
+    let max_side = if options.image_size > 0 { options.image_size } else { 1024 };
+    let img = image::open(img_path)
         .map_err(|e| format!("读取图片失败: {}", e))?;
 
-    let ext = img_path.extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_else(|| "png".into());
-    let mime = match ext.as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "bmp" => "image/bmp",
-        _ => "image/png",
+    let img = if img.width() > max_side || img.height() > max_side {
+        img.resize(max_side, max_side, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
     };
 
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&img_bytes);
-    let data_url = format!("data:{};base64,{}", mime, b64);
+    // 编码为 JPEG base64（压缩更小、传输更快）
+    let mut buf = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut buf, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("编码图片失败: {}", e))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(buf.get_ref());
+    let data_url = format!("data:image/jpeg;base64,{}", b64);
 
     // Build OpenAI-compatible request
     let messages = vec![
@@ -225,6 +257,7 @@ async fn tag_with_llm(
         messages,
         max_tokens: if options.max_tokens > 0 { Some(options.max_tokens as u32) } else { None },
         temperature: options.temperature,
+        top_p: if options.top_p > 0.0 && options.top_p <= 1.0 { Some(options.top_p) } else { None },
     };
 
     let endpoint = if options.api_endpoint.ends_with('/') {

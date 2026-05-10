@@ -23,7 +23,7 @@ export default function TaggerPage() {
 
       {/* Tab Bar */}
       <div style={{
-        display: 'flex', gap: 2, marginBottom: 'var(--space-5)',
+        display: 'flex', gap: 2, marginBottom: 'var(--space-4)',
         background: 'var(--color-bg-card)', borderRadius: 'var(--radius-lg)',
         padding: 3, border: '1px solid var(--color-border)',
         width: 'fit-content',

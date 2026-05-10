@@ -15,7 +15,7 @@ use commands::tagger::{
     cancel_tagging,
 };
 use commands::tagger::llm_tagger::{start_llm_tagging, fetch_llm_models, cancel_llm_tagging};
-use commands::tag_manager::{load_tag_dataset, save_single_tag_file, save_all_tag_files};
+use commands::tag_manager::{load_tag_dataset, save_single_tag_file, save_all_tag_files, save_caption_file, save_all_caption_files, load_caption_dataset};
 use commands::translator::{translate_tags, get_translation_cache_stats, clear_translation_cache, test_translation, get_cache_path, set_cache_path};
 use commands::tag_sort::{start_tag_sorting, cancel_tag_sorting};
 use commands::api_config::{save_api_config, load_api_config};
@@ -59,6 +59,9 @@ pub fn run() {
             load_tag_dataset,
             save_single_tag_file,
             save_all_tag_files,
+            save_caption_file,
+            save_all_caption_files,
+            load_caption_dataset,
             translate_tags,
             get_translation_cache_stats,
             clear_translation_cache,

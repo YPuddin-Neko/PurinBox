@@ -9,9 +9,12 @@ import {
   Trash2, Image as ImageIcon, BarChart3, CheckCircle2, Loader2,
   Replace, Filter, ListPlus, PlusCircle, MinusCircle, Languages
 } from 'lucide-react';
+import NaturalLangTab from '../components/NaturalLangTab';
 
 type ImageItem = { filename: string; path: string; tags: string[]; dirty: boolean; };
+type CaptionItem = { filename: string; path: string; caption: string; dirty: boolean; };
 type TagDataset = { folder: string; images: { path: string; filename: string; tags: string[] }[] };
+type CaptionDataset = { folder: string; images: { path: string; filename: string; caption: string }[] };
 
 // 翻译映射（由 translate_tags 命令填充）
 const getTranslation = (tag: string, translations: Record<string, string>) => translations[tag] || '';
@@ -45,7 +48,9 @@ const phdr:React.CSSProperties={display:'flex',alignItems:'center',justifyConten
 const ptitle:React.CSSProperties={fontSize:12,fontWeight:700,color:'var(--color-text-primary)',textTransform:'uppercase',letterSpacing:'0.5px'};
 
 export default function TagManagerPage() {
+  const [mode, setMode] = useState<'danbooru' | 'natural'>('danbooru');
   const [images, setImages] = useState<ImageItem[]>([]);
+  const [nlImages, setNlImages] = useState<CaptionItem[]>([]);
 
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [searchText, setSearchText] = useState('');
@@ -185,11 +190,15 @@ export default function TagManagerPage() {
     if (!selected) return;
     setLoading(true);
     try {
-      const result = await invoke<TagDataset>('load_tag_dataset', { folder: selected as string });
-
-      setImages(result.images.map(img => ({ ...img, dirty: false })));
-      setSelectedIdx(result.images.length > 0 ? 0 : -1);
-      setSearchText(''); setFilterMode('all'); setGlobalSearch('');
+      if (mode === 'danbooru') {
+        const result = await invoke<TagDataset>('load_tag_dataset', { folder: selected as string });
+        setImages(result.images.map(img => ({ ...img, dirty: false })));
+        setSelectedIdx(result.images.length > 0 ? 0 : -1);
+        setSearchText(''); setFilterMode('all'); setGlobalSearch('');
+      } else {
+        const result = await invoke<CaptionDataset>('load_caption_dataset', { folder: selected as string });
+        setNlImages(result.images.map(img => ({ ...img, dirty: false })));
+      }
     } catch (e: any) {
       console.error('加载失败:', e);
     } finally {
@@ -448,24 +457,61 @@ export default function TagManagerPage() {
   return (
     <>
     <div className="page" style={{height:'100%',display:'flex',flexDirection:'column',overflow:'hidden',gap:0}} onKeyDown={handleKeyDown} tabIndex={0}>
-      {/* ═ Toolbar ═ */}
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 0',flexShrink:0}}>
-        <div style={{display:'flex',alignItems:'center',gap:10}}>
-          <Tags style={{width:24,height:24,color:'#7c5cfc'}} />
-          <h1 style={{fontSize:18,fontWeight:700,color:'var(--color-text-primary)',margin:0}}>标签管理</h1>
-          {images.length>0&&<span style={{fontSize:12,color:'var(--color-text-tertiary)',background:'var(--color-bg-secondary)',padding:'2px 10px',borderRadius:20,border:'1px solid var(--color-border)'}}>{images.length} 张图片</span>}
+      {/* ═ Page Header ═ */}
+      <div className="page-header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+          <Tags style={{ width: 28, height: 28, color: '#7c5cfc' }} />
+          <h1 className="page-title">标签管理</h1>
+        </div>
+        <p className="page-subtitle">可视化编辑训练图片的标签文件，支持 Danbooru 标签和自然语言</p>
+      </div>
+
+      {/* Tab Bar + Actions */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-4)', flexShrink: 0 }}>
+        <div style={{
+          display: 'flex', gap: 2,
+          background: 'var(--color-bg-card)', borderRadius: 'var(--radius-lg)',
+          padding: 3, border: '1px solid var(--color-border)',
+          width: 'fit-content',
+        }}>
+          <button onClick={()=>setMode('danbooru')} style={{
+            padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
+            cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
+            transition: 'all 0.2s', fontFamily: 'inherit',
+            background: mode==='danbooru' ? 'var(--color-accent-primary)' : 'transparent',
+            color: mode==='danbooru' ? '#fff' : 'var(--color-text-tertiary)',
+          }}>Danbooru 格式</button>
+          <button onClick={()=>setMode('natural')} style={{
+            padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
+            cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
+            transition: 'all 0.2s', fontFamily: 'inherit',
+            background: mode==='natural' ? 'var(--color-accent-primary)' : 'transparent',
+            color: mode==='natural' ? '#fff' : 'var(--color-text-tertiary)',
+          }}>自然语言格式</button>
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
           <button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={handleLoadFolder} disabled={loading}>
             {loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {loading?'加载中...':'加载文件夹'}
           </button>
-          <button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={dirtyCount===0||saving} onClick={handleSaveAll}>
+          {mode==='danbooru'&&<button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={dirtyCount===0||saving} onClick={handleSaveAll}>
             {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} 全部保存{dirtyCount>0?` (${dirtyCount})`:''}
-          </button>
+          </button>}
+          {mode==='natural'&&(()=>{const nlDirty=nlImages.filter(i=>i.dirty).length;return(
+            <button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={nlDirty===0||saving} onClick={async()=>{
+              setSaving(true);
+              try{
+                const items=nlImages.filter(i=>i.dirty).map(i=>({path:i.path,content:i.caption}));
+                await invoke('save_all_caption_files',{items});
+                setNlImages(p=>p.map(img=>img.dirty?{...img,dirty:false}:img));
+              }catch(e){console.error(e);}finally{setSaving(false);}
+            }}>
+              {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} 全部保存{nlDirty>0?` (${nlDirty})`:''}
+            </button>
+          );})()}
         </div>
       </div>
 
-      {/* ═ Three Columns ═ */}
+      {mode === 'danbooru' && (
       <div style={{flex:1,display:'flex',overflow:'hidden',minHeight:0}}>
 
         {/* ─ Col1: Images ─ */}
@@ -695,6 +741,11 @@ export default function TagManagerPage() {
           </div>
         </div>
       </div>
+      )}
+
+      {mode === 'natural' && (
+        <NaturalLangTab images={nlImages} setImages={setNlImages} />
+      )}
 
       {/* ═ 批量添加弹窗 ═ */}
       {showAddModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setShowAddModal(false)}>

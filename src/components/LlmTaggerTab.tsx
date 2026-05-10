@@ -2,15 +2,15 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { FolderOpen, Play, Loader2, Globe, Key, MessageSquare, Bot, RefreshCw, ChevronDown, Thermometer, Hash, StopCircle, Save } from 'lucide-react';
+import { FolderOpen, Play, Loader2, Globe, Key, MessageSquare, Bot, RefreshCw, ChevronDown, Thermometer, Hash, StopCircle, Save, ImageIcon } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
 import { useTaskQueue } from './TaskContext';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 
-const defaultSystemPrompt = `You are an expert image tagger for AI training datasets. Analyze the given image and output descriptive tags separated by commas. Focus on: subject, actions, composition, style, colors, lighting, and quality. Output ONLY tags, no explanation.`;
-const defaultUserPrompt = `Please analyze this image and provide descriptive tags for AI training. Output comma-separated tags only.`;
+const defaultSystemPrompt = `You are a professional image captioning assistant. Provide a detailed, natural language description of the image suitable for training image generation models.`;
+const defaultUserPrompt = `Please describe this image in detail.`;
 
 export default function LlmTaggerTab() {
   const [inputPath, setInputPath] = useState('');
@@ -33,6 +33,9 @@ export default function LlmTaggerTab() {
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [imageSize, setImageSize] = useState('1024');
+  const [topP, setTopP] = useState('');
+  const [skipExisting, setSkipExisting] = useState(false);
 
   const PRESETS: Record<string, { label: string; url: string }> = {
     openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
@@ -105,7 +108,14 @@ export default function LlmTaggerTab() {
     setLogs([{ time: getTimeStr(), message: `开始 LLM 打标 | 模型: ${modelName} | API: ${endpoint}`, status: 'info' }]);
     try {
       await invoke<ProcessResult>('start_llm_tagging', {
-        options: { input_path: inputPath, api_endpoint: endpoint, api_key: apiKey, model_name: modelName, system_prompt: sysPrompt, user_prompt: userPrompt, temperature: parseFloat(temperature) || 0.2, max_tokens: parseInt(maxTokens) || -1 },
+        options: {
+          input_path: inputPath, api_endpoint: endpoint, api_key: apiKey, model_name: modelName,
+          system_prompt: sysPrompt, user_prompt: userPrompt,
+          temperature: parseFloat(temperature) || 0.2, max_tokens: parseInt(maxTokens) || -1,
+          image_size: parseInt(imageSize) || 1024,
+          top_p: parseFloat(topP) || 0,
+          skip_existing: skipExisting,
+        },
       });
     } catch (e: any) {
       setLogs(p => [...p, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
@@ -149,8 +159,14 @@ export default function LlmTaggerTab() {
                 ))}
               </div>
               {preset === 'custom' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 6 }}>
+                  <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>API 地址</span>
+                  <span title="仅支持 OpenAI 格式" style={{ cursor: 'help', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, borderRadius: '50%', fontSize: 9, fontWeight: 700, color: 'var(--color-text-tertiary)', border: '1px solid var(--color-border)' }}>?</span>
+                </div>
+              )}
+              {preset === 'custom' && (
                 <input className="form-input" placeholder="输入自定义 API 端点 URL..." value={customEndpoint}
-                  onChange={e => setCustomEndpoint(e.target.value)} style={{ marginTop: 6 }} />
+                  onChange={e => setCustomEndpoint(e.target.value)} style={{ marginTop: 4 }} />
               )}
               {preset !== 'custom' && (
                 <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{endpoint}</div>
@@ -193,13 +209,48 @@ export default function LlmTaggerTab() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
             <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
               <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
-                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Thermometer style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> 温度</label>
-                <input className="form-input" type="number" min="0" max="2" step="0.1" value={temperature} onChange={e => setTemperature(e.target.value)} placeholder="默认 0.2" />
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Thermometer style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> 温度</span>
+                  <span style={{ fontSize: 11, color: 'var(--color-accent-primary)', fontFamily: 'monospace' }}>{temperature}</span>
+                </label>
+                <input type="range" min="0" max="2" step="0.05" value={temperature}
+                  onChange={e => setTemperature(e.target.value)}
+                  style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span>Top P</span>
+                  <span style={{ fontSize: 11, color: 'var(--color-accent-primary)', fontFamily: 'monospace' }}>{topP || '0'}</span>
+                </label>
+                <input type="range" min="0" max="1" step="0.05" value={topP || '0'}
+                  onChange={e => setTopP(e.target.value === '0' ? '' : e.target.value)}
+                  style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+              <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><ImageIcon style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> 图像尺寸</label>
+                <input className="form-input" type="number" min="256" max="4096" step="64" value={imageSize} onChange={e => setImageSize(e.target.value)} placeholder="默认 1024" />
               </div>
               <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Hash style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> 最大 Tokens</label>
                 <input className="form-input" type="number" min="-1" max="8192" step="1" value={maxTokens} onChange={e => setMaxTokens(e.target.value)} placeholder="-1 为不限制" />
               </div>
+            </div>
+            {/* 跳过已有描述 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div onClick={() => setSkipExisting(!skipExisting)} style={{
+                width: 36, height: 20, borderRadius: 10, cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
+                background: skipExisting ? 'var(--color-accent-primary)' : 'var(--color-border)',
+              }}>
+                <div style={{
+                  width: 14, height: 14, borderRadius: '50%', background: '#fff', position: 'absolute', top: 3,
+                  left: skipExisting ? 19 : 3, transition: 'left 0.2s',
+                }} />
+              </div>
+              <label className="form-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} onClick={() => setSkipExisting(!skipExisting)}>
+                跳过已有描述
+              </label>
             </div>
             {/* System Prompt */}
             <div className="form-group" style={{ marginBottom: 0 }}>

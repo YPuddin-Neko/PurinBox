@@ -1,5 +1,5 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Sun, Moon, Monitor, ListTodo, Cpu, MemoryStick, MonitorDot } from 'lucide-react';
 import { useTheme } from './ThemeProvider';
@@ -74,7 +74,7 @@ export default function Header() {
   const location = useLocation();
   const navigate = useNavigate();
   const currentRoute = routeNames[location.pathname] || { breadcrumb: '未知', title: '未知' };
-  const { mode, setMode, monitorInterval } = useTheme();
+  const { mode, monitorInterval, cycleThemeWithRipple } = useTheme();
   const { tasks: allTasks } = useTaskQueue();
   const runningTasks = allTasks.filter(t => t.status === 'running');
   const [stats, setStats] = useState<SystemStats | null>(null);
@@ -95,9 +95,13 @@ export default function Header() {
     return () => { alive = false; clearInterval(timer); };
   }, [monitorInterval]);
 
-  const cycleTheme = () => {
-    const next: Record<string, 'light' | 'dark' | 'system'> = { dark: 'light', light: 'system', system: 'dark' };
-    setMode(next[mode]);
+  const themeBtnRef = useRef<HTMLButtonElement>(null);
+
+  const cycleTheme = (e: React.MouseEvent) => {
+    const rect = themeBtnRef.current?.getBoundingClientRect();
+    const x = rect ? rect.left + rect.width / 2 : e.clientX;
+    const y = rect ? rect.top + rect.height / 2 : e.clientY;
+    cycleThemeWithRipple(x, y);
   };
 
   const themeIcon = mode === 'dark' ? <Moon style={{ width: 16, height: 16 }} />
@@ -219,7 +223,7 @@ export default function Header() {
         </div>
 
         {/* 主题切换 */}
-        <button className="header-btn" onClick={cycleTheme} title={`当前: ${themeLabel}\n点击切换`}>
+        <button ref={themeBtnRef} className="header-btn" onClick={cycleTheme} title={`当前: ${themeLabel}\n点击切换`}>
           {themeIcon}
         </button>
       </div>

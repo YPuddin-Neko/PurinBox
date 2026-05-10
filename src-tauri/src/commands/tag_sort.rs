@@ -22,6 +22,9 @@ pub struct TagSortOptions {
     pub request_interval_ms: i64,
     /// 并发线程数，<= 0 或 1 表示单线程
     pub concurrency: u32,
+    /// Top P 采样参数（0~1，为 0 或负数时不发送）
+    #[serde(default)]
+    pub top_p: f64,
 }
 
 #[derive(Serialize)]
@@ -37,6 +40,8 @@ struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -442,6 +447,7 @@ async fn sort_tags_with_llm(
         messages,
         max_tokens: if options.max_tokens > 0 { Some(options.max_tokens as u32) } else { None },
         temperature: options.temperature,
+        top_p: if options.top_p > 0.0 && options.top_p <= 1.0 { Some(options.top_p) } else { None },
     };
 
     let endpoint = if options.api_endpoint.ends_with('/') {
