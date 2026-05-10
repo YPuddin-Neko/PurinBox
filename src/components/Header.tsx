@@ -1,7 +1,7 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Sun, Moon, Monitor, ListTodo, Cpu, MemoryStick, MonitorDot } from 'lucide-react';
+import { Sun, Moon, Monitor, ListTodo, Cpu, MemoryStick, MonitorDot, Trash2 } from 'lucide-react';
 import { useTheme } from './ThemeProvider';
 import { useTaskQueue } from './TaskContext';
 import '../styles/layout.css';
@@ -75,8 +75,9 @@ export default function Header() {
   const navigate = useNavigate();
   const currentRoute = routeNames[location.pathname] || { breadcrumb: '未知', title: '未知' };
   const { mode, monitorInterval, cycleThemeWithRipple } = useTheme();
-  const { tasks: allTasks } = useTaskQueue();
+  const { tasks: allTasks, clearCompleted } = useTaskQueue();
   const runningTasks = allTasks.filter(t => t.status === 'running');
+  const completedTasks = allTasks.filter(t => t.status !== 'running');
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [showTaskPanel, setShowTaskPanel] = useState(false);
 
@@ -180,7 +181,18 @@ export default function Header() {
             <div className="header-dropdown" style={{ minWidth: 280 }}>
               <div style={{ padding: '12px 16px', fontWeight: 700, fontSize: 13, borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span>任务队列</span>
-                {allTasks.length > 0 && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{runningTasks.length} 运行中</span>}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {allTasks.length > 0 && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{runningTasks.length} 运行中</span>}
+                  {completedTasks.length > 0 && (
+                    <button onClick={(e) => { e.stopPropagation(); clearCompleted(); }} title="清理已完成任务"
+                      style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-tertiary)', fontSize: 10, cursor: 'pointer', transition: 'all 0.15s' }}
+                      onMouseEnter={e => { (e.currentTarget).style.color = '#f87171'; (e.currentTarget).style.borderColor = 'rgba(248,113,113,0.3)'; }}
+                      onMouseLeave={e => { (e.currentTarget).style.color = 'var(--color-text-tertiary)'; (e.currentTarget).style.borderColor = 'var(--color-border)'; }}
+                    >
+                      <Trash2 style={{ width: 10, height: 10 }} /> 清理
+                    </button>
+                  )}
+                </div>
               </div>
               {allTasks.length === 0 ? (
                 <div style={{ padding: '20px 16px', textAlign: 'center', color: 'var(--color-text-tertiary)', fontSize: 12 }}>
@@ -195,10 +207,10 @@ export default function Header() {
                       onMouseEnter={e => { if (TASK_ROUTE_MAP[task.id]) (e.currentTarget as HTMLDivElement).style.background = 'var(--color-bg-hover)'; }}
                       onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = ''; }}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: 12, fontWeight: 600 }}>{task.name}</span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{task.name}</span>
                         <span style={{
-                          fontSize: 10, padding: '1px 6px', borderRadius: 4,
+                          fontSize: 10, padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap', flexShrink: 0,
                           background: task.status === 'running' ? 'rgba(74,222,128,0.1)' : task.status === 'done' ? 'rgba(96,165,250,0.1)' : 'rgba(248,113,113,0.1)',
                           color: task.status === 'running' ? '#4ade80' : task.status === 'done' ? '#60a5fa' : '#f87171',
                         }}>

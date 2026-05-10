@@ -1,4 +1,4 @@
-import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save } from 'lucide-react';
+import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, AlertTriangle } from 'lucide-react';
 import { useTheme } from '../components/ThemeProvider';
 import { useState, useEffect } from 'react';
 import { ConfirmModal, AlertModal } from '../components/Modal';
@@ -48,6 +48,8 @@ export default function SettingsPage() {
   const [cachePath, setCachePath] = useState<string>('');
   const [appVersion, setAppVersion] = useState('');
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [resetPythonConfirmOpen, setResetPythonConfirmOpen] = useState(false);
+  const [resettingPython, setResettingPython] = useState(false);
   const [alertMsg, setAlertMsg] = useState('');
 
   // 代理设置
@@ -523,6 +525,29 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          {/* 高级设置 */}
+          <div className="tool-panel">
+            <div className="tool-panel-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                <AlertTriangle style={{ width: 16, height: 16, color: '#fbbf24' }} />
+                <span className="tool-panel-title">高级设置</span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>重置 Python 环境</div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>删除软件管理的 Python 虚拟环境和独立版本，下次使用时会自动重新配置</div>
+                </div>
+                <button className="btn" onClick={() => setResetPythonConfirmOpen(true)} disabled={resettingPython}
+                  style={{ background: 'rgba(248,113,113,0.1)', color: '#f87171', border: '1px solid rgba(248,113,113,0.3)', fontSize: 12, padding: '6px 14px', gap: 6 }}>
+                  {resettingPython ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RotateCcw style={{ width: 14, height: 14 }} />}
+                  重置
+                </button>
+              </div>
+            </div>
+          </div>
+
           {/* About */}
           <div className="tool-panel">
             <div className="tool-panel-header">
@@ -555,10 +580,30 @@ export default function SettingsPage() {
         confirmText="清空"
         variant="warning"
       />
+      <ConfirmModal
+        open={resetPythonConfirmOpen}
+        onClose={() => setResetPythonConfirmOpen(false)}
+        onConfirm={async () => {
+          setResetPythonConfirmOpen(false);
+          setResettingPython(true);
+          try {
+            await invoke('reset_python_env');
+            setAlertMsg('Python 环境已重置，下次使用打标功能时会自动重新配置。');
+          } catch (e: any) {
+            setAlertMsg(`重置失败: ${e}`);
+          } finally {
+            setResettingPython(false);
+          }
+        }}
+        title="重置 Python 环境"
+        message="确定重置 Python 环境？将删除虚拟环境和下载的独立 Python，下次使用打标功能时会自动重新配置。"
+        confirmText="重置"
+        variant="error"
+      />
       <AlertModal
         open={!!alertMsg}
         onClose={() => setAlertMsg('')}
-        title="错误"
+        title="提示"
         message={alertMsg}
       />
     </>

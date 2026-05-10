@@ -87,7 +87,13 @@ fn get_venv_python() -> PathBuf {
     #[cfg(target_os = "windows")]
     { get_venv_dir().join("Scripts").join("python.exe") }
     #[cfg(not(target_os = "windows"))]
-    { get_venv_dir().join("bin").join("python3") }
+    {
+        let p3 = get_venv_dir().join("bin").join("python3");
+        if p3.exists() { return p3; }
+        let p = get_venv_dir().join("bin").join("python");
+        if p.exists() { return p; }
+        p3 // 默认返回 python3 路径
+    }
 }
 
 /// 获取 standalone Python 可执行文件路径
@@ -122,6 +128,16 @@ pub fn get_python_exe() -> Option<String> {
     } else {
         None
     }
+}
+
+/// 重置 Python 环境（删除 venv 和 standalone）
+pub fn reset_python_env() -> Result<String, String> {
+    let python_root = get_env_dir().join("python");
+    if python_root.exists() {
+        std::fs::remove_dir_all(&python_root)
+            .map_err(|e| format!("删除 Python 环境失败: {}", e))?;
+    }
+    Ok("Python 环境已重置".to_string())
 }
 
 /// 发送进度事件
@@ -253,10 +269,14 @@ pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> 
     if let Some((sys_python, sys_version)) = detect_system_python() {
         emit_progress(app, &format!("检测到系统 Python: {} ({})", sys_version, sys_python), "success");
 
-        // 用系统 Python 创建 venv（如果 venv 不存在）
-        if !venv_python.exists() {
+        // 用系统 Python 创建 venv（如果 venv python 不可用）
+        if !venv_python.exists() || !is_ready() {
             emit_progress(app, "正在使用系统 Python 创建虚拟环境...", "info");
             let venv_dir = get_venv_dir();
+            // 清理旧的 venv（可能有残留的 broken symlink）
+            if venv_dir.exists() {
+                let _ = std::fs::remove_dir_all(&venv_dir);
+            }
             // 确保父目录存在
             let python_parent = get_env_dir().join("python");
             std::fs::create_dir_all(&python_parent)

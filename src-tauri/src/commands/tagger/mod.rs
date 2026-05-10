@@ -368,6 +368,12 @@ pub fn cancel_tagging() {
     python_env::cancel_setup();
 }
 
+/// 重置 Python 环境
+#[tauri::command]
+pub fn reset_python_env() -> Result<String, String> {
+    python_env::reset_python_env()
+}
+
 /// 开始打标
 #[tauri::command]
 pub async fn start_tagging(

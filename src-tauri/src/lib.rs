@@ -12,7 +12,7 @@ use commands::tagger::{
     import_local_tagger_model, remove_custom_tagger_model,
     check_cuda_available, start_tagging, cancel_tagger_download,
     get_gpu_runtime_status, download_gpu_runtime, cancel_gpu_runtime_download,
-    cancel_tagging,
+    cancel_tagging, reset_python_env,
 };
 use commands::tagger::llm_tagger::{start_llm_tagging, fetch_llm_models, cancel_llm_tagging};
 use commands::tag_manager::{load_tag_dataset, save_single_tag_file, save_all_tag_files, save_caption_file, save_all_caption_files, load_caption_dataset};
@@ -52,6 +52,7 @@ pub fn run() {
             download_gpu_runtime,
             cancel_gpu_runtime_download,
             cancel_tagging,
+            reset_python_env,
             start_llm_tagging,
             fetch_llm_models,
             cancel_llm_tagging,

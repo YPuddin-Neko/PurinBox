@@ -17,6 +17,7 @@ interface TaskContextType {
   addTask: (id: string, name: string) => void;
   removeTask: (id: string) => void;
   updateTask: (id: string, updates: Partial<TaskInfo>) => void;
+  clearCompleted: () => void;
 }
 
 const TaskContext = createContext<TaskContextType>({
@@ -24,6 +25,7 @@ const TaskContext = createContext<TaskContextType>({
   addTask: () => {},
   removeTask: () => {},
   updateTask: () => {},
+  clearCompleted: () => {},
 });
 
 export function useTaskQueue() {
@@ -62,6 +64,10 @@ export function TaskProvider({ children }: { children: ReactNode }) {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
   }, []);
 
+  const clearCompleted = useCallback(() => {
+    setTasks(prev => prev.filter(t => t.status === 'running'));
+  }, []);
+
   // 集中监听所有功能的进度事件
   useEffect(() => {
     let active = true;
@@ -93,7 +99,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <TaskContext.Provider value={{ tasks, addTask, removeTask, updateTask }}>
+    <TaskContext.Provider value={{ tasks, addTask, removeTask, updateTask, clearCompleted }}>
       {children}
     </TaskContext.Provider>
   );
