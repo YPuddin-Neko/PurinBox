@@ -183,21 +183,6 @@ export default function LlmTaggerTab() {
     }
   }, [logs.length]);
 
-  // 处理速度
-  const speedStartRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (pCur === 1 && !speedStartRef.current) speedStartRef.current = Date.now();
-    if (pCur === 0) speedStartRef.current = null;
-  }, [pCur]);
-  const getSpeed = () => {
-    if (!speedStartRef.current || pCur <= 0) return '';
-    const el = (Date.now() - speedStartRef.current) / 1000;
-    if (el < 0.5) return '';
-    const spd = pCur / el;
-    return spd >= 1 ? `${spd.toFixed(1)} it/s` : `${(1 / spd).toFixed(1)} s/it`;
-  };
-  const speed = getSpeed();
-
   const statusIcon = (status: LogEntry['status']) => {
     switch (status) {
       case 'success': return <CheckCircle2 className="log-entry-icon success" />;
@@ -368,7 +353,14 @@ export default function LlmTaggerTab() {
           <div className="progress-header">
             <span className="progress-label">{isDone ? '处理完成' : '处理进度'}</span>
             <span className="progress-percent">
-              {speed && <span style={{ marginRight: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{speed}</span>}
+              {(() => {
+                if (!startTime || pCur <= 0) return null;
+                const el = (Date.now() - startTime) / 1000;
+                if (el < 0.5) return null;
+                const spd = pCur / el;
+                const txt = spd >= 1 ? `${spd.toFixed(1)} it/s` : `${(1 / spd).toFixed(1)} s/it`;
+                return <span style={{ marginRight: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{txt}</span>;
+              })()}
               {Math.round(progress)}%
             </span>
           </div>

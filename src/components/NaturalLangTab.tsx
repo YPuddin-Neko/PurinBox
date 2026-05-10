@@ -134,7 +134,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
               <Search style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', width: 13, height: 13, color: 'var(--color-text-tertiary)' }} />
               <input className="form-input" placeholder="搜索..." value={searchText} onChange={e => setSearchText(e.target.value)} style={{ paddingLeft: 28, fontSize: 11, height: 30 }} />
             </div>
-            {onRefresh && <button className="btn btn-ghost btn-sm" onClick={onRefresh} title="刷新" style={{ width: 30, height: 30, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><RefreshCw style={{ width: 13, height: 13 }} /></button>}
+            <button className="btn btn-ghost btn-sm" onClick={() => onRefresh?.()} disabled={!onRefresh} title="刷新" style={{ width: 30, height: 30, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><RefreshCw style={{ width: 13, height: 13 }} /></button>
           </div>
           <div style={{ display: 'flex', gap: 4 }}>
             {([{ k: 'all' as const, l: '全部', n: images.length }, { k: 'untagged' as const, l: '空', n: images.length - taggedN }, { k: 'tagged' as const, l: '已标', n: taggedN }]).map(t => (
@@ -196,13 +196,20 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
             )}
           </div>
         </div>
+      </div>
 
-        {/* caption editor */}
-        <div style={{ height: 6, flexShrink: 0 }} />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--color-bg-secondary)', borderRadius: 12, border: '1px solid var(--color-border)', overflow: 'hidden', minHeight: 80 }}>
+      {/* resize handle 2 */}
+      <div onMouseDown={e => handleResizeStart('col3', e)} style={{ width: 6, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} title="拖拽调整宽度">
+        <div style={{ width: 2, height: 32, borderRadius: 1, background: 'var(--color-border)', transition: 'background 0.15s' }} />
+      </div>
+
+      {/* ─ Col3: Caption + Translation ─ */}
+      <div style={{ width: col3W, minWidth: 200, maxWidth: 500, flexShrink: 0, display: 'flex', flexDirection: 'column', background: 'var(--color-bg-secondary)', borderRadius: 12, border: '1px solid var(--color-border)', overflow: 'hidden' }}>
+        {/* 描述内容（可编辑） */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={phdr}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <FileText style={{ width: 14, height: 14, color: '#4ade80' }} />
+              <FileText style={{ width: 14, height: 14, color: '#60a5fa' }} />
               <span style={ptitle}>描述内容</span>
             </div>
             <button className="btn btn-primary" style={{ fontSize: 10, gap: 4, height: 24, padding: '0 10px' }} disabled={!cur || !cur.dirty || savingSingle} onClick={handleSaveSingle}>
@@ -224,45 +231,19 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
             />
           </div>
         </div>
-      </div>
-
-      {/* resize handle 2 */}
-      <div onMouseDown={e => handleResizeStart('col3', e)} style={{ width: 6, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} title="拖拽调整宽度">
-        <div style={{ width: 2, height: 32, borderRadius: 1, background: 'var(--color-border)', transition: 'background 0.15s' }} />
-      </div>
-
-      {/* ─ Col3: Translation ─ */}
-      <div style={{ width: col3W, minWidth: 200, maxWidth: 500, flexShrink: 0, display: 'flex', flexDirection: 'column', background: 'var(--color-bg-secondary)', borderRadius: 12, border: '1px solid var(--color-border)', overflow: 'hidden' }}>
-        {/* 原文 */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div style={phdr}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <FileText style={{ width: 14, height: 14, color: '#60a5fa' }} />
-              <span style={ptitle}>原文</span>
-            </div>
-          </div>
-          <div style={{ flex: 1, padding: '12px 14px', overflowY: 'auto', fontSize: 12, lineHeight: 1.7, color: 'var(--color-text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-            {cur?.caption?.trim() || <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>暂无描述内容</span>}
-          </div>
-        </div>
-
-        {/* 分割线 + 翻译按钮 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', borderTop: '1px solid var(--color-border)', borderBottom: '1px solid var(--color-border)', background: 'rgba(96,165,250,0.03)' }}>
-          <Languages style={{ width: 14, height: 14, color: '#60a5fa', flexShrink: 0 }} />
-          <button className="btn btn-primary" style={{ fontSize: 10, height: 26, padding: '0 12px', gap: 4, flexShrink: 0, flex: 1 }}
-            onClick={handleTranslate} disabled={!cur || !cur.caption.trim() || translating}>
-            {translating ? <Loader2 style={{ width: 10, height: 10, animation: 'spin 1s linear infinite' }} /> : <Languages style={{ width: 10, height: 10 }} />}
-            翻译
-          </button>
-        </div>
 
         {/* 翻译结果 */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', borderTop: '1px solid var(--color-border)' }}>
           <div style={phdr}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Languages style={{ width: 14, height: 14, color: '#4ade80' }} />
               <span style={ptitle}>翻译</span>
             </div>
+            <button className="btn btn-primary" style={{ fontSize: 10, height: 24, padding: '0 10px', gap: 4 }}
+              onClick={handleTranslate} disabled={!cur || !cur.caption.trim() || translating}>
+              {translating ? <Loader2 style={{ width: 10, height: 10, animation: 'spin 1s linear infinite' }} /> : <Languages style={{ width: 10, height: 10 }} />}
+              翻译
+            </button>
           </div>
           <div style={{ flex: 1, padding: '12px 14px', overflowY: 'auto', fontSize: 12, lineHeight: 1.7, color: 'var(--color-text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
             {translatedText || <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>点击翻译按钮查看翻译结果</span>}
