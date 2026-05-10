@@ -449,7 +449,7 @@ fn find_python() -> Result<String, String> {
         }
     }
 
-    Err("未找到可用的 Python 3 环境".into())
+    Err("未找到可用的 Python 环境".into())
 }
 
 /// 获取推理脚本路径

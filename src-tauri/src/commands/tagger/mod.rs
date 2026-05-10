@@ -252,10 +252,39 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
             }
             (has_cuda, true)
         }
-        Err(e) => {
-            emit_line(&e, "error");
-            summary_lines.push(e);
-            (false, false)
+        Err(_) => {
+            // Python 环境未就绪，自动配置
+            emit_line("Python 环境未就绪，正在自动配置...", "info");
+            match python_env::setup_python_env(&app).await {
+                Ok(_) => {
+                    // 配置成功，重新检测
+                    let recheck = tokio::task::spawn_blocking(|| {
+                        inference::check_python_env()
+                    }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
+                    match recheck {
+                        Ok((ort_ver, providers)) => {
+                            emit_line(&format!("✓ 推理环境就绪 (onnxruntime v{})", ort_ver), "success");
+                            let has_cuda = providers.contains("CUDAExecutionProvider");
+                            if has_cuda {
+                                emit_line("✓ CUDA ExecutionProvider 可用", "success");
+                            } else {
+                                emit_line("GPU ExecutionProvider 不可用", "info");
+                            }
+                            (has_cuda, true)
+                        }
+                        Err(e) => {
+                            emit_line(&e, "error");
+                            summary_lines.push(e);
+                            (false, false)
+                        }
+                    }
+                }
+                Err(e) => {
+                    emit_line(&format!("Python 环境配置失败: {}", e), "error");
+                    summary_lines.push(e);
+                    (false, false)
+                }
+            }
         }
     };
 
