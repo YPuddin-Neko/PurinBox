@@ -84,6 +84,7 @@ pub async fn start_llm_tagging(
     let mut success_count = 0u32;
     let mut fail_count = 0u32;
     let mut errors = Vec::new();
+    let mut failed_files: Vec<std::path::PathBuf> = Vec::new();
 
     let client = crate::commands::proxy_config::build_http_client_for_llm()
         .build()
@@ -137,6 +138,8 @@ pub async fn start_llm_tagging(
             message: format!("正在处理: {} ({}/{})", filename, i + 1, total),
         });
 
+        let file_start = std::time::Instant::now();
+
         // 使用 select! 让取消可以立即中断 HTTP 请求
         let tag_result = tokio::select! {
             result = tag_with_llm(&client, file_path, &options) => result,
@@ -148,6 +151,13 @@ pub async fn start_llm_tagging(
             } => {
                 Err("已取消".to_string())
             }
+        };
+
+        let elapsed_ms = file_start.elapsed().as_millis();
+        let elapsed_str = if elapsed_ms >= 1000 {
+            format!("{:.1}s", elapsed_ms as f64 / 1000.0)
+        } else {
+            format!("{}ms", elapsed_ms)
         };
 
         // 取消后立即退出循环
@@ -169,23 +179,23 @@ pub async fn start_llm_tagging(
                 match std::fs::write(&txt_path, &tag_text) {
                     Ok(_) => {
                         success_count += 1;
-                        let tag_count = tag_text.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).count();
                         let _ = app.emit("llm-tagger-progress", ProgressEvent {
                             current: i as u32 + 1, total,
                             filename: filename.clone(),
                             status: "success".to_string(),
-                            message: format!("[完成] {} → {} 个标签", filename, tag_count),
+                            message: format!("[完成] {} ({})", filename, elapsed_str),
                         });
                     }
                     Err(e) => {
                         fail_count += 1;
                         let err_msg = format!("{}: 写入失败 {}", filename, e);
                         errors.push(err_msg.clone());
+                        failed_files.push(file_path.clone());
                         let _ = app.emit("llm-tagger-progress", ProgressEvent {
                             current: i as u32 + 1, total,
                             filename: filename.clone(),
                             status: "error".to_string(),
-                            message: format!("[错误] {}", err_msg),
+                            message: format!("[错误] {} ({})", err_msg, elapsed_str),
                         });
                     }
                 }
@@ -194,13 +204,42 @@ pub async fn start_llm_tagging(
                 fail_count += 1;
                 let err_msg = format!("{}: {}", filename, e);
                 errors.push(err_msg.clone());
+                failed_files.push(file_path.clone());
                 let _ = app.emit("llm-tagger-progress", ProgressEvent {
                     current: i as u32 + 1, total,
                     filename: filename.clone(),
                     status: "error".to_string(),
-                    message: format!("[错误] {}", err_msg),
+                    message: format!("[错误] {} ({})", err_msg, elapsed_str),
                 });
             }
+        }
+    }
+
+    // 将失败的图片复制到 Fail 文件夹
+    if !failed_files.is_empty() {
+        let fail_dir = input_dir.join("Fail");
+        if let Err(e) = std::fs::create_dir_all(&fail_dir) {
+            let _ = app.emit("llm-tagger-progress", ProgressEvent {
+                current: total, total,
+                filename: String::new(),
+                status: "error".to_string(),
+                message: format!("创建 Fail 文件夹失败: {}", e),
+            });
+        } else {
+            let mut copy_count = 0u32;
+            for f in &failed_files {
+                let fname = f.file_name().unwrap_or_default();
+                let dest = fail_dir.join(fname);
+                if std::fs::copy(f, &dest).is_ok() {
+                    copy_count += 1;
+                }
+            }
+            let _ = app.emit("llm-tagger-progress", ProgressEvent {
+                current: total, total,
+                filename: String::new(),
+                status: "info".to_string(),
+                message: format!("已将 {} 张失败图片复制到 Fail 文件夹", copy_count),
+            });
         }
     }
 

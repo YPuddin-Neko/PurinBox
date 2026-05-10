@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { FolderOpen, Play, Loader2, Cpu, Zap, Download, Plus, Check, RefreshCw, ChevronDown, Trash2, Search, FileUp, X } from 'lucide-react';
+import { FolderOpen, Play, Loader2, Cpu, Zap, Download, Plus, Check, RefreshCw, Trash2, Search, FileUp, X } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
 import { useTaskQueue } from './TaskContext';
 import { ConfirmModal } from './Modal';
+import CustomSelect from './CustomSelect';
 
 interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
@@ -220,7 +221,7 @@ export default function AiTaggerTab() {
               <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>模型文件 (.onnx)：</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder="选择 .onnx 文件..." value={nModelPath} onChange={e => setNModelPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseOnnx}><FileUp style={{ width: 14, height: 14 }} /> 浏览...</button></div></div>
               <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>标签映射 (.csv / .json)：</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder="选择标签文件..." value={nTagsPath} onChange={e => setNTagsPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseTags}><FileUp style={{ width: 14, height: 14 }} /> 浏览...</button></div></div>
               <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
-                <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>输入通道：</label><div style={{ position: 'relative' }}><select className="form-input" value={nFormat} onChange={e => setNFormat(e.target.value)} style={{ width: 90, appearance: 'none', paddingRight: 24, cursor: 'pointer' }}><option value="NHWC">NHWC</option><option value="NCHW">NCHW</option></select><ChevronDown style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', width: 12, height: 12, color: 'var(--color-text-tertiary)', pointerEvents: 'none' }} /></div></div>
+                <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>输入通道：</label><CustomSelect value={nFormat} onChange={v => setNFormat(v)} options={[{ value: 'NHWC', label: 'NHWC' }, { value: 'NCHW', label: 'NCHW' }]} compact style={{ width: 90 }} /></div>
                 <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>输入尺寸：</label><input className="form-input" type="number" value={nSize} onChange={e => setNSize(Number(e.target.value))} style={{ width: 80 }} /></div>
                 <button className="btn btn-secondary btn-sm" onClick={autoDetect} disabled={detecting || !nModelPath} style={{ height: 34, whiteSpace: 'nowrap' }}>{detecting ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Search style={{ width: 14, height: 14 }} />} 自动识别</button>
                 <button className="btn btn-primary btn-sm" onClick={handleImport} disabled={importing || !nName || !nModelPath || !nTagsPath} style={{ height: 34 }}>{importing ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Plus style={{ width: 14, height: 14 }} />} 添加</button>
@@ -228,12 +229,8 @@ export default function AiTaggerTab() {
               <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }}>💡 <b>输入通道</b>：NHWC = [批次,高,宽,通道数]（TensorFlow），NCHW = [批次,通道数,高,宽]（PyTorch）。建议使用「自动识别」。</div>
             </div>
           )}
-          <div style={{ position: 'relative' }}>
-            <select className="form-input" value={selectedModel} onChange={e => setSelectedModel(e.target.value)} style={{ width: '100%', appearance: 'none', paddingRight: 32, cursor: 'pointer' }}>
-              {models.map(m => (<option key={m.id} value={m.id}>{m.name} {m.is_downloaded ? '✓' : '⬇'}</option>))}
-            </select>
-            <ChevronDown style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', width: 16, height: 16, color: 'var(--color-text-tertiary)', pointerEvents: 'none' }} />
-          </div>
+          <CustomSelect value={selectedModel} onChange={v => setSelectedModel(v)}
+            options={models.map(m => ({ value: m.id, label: `${m.name} ${m.is_downloaded ? '✓' : '⬇'}` }))} />
           {cur && (
             <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>
               <span>{cur.description}</span>

@@ -134,11 +134,65 @@ fn emit_progress(app: &tauri::AppHandle, message: &str, status: &str) {
     });
 }
 
+/// 检测系统安装的 Python 3（非 standalone）
+fn detect_system_python() -> Option<String> {
+    let candidates = if cfg!(target_os = "windows") {
+        vec!["python3", "python", "py"]
+    } else {
+        vec!["python3", "python"]
+    };
+
+    for name in &candidates {
+        let mut cmd = std::process::Command::new(name);
+        cmd.args(["--version"]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let ver = String::from_utf8_lossy(&output.stdout).to_string()
+                    + &String::from_utf8_lossy(&output.stderr).to_string();
+                if ver.contains("Python 3") {
+                    // 验证可以运行 -m venv
+                    let mut test = std::process::Command::new(name);
+                    test.args(["-c", "import venv"]);
+                    #[cfg(target_os = "windows")]
+                    {
+                        use std::os::windows::process::CommandExt;
+                        test.creation_flags(0x08000000);
+                    }
+                    if test.output().map(|o| o.status.success()).unwrap_or(false) {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // Windows: 尝试常见安装路径
+    #[cfg(target_os = "windows")]
+    {
+        let paths = [
+            r"C:\Python312\python.exe",
+            r"C:\Python311\python.exe",
+            r"C:\Python310\python.exe",
+        ];
+        for p in &paths {
+            if std::path::Path::new(p).exists() {
+                return Some(p.to_string());
+            }
+        }
+    }
+
+    None
+}
+
 /// 完整的 Python 环境设置流程
 pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> {
     SETUP_CANCELLED.store(false, Ordering::SeqCst);
 
-    let python_exe = get_standalone_python();
     let venv_python = get_venv_python();
 
     // 1. 如果 venv 已就绪，直接返回
@@ -146,35 +200,85 @@ pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> 
         return Ok(venv_python.to_string_lossy().to_string());
     }
 
-    // 2. 检查 standalone Python 是否已下载
+    // 2. 优先检测系统 Python
+    if let Some(sys_python) = detect_system_python() {
+        emit_progress(app, &format!("检测到系统 Python: {}", sys_python), "success");
+
+        // 用系统 Python 创建 venv（如果 venv 不存在）
+        if !venv_python.exists() {
+            emit_progress(app, "正在使用系统 Python 创建虚拟环境...", "info");
+            let venv_dir = get_venv_dir();
+            // 确保父目录存在
+            let python_parent = get_env_dir().join("python");
+            std::fs::create_dir_all(&python_parent)
+                .map_err(|e| format!("创建目录失败: {}", e))?;
+
+            let mut cmd = std::process::Command::new(&sys_python);
+            cmd.args(["-m", "venv", &venv_dir.to_string_lossy()]);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+            }
+            let output = cmd.output().map_err(|e| format!("创建 venv 失败: {}", e))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                emit_progress(app, &format!("系统 Python 创建 venv 失败: {}，将下载独立版本", stderr), "info");
+                // 失败则回退到下载 standalone
+                return setup_with_standalone(app).await;
+            }
+            emit_progress(app, "✓ 虚拟环境已创建（使用系统 Python）", "success");
+        }
+
+        if is_cancelled() { return Err("已取消".into()); }
+
+        // 安装依赖
+        emit_progress(app, "正在安装推理依赖 (onnxruntime, numpy, pillow)...", "info");
+        install_deps(app)?;
+
+        if is_cancelled() { return Err("已取消".into()); }
+
+        if !is_ready() {
+            return Err("Python 环境安装后验证失败".into());
+        }
+
+        emit_progress(app, "✓ Python 推理环境准备完成（使用系统 Python）", "success");
+        return Ok(venv_python.to_string_lossy().to_string());
+    }
+
+    // 3. 系统没有 Python，下载 standalone 版本
+    emit_progress(app, "未检测到系统 Python，将下载独立 Python 环境...", "info");
+    setup_with_standalone(app).await
+}
+
+/// 使用 standalone Python 完成环境设置（下载+venv+依赖）
+async fn setup_with_standalone(app: &tauri::AppHandle) -> Result<String, String> {
+    let python_exe = get_standalone_python();
+    let venv_python = get_venv_python();
+
+    // 下载 standalone Python
     if !python_exe.exists() {
         emit_progress(app, "正在下载 Python 运行环境...", "info");
         download_python(app).await?;
     }
 
-    if is_cancelled() {
-        return Err("已取消".into());
-    }
+    if is_cancelled() { return Err("已取消".into()); }
 
-    // 3. 创建 venv
+    // 创建 venv
     if !venv_python.exists() {
         emit_progress(app, "正在创建 Python 虚拟环境...", "info");
         create_venv(app)?;
     }
 
-    if is_cancelled() {
-        return Err("已取消".into());
-    }
+    if is_cancelled() { return Err("已取消".into()); }
 
-    // 4. 安装依赖
+    // 安装依赖
     emit_progress(app, "正在安装推理依赖 (onnxruntime, numpy, pillow)...", "info");
     install_deps(app)?;
 
-    if is_cancelled() {
-        return Err("已取消".into());
-    }
+    if is_cancelled() { return Err("已取消".into()); }
 
-    // 5. 验证
+    // 验证
     if !is_ready() {
         return Err("Python 环境安装后验证失败".into());
     }

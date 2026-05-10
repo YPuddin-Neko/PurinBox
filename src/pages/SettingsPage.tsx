@@ -2,6 +2,7 @@ import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages
 import { useTheme } from '../components/ThemeProvider';
 import { useState, useEffect } from 'react';
 import { ConfirmModal, AlertModal } from '../components/Modal';
+import CustomSelect from '../components/CustomSelect';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
@@ -26,6 +27,7 @@ export default function SettingsPage() {
   const { mode, setMode, monitorInterval, setMonitorInterval } = useTheme();
   const [translateEnabled, setTranslateEnabled] = useState(() => localStorage.getItem('translate_enabled') === 'true');
   const [provider, setProvider] = useState(() => localStorage.getItem('translate_provider') || 'google');
+  const [targetLang, setTargetLang] = useState(() => localStorage.getItem('translate_target_lang') || 'zh-CN');
   // Baidu
   const [baiduAppid, setBaiduAppid] = useState(() => localStorage.getItem('baidu_appid') || '');
   const [baiduKey, setBaiduKey] = useState(() => localStorage.getItem('baidu_key') || '');
@@ -401,12 +403,28 @@ export default function SettingsPage() {
                       {testing ? '测试中...' : testResult ? (testResult.ok ? testResult.msg : '测试失败') : '测试可用性'}
                     </button>
                   </div>
-                  <select className="form-input" value={provider} onChange={e => { changeProvider(e.target.value); setTestResult(null); }}
-                    style={{ fontSize: 12, height: 30, cursor: 'pointer', background: 'var(--color-bg-secondary)', color: 'var(--color-text-primary)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-sm)', padding: '0 10px', width: '100%' }}>
-                    {providerOptions.map(opt => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
+                  <CustomSelect value={provider} onChange={v => { changeProvider(v); setTestResult(null); }} options={providerOptions} compact />
+                </div>
+              </div>
+
+              {/* 目标语言 */}
+              <div style={{ padding: '12px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>目标语言</div>
+                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>翻译结果的目标语言</div>
+                  </div>
+                  <CustomSelect value={targetLang}
+                    onChange={v => { setTargetLang(v); localStorage.setItem('translate_target_lang', v); }}
+                    options={[
+                      { value: 'zh-CN', label: '中文' },
+                      { value: 'en', label: 'English' },
+                      { value: 'ja', label: '日本語' },
+                      { value: 'ko', label: '한국어' },
+                    ]}
+                    compact
+                    style={{ width: 120 }}
+                  />
                 </div>
               </div>
 

@@ -7,7 +7,8 @@ import { AlertModal } from '../components/Modal';
 import {
   Tags, FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,
   Trash2, Image as ImageIcon, BarChart3, CheckCircle2, Loader2,
-  Replace, Filter, ListPlus, PlusCircle, MinusCircle, Languages
+  Replace, Filter, ListPlus, PlusCircle, MinusCircle, Languages, RefreshCw,
+  ArrowUpDown, Hash, BarChart
 } from 'lucide-react';
 import NaturalLangTab from '../components/NaturalLangTab';
 
@@ -66,6 +67,9 @@ export default function TagManagerPage() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const newTagRef = useRef<HTMLInputElement>(null);
+  const [folderPath, setFolderPath] = useState('');
+  const [tagSortBy, setTagSortBy] = useState<'freq'|'name'>('freq');
+  const [tagSortDir, setTagSortDir] = useState<'asc'|'desc'>('desc');
 
   // ── 列宽拖拽 ──
   const [col1W, setCol1W] = useState(220);
@@ -157,7 +161,7 @@ export default function TagManagerPage() {
     try {
       const result = await invoke<{ translations: { source: string; translated: string }[]; cached_count: number; translated_count: number }>('translate_tags', {
         tags: allTags,
-        targetLang: 'zh-CN',
+        targetLang: localStorage.getItem('translate_target_lang') || 'zh-CN',
         provider,
         baiduAppid: localStorage.getItem('baidu_appid') || '',
         baiduKey: localStorage.getItem('baidu_key') || '',
@@ -199,8 +203,29 @@ export default function TagManagerPage() {
         const result = await invoke<CaptionDataset>('load_caption_dataset', { folder: selected as string });
         setNlImages(result.images.map(img => ({ ...img, dirty: false })));
       }
+      setFolderPath(selected as string);
     } catch (e: any) {
       console.error('加载失败:', e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── refresh ──
+  const handleRefresh = async () => {
+    if (!folderPath) return;
+    setLoading(true);
+    try {
+      if (mode === 'danbooru') {
+        const result = await invoke<TagDataset>('load_tag_dataset', { folder: folderPath });
+        setImages(result.images.map(img => ({ ...img, dirty: false })));
+        if (selectedIdx >= result.images.length) setSelectedIdx(result.images.length > 0 ? 0 : -1);
+      } else {
+        const result = await invoke<CaptionDataset>('load_caption_dataset', { folder: folderPath });
+        setNlImages(result.images.map(img => ({ ...img, dirty: false })));
+      }
+    } catch (e: any) {
+      console.error('刷新失败:', e);
     } finally {
       setLoading(false);
     }
@@ -237,10 +262,17 @@ export default function TagManagerPage() {
     const base = tagListMode === 'common'
       ? tagStats.filter(([,c]) => taggedCount > 0 && c === taggedCount)
       : tagStats;
-    if (!globalSearch) return base;
+    // 排序
+    let sorted = [...base];
+    if (tagSortBy === 'freq') {
+      sorted.sort((a,b) => tagSortDir === 'desc' ? b[1] - a[1] : a[1] - b[1]);
+    } else {
+      sorted.sort((a,b) => tagSortDir === 'desc' ? b[0].localeCompare(a[0]) : a[0].localeCompare(b[0]));
+    }
+    if (!globalSearch) return sorted;
     const q=globalSearch.toLowerCase();
-    return base.filter(([t])=>t.includes(q)||getTranslation(t,translations).includes(q));
-  }, [tagStats, globalSearch, tagListMode, taggedCount, translations]);
+    return sorted.filter(([t])=>t.includes(q)||getTranslation(t,translations).includes(q));
+  }, [tagStats, globalSearch, tagListMode, taggedCount, translations, tagSortBy, tagSortDir]);
 
   // ── 标签筛选图片 ──
   const filtered = useMemo(() => {
@@ -517,9 +549,12 @@ export default function TagManagerPage() {
         {/* ─ Col1: Images ─ */}
         <div style={{width:col1W,minWidth:160,maxWidth:500,flexShrink:0,display:'flex',flexDirection:'column',background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',overflow:'hidden'}}>
           <div style={{padding:8,borderBottom:'1px solid var(--color-border)'}}>
-            <div style={{position:'relative',marginBottom:6}}>
-              <Search style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:13,height:13,color:'var(--color-text-tertiary)'}} />
-              <input className="form-input" placeholder="搜索..." value={searchText} onChange={e=>setSearchText(e.target.value)} style={{paddingLeft:28,fontSize:11,height:30}} />
+            <div style={{display:'flex',gap:4,position:'relative',marginBottom:6}}>
+              <div style={{position:'relative',flex:1}}>
+                <Search style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:13,height:13,color:'var(--color-text-tertiary)'}} />
+                <input className="form-input" placeholder="搜索..." value={searchText} onChange={e=>setSearchText(e.target.value)} style={{paddingLeft:28,fontSize:11,height:30}} />
+              </div>
+              {folderPath && <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={loading} title="刷新" style={{width:30,height:30,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><RefreshCw style={{width:13,height:13,animation:loading?'spin 1s linear infinite':undefined}} /></button>}
             </div>
             <div style={{display:'flex',gap:4}}>
               {([{k:'all' as const,l:'全部',n:images.length},{k:'untagged' as const,l:'空',n:images.length-taggedN},{k:'tagged' as const,l:'已标',n:taggedN}]).map(t=>(
@@ -652,7 +687,7 @@ export default function TagManagerPage() {
                 <span style={{fontSize:10,padding:'1px 8px',borderRadius:10,background:'rgba(96,165,250,0.1)',color:'#60a5fa',fontWeight:600}}>{filteredStats.length}</span>
               </div>
               <div style={{display:'flex',alignItems:'center',gap:4}}>
-                <button className="btn btn-ghost btn-sm" title="翻译标签（需在设置中启用）" style={{width:22,height:22,padding:0,display:'flex',alignItems:'center',justifyContent:'center',color:Object.keys(translations).length>0?'#60a5fa':undefined}} onClick={handleTranslate} disabled={images.length===0||localStorage.getItem('translate_enabled')!=='true'||translating}>
+                <button className="btn btn-ghost btn-sm" title="翻译标签" style={{width:22,height:22,padding:0,display:'flex',alignItems:'center',justifyContent:'center',color:Object.keys(translations).length>0?'#60a5fa':undefined}} onClick={handleTranslate} disabled={images.length===0||localStorage.getItem('translate_enabled')!=='true'||translating}>
                   <Languages style={{width:12,height:12}} />
                 </button>
                 <button className="btn btn-ghost btn-sm" style={{fontSize:9,height:22,padding:'0 6px'}} onClick={()=>setTagListMode(m=>m==='all'?'common':'all')} disabled={images.length===0}>
@@ -660,10 +695,22 @@ export default function TagManagerPage() {
                 </button>
               </div>
             </div>
-            <div style={{padding:'8px 10px',borderBottom:'1px solid var(--color-border)'}}>
-              <div style={{position:'relative'}}>
-                <Search style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:12,height:12,color:'var(--color-text-tertiary)'}} />
-                <input className="form-input" placeholder="搜索标签..." value={globalSearch} onChange={e=>setGlobalSearch(e.target.value)} style={{paddingLeft:26,fontSize:11,height:28}} />
+            <div style={{padding:'8px 10px',borderBottom:'1px solid var(--color-border)'}}>  
+              <div style={{display:'flex',gap:4}}>
+                <div style={{position:'relative',flex:1}}>
+                  <Search style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:12,height:12,color:'var(--color-text-tertiary)'}} />
+                  <input className="form-input" placeholder="搜索标签..." value={globalSearch} onChange={e=>setGlobalSearch(e.target.value)} style={{paddingLeft:26,fontSize:11,height:28}} />
+                </div>
+                <button className="btn btn-ghost btn-sm" onClick={()=>setTagSortBy(b=>b==='freq'?'name':'freq')}
+                  title={tagSortBy==='freq'?'按频次排序':'按名称排序'}
+                  style={{width:28,height:28,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:tagSortBy==='freq'?'#60a5fa':'#a78bfa'}}>
+                  {tagSortBy==='freq'?<BarChart style={{width:13,height:13}} />:<Hash style={{width:13,height:13}} />}
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={()=>setTagSortDir(d=>d==='desc'?'asc':'desc')}
+                  title={tagSortDir==='desc'?'降序':'升序'}
+                  style={{width:28,height:28,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:'var(--color-text-tertiary)'}}>
+                  <ArrowUpDown style={{width:13,height:13,transform:tagSortDir==='asc'?'scaleY(-1)':undefined,transition:'transform 0.2s'}} />
+                </button>
               </div>
             </div>
             {tagFilterActive&&<div style={{padding:'4px 10px',background:'linear-gradient(90deg,rgba(124,92,252,0.08),rgba(124,92,252,0.02))',borderBottom:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:6}}>
@@ -744,7 +791,7 @@ export default function TagManagerPage() {
       )}
 
       {mode === 'natural' && (
-        <NaturalLangTab images={nlImages} setImages={setNlImages} />
+        <NaturalLangTab images={nlImages} setImages={setNlImages} onRefresh={folderPath ? handleRefresh : undefined} />
       )}
 
       {/* ═ 批量添加弹窗 ═ */}

@@ -448,14 +448,18 @@ pub async fn translate_tags(
     bing_key: Option<String>,
     bing_region: Option<String>,
     skip_cache: Option<bool>,
+    translate_mode: Option<String>,
 ) -> Result<TranslateResult, String> {
     if tags.is_empty() {
         return Ok(TranslateResult { translations: vec![], cached_count: 0, translated_count: 0 });
     }
 
-    let conn = if skip_cache.unwrap_or(false) { None } else { Some(open_db()?) };
+    // "text" = 自然语言整段翻译，"tags" = Danbooru 标签批量翻译（默认）
+    let is_text_mode = translate_mode.as_deref() == Some("text");
 
-    // 1. 查缓存
+    let conn = if skip_cache.unwrap_or(false) || is_text_mode { None } else { Some(open_db()?) };
+
+    // 1. 查缓存（text 模式跳过）
     let mut cached: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut uncached: Vec<String> = Vec::new();
 
@@ -488,91 +492,152 @@ pub async fn translate_tags(
 
     // 2. 翻译未缓存的
     if !uncached.is_empty() {
-        let prepared: Vec<String> = uncached.iter().map(|t| t.replace('_', " ")).collect();
+        // text 模式：保留原文不做处理；tags 模式：下划线替换为空格
+        let prepared: Vec<String> = if is_text_mode {
+            uncached.clone()
+        } else {
+            uncached.iter().map(|t| t.replace('_', " ")).collect()
+        };
 
+        // text 模式用更长超时（长文本翻译可能较慢）
+        let timeout_secs = if is_text_mode { 30 } else { 15 };
         let client = super::proxy_config::build_http_client()
-            .timeout(std::time::Duration::from_secs(15))
+            .timeout(std::time::Duration::from_secs(timeout_secs))
             .build()
             .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
 
-        // 不同供应商批量大小和 QPS 限制不同
-        let batch_size = match provider.as_str() {
-            "baidu" => 20,   // QPS=1
-            "youdao" => 20,  // QPS 有限
-            "bing" => 25,    // 单次最多 25 个文本
-            _ => 50,         // Google
-        };
+        if is_text_mode {
+            // ═══ 自然语言模式：逐条独立翻译，不拆分结果 ═══
+            for (idx, text) in prepared.iter().enumerate() {
+                let original = &uncached[idx];
+                let single = &[text.clone()];
 
-        for chunk_start in (0..prepared.len()).step_by(batch_size) {
-            let chunk_end = std::cmp::min(chunk_start + batch_size, prepared.len());
-            let chunk = &prepared[chunk_start..chunk_end];
-            let original_chunk = &uncached[chunk_start..chunk_end];
-
-            // 需要 QPS 限制的供应商
-            if chunk_start > 0 && matches!(provider.as_str(), "baidu" | "youdao") {
-                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-            }
-
-            let translated_lines = match provider.as_str() {
-                "baidu" => {
-                    let appid = baidu_appid.as_deref().unwrap_or("");
-                    let key = baidu_key.as_deref().unwrap_or("");
-                    if appid.is_empty() || key.is_empty() {
-                        return Err("百度翻译需要配置 APP ID 和密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                let translated = match provider.as_str() {
+                    "baidu" => {
+                        let appid = baidu_appid.as_deref().unwrap_or("");
+                        let key = baidu_key.as_deref().unwrap_or("");
+                        if appid.is_empty() || key.is_empty() {
+                            return Err("百度翻译需要配置 APP ID 和密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                        }
+                        if idx > 0 { tokio::time::sleep(std::time::Duration::from_millis(1100)).await; }
+                        let results = translate_baidu(&client, single, appid, key).await?;
+                        // 百度按换行拆分了结果，重新合并
+                        results.join("\n")
                     }
-                    translate_baidu(&client, chunk, appid, key).await?
-                }
-                "youdao" => {
-                    let app_key = youdao_app_key.as_deref().unwrap_or("");
-                    let app_secret = youdao_app_secret.as_deref().unwrap_or("");
-                    if app_key.is_empty() || app_secret.is_empty() {
-                        return Err("有道翻译需要配置应用 ID 和应用密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                    "youdao" => {
+                        let app_key = youdao_app_key.as_deref().unwrap_or("");
+                        let app_secret = youdao_app_secret.as_deref().unwrap_or("");
+                        if app_key.is_empty() || app_secret.is_empty() {
+                            return Err("有道翻译需要配置应用 ID 和应用密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                        }
+                        if idx > 0 { tokio::time::sleep(std::time::Duration::from_millis(1100)).await; }
+                        let results = translate_youdao(&client, single, app_key, app_secret).await?;
+                        results.join("\n")
                     }
-                    translate_youdao(&client, chunk, app_key, app_secret).await?
-                }
-                "bing" => {
-                    let key = bing_key.as_deref().unwrap_or("");
-                    if key.is_empty() {
-                        return Err("必应翻译需要配置订阅密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                    "bing" => {
+                        let key = bing_key.as_deref().unwrap_or("");
+                        if key.is_empty() {
+                            return Err("必应翻译需要配置订阅密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                        }
+                        let region = bing_region.as_deref().unwrap_or("");
+                        let results = translate_bing(&client, single, key, region).await?;
+                        results.join("")
                     }
-                    let region = bing_region.as_deref().unwrap_or("");
-                    translate_bing(&client, chunk, key, region).await?
-                }
-                _ => {
-                    translate_google(&client, chunk, &target_lang).await?
-                }
-            };
-
-            for (i, original) in original_chunk.iter().enumerate() {
-                let tr = translated_lines
-                    .get(i)
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_default();
-
-                let final_tr = if tr.to_lowercase() == original.replace('_', " ").to_lowercase() {
-                    String::new()
-                } else {
-                    tr
+                    _ => {
+                        let results = translate_google(&client, single, &target_lang).await?;
+                        results.join("\n")
+                    }
                 };
 
-                if let Some(ref db) = conn {
-                    let _ = db.execute(
-                        "INSERT OR REPLACE INTO translations (tag, translated, lang) VALUES (?1, ?2, ?3)",
-                        rusqlite::params![original, &final_tr, &target_lang],
-                    );
+                cached.insert(original.clone(), translated.trim().to_string());
+                translated_count += 1;
+
+                {
+                    use tauri::Emitter;
+                    let _ = app.emit("translate-progress", serde_json::json!({
+                        "current": cached_count + translated_count,
+                        "total": total_count
+                    }));
+                }
+            }
+        } else {
+            // ═══ Danbooru 标签模式：批量翻译 ═══
+            let batch_size = match provider.as_str() {
+                "baidu" => 20,
+                "youdao" => 20,
+                "bing" => 25,
+                _ => 50,
+            };
+
+            for chunk_start in (0..prepared.len()).step_by(batch_size) {
+                let chunk_end = std::cmp::min(chunk_start + batch_size, prepared.len());
+                let chunk = &prepared[chunk_start..chunk_end];
+                let original_chunk = &uncached[chunk_start..chunk_end];
+
+                if chunk_start > 0 && matches!(provider.as_str(), "baidu" | "youdao") {
+                    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
                 }
 
-                cached.insert(original.clone(), final_tr);
-                translated_count += 1;
-            }
+                let translated_lines = match provider.as_str() {
+                    "baidu" => {
+                        let appid = baidu_appid.as_deref().unwrap_or("");
+                        let key = baidu_key.as_deref().unwrap_or("");
+                        if appid.is_empty() || key.is_empty() {
+                            return Err("百度翻译需要配置 APP ID 和密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                        }
+                        translate_baidu(&client, chunk, appid, key).await?
+                    }
+                    "youdao" => {
+                        let app_key = youdao_app_key.as_deref().unwrap_or("");
+                        let app_secret = youdao_app_secret.as_deref().unwrap_or("");
+                        if app_key.is_empty() || app_secret.is_empty() {
+                            return Err("有道翻译需要配置应用 ID 和应用密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                        }
+                        translate_youdao(&client, chunk, app_key, app_secret).await?
+                    }
+                    "bing" => {
+                        let key = bing_key.as_deref().unwrap_or("");
+                        if key.is_empty() {
+                            return Err("必应翻译需要配置订阅密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                        }
+                        let region = bing_region.as_deref().unwrap_or("");
+                        translate_bing(&client, chunk, key, region).await?
+                    }
+                    _ => {
+                        translate_google(&client, chunk, &target_lang).await?
+                    }
+                };
 
-            // 发送翻译批次进度
-            {
-                use tauri::Emitter;
-                let _ = app.emit("translate-progress", serde_json::json!({
-                    "current": cached_count + translated_count,
-                    "total": total_count
-                }));
+                for (i, original) in original_chunk.iter().enumerate() {
+                    let tr = translated_lines
+                        .get(i)
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default();
+
+                    let final_tr = if tr.to_lowercase() == original.replace('_', " ").to_lowercase() {
+                        String::new()
+                    } else {
+                        tr
+                    };
+
+                    if let Some(ref db) = conn {
+                        let _ = db.execute(
+                            "INSERT OR REPLACE INTO translations (tag, translated, lang) VALUES (?1, ?2, ?3)",
+                            rusqlite::params![original, &final_tr, &target_lang],
+                        );
+                    }
+
+                    cached.insert(original.clone(), final_tr);
+                    translated_count += 1;
+                }
+
+                {
+                    use tauri::Emitter;
+                    let _ = app.emit("translate-progress", serde_json::json!({
+                        "current": cached_count + translated_count,
+                        "total": total_count
+                    }));
+                }
             }
         }
     }

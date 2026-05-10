@@ -1,0 +1,186 @@
+/* ── Custom Select ── */
+.cs-root {
+  position: relative;
+  width: 100%;
+  user-select: none;
+}
+
+.cs-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-input);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  min-height: 34px;
+}
+
+.cs-root:focus {
+  outline: none;
+}
+.cs-root:focus .cs-trigger,
+.cs-open .cs-trigger {
+  border-color: var(--color-accent-primary);
+  box-shadow: 0 0 0 3px rgba(124, 92, 252, 0.1);
+}
+
+.cs-trigger:hover {
+  border-color: var(--color-accent-primary);
+}
+
+.cs-disabled .cs-trigger {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cs-value {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.cs-placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.cs-arrow {
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.cs-arrow-open {
+  transform: rotate(180deg);
+}
+
+/* Dropdown */
+.cs-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.35),
+    0 2px 8px rgba(0, 0, 0, 0.2);
+  padding: 4px;
+  animation: cs-slide-in 0.15s ease;
+}
+
+@keyframes cs-slide-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.cs-dropdown::-webkit-scrollbar {
+  width: 5px;
+}
+.cs-dropdown::-webkit-scrollbar-track {
+  background: transparent;
+}
+.cs-dropdown::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+/* Option */
+.cs-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: calc(var(--radius-sm) - 2px);
+  cursor: pointer;
+  transition: all 0.1s;
+}
+
+.cs-option:hover {
+  background: rgba(124, 92, 252, 0.08);
+}
+
+.cs-option.active {
+  background: rgba(124, 92, 252, 0.12);
+  color: #a78bfa;
+}
+
+.cs-option-label {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+
+.cs-option.active .cs-option-label {
+  color: #a78bfa;
+  font-weight: 600;
+}
+
+.cs-option-check {
+  width: 14px;
+  height: 14px;
+  color: #7c5cfc;
+  flex-shrink: 0;
+}
+
+.cs-empty {
+  padding: 12px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+/* ── Compact mode ── */
+.cs-compact .cs-trigger {
+  min-height: 28px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+.cs-compact .cs-value {
+  font-size: 11px;
+}
+.cs-compact .cs-arrow {
+  width: 12px;
+  height: 12px;
+}
+.cs-compact .cs-option {
+  padding: 5px 8px;
+}
+.cs-compact .cs-option-label {
+  font-size: 11px;
+}
+.cs-compact .cs-option-check {
+  width: 12px;
+  height: 12px;
+}
+
+/* ── Light theme ── */
+[data-theme="light"] .cs-dropdown {
+  background: var(--color-bg-primary);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.12),
+    0 2px 8px rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .cs-option:hover {
+  background: rgba(124, 92, 252, 0.06);
+}
+[data-theme="light"] .cs-option.active {
+  background: rgba(124, 92, 252, 0.1);
+}

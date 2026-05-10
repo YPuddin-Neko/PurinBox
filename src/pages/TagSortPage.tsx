@@ -4,11 +4,13 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   ArrowUpDown, FolderOpen, FolderOutput, Play, Loader2, Globe, Key, Bot,
-  RefreshCw, ChevronDown, MessageSquare, StopCircle, Timer, Layers,
-  CheckCircle2, XCircle, Info, ScrollText, Trash2, AlertTriangle, Save, Thermometer
+  RefreshCw, MessageSquare, StopCircle, Timer, Layers,
+  CheckCircle2, XCircle, Info, ScrollText, Trash2, AlertTriangle, Save, Thermometer,
+  Eye, EyeOff
 } from 'lucide-react';
 import { LogEntry, getTimeStr } from '../components/ProgressLog';
 import { useTaskQueue } from '../components/TaskContext';
+import CustomSelect from '../components/CustomSelect';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -54,6 +56,7 @@ export default function TagSortPage() {
   const [elapsed, setElapsed] = useState('');
   const [errorFiles, setErrorFiles] = useState<string[]>([]);
   const [warnFiles, setWarnFiles] = useState<string[]>([]);
+  const [showKey, setShowKey] = useState(false);
 
   const PRESETS: Record<string, { label: string; url: string }> = {
     openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
@@ -306,7 +309,12 @@ export default function TagSortPage() {
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Key style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> API Key</label>
-                <input className="form-input" type="password" placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} />
+                <div style={{ position: 'relative' }}>
+                  <input className="form-input" type={showKey ? 'text' : 'password'} placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} style={{ paddingRight: 32 }} />
+                  <button onClick={() => setShowKey(!showKey)} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', display: 'flex', padding: 2 }}>
+                    {showKey ? <EyeOff style={{ width: 14, height: 14 }} /> : <Eye style={{ width: 14, height: 14 }} />}
+                  </button>
+                </div>
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -316,13 +324,8 @@ export default function TagSortPage() {
                   </button>
                 </label>
                 {modelList.length > 0 ? (
-                  <div style={{ position: 'relative' }}>
-                    <select className="form-input" value={modelName} onChange={e => setModelName(e.target.value)}
-                      style={{ width: '100%', appearance: 'none', paddingRight: 32, cursor: 'pointer' }}>
-                      {modelList.map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                    <ChevronDown style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, color: 'var(--color-text-tertiary)', pointerEvents: 'none' }} />
-                  </div>
+                  <CustomSelect value={modelName} onChange={v => setModelName(v)}
+                    options={modelList.map(m => ({ value: m, label: m }))} />
                 ) : (
                   <input className="form-input" placeholder="模型名称..." value={modelName} onChange={e => setModelName(e.target.value)} />
                 )}
@@ -406,7 +409,17 @@ export default function TagSortPage() {
           <div className="progress-section">
             <div className="progress-header">
               <span className="progress-label">{isDone ? '处理完成' : '处理进度'}</span>
-              <span className="progress-percent">{Math.round(progress)}%</span>
+              <span className="progress-percent">
+                {(() => {
+                  if (!startTime || pCur <= 0) return null;
+                  const el = (Date.now() - startTime) / 1000;
+                  if (el < 0.5) return null;
+                  const spd = pCur / el;
+                  const txt = spd >= 1 ? `${spd.toFixed(1)} it/s` : `${(1 / spd).toFixed(1)} s/it`;
+                  return <span style={{ marginRight: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{txt}</span>;
+                })()}
+                {Math.round(progress)}%
+              </span>
             </div>
             <div className="progress-bar-lg">
               <div className={`progress-fill-lg ${isDone ? (hasErr ? 'has-error' : 'done') : ''}`} style={{ width: `${progress}%` }} />

@@ -1,10 +1,15 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { FolderOpen, Play, Loader2, Globe, Key, MessageSquare, Bot, RefreshCw, ChevronDown, Thermometer, Hash, StopCircle, Save, ImageIcon } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
+import {
+  FolderOpen, Play, Loader2, Globe, Key, MessageSquare, Bot,
+  RefreshCw, Thermometer, Hash, StopCircle, Save, ImageIcon,
+  CheckCircle2, XCircle, Info, ScrollText, Trash2, Eye, EyeOff
+} from 'lucide-react';
+import { LogEntry, getTimeStr } from './ProgressLog';
 import { useTaskQueue } from './TaskContext';
+import CustomSelect from './CustomSelect';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -36,6 +41,12 @@ export default function LlmTaggerTab() {
   const [imageSize, setImageSize] = useState('1024');
   const [topP, setTopP] = useState('');
   const [skipExisting, setSkipExisting] = useState(false);
+  const [showKey, setShowKey] = useState(false);
+  const [successCnt, setSuccessCnt] = useState(0);
+  const [failCnt, setFailCnt] = useState(0);
+  const [startTime, setStartTime] = useState<number>(0);
+  const [elapsed, setElapsed] = useState('');
+  const [errorFiles, setErrorFiles] = useState<string[]>([]);
 
   const PRESETS: Record<string, { label: string; url: string }> = {
     openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
@@ -72,8 +83,14 @@ export default function LlmTaggerTab() {
       if (cancelled) return;
       const p = e.payload; setPCur(p.current); setPTot(p.total);
       if (p.total > 0) setProgress((p.current / p.total) * 100);
-      if (p.status === 'done') setIsDone(true);
-      if (p.status === 'error') setHasErr(true);
+      if (p.status === 'done') { setIsDone(true); setProcessing(false); }
+      if (p.status === 'error') {
+        setHasErr(true);
+        setFailCnt(c => c + 1);
+        const m = p.message.match(/\[错误\] ([^:(]+)/);
+        if (m) setErrorFiles(prev => [...prev, m[1].trim()]);
+      }
+      if (p.status === 'success') setSuccessCnt(c => c + 1);
       setLogs(prev => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }]);
     }).then(fn => {
       if (cancelled) { fn(); } else { unlisten = fn; }
@@ -104,6 +121,7 @@ export default function LlmTaggerTab() {
   const handleStart = async () => {
     if (!inputPath || !endpoint || !modelName) return;
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
+    setSuccessCnt(0); setFailCnt(0); setErrorFiles([]); setStartTime(Date.now()); setElapsed('');
     addTask('llm-tagger', 'LLM 打标');
     setLogs([{ time: getTimeStr(), message: `开始 LLM 打标 | 模型: ${modelName} | API: ${endpoint}`, status: 'info' }]);
     try {
@@ -123,7 +141,71 @@ export default function LlmTaggerTab() {
     } finally { setProcessing(false); }
   };
 
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); }, []);
+  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); setSuccessCnt(0); setFailCnt(0); setErrorFiles([]); setElapsed(''); }, []);
+
+  // 耗时计时器
+  useEffect(() => {
+    if (!processing || startTime === 0) return;
+    const timer = setInterval(() => {
+      const sec = Math.floor((Date.now() - startTime) / 1000);
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      setElapsed(m > 0 ? `${m}分${s}秒` : `${s}秒`);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [processing, startTime]);
+
+  // 完成后输出失败文件摘要
+  useEffect(() => {
+    if (!isDone) return;
+    if (startTime > 0) {
+      const sec = Math.floor((Date.now() - startTime) / 1000);
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      setElapsed(m > 0 ? `${m}分${s}秒` : `${s}秒`);
+    }
+    if (errorFiles.length > 0) {
+      setLogs(p => [...p, { time: getTimeStr(), message: `❌ 失败文件: ${errorFiles.join(', ')}`, status: 'error' }]);
+    }
+  }, [isDone]);
+
+  // 日志自动滚动
+  const logContainerRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
+  const handleLogScroll = () => {
+    const el = logContainerRef.current;
+    if (!el) return;
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  };
+  useEffect(() => {
+    if (isNearBottomRef.current && logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [logs.length]);
+
+  // 处理速度
+  const speedStartRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (pCur === 1 && !speedStartRef.current) speedStartRef.current = Date.now();
+    if (pCur === 0) speedStartRef.current = null;
+  }, [pCur]);
+  const getSpeed = () => {
+    if (!speedStartRef.current || pCur <= 0) return '';
+    const el = (Date.now() - speedStartRef.current) / 1000;
+    if (el < 0.5) return '';
+    const spd = pCur / el;
+    return spd >= 1 ? `${spd.toFixed(1)} it/s` : `${(1 / spd).toFixed(1)} s/it`;
+  };
+  const speed = getSpeed();
+
+  const statusIcon = (status: LogEntry['status']) => {
+    switch (status) {
+      case 'success': return <CheckCircle2 className="log-entry-icon success" />;
+      case 'error': return <XCircle className="log-entry-icon error" />;
+      case 'processing': return <Loader2 className="log-entry-icon processing" />;
+      default: return <Info className="log-entry-icon info" />;
+    }
+  };
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-5)' }}>
@@ -174,7 +256,12 @@ export default function LlmTaggerTab() {
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Key style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> API Key</label>
-              <input className="form-input" type="password" placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} />
+              <div style={{ position: 'relative' }}>
+                <input className="form-input" type={showKey ? 'text' : 'password'} placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} style={{ paddingRight: 32 }} />
+                <button onClick={() => setShowKey(!showKey)} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', display: 'flex', padding: 2 }}>
+                  {showKey ? <EyeOff style={{ width: 14, height: 14 }} /> : <Eye style={{ width: 14, height: 14 }} />}
+                </button>
+              </div>
             </div>
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -184,13 +271,8 @@ export default function LlmTaggerTab() {
                 </button>
               </label>
               {modelList.length > 0 ? (
-                <div style={{ position: 'relative' }}>
-                  <select className="form-input" value={modelName} onChange={e => setModelName(e.target.value)}
-                    style={{ width: '100%', appearance: 'none', paddingRight: 32, cursor: 'pointer' }}>
-                    {modelList.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                  <ChevronDown style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, color: 'var(--color-text-tertiary)', pointerEvents: 'none' }} />
-                </div>
+                <CustomSelect value={modelName} onChange={v => setModelName(v)}
+                  options={modelList.map(m => ({ value: m, label: m }))} />
               ) : (
                 <input className="form-input" placeholder="模型名称..." value={modelName} onChange={e => setModelName(e.target.value)} />
               )}
@@ -281,7 +363,45 @@ export default function LlmTaggerTab() {
           )}
         </div>
 
-        <ProgressLog progress={progress} current={pCur} total={pTot} logs={logs} isDone={isDone} hasError={hasErr} onClearLogs={clearLogs} />
+        {/* 自定义进度日志 */}
+        <div className="progress-section">
+          <div className="progress-header">
+            <span className="progress-label">{isDone ? '处理完成' : '处理进度'}</span>
+            <span className="progress-percent">
+              {speed && <span style={{ marginRight: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{speed}</span>}
+              {Math.round(progress)}%
+            </span>
+          </div>
+          <div className="progress-bar-lg">
+            <div className={`progress-fill-lg ${isDone ? (hasErr ? 'has-error' : 'done') : ''}`} style={{ width: `${progress}%` }} />
+          </div>
+          <div className="progress-count">{pCur} / {pTot} 个文件</div>
+
+          <div className="log-panel" style={{ marginTop: 'var(--space-4)' }}>
+            <div className="log-panel-header">
+              <div className="log-panel-title"><ScrollText style={{ width: 14, height: 14 }} /> 处理日志</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', fontSize: 12 }}>
+                {elapsed && <span style={{ color: 'var(--color-text-tertiary)' }}>⏱ {elapsed}</span>}
+                {successCnt > 0 && <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: '#4ade80' }}><CheckCircle2 style={{ width: 12, height: 12 }} /> {successCnt}</span>}
+                {failCnt > 0 && <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: '#f87171' }}><XCircle style={{ width: 12, height: 12 }} /> {failCnt}</span>}
+                <span className="log-panel-count">{logs.length} 条</span>
+                <button className="btn btn-ghost btn-sm" onClick={clearLogs} style={{ padding: '2px 6px' }} title="清空日志"><Trash2 style={{ width: 12, height: 12 }} /></button>
+              </div>
+            </div>
+
+            <div className="log-content" ref={logContainerRef} onScroll={handleLogScroll}>
+              {logs.length === 0 ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>暂无日志</div>
+              ) : logs.map((log, i) => (
+                <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
+                  <span className="log-entry-time">{log.time}</span>
+                  {statusIcon(log.status)}
+                  <span className={`log-entry-message ${log.status}`}>{log.message}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
