@@ -364,7 +364,7 @@ pub async fn start_tagging(
             let _ = app.emit("tagger-progress", ProgressEvent {
                 current: 0, total: 0, filename: String::new(),
                 status: "info".to_string(),
-                message: "未检测到 Python 推理环境，正在自动安装...".to_string(),
+                message: "Python 环境未就绪，正在自动配置...".to_string(),
             });
             python_env::setup_python_env(&app).await?;
         }

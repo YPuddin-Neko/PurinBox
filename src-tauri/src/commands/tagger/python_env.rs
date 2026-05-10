@@ -135,7 +135,8 @@ fn emit_progress(app: &tauri::AppHandle, message: &str, status: &str) {
 }
 
 /// 检测系统安装的 Python 3（非 standalone）
-fn detect_system_python() -> Option<String> {
+/// 返回 (命令/路径, 版本号)
+fn detect_system_python() -> Option<(String, String)> {
     let candidates = if cfg!(target_os = "windows") {
         vec!["python3", "python", "py"]
     } else {
@@ -152,9 +153,11 @@ fn detect_system_python() -> Option<String> {
         }
         if let Ok(output) = cmd.output() {
             if output.status.success() {
-                let ver = String::from_utf8_lossy(&output.stdout).to_string()
+                let ver_output = String::from_utf8_lossy(&output.stdout).to_string()
                     + &String::from_utf8_lossy(&output.stderr).to_string();
-                if ver.contains("Python 3") {
+                if ver_output.contains("Python 3") {
+                    // 提取版本号
+                    let version = ver_output.trim().to_string();
                     // 验证可以运行 -m venv
                     let mut test = std::process::Command::new(name);
                     test.args(["-c", "import venv"]);
@@ -164,7 +167,9 @@ fn detect_system_python() -> Option<String> {
                         test.creation_flags(0x08000000);
                     }
                     if test.output().map(|o| o.status.success()).unwrap_or(false) {
-                        return Some(name.to_string());
+                        // 获取实际路径
+                        let real_path = resolve_python_path(name);
+                        return Some((real_path, version));
                     }
                 }
             }
@@ -181,12 +186,56 @@ fn detect_system_python() -> Option<String> {
         ];
         for p in &paths {
             if std::path::Path::new(p).exists() {
-                return Some(p.to_string());
+                // 获取版本号
+                let mut cmd = std::process::Command::new(p);
+                cmd.args(["--version"]);
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+                let version = cmd.output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|_| "Python 3".to_string());
+                return Some((p.to_string(), version));
             }
         }
     }
 
     None
+}
+
+/// 解析 Python 命令的实际可执行文件路径
+fn resolve_python_path(name: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = std::process::Command::new("where");
+        cmd.arg(name);
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout);
+                if let Some(first_line) = path.lines().next() {
+                    let p = first_line.trim();
+                    if !p.is_empty() {
+                        return p.to_string();
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = std::process::Command::new("which");
+        cmd.arg(name);
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return path;
+                }
+            }
+        }
+    }
+    name.to_string()
 }
 
 /// 完整的 Python 环境设置流程
@@ -201,8 +250,8 @@ pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> 
     }
 
     // 2. 优先检测系统 Python
-    if let Some(sys_python) = detect_system_python() {
-        emit_progress(app, &format!("检测到系统 Python: {}", sys_python), "success");
+    if let Some((sys_python, sys_version)) = detect_system_python() {
+        emit_progress(app, &format!("检测到系统 Python: {} ({})", sys_version, sys_python), "success");
 
         // 用系统 Python 创建 venv（如果 venv 不存在）
         if !venv_python.exists() {
