@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   FolderOpen, Play, Loader2, Globe, Key, MessageSquare, Bot,
@@ -41,6 +41,8 @@ export default function LlmTaggerTab() {
   const [imageSize, setImageSize] = useState('1024');
   const [topP, setTopP] = useState('');
   const [skipExisting, setSkipExisting] = useState(false);
+  const [outputFormat, setOutputFormat] = useState<'txt' | 'json'>('txt');
+  const [jsonSimplified, setJsonSimplified] = useState(()=>localStorage.getItem('tagger_json_simplified')==='true');
   const [showKey, setShowKey] = useState(false);
   const [successCnt, setSuccessCnt] = useState(0);
   const [failCnt, setFailCnt] = useState(0);
@@ -78,8 +80,7 @@ export default function LlmTaggerTab() {
 
   useEffect(() => {
     let cancelled = false;
-    let unlisten: UnlistenFn | null = null;
-    listen<ProgressPayload>('llm-tagger-progress', (e) => {
+    const listenPromise = listen<ProgressPayload>('llm-tagger-progress', (e) => {
       if (cancelled) return;
       const p = e.payload; setPCur(p.current); setPTot(p.total);
       if (p.total > 0) setProgress((p.current / p.total) * 100);
@@ -92,10 +93,8 @@ export default function LlmTaggerTab() {
       }
       if (p.status === 'success') setSuccessCnt(c => c + 1);
       setLogs(prev => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }]);
-    }).then(fn => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
     });
-    return () => { cancelled = true; unlisten?.(); };
+    return () => { cancelled = true; listenPromise.then(fn => fn()); };
   }, []);
 
   const handleFetchModels = async () => {
@@ -133,6 +132,8 @@ export default function LlmTaggerTab() {
           image_size: parseInt(imageSize) || 1024,
           top_p: parseFloat(topP) || 0,
           skip_existing: skipExisting,
+          output_format: outputFormat,
+          json_simplified: jsonSimplified,
         },
       });
     } catch (e: any) {
@@ -304,7 +305,7 @@ export default function LlmTaggerTab() {
                 <input className="form-input" type="number" min="-1" max="8192" step="1" value={maxTokens} onChange={e => setMaxTokens(e.target.value)} placeholder="-1 为不限制" />
               </div>
             </div>
-            {/* 跳过已有描述 */}
+            {/* 跳过已有描述 + 输出格式 */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <div onClick={() => setSkipExisting(!skipExisting)} style={{
                 width: 36, height: 20, borderRadius: 10, cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
@@ -318,6 +319,19 @@ export default function LlmTaggerTab() {
               <label className="form-label" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} onClick={() => setSkipExisting(!skipExisting)}>
                 跳过已有描述
               </label>
+              <div style={{ flex: 1 }} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+                <span style={{ color: 'var(--color-text-tertiary)', fontWeight: 500 }}>输出格式</span>
+                {(['txt', 'json'] as const).map(fmt => (
+                  <button key={fmt} onClick={() => setOutputFormat(fmt)} style={{ padding: '2px 10px', borderRadius: 'var(--radius-sm)', border: `1px solid ${outputFormat === fmt ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: outputFormat === fmt ? 'rgba(124,92,252,0.08)' : 'transparent', color: outputFormat === fmt ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>.{fmt}</button>
+                ))}
+                {outputFormat==='json'&&(
+                  <select className="form-input" value={jsonSimplified?'simplified':'full'} onChange={e=>{const v=e.target.value==='simplified';setJsonSimplified(v);localStorage.setItem('tagger_json_simplified',String(v));}} style={{fontSize:10,height:24,padding:'0 6px',width:'auto',marginLeft:2}}>
+                    <option value="full">完整格式</option>
+                    <option value="simplified">简化格式</option>
+                  </select>
+                )}
+              </div>
             </div>
             {/* System Prompt */}
             <div className="form-group" style={{ marginBottom: 0 }}>

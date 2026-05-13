@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # 1. 先创建 GitHub Release（带更新日志）
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.id }}
+      upload_url: ${{ steps.create.outputs.upload_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create Release
+        id: create
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'PurinBox ${{ github.ref_name }}'
+          draft: false
+          prerelease: false
+          body: |
+            ## ✨ 新功能
+
+            - 标签管理支持 JSON 格式标签文件
+            - 新增图片超分工具
+            - 新增图片聚类工具
+            - 新增图片去重工具
+            - 新增图片裁切工具
+            - 新增三分法裁切工具
+            - 新增透视变换工具
+            - 新增模糊/噪点工具
+
+            ## 🔨 改进
+
+            - 日志组件新增下载进度条、速度显示、警告状态、耗时计时
+
+            ## 🐛 修复
+
+            - 修复 CL Tagger model 类别错误使用 argmax
+            - 修复 CL Tagger copyright/artist 使用了错误的阈值
+            - 修复 JSON 打标 quality/rating/model 标签混入 tags 列表
+            - 修复打标 count 标签互相覆盖（如 1girl 被 solo 覆盖）
+
+  # 2. 构建 Windows
+  build-windows:
+    needs: create-release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+
+  # 3. 构建 macOS (Apple Silicon + Intel)
+  build-macos:
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            arch: arm64
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --target ${{ matrix.target }}

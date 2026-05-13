@@ -1,11 +1,14 @@
-import { useEffect, useRef } from 'react';
-import { CheckCircle2, XCircle, Loader2, Info, ScrollText, Trash2 } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { CheckCircle2, XCircle, Loader2, Info, ScrollText, Trash2, Download, Timer, AlertTriangle } from 'lucide-react';
 import '../styles/progress.css';
 
 export interface LogEntry {
   time: string;
   message: string;
-  status: 'success' | 'error' | 'processing' | 'info';
+  status: 'success' | 'error' | 'processing' | 'info' | 'download' | 'warning';
+  /** 下载专用字段 */
+  dlPercent?: number;
+  dlSpeed?: string;
 }
 
 interface ProgressLogProps {
@@ -16,6 +19,8 @@ interface ProgressLogProps {
   isDone: boolean;
   hasError: boolean;
   onClearLogs?: () => void;
+  /** 外部传入的开始时间戳，优先使用 */
+  externalStartTime?: number;
 }
 
 function getTimeStr(): string {
@@ -23,21 +28,48 @@ function getTimeStr(): string {
   return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 }
 
+function formatElapsed(ms: number): string {
+  const sec = Math.floor(ms / 1000);
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+}
+
 export { getTimeStr };
 
-export default function ProgressLog({ progress, current, total, logs, isDone, hasError, onClearLogs }: ProgressLogProps) {
+export default function ProgressLog({ progress, current, total, logs, isDone, hasError, onClearLogs, externalStartTime }: ProgressLogProps) {
   const logEndRef = useRef<HTMLDivElement>(null);
-  const startTimeRef = useRef<number | null>(null);
+  const [startTime, setStartTime] = useState<number>(0);
+  const [elapsed, setElapsed] = useState('');
 
-  // 记录开始时间
+  // 记录开始时间（外部优先）
   useEffect(() => {
-    if (current === 1 && !startTimeRef.current) {
-      startTimeRef.current = Date.now();
+    if (externalStartTime && externalStartTime > 0) {
+      setStartTime(externalStartTime);
+    } else if (current >= 1 && startTime === 0) {
+      setStartTime(Date.now());
     }
-    if (current === 0) {
-      startTimeRef.current = null;
+    if (current === 0 && !externalStartTime) {
+      setStartTime(0);
+      setElapsed('');
     }
-  }, [current]);
+  }, [current, startTime, externalStartTime]);
+
+  // 实时计时器
+  useEffect(() => {
+    if (startTime === 0 || isDone) return;
+    const timer = setInterval(() => {
+      setElapsed(formatElapsed(Date.now() - startTime));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [startTime, isDone]);
+
+  // 完成时定格耗时
+  useEffect(() => {
+    if (isDone && startTime > 0) {
+      setElapsed(formatElapsed(Date.now() - startTime));
+    }
+  }, [isDone, startTime]);
 
   // Auto-scroll to bottom only if user is near bottom
   const logContainerRef = useRef<HTMLDivElement>(null);
@@ -53,14 +85,14 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
     if (isNearBottomRef.current && logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-  }, [logs.length]);
+  }, [logs.length, logs[logs.length - 1]?.dlPercent]);
 
   // 计算速度
   const getSpeed = () => {
-    if (!startTimeRef.current || current <= 0) return '';
-    const elapsed = (Date.now() - startTimeRef.current) / 1000;
-    if (elapsed < 0.5) return '';
-    const speed = current / elapsed;
+    if (startTime === 0 || current <= 0) return '';
+    const el = (Date.now() - startTime) / 1000;
+    if (el < 0.5) return '';
+    const speed = current / el;
     return speed >= 1 ? `${speed.toFixed(1)} it/s` : `${(1 / speed).toFixed(1)} s/it`;
   };
 
@@ -74,6 +106,10 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
         return <XCircle className="log-entry-icon error" />;
       case 'processing':
         return <Loader2 className="log-entry-icon processing" />;
+      case 'download':
+        return <Download className="log-entry-icon info" style={{ animation: 'pulse 1.5s infinite' }} />;
+      case 'warning':
+        return <AlertTriangle className="log-entry-icon" style={{ color: '#fbbf24' }} />;
       case 'info':
       default:
         return <Info className="log-entry-icon info" />;
@@ -110,6 +146,12 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
               处理日志
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+              {elapsed && (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                  <Timer style={{ width: 11, height: 11 }} />
+                  {elapsed}
+                </span>
+              )}
               <span className="log-panel-count">{logs.length} 条</span>
               {onClearLogs && (
                 <button
@@ -127,11 +169,28 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
             {logs.length === 0 ? (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>暂无日志</div>
             ) : logs.map((log, i) => (
-              <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
-                <span className="log-entry-time">{log.time}</span>
-                {statusIcon(log.status)}
-                <span className={`log-entry-message ${log.status}`}>{log.message}</span>
-              </div>
+              log.status === 'download' && log.dlPercent != null ? (
+                <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)' }}>
+                    <span className="log-entry-time">{log.time}</span>
+                    {statusIcon(log.status)}
+                    <span className="log-entry-message info">{log.message}</span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 90 }}>
+                    <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
+                      <div style={{ height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #7c5cfc, #60a5fa)', width: `${log.dlPercent}%`, transition: 'width 0.3s ease' }} />
+                    </div>
+                    <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#60a5fa', fontSize: 10, minWidth: 36, textAlign: 'right', flexShrink: 0 }}>{log.dlPercent.toFixed(1)}%</span>
+                    {log.dlSpeed && <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>{log.dlSpeed}</span>}
+                  </div>
+                </div>
+              ) : (
+                <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
+                  <span className="log-entry-time">{log.time}</span>
+                  {statusIcon(log.status)}
+                  <span className={`log-entry-message ${log.status}`}>{log.message}</span>
+                </div>
+              )
             ))}
             <div ref={logEndRef} />
           </div>

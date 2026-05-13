@@ -2,9 +2,12 @@ use image::imageops::FilterType;
 use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use super::{collect_image_files, ProcessResult, ProgressEvent};
+
+static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScaleOptions {
@@ -18,11 +21,17 @@ pub struct ScaleOptions {
 
 #[tauri::command]
 pub async fn scale_images(app: tauri::AppHandle, options: ScaleOptions) -> Result<ProcessResult, String> {
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
     tokio::task::spawn_blocking(move || {
         scale_images_sync(&app, &options)
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
+#[tauri::command]
+pub fn cancel_scale() {
+    CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
 fn scale_images_sync(app: &tauri::AppHandle, options: &ScaleOptions) -> Result<ProcessResult, String> {
@@ -41,6 +50,14 @@ fn scale_images_sync(app: &tauri::AppHandle, options: &ScaleOptions) -> Result<P
     let mut errors = Vec::new();
 
     for (i, file_path) in files.iter().enumerate() {
+        if CANCEL_FLAG.load(Ordering::SeqCst) {
+            let _ = app.emit("scale-progress", ProgressEvent {
+                current: i as u32, total, filename: String::new(),
+                status: "done".to_string(),
+                message: format!("已取消: 已处理 {}, 共 {}", i, total),
+            });
+            break;
+        }
         let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
         let _ = app.emit("scale-progress", ProgressEvent {

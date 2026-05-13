@@ -137,7 +137,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
             <button className="btn btn-ghost btn-sm" onClick={() => onRefresh?.()} disabled={!onRefresh} title="刷新" style={{ width: 30, height: 30, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><RefreshCw style={{ width: 13, height: 13 }} /></button>
           </div>
           <div style={{ display: 'flex', gap: 4 }}>
-            {([{ k: 'all' as const, l: '全部', n: images.length }, { k: 'untagged' as const, l: '空', n: images.length - taggedN }, { k: 'tagged' as const, l: '已标', n: taggedN }]).map(t => (
+            {([{ k: 'all' as const, l: '全部', n: images.length }, { k: 'untagged' as const, l: '空标', n: images.length - taggedN }, { k: 'tagged' as const, l: '已标', n: taggedN }]).map(t => (
               <button key={t.k} onClick={() => setFilterMode(t.k)} style={{ flex: 1, padding: '3px 0', borderRadius: 6, fontSize: 10, fontWeight: 500, background: filterMode === t.k ? 'rgba(124,92,252,0.15)' : 'transparent', color: filterMode === t.k ? '#a78bfa' : 'var(--color-text-tertiary)', border: filterMode === t.k ? '1px solid rgba(124,92,252,0.25)' : '1px solid transparent' }}>{t.l} {t.n}</button>
             ))}
           </div>
@@ -227,7 +227,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
               }}
               disabled={!cur}
               placeholder={cur ? '输入图片描述...' : '选择图片以编辑描述'}
-              style={{ flex: 1, resize: 'none', fontSize: 12, fontFamily: 'monospace', lineHeight: 1.6 }}
+              style={{ flex: 1, resize: 'none', fontSize: 12, fontFamily: 'monospace', lineHeight: 1.6, border: 'none', outline: 'none', boxShadow: 'none', background: 'transparent', color: 'var(--color-text-primary)', padding: 0, width: '100%' }}
             />
           </div>
         </div>

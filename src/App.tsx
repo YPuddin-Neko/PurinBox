@@ -4,6 +4,8 @@ import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import HomePage from './pages/HomePage';
 import ScalePage from './pages/ScalePage';
+import CropPage from './pages/CropPage';
+import PersonCropPage from './pages/PersonCropPage';
 import FlipPage from './pages/FlipPage';
 import FilterPage from './pages/FilterPage';
 import FileKeeperPage from './pages/FileKeeperPage';
@@ -14,6 +16,11 @@ import TaggerPage from './pages/TaggerPage';
 import TagManagerPage from './pages/TagManagerPage';
 import TagSortPage from './pages/TagSortPage';
 import BucketPreviewPage from './pages/BucketPreviewPage';
+import PerspectivePage from './pages/PerspectivePage';
+import BlurNoisePage from './pages/BlurNoisePage';
+import UpscalePage from './pages/UpscalePage';
+import ImageClusterPage from './pages/ImageClusterPage';
+import ImageDedupPage from './pages/ImageDedupPage';
 import SettingsPage from './pages/SettingsPage';
 import './styles/global.css';
 import './styles/sidebar.css';
@@ -23,6 +30,8 @@ import { TaskProvider } from './components/TaskContext';
 
 // 所有功能页面持久化（用 display:none 隐藏而非卸载，切换页面不丢失状态）
 const persistentPages = [
+  { path: '/crop', component: CropPage },
+  { path: '/person-crop', component: PersonCropPage },
   { path: '/scale', component: ScalePage },
   { path: '/flip', component: FlipPage },
   { path: '/filter', component: FilterPage },
@@ -34,6 +43,11 @@ const persistentPages = [
   { path: '/tag-manager', component: TagManagerPage },
   { path: '/tag-sort', component: TagSortPage },
   { path: '/bucket-preview', component: BucketPreviewPage },
+  { path: '/perspective', component: PerspectivePage },
+  { path: '/blur-noise', component: BlurNoisePage },
+  { path: '/upscale', component: UpscalePage },
+  { path: '/image-cluster', component: ImageClusterPage },
+  { path: '/image-dedup', component: ImageDedupPage },
 ];
 
 // 无状态页面走 Routes

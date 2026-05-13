@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PurinBox",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "identifier": "com.sora.purinbox",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -35,7 +35,10 @@
     "active": true,
     "targets": "all",
     "resources": [
-      "scripts/tagger_inference.py"
+      "scripts/tagger_inference.py",
+      "scripts/person_crop.py",
+      "scripts/realesrgan_upscale.py",
+      "scripts/image_cluster.py"
     ],
     "icon": [
       "icons/32x32.png",

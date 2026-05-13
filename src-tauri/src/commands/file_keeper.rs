@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use super::{ProcessResult, ProgressEvent};
+
+static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileKeeperOptions {
@@ -12,11 +15,17 @@ pub struct FileKeeperOptions {
 
 #[tauri::command]
 pub async fn keep_specified_files(app: tauri::AppHandle, options: FileKeeperOptions) -> Result<ProcessResult, String> {
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
     tokio::task::spawn_blocking(move || {
         keep_files_sync(&app, &options)
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
+#[tauri::command]
+pub fn cancel_keeper() {
+    CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
 fn keep_files_sync(app: &tauri::AppHandle, options: &FileKeeperOptions) -> Result<ProcessResult, String> {
@@ -56,6 +65,14 @@ fn keep_files_sync(app: &tauri::AppHandle, options: &FileKeeperOptions) -> Resul
     });
 
     for (i, file_path) in all_files.iter().enumerate() {
+        if CANCEL_FLAG.load(Ordering::SeqCst) {
+            let _ = app.emit("keeper-progress", ProgressEvent {
+                current: i as u32, total, filename: String::new(),
+                status: "done".to_string(),
+                message: format!("已取消: 已处理 {}, 共 {}", i, total),
+            });
+            break;
+        }
         let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
         let ext = file_path.extension()
             .map(|e| e.to_string_lossy().to_lowercase())

@@ -186,7 +186,6 @@
   height: 6px;
   min-width: 6px;
   border-radius: 50%;
-  background: var(--color-success);
   animation: pulse 2s infinite;
 }
 

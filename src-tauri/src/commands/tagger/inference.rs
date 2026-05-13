@@ -408,6 +408,8 @@ pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
             "Character" => TagCategory::Character,
             "Meta" => TagCategory::Meta,
             "Rating" => TagCategory::Rating,
+            "Quality" => TagCategory::Quality,
+            "Model" => TagCategory::Model,
             _ => TagCategory::General,
         };
 
@@ -760,6 +762,8 @@ pub fn run_tagging(
             "append_tags": options.append_tags,
             "append_position": options.append_position,
             "replace_underscore": options.replace_underscore,
+            "output_format": options.output_format,
+            "json_simplified": options.json_simplified,
         });
 
         if let Err(e) = writeln!(stdin, "{}", tag_cmd) {

@@ -19,6 +19,8 @@ pub enum TagCategory {
     Character,
     Meta,
     Rating,
+    Quality,
+    Model,
 }
 
 impl TagCategory {
@@ -26,9 +28,11 @@ impl TagCategory {
         match id {
             0 => Some(Self::General),
             1 => Some(Self::Artist),
-            2 => Some(Self::Copyright),
-            3 => Some(Self::Character),
-            4 => Some(Self::Meta),
+            3 => Some(Self::Copyright),
+            4 => Some(Self::Character),
+            5 => Some(Self::Meta),
+            6 => Some(Self::Quality),
+            7 => Some(Self::Model),
             9 => Some(Self::Rating),
             _ => None,
         }
@@ -52,10 +56,15 @@ pub struct TaggerOptions {
     pub append_position: String,
     #[serde(default = "default_true")]
     pub replace_underscore: bool,
+    #[serde(default = "default_output_format")]
+    pub output_format: String,
+    #[serde(default)]
+    pub json_simplified: bool,
 }
 
 fn default_append_position() -> String { "append".into() }
 fn default_true() -> bool { true }
+fn default_output_format() -> String { "txt".into() }
 
 /// 模型信息（给前端用）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +77,8 @@ pub struct TaggerModelInfo {
     pub is_downloaded: bool,
     pub repo_id: String,
     pub input_format: String,
+    /// 该模型支持的标签分类列表
+    pub supported_categories: Vec<String>,
 }
 
 /// 标签定义（从 CSV 解析）
@@ -112,6 +123,63 @@ pub fn get_model_dir(model_id: &str) -> PathBuf {
     get_models_dir().join(model_id)
 }
 
+/// 从标签文件中扫描支持的分类
+fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut cats = BTreeSet::new();
+
+    if let Some(ext) = tags_path.extension().and_then(|e| e.to_str()) {
+        if ext == "json" {
+            // JSON 格式 (CL Tagger)
+            if let Ok(content) = std::fs::read_to_string(tags_path) {
+                if let Ok(map) = serde_json::from_str::<std::collections::BTreeMap<String, serde_json::Value>>(&content) {
+                    for (_, val) in &map {
+                        if let Some(cat) = val.get("category").and_then(|v| v.as_str()) {
+                            cats.insert(cat.to_lowercase());
+                        }
+                    }
+                }
+            }
+        } else {
+            // CSV 格式 (WD Tagger)
+            let cat_map = [
+                (0, "general"), (1, "artist"), (3, "copyright"),
+                (4, "character"), (5, "meta"), (6, "quality"),
+                (7, "model"), (9, "rating"),
+            ];
+            if let Ok(mut reader) = csv::Reader::from_path(tags_path) {
+                for result in reader.records().flatten() {
+                    if result.len() >= 3 {
+                        if let Ok(cat_id) = result.get(2).unwrap_or("0").parse::<i32>() {
+                            for (id, name) in &cat_map {
+                                if cat_id == *id {
+                                    cats.insert(name.to_string());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    cats.into_iter().collect()
+}
+
+/// 根据 tags_filename 推断默认支持分类（未下载时使用）
+fn infer_categories_from_filename(tags_filename: &str) -> Vec<String> {
+    if tags_filename.ends_with(".json") {
+        // CL Tagger 类型: 全分类
+        vec!["general", "character", "rating", "artist", "copyright", "meta", "quality", "model"]
+            .into_iter().map(|s| s.to_string()).collect()
+    } else {
+        // WD Tagger 类型: 只有 general, character, rating
+        vec!["general", "character", "rating"]
+            .into_iter().map(|s| s.to_string()).collect()
+    }
+}
+
 // ===== Tauri Commands =====
 
 /// 获取可用模型列表
@@ -135,6 +203,20 @@ pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
             models::InputFormat::NHWC => "NHWC",
             models::InputFormat::NCHW => "NCHW",
         };
+
+        // 检测支持的分类
+        let supported_categories = if is_downloaded {
+            let tags_path = model_dir.join(&tags_basename);
+            let detected = detect_supported_categories(&tags_path);
+            if detected.is_empty() {
+                infer_categories_from_filename(&m.tags_filename)
+            } else {
+                detected
+            }
+        } else {
+            infer_categories_from_filename(&m.tags_filename)
+        };
+
         result.push(TaggerModelInfo {
             id: m.id.clone(),
             name: m.name.clone(),
@@ -144,6 +226,7 @@ pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
             is_downloaded,
             repo_id: m.repo_id.clone(),
             input_format: fmt_str.to_string(),
+            supported_categories,
         });
     }
     Ok(result)
@@ -244,13 +327,17 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
 
             // 检测 GPU provider
             let has_cuda = providers.contains("CUDAExecutionProvider");
+            let has_coreml = providers.contains("CoreMLExecutionProvider");
+            let has_gpu = has_cuda || has_coreml;
 
             if has_cuda {
                 emit_line("✓ CUDA ExecutionProvider 可用", "success");
+            } else if has_coreml {
+                emit_line("✓ CoreML ExecutionProvider 可用 (Apple Neural Engine)", "success");
             } else {
                 emit_line("GPU ExecutionProvider 不可用", "info");
             }
-            (has_cuda, true)
+            (has_gpu, true)
         }
         Err(_) => {
             // Python 环境未就绪，自动配置
@@ -265,12 +352,16 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
                         Ok((ort_ver, providers)) => {
                             emit_line(&format!("✓ 推理环境就绪 (onnxruntime v{})", ort_ver), "success");
                             let has_cuda = providers.contains("CUDAExecutionProvider");
+                            let has_coreml = providers.contains("CoreMLExecutionProvider");
+                            let has_gpu = has_cuda || has_coreml;
                             if has_cuda {
                                 emit_line("✓ CUDA ExecutionProvider 可用", "success");
+                            } else if has_coreml {
+                                emit_line("✓ CoreML ExecutionProvider 可用 (Apple Neural Engine)", "success");
                             } else {
                                 emit_line("GPU ExecutionProvider 不可用", "info");
                             }
-                            (has_cuda, true)
+                            (has_gpu, true)
                         }
                         Err(e) => {
                             emit_line(&e, "error");
@@ -327,7 +418,8 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
 
     // 4. 总结
     if gpu_ok {
-        emit_line("✓ GPU 加速已就绪 (CUDA)", "success");
+        let backend = if cfg!(target_os = "macos") { "CoreML" } else { "CUDA" };
+        emit_line(&format!("✓ GPU 加速已就绪 ({})", backend), "success");
     } else {
         emit_line("将使用 CPU 推理", "info");
     }
@@ -368,11 +460,6 @@ pub fn cancel_tagging() {
     python_env::cancel_setup();
 }
 
-/// 重置 Python 环境
-#[tauri::command]
-pub fn reset_python_env() -> Result<String, String> {
-    python_env::reset_python_env()
-}
 
 /// 开始打标
 #[tauri::command]

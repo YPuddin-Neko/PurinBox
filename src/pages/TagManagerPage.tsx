@@ -8,9 +8,10 @@ import {
   Tags, FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,
   Trash2, Image as ImageIcon, BarChart3, CheckCircle2, Loader2,
   Replace, Filter, ListPlus, PlusCircle, MinusCircle, Languages, RefreshCw,
-  ArrowUpDown, Hash, BarChart
+  ArrowUpDown, Hash, BarChart, List
 } from 'lucide-react';
 import NaturalLangTab from '../components/NaturalLangTab';
+import JsonTagTab, { type JsonTagTabHandle } from '../components/JsonTagTab';
 
 type ImageItem = { filename: string; path: string; tags: string[]; dirty: boolean; };
 type CaptionItem = { filename: string; path: string; caption: string; dirty: boolean; };
@@ -49,25 +50,27 @@ const phdr:React.CSSProperties={display:'flex',alignItems:'center',justifyConten
 const ptitle:React.CSSProperties={fontSize:12,fontWeight:700,color:'var(--color-text-primary)',textTransform:'uppercase',letterSpacing:'0.5px'};
 
 export default function TagManagerPage() {
-  const [mode, setMode] = useState<'danbooru' | 'natural'>('danbooru');
+  const [mode, setMode] = useState<'danbooru' | 'natural' | 'json'>('danbooru');
   const [images, setImages] = useState<ImageItem[]>([]);
   const [nlImages, setNlImages] = useState<CaptionItem[]>([]);
 
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [searchText, setSearchText] = useState('');
   const [filterMode, setFilterMode] = useState<'all'|'tagged'|'untagged'>('all');
-  const [newTag, setNewTag] = useState('');
+
   const [globalSearch, setGlobalSearch] = useState('');
   const [dragIdx, setDragIdx] = useState<number|null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number|null>(null);
   const [dropSide, setDropSide] = useState<'before'|'after'>('before');
   const [savingSingle, setSavingSingle] = useState(false);
   const [alertMsg, setAlertMsg] = useState('');
+  const [editingDanbooru, setEditingDanbooru] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const newTagRef = useRef<HTMLInputElement>(null);
+
   const [folderPath, setFolderPath] = useState('');
+  const jsonTabRef = useRef<JsonTagTabHandle>(null);
   const [tagSortBy, setTagSortBy] = useState<'freq'|'name'>('freq');
   const [tagSortDir, setTagSortDir] = useState<'asc'|'desc'>('desc');
 
@@ -391,14 +394,7 @@ export default function TagManagerPage() {
   const goPrev = useCallback(()=>{setSelectedIdx(i=>Math.max(0,i-1));},[]);
   const goNext = useCallback(()=>{setSelectedIdx(i=>Math.min(images.length-1,i+1));},[images.length]);
 
-  // ── tag ops ──
-  const addTag = () => {
-    if (selectedIdx < 0) return;
-    const t=newTag.trim().toLowerCase().replace(/_/g,' ');
-    if(!t||cur?.tags.includes(t)){setNewTag('');return;}
-    setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,tags:[...img.tags,t],dirty:true}:img));
-    setNewTag(''); newTagRef.current?.focus();
-  };
+
   const removeTag = (tag:string) => {
     setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,tags:img.tags.filter(t=>t!==tag),dirty:true}:img));
   };
@@ -492,7 +488,7 @@ export default function TagManagerPage() {
       {/* ═ Page Header ═ */}
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <Tags style={{ width: 28, height: 28, color: '#7c5cfc' }} />
+          <List style={{ width: 28, height: 28, color: '#7c5cfc' }} />
           <h1 className="page-title">标签管理</h1>
         </div>
         <p className="page-subtitle">可视化编辑训练图片的标签文件，支持 Danbooru 标签和自然语言</p>
@@ -512,19 +508,29 @@ export default function TagManagerPage() {
             transition: 'all 0.2s', fontFamily: 'inherit',
             background: mode==='danbooru' ? 'var(--color-accent-primary)' : 'transparent',
             color: mode==='danbooru' ? '#fff' : 'var(--color-text-tertiary)',
-          }}>Danbooru 格式</button>
+          }}>Danbooru 格式 (TXT)</button>
           <button onClick={()=>setMode('natural')} style={{
             padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
             cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
             transition: 'all 0.2s', fontFamily: 'inherit',
             background: mode==='natural' ? 'var(--color-accent-primary)' : 'transparent',
             color: mode==='natural' ? '#fff' : 'var(--color-text-tertiary)',
-          }}>自然语言格式</button>
+          }}>自然语言格式 (TXT)</button>
+          <button onClick={()=>setMode('json')} style={{
+            padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
+            cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
+            transition: 'all 0.2s', fontFamily: 'inherit',
+            background: mode==='json' ? 'var(--color-accent-primary)' : 'transparent',
+            color: mode==='json' ? '#fff' : 'var(--color-text-tertiary)',
+          }}>Danbooru+自然语言 (JSON)</button>
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          <button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={handleLoadFolder} disabled={loading}>
+          {mode!=='json'&&<button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={handleLoadFolder} disabled={loading}>
             {loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {loading?'加载中...':'加载文件夹'}
-          </button>
+          </button>}
+          {mode==='json'&&<button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={()=>jsonTabRef.current?.loadFolder()} disabled={jsonTabRef.current?.loading}>
+            {jsonTabRef.current?.loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {jsonTabRef.current?.loading?'加载中...':'加载文件夹'}
+          </button>}
           {mode==='danbooru'&&<button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={dirtyCount===0||saving} onClick={handleSaveAll}>
             {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} 全部保存{dirtyCount>0?` (${dirtyCount})`:''}
           </button>}
@@ -538,6 +544,11 @@ export default function TagManagerPage() {
               }catch(e){console.error(e);}finally{setSaving(false);}
             }}>
               {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} 全部保存{nlDirty>0?` (${nlDirty})`:''}
+            </button>
+          );})()}
+          {mode==='json'&&(()=>{const jd=jsonTabRef.current?.dirtyCount||0;return(
+            <button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={jd===0||jsonTabRef.current?.saving} onClick={()=>jsonTabRef.current?.saveAll()}>
+              {jsonTabRef.current?.saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} 全部保存{jd>0?` (${jd})`:''}
             </button>
           );})()}
         </div>
@@ -554,10 +565,10 @@ export default function TagManagerPage() {
                 <Search style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:13,height:13,color:'var(--color-text-tertiary)'}} />
                 <input className="form-input" placeholder="搜索..." value={searchText} onChange={e=>setSearchText(e.target.value)} style={{paddingLeft:28,fontSize:11,height:30}} />
               </div>
-              {folderPath && <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={loading} title="刷新" style={{width:30,height:30,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><RefreshCw style={{width:13,height:13,animation:loading?'spin 1s linear infinite':undefined}} /></button>}
+              <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={!folderPath||loading} title="刷新" style={{width:30,height:30,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><RefreshCw style={{width:13,height:13,animation:loading?'spin 1s linear infinite':undefined}} /></button>
             </div>
             <div style={{display:'flex',gap:4}}>
-              {([{k:'all' as const,l:'全部',n:images.length},{k:'untagged' as const,l:'空',n:images.length-taggedN},{k:'tagged' as const,l:'已标',n:taggedN}]).map(t=>(
+              {([{k:'all' as const,l:'全部',n:images.length},{k:'untagged' as const,l:'空标',n:images.length-taggedN},{k:'tagged' as const,l:'已标',n:taggedN}]).map(t=>(
                 <button key={t.k} onClick={()=>setFilterMode(t.k)} style={{flex:1,padding:'3px 0',borderRadius:6,fontSize:10,fontWeight:500,background:filterMode===t.k?'rgba(124,92,252,0.15)':'transparent',color:filterMode===t.k?'#a78bfa':'var(--color-text-tertiary)',border:filterMode===t.k?'1px solid rgba(124,92,252,0.25)':'1px solid transparent'}}>{t.l} {t.n}</button>
               ))}
             </div>
@@ -657,16 +668,15 @@ export default function TagManagerPage() {
                 );
               })}
               {!cur&&<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic'}}>选择图片以编辑标签</span>}
-              {cur&&cur.tags.length===0&&<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic'}}>暂无标签</span>}
-            </div>
-            <div style={{display:'flex',gap:6,padding:'8px 14px',borderTop:'1px solid var(--color-border)',flexShrink:0}}>
-              <div style={{flex:1,position:'relative'}}>
-                <Plus style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:12,height:12,color:'var(--color-text-tertiary)'}} />
-                <input ref={newTagRef} className="form-input" value={newTag} onChange={e=>setNewTag(e.target.value)}
-                  onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();addTag();}}}
-                  placeholder="输入标签, 按 Enter 添加" disabled={!cur} style={{paddingLeft:26,fontSize:11,height:30}} />
-              </div>
-              <button className="btn btn-primary" onClick={addTag} disabled={!cur||!newTag.trim()} style={{height:30,fontSize:11,padding:'0 12px'}}>添加</button>
+              {cur&&cur.tags.length===0&&!editingDanbooru&&<span onClick={()=>setEditingDanbooru(true)} style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic',cursor:'pointer'}}>暂无标签，点击添加标签</span>}
+              {cur&&(cur.tags.length>0)&&!editingDanbooru&&<button onClick={()=>setEditingDanbooru(true)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:20,height:20,borderRadius:'50%',background:'rgba(74,222,128,0.10)',border:'1px solid rgba(74,222,128,0.25)',color:'#4ade80',cursor:'pointer',flexShrink:0,opacity:0.5,transition:'opacity 0.15s'}}
+                onMouseEnter={e=>e.currentTarget.style.opacity='1'} onMouseLeave={e=>e.currentTarget.style.opacity='0.5'}
+              ><Plus style={{width:11,height:11}} /></button>}
+              {cur&&editingDanbooru&&<input autoFocus className="form-input" placeholder="输入标签, Enter 添加"
+                onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const v=(e.target as HTMLInputElement).value.trim().toLowerCase().replace(/_/g,' ');if(v&&!cur.tags.includes(v)){setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,tags:[...img.tags,v],dirty:true}:img));}(e.target as HTMLInputElement).value='';if(!e.shiftKey)setEditingDanbooru(false);}if(e.key==='Escape')setEditingDanbooru(false);}}
+                onBlur={e=>{const v=e.target.value.trim().toLowerCase().replace(/_/g,' ');if(v&&cur&&!cur.tags.includes(v)){setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,tags:[...img.tags,v],dirty:true}:img));}setEditingDanbooru(false);}}
+                onClick={e=>e.stopPropagation()}
+                style={{fontSize:11,height:26,border:'none',background:'transparent',padding:'0 6px',flex:'1 0 80px',minWidth:80,outline:'none'}} />}
             </div>
           </div>
         </div>
@@ -793,6 +803,10 @@ export default function TagManagerPage() {
       {mode === 'natural' && (
         <NaturalLangTab images={nlImages} setImages={setNlImages} onRefresh={folderPath ? handleRefresh : undefined} />
       )}
+
+      <div style={{display:mode==='json'?'flex':'none',flex:1,overflow:'hidden',minHeight:0}}>
+        <JsonTagTab ref={jsonTabRef} />
+      </div>
 
       {/* ═ 批量添加弹窗 ═ */}
       {showAddModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setShowAddModal(false)}>

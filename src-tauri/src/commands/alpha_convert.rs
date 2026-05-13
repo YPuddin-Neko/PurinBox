@@ -1,9 +1,12 @@
 use image::{DynamicImage, GenericImageView};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use super::{collect_image_files, ProcessResult, ProgressEvent};
+
+static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlphaConvertOptions {
@@ -37,11 +40,17 @@ fn has_alpha(img: &DynamicImage) -> bool {
 
 #[tauri::command]
 pub async fn convert_alpha(app: tauri::AppHandle, options: AlphaConvertOptions) -> Result<ProcessResult, String> {
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
     tokio::task::spawn_blocking(move || {
         convert_alpha_sync(&app, &options)
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
+#[tauri::command]
+pub fn cancel_alpha() {
+    CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
 fn convert_alpha_sync(app: &tauri::AppHandle, options: &AlphaConvertOptions) -> Result<ProcessResult, String> {
@@ -66,6 +75,14 @@ fn convert_alpha_sync(app: &tauri::AppHandle, options: &AlphaConvertOptions) -> 
     };
 
     for (i, file_path) in files.iter().enumerate() {
+        if CANCEL_FLAG.load(Ordering::SeqCst) {
+            let _ = app.emit("alpha-progress", ProgressEvent {
+                current: i as u32, total, filename: String::new(),
+                status: "done".to_string(),
+                message: format!("已取消: 已处理 {}, 共 {}", i, total),
+            });
+            break;
+        }
         let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
         let _ = app.emit("alpha-progress", ProgressEvent {

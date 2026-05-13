@@ -1,9 +1,12 @@
 use image::{DynamicImage, RgbaImage};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use super::{ProcessResult, ProgressEvent};
+
+static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormatConvertOptions {
@@ -73,11 +76,17 @@ fn open_image(file_path: &Path) -> Result<DynamicImage, String> {
 
 #[tauri::command]
 pub async fn convert_format(app: tauri::AppHandle, options: FormatConvertOptions) -> Result<ProcessResult, String> {
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
     tokio::task::spawn_blocking(move || {
         convert_format_sync(&app, &options)
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
+#[tauri::command]
+pub fn cancel_convert() {
+    CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
 fn convert_format_sync(app: &tauri::AppHandle, options: &FormatConvertOptions) -> Result<ProcessResult, String> {
@@ -98,6 +107,14 @@ fn convert_format_sync(app: &tauri::AppHandle, options: &FormatConvertOptions) -
     let target_ext = options.target_format.to_lowercase();
 
     for (i, file_path) in files.iter().enumerate() {
+        if CANCEL_FLAG.load(Ordering::SeqCst) {
+            let _ = app.emit("convert-progress", ProgressEvent {
+                current: i as u32, total, filename: String::new(),
+                status: "done".to_string(),
+                message: format!("已取消: 已处理 {}, 共 {}", i, total),
+            });
+            break;
+        }
         let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
         let src_ext = file_path.extension()
             .map(|e| e.to_string_lossy().to_lowercase())

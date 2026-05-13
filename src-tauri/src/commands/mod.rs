@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub mod image_scale;
+pub mod image_crop;
 pub mod image_flip;
+pub mod person_crop;
 pub mod resolution_filter;
 pub mod file_keeper;
 pub mod format_convert;
@@ -15,6 +17,12 @@ pub mod tag_sort;
 pub mod api_config;
 pub mod proxy_config;
 pub mod bucket_preview;
+pub mod perspective;
+pub mod blur_noise;
+pub mod upscale;
+pub mod python_env;
+pub mod image_cluster;
+pub mod image_dedup;
 
 /// 进度事件 payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -329,3 +337,77 @@ fn get_apple_gpu_memory() -> (u64, u64) {
     (used, total)
 }
 
+/// 版本更新检查结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateCheckResult {
+    pub has_update: bool,
+    pub current_version: String,
+    pub latest_version: String,
+    pub release_url: String,
+    pub release_notes: String,
+}
+
+/// 检查 GitHub 最新 Release 版本
+#[tauri::command]
+pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
+    let current = env!("CARGO_PKG_VERSION");
+    let url = "https://api.github.com/repos/YPuddin-Neko/PurinBox/releases/latest";
+
+    let client = reqwest::Client::builder()
+        .user_agent("PurinBox")
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
+
+    let resp = client.get(url).send().await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        // 仓库还没有任何 Release
+        return Ok(UpdateCheckResult {
+            has_update: false,
+            current_version: current.to_string(),
+            latest_version: current.to_string(),
+            release_url: String::new(),
+            release_notes: String::new(),
+        });
+    }
+    if !status.is_success() {
+        return Err(format!("GitHub API 返回 {}", status));
+    }
+
+    let json: serde_json::Value = resp.json().await
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+
+    let tag = json["tag_name"].as_str().unwrap_or("v0.0.0");
+    let latest = tag.trim_start_matches('v');
+    let html_url = json["html_url"].as_str().unwrap_or("").to_string();
+    let body = json["body"].as_str().unwrap_or("").to_string();
+
+    let has_update = version_compare(latest, current);
+
+    Ok(UpdateCheckResult {
+        has_update,
+        current_version: current.to_string(),
+        latest_version: latest.to_string(),
+        release_url: html_url,
+        release_notes: body,
+    })
+}
+
+/// 简单版本号比较: 如果 latest > current 返回 true
+fn version_compare(latest: &str, current: &str) -> bool {
+    let parse = |s: &str| -> Vec<u32> {
+        s.split('.').filter_map(|p| p.parse().ok()).collect()
+    };
+    let l = parse(latest);
+    let c = parse(current);
+    for i in 0..l.len().max(c.len()) {
+        let lv = l.get(i).copied().unwrap_or(0);
+        let cv = c.get(i).copied().unwrap_or(0);
+        if lv > cv { return true; }
+        if lv < cv { return false; }
+    }
+    false
+}

@@ -1,18 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import {
   Scaling,
   FolderOpen,
-  Play,
   ArrowUpCircle,
   ArrowDownCircle,
   Info,
-  Loader2,
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
+import ProcessButton from '../components/ProcessButton';
 
 interface ProcessResult {
   success_count: number;
@@ -50,31 +49,31 @@ export default function ScalePage() {
 
   // Listen for progress events
   useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
-    listen<ProgressPayload>('scale-progress', (event) => {
-      const p = event.payload;
-      setProgressCurrent(p.current);
-      setProgressTotal(p.total);
-      if (p.total > 0) {
-        setProgress((p.current / p.total) * 100);
+    let active = true;
+    const p = listen<ProgressPayload>('scale-progress', (event) => {
+      if (!active) return;
+      const d = event.payload;
+      setProgressCurrent(d.current);
+      setProgressTotal(d.total);
+      if (d.total > 0) {
+        setProgress((d.current / d.total) * 100);
       }
-      if (p.status === 'done') {
+      if (d.status === 'done') {
         setIsDone(true);
       }
-      if (p.status === 'error') {
+      if (d.status === 'error') {
         setHasError(true);
       }
       // Only add meaningful log entries (not processing status)
-      if (p.status !== 'processing') {
+      if (d.status !== 'processing') {
         setLogs((prev) => [...prev, {
           time: getTimeStr(),
-          message: p.message,
-          status: p.status === 'done' ? 'info' : p.status as LogEntry['status'],
+          message: d.message,
+          status: d.status === 'done' ? 'info' : d.status as LogEntry['status'],
         }]);
       }
-    }).then((fn) => { unlisten = fn; });
-
-    return () => { unlisten?.(); };
+    });
+    return () => { active = false; p.then(fn => fn()); };
   }, []);
 
   const selectInputFolder = async () => {
@@ -121,12 +120,13 @@ export default function ScalePage() {
   };
 
   const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
+  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   return (
     <div className="page">
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <Scaling style={{ width: 28, height: 28, color: '#7c5cfc' }} />
+          <Scaling style={{ width: 28, height: 28, color: '#818cf8' }} />
           <h1 className="page-title">图片缩放</h1>
         </div>
         <p className="page-subtitle">支持单个或批量缩放图片，将图片上采样或下采样到目标分辨率</p>
@@ -230,13 +230,10 @@ export default function ScalePage() {
         {/* 右侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 执行按钮 */}
-          <button className="btn btn-primary btn-lg" style={{ width: '100%', height: 48 }} onClick={handleProcess} disabled={processing || !inputPath || !outputPath}>
-            {processing ? (
-              <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 处理中...</>
-            ) : (
-              <><Play style={{ width: 18, height: 18 }} /> 开始缩放</>
-            )}
-          </button>
+          <ProcessButton processing={processing} onStart={handleProcess}
+            disabled={!inputPath || !outputPath}
+            cancelCommand="cancel_scale" startText="开始缩放" processingText="处理中..."
+            onCancelLog={addCancelLog} />
 
           {/* 进度条和日志 */}
           <ProgressLog

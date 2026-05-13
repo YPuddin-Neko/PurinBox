@@ -1,4 +1,4 @@
-import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, AlertTriangle } from 'lucide-react';
+import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, AlertTriangle, RefreshCw as RefreshIcon } from 'lucide-react';
 import { useTheme } from '../components/ThemeProvider';
 import { useState, useEffect } from 'react';
 import { ConfirmModal, AlertModal } from '../components/Modal';
@@ -6,6 +6,7 @@ import CustomSelect from '../components/CustomSelect';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
+import SystemMonitor from '../components/SystemMonitor';
 
 const intervalOptions = [
   { value: 1000, label: '1 秒', desc: '实时' },
@@ -51,6 +52,12 @@ export default function SettingsPage() {
   const [resetPythonConfirmOpen, setResetPythonConfirmOpen] = useState(false);
   const [resettingPython, setResettingPython] = useState(false);
   const [alertMsg, setAlertMsg] = useState('');
+  const [pythonInfo, setPythonInfo] = useState<{ available: boolean; version: string; path: string } | null>(null);
+
+  // 更新检查
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateResult, setUpdateResult] = useState<{ has_update: boolean; latest_version: string; release_url: string } | null>(null);
+  const [updateError, setUpdateError] = useState('');
 
   // 代理设置
   const [proxyEnabled, setProxyEnabled] = useState(false);
@@ -101,7 +108,11 @@ export default function SettingsPage() {
     try { await invoke('clear_translation_cache'); await loadCacheStats(); } catch (e) { console.error(e); } finally { setClearing(false); }
   };
 
-  useEffect(() => { loadCacheStats(); loadCachePath(); getVersion().then(v => setAppVersion(v)).catch(() => {}); loadProxySettings(); }, []);
+  const loadPythonInfo = async () => {
+    try { setPythonInfo(await invoke<{ available: boolean; version: string; path: string }>('get_python_env_info')); } catch { setPythonInfo(null); }
+  };
+
+  useEffect(() => { loadCacheStats(); loadCachePath(); getVersion().then(v => setAppVersion(v)).catch(() => {}); loadProxySettings(); loadPythonInfo(); }, []);
 
   const loadProxySettings = async () => {
     try {
@@ -191,6 +202,9 @@ export default function SettingsPage() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+          {/* System Monitor */}
+          <SystemMonitor />
+
           {/* Appearance */}
           <div className="tool-panel">
             <div className="tool-panel-header">
@@ -534,6 +548,27 @@ export default function SettingsPage() {
               </div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+              {/* Python 环境信息 */}
+              <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>Python 环境</div>
+                    <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
+                      {pythonInfo === null ? '加载中...' : pythonInfo.available
+                        ? <><span style={{ color: '#4ade80' }}>✓</span> {pythonInfo.version}</>
+                        : <span style={{ color: '#f87171' }}>未检测到</span>
+                      }
+                    </div>
+                    {pythonInfo?.available && (
+                      <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2, wordBreak: 'break-all', lineHeight: 1.5 }}>
+                        {pythonInfo.path}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* 重置 Python */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
                   <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>重置 Python 环境</div>
@@ -565,6 +600,42 @@ export default function SettingsPage() {
                   GitHub <ExternalLink style={{ width: 12, height: 12 }} />
                 </a>
               </p>
+              {/* Update check */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>检查更新</div>
+                  <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
+                    {updateChecking ? '正在检查...'
+                      : updateError ? `检查失败: ${updateError}`
+                      : updateResult
+                        ? updateResult.has_update
+                          ? <span style={{ color: '#ef4444' }}>发现新版本 v{updateResult.latest_version}</span>
+                          : <span style={{ color: '#4ade80' }}>已是最新版本</span>
+                        : '点击检查是否有新版本'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {updateResult?.has_update && updateResult.release_url && (
+                    <a href={updateResult.release_url} target="_blank" rel="noreferrer"
+                      className="btn btn-primary" style={{ fontSize: 11, height: 28, padding: '0 12px', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <ExternalLink style={{ width: 11, height: 11 }} /> 前往下载
+                    </a>
+                  )}
+                  <button className="btn btn-secondary" disabled={updateChecking}
+                    onClick={async () => {
+                      setUpdateChecking(true); setUpdateError(''); setUpdateResult(null);
+                      try {
+                        const r = await invoke<{ has_update: boolean; latest_version: string; release_url: string }>('check_for_updates');
+                        setUpdateResult(r);
+                      } catch (e: any) { setUpdateError(String(e)); }
+                      finally { setUpdateChecking(false); }
+                    }}
+                    style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    {updateChecking ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <RefreshIcon style={{ width: 12, height: 12 }} />}
+                    {updateChecking ? '检查中...' : '检查更新'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -588,7 +659,8 @@ export default function SettingsPage() {
           setResettingPython(true);
           try {
             await invoke('reset_python_env');
-            setAlertMsg('Python 环境已重置，下次使用打标功能时会自动重新配置。');
+            setAlertMsg('Python 环境已重置');
+            loadPythonInfo();
           } catch (e: any) {
             setAlertMsg(`重置失败: ${e}`);
           } finally {
@@ -596,7 +668,7 @@ export default function SettingsPage() {
           }
         }}
         title="重置 Python 环境"
-        message="确定重置 Python 环境？将删除虚拟环境和下载的独立 Python，下次使用打标功能时会自动重新配置。"
+        message="确定重置 Python 环境？将删除虚拟环境和下载的独立 Python."
         confirmText="重置"
         variant="error"
       />

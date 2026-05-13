@@ -15,10 +15,17 @@ const routeNames: Record<string, { breadcrumb: string; title: string }> = {
   '/format-convert': { breadcrumb: '图片格式转换', title: '图片格式转换' },
   '/alpha-convert': { breadcrumb: '转换透明通道', title: '转换透明通道' },
   '/batch-rename': { breadcrumb: '批量重命名', title: '批量重命名' },
+  '/crop': { breadcrumb: '图片裁切', title: '图片裁切' },
+  '/person-crop': { breadcrumb: '三分法裁切', title: '三分法裁切' },
+  '/perspective': { breadcrumb: '透视变换', title: '透视变换' },
+  '/blur-noise': { breadcrumb: '模糊/噪点', title: '模糊/噪点' },
   '/tagger': { breadcrumb: '图片打标', title: '图片打标' },
   '/tag-manager': { breadcrumb: '标签管理', title: '标签管理' },
   '/tag-sort': { breadcrumb: '标签排序', title: '标签排序' },
   '/bucket-preview': { breadcrumb: '分桶预览', title: '分桶预览' },
+  '/upscale': { breadcrumb: '图片超分', title: '图片超分' },
+  '/image-cluster': { breadcrumb: '图片聚类', title: '图片聚类' },
+  '/image-dedup': { breadcrumb: '图片去重', title: '图片去重' },
   '/settings': { breadcrumb: '设置', title: '设置' },
 };
 
@@ -31,9 +38,14 @@ const TASK_ROUTE_MAP: Record<string, string> = {
   convert: '/format-convert',
   alpha: '/alpha-convert',
   rename: '/batch-rename',
+  crop: '/crop',
+  'person-crop': '/person-crop',
+  perspective: '/perspective',
+  'blur-noise': '/blur-noise',
   tagger: '/tagger',
   'llm-tagger': '/tagger',
   'tag-sort': '/tag-sort',
+  upscale: '/upscale',
 };
 
 interface SystemStats {

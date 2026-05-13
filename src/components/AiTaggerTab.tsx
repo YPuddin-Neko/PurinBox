@@ -2,13 +2,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { FolderOpen, Play, Loader2, Cpu, Zap, Download, Plus, Check, RefreshCw, Trash2, Search, FileUp, X } from 'lucide-react';
+import { FolderOpen, Loader2, Cpu, Gpu, Download, Plus, Check, RefreshCw, Trash2, Search, FileUp } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
+import ProcessButton from './ProcessButton';
 import { useTaskQueue } from './TaskContext';
 import { ConfirmModal } from './Modal';
 import CustomSelect from './CustomSelect';
 
-interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; }
+interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; supported_categories: string[]; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 interface OnnxModelInfo { input_size: number; input_format: string; input_shape: number[]; channels: number; }
@@ -21,6 +22,8 @@ const cats = [
   { key: 'artist', label: '作者标签', default: false },
   { key: 'copyright', label: '版权标签', default: false },
   { key: 'meta', label: '元信息标签', default: false },
+  { key: 'quality', label: '质量标签', default: false },
+  { key: 'model', label: '模型标签', default: false },
 ];
 
 export default function AiTaggerTab() {
@@ -32,7 +35,7 @@ export default function AiTaggerTab() {
   const [enabled, setEnabled] = useState<Set<string>>(new Set(cats.filter(c => c.default).map(c => c.key)));
   const [useGpu, setUseGpu] = useState(false);
   const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
-  const gpuSupported = !isMac; // macOS 无 NVIDIA GPU，不支持 GPU 加速
+  const gpuSupported = true; // Windows: CUDA, macOS: CoreML (Neural Engine)
   const [cudaOk, setCudaOk] = useState<boolean | null>(null);
   const [cudaChecking, setCudaChecking] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -42,8 +45,6 @@ export default function AiTaggerTab() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
-  // 下载进度
-  const [dlProgress, setDlProgress] = useState<DownloadPayload | null>(null);
   // 导入模型
   const [showAdd, setShowAdd] = useState(false);
   const [nName, setNName] = useState('');
@@ -58,6 +59,8 @@ export default function AiTaggerTab() {
   const [appendTags, setAppendTags] = useState('');
   const [appendPosition, setAppendPosition] = useState<'prepend' | 'append'>('append');
   const [replaceUnderscore, setReplaceUnderscore] = useState(true);
+  const [outputFormat, setOutputFormat] = useState<'txt' | 'json'>('txt');
+  const [jsonSimplified, setJsonSimplified] = useState(()=>localStorage.getItem('tagger_json_simplified')==='true');
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -67,57 +70,74 @@ export default function AiTaggerTab() {
     load();
   }, []);
 
+  // 切换模型时自动移除不支持的分类
+  useEffect(() => {
+    const curModel = models.find(m => m.id === selectedModel);
+    if (!curModel) return;
+    const supported = new Set(curModel.supported_categories);
+    setEnabled(prev => {
+      const next = new Set([...prev].filter(k => supported.has(k)));
+      // 至少保留一个支持的分类
+      if (next.size === 0) cats.filter(c => c.default && supported.has(c.key)).forEach(c => next.add(c.key));
+      if (next.size === 0 && curModel.supported_categories.length > 0) next.add(curModel.supported_categories[0]);
+      return next;
+    });
+  }, [selectedModel, models]);
+
   // 打标进度事件
   useEffect(() => {
     let active = true;
-    const unlistenPromise = listen<ProgressPayload>('tagger-progress', (e) => {
+    const handler = (e: { payload: ProgressPayload }) => {
       if (!active) return;
       const p = e.payload; setPCur(p.current); setPTot(p.total);
       if (p.total > 0) setProgress((p.current / p.total) * 100);
       if (p.status === 'done') setIsDone(true);
       if (p.status === 'error') setHasErr(true);
-      if (p.status === 'download-progress') {
-        // 原地更新最后一行（进度条效果）
-        setLogs(prev => {
-          if (prev.length > 0 && prev[prev.length - 1].status === 'info' && prev[prev.length - 1].message.startsWith('⬇')) {
-            return [...prev.slice(0, -1), { time: getTimeStr(), message: p.message, status: 'info' }];
-          }
-          return [...prev, { time: getTimeStr(), message: p.message, status: 'info' }];
-        });
-      } else {
-        setLogs(prev => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }]);
-      }
-    });
-    return () => { active = false; unlistenPromise.then(fn => fn()); };
+      setLogs(prev => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }]);
+    };
+    const u1 = listen<ProgressPayload>('tagger-progress', handler);
+    const u2 = listen<ProgressPayload>('python-env-progress', handler);
+    return () => { active = false; u1.then(fn => fn()); u2.then(fn => fn()); };
   }, []);
 
-  // 下载进度事件（独立，不刷日志）
+  // 下载进度事件 → 更新日志中的下载条目
   useEffect(() => {
     let active = true;
-    const unlistenPromise = listen<DownloadPayload>('tagger-download', (e) => {
+    const handler = (e: { payload: DownloadPayload }) => {
       if (!active) return;
       const d = e.payload;
-      if (d.status === 'done' || d.status === 'cancelled' || d.status === 'error') {
-        setDlProgress(null);
-        if (d.status === 'error') {
-          setLogs(p => [...p, { time: getTimeStr(), message: `下载失败: ${d.message}`, status: 'error' }]);
-        }
+      if (d.status === 'done' || d.status === 'cancelled') {
+        // 下载结束，移除进度条日志
+        setLogs(p => p.filter(l => l.status !== 'download'));
+      } else if (d.status === 'error') {
+        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: `下载失败: ${d.message}`, status: 'error' }]);
       } else {
-        setDlProgress(d);
+        const avgSpeed = d.speed_mbps > 0 ? `${d.speed_mbps.toFixed(1)} MB/s` : '';
+        setLogs(p => {
+          const idx = p.findIndex(l => l.status === 'download');
+          const entry: LogEntry = { time: getTimeStr(), message: d.message, status: 'download', dlPercent: d.percent, dlSpeed: avgSpeed };
+          if (idx >= 0) {
+            const next = [...p];
+            next[idx] = entry;
+            return next;
+          }
+          return [...p, entry];
+        });
       }
-    });
-    return () => { active = false; unlistenPromise.then(fn => fn()); };
+    };
+    const u1 = listen<DownloadPayload>('tagger-download', handler);
+    const u2 = listen<DownloadPayload>('python-env-download', handler);
+    return () => { active = false; u1.then(fn => fn()); u2.then(fn => fn()); };
   }, []);
 
   const { addTask, updateTask } = useTaskQueue();
   const cur = models.find(m => m.id === selectedModel);
 
-  const handleCancel = async () => {
+  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
+  const doCancel = async () => {
     try { await invoke('cancel_tagging'); } catch {}
     try { await invoke('cancel_tagger_download'); } catch {}
-    setDlProgress(null);
     setProcessing(false);
-    setLogs(p => [...p, { time: getTimeStr(), message: '已取消', status: 'info' }]);
     updateTask('tagger', { status: 'cancelled' });
   };
 
@@ -125,14 +145,14 @@ export default function AiTaggerTab() {
     if (!inputPath || !selectedModel || enabled.size === 0) return;
     // 如果正在打标，先取消上一次
     if (processing) {
-      await handleCancel();
+      doCancel();
       await new Promise(r => setTimeout(r, 300));
     }
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
     setLogs([{ time: getTimeStr(), message: `开始打标 | 模型: ${cur?.name} | 硬件: ${useGpu ? 'GPU' : 'CPU'}`, status: 'info' }]);
     addTask('tagger', `Tagger 打标 - ${cur?.name || '未知'}`);
     try {
-      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore } });
+      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, output_format: outputFormat, json_simplified: jsonSimplified } });
       updateTask('tagger', { status: 'done' });
       await load();
     } catch (e: any) {
@@ -244,12 +264,12 @@ export default function AiTaggerTab() {
         {/* 标签分类与阈值 */}
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">标签分类与阈值</span></div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginBottom: 'var(--space-3)' }}>
-            {cats.map(c => { const on = enabled.has(c.key); return (
-              <div key={c.key} onClick={() => setEnabled(p => { const n = new Set(p); on ? n.delete(c.key) : n.add(c.key); return n; })} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: `1px solid ${on ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: on ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: 'pointer', transition: 'all 0.15s' }}>
-                <div style={{ width: 14, height: 14, borderRadius: 3, minWidth: 14, border: `2px solid ${on ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: on ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{on && <Check style={{ width: 9, height: 9, color: '#fff' }} />}</div>
-                <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{c.label}</span>
-              </div>); })}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 'var(--space-3)' }}>
+            {(()=>{ const curModel = models.find(m => m.id === selectedModel); const supported = new Set(curModel?.supported_categories || cats.map(c=>c.key)); return cats.map(c => { const on = enabled.has(c.key); const avail = supported.has(c.key); return (
+              <div key={c.key} onClick={() => { if(!avail)return; setEnabled(p => { const n = new Set(p); on ? n.delete(c.key) : n.add(c.key); return n; }); }} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: `1px solid ${!avail ? 'var(--color-border)' : on ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: !avail ? 'rgba(0,0,0,0.04)' : on ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: avail ? 'pointer' : 'not-allowed', transition: 'all 0.15s', opacity: avail ? 1 : 0.35 }}>
+                <div style={{ width: 14, height: 14, borderRadius: 3, minWidth: 14, border: `2px solid ${on && avail ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: on && avail ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{on && avail && <Check style={{ width: 9, height: 9, color: '#fff' }} />}</div>
+                <span style={{ fontSize: 12, fontWeight: 600, color: avail ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}>{c.label}</span>
+              </div>); }); })()}
           </div>
           <div style={{ display: 'flex', gap: 'var(--space-4)' }}>
             <div style={{ flex: 1 }}><label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ fontSize: 12 }}>通用阈值</span><span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', fontSize: 12 }}>{genTh.toFixed(2)}</span></label><input type="range" min="0.05" max="1" step="0.01" value={genTh} onChange={e => setGenTh(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} /></div>
@@ -261,22 +281,36 @@ export default function AiTaggerTab() {
         <div className="tool-panel">
           <div className="tool-panel-header">
             <span className="tool-panel-title">硬件设置</span>
-            {gpuSupported && (<button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `CUDA 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>{cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} 检测 CUDA</button>)}
+            {gpuSupported && (<button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `GPU 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>{cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} {isMac ? '检测 CoreML' : '检测 CUDA'}</button>)}
           </div>
-          {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6, marginBottom: 'var(--space-3)' }}>{cudaOk ? '✓ CUDA 可用，GPU 加速已就绪' : '✗ CUDA 不可用 — 详情请查看日志'}</div>}
+          {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6, marginBottom: 'var(--space-3)' }}>{cudaOk ? (isMac ? '✓ CoreML 可用，Neural Engine 加速已就绪' : '✓ CUDA 可用，GPU 加速已就绪') : (isMac ? '✗ CoreML 不可用 — 详情请查看日志' : '✗ CUDA 不可用 — 详情请查看日志')}</div>}
           <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
-            <div onClick={() => setUseGpu(false)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1px solid ${!useGpu ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: !useGpu ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: 'pointer' }}><Cpu style={{ width: 16, height: 16, color: !useGpu ? '#60a5fa' : 'var(--color-text-tertiary)' }} /><span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>CPU</span></div>
-            <div onClick={() => { if (gpuSupported) setUseGpu(true); }} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1px solid ${useGpu ? 'rgba(74,222,128,0.5)' : 'var(--color-border)'}`, background: useGpu ? 'rgba(74,222,128,0.06)' : 'var(--color-bg-input)', cursor: gpuSupported ? 'pointer' : 'not-allowed', opacity: gpuSupported ? 1 : 0.4 }}><Zap style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} /><span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>GPU</span>{!gpuSupported && <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>(不可用)</span>}</div>
+            <div onClick={() => setUseGpu(false)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1.5px solid ${!useGpu ? '#fbbf24' : 'var(--color-border)'}`, background: !useGpu ? 'rgba(251,191,36,0.07)' : 'var(--color-bg-input)', cursor: 'pointer' }}><Cpu style={{ width: 16, height: 16, color: !useGpu ? '#fbbf24' : 'var(--color-text-tertiary)' }} /><span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: !useGpu ? '#fbbf24' : 'var(--color-text-tertiary)' }}>CPU</span></div>
+            <div onClick={() => { if (gpuSupported) setUseGpu(true); }} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1.5px solid ${useGpu ? '#4ade80' : 'var(--color-border)'}`, background: useGpu ? 'rgba(74,222,128,0.07)' : 'var(--color-bg-input)', cursor: gpuSupported ? 'pointer' : 'not-allowed', opacity: gpuSupported ? 1 : 0.4 }}><Gpu style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} /><span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }}>GPU</span>{!gpuSupported && <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>(不可用)</span>}</div>
           </div>
         </div>
 
         {/* 其他设置 */}
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">其他设置</span></div>
-          <div onClick={() => setReplaceUnderscore(!replaceUnderscore)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', marginBottom: 'var(--space-3)' }}>
-            <div style={{ width: 16, height: 16, borderRadius: 4, minWidth: 16, border: `2px solid ${replaceUnderscore ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: replaceUnderscore ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{replaceUnderscore && <Check style={{ width: 10, height: 10, color: '#fff' }} />}</div>
-            <span style={{ fontSize: 12, fontWeight: 600 }}>替换下划线为空格</span>
-            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>将标签中的 _ 替换为空格</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => setReplaceUnderscore(!replaceUnderscore)}>
+              <div style={{ width: 16, height: 16, borderRadius: 4, minWidth: 16, border: `2px solid ${replaceUnderscore ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: replaceUnderscore ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{replaceUnderscore && <Check style={{ width: 10, height: 10, color: '#fff' }} />}</div>
+              <span style={{ fontSize: 12, fontWeight: 600 }}>替换下划线为空格</span>
+            </div>
+            <div style={{ flex: 1 }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+              <span style={{ color: 'var(--color-text-tertiary)', fontWeight: 500 }}>输出格式</span>
+              {(['txt', 'json'] as const).map(fmt => (
+                <button key={fmt} onClick={() => setOutputFormat(fmt)} style={{ padding: '2px 10px', borderRadius: 'var(--radius-sm)', border: `1px solid ${outputFormat === fmt ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: outputFormat === fmt ? 'rgba(124,92,252,0.08)' : 'transparent', color: outputFormat === fmt ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>.{fmt}</button>
+              ))}
+              {outputFormat==='json'&&(
+                <select className="form-input" value={jsonSimplified?'simplified':'full'} onChange={e=>{const v=e.target.value==='simplified';setJsonSimplified(v);localStorage.setItem('tagger_json_simplified',String(v));}} style={{fontSize:10,height:24,padding:'0 6px',width:'auto',marginLeft:2}}>
+                  <option value="full">完整格式</option>
+                  <option value="simplified">简化格式</option>
+                </select>
+              )}
+            </div>
           </div>
           <div style={{ marginBottom: 'var(--space-3)' }}>
             <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>排除标签</label>
@@ -298,23 +332,14 @@ export default function AiTaggerTab() {
 
       {/* 右栏 - 操作 + 进度 + 日志 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-          <button className="btn btn-primary btn-lg" style={{ flex: 1, height: 48 }} onClick={handleStart} disabled={!inputPath || !selectedModel || enabled.size === 0}>
-            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 打标中...</> : cur && !cur.is_downloaded ? <><Download style={{ width: 18, height: 18 }} /> 下载并打标</> : <><Play style={{ width: 18, height: 18 }} /> 开始打标</>}
-          </button>
-          {processing && (<button className="btn btn-secondary btn-lg" style={{ height: 48, color: '#f87171' }} onClick={handleCancel}><X style={{ width: 18, height: 18 }} /> 取消</button>)}
-        </div>
+        <ProcessButton processing={processing} onStart={handleStart}
+          disabled={!inputPath || !selectedModel || enabled.size === 0}
+          cancelCommand="cancel_tagging" forceCancelCommand="cancel_tagging"
+          startText={cur && !cur.is_downloaded ? '下载并打标' : '开始打标'}
+          startIcon={cur && !cur.is_downloaded ? <Download style={{ width: 18, height: 18 }} /> : undefined}
+          processingText="打标中..."
+          onCancelLog={addCancelLog} />
 
-        {dlProgress && (
-          <div className="tool-panel" style={{ padding: 'var(--space-4)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Download style={{ width: 14, height: 14, color: '#60a5fa', animation: 'pulse 1.5s infinite' }} /><span style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>下载模型</span></div>
-              <button onClick={async () => { try { await invoke('cancel_tagger_download'); } catch {} try { await invoke('cancel_gpu_runtime_download'); } catch {} setDlProgress(null); }} style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(248,113,113,0.3)', background: 'rgba(248,113,113,0.06)', color: '#f87171', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}><X style={{ width: 12, height: 12 }} /> 取消</button>
-            </div>
-            <div style={{ marginBottom: 6 }}><div style={{ height: 6, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}><div style={{ height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #7c5cfc, #60a5fa)', width: `${dlProgress.percent}%`, transition: 'width 0.3s ease' }} /></div></div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--color-text-tertiary)' }}><span>{dlProgress.message}</span><span style={{ fontWeight: 700, fontFamily: 'monospace', color: '#60a5fa' }}>{dlProgress.percent.toFixed(1)}%</span></div>
-          </div>
-        )}
 
         <ProgressLog progress={progress} current={pCur} total={pTot} logs={logs} isDone={isDone} hasError={hasErr} onClearLogs={() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); }} />
       </div>

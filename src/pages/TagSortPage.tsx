@@ -1,16 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
-  ArrowUpDown, FolderOpen, FolderOutput, Play, Loader2, Globe, Key, Bot,
-  RefreshCw, MessageSquare, StopCircle, Timer, Layers,
+  ArrowUpDown, FolderOpen, FolderOutput, Loader2, Globe, Key, Bot,
+  RefreshCw, MessageSquare, Timer, Layers,
   CheckCircle2, XCircle, Info, ScrollText, Trash2, AlertTriangle, Save, Thermometer,
   Eye, EyeOff
 } from 'lucide-react';
 import { LogEntry, getTimeStr } from '../components/ProgressLog';
 import { useTaskQueue } from '../components/TaskContext';
 import CustomSelect from '../components/CustomSelect';
+import ProcessButton from '../components/ProcessButton';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -89,8 +90,7 @@ export default function TagSortPage() {
   // 监听进度事件
   useEffect(() => {
     let cancelled = false;
-    let unlisten: UnlistenFn | null = null;
-    listen<ProgressPayload>('tag-sort-progress', (e) => {
+    const listenPromise = listen<ProgressPayload>('tag-sort-progress', (e) => {
       if (cancelled) return;
       const p = e.payload;
       setPCur(p.current); setPTot(p.total);
@@ -119,10 +119,8 @@ export default function TagSortPage() {
         message: p.message,
         status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'],
       }]);
-    }).then(fn => {
-      if (cancelled) { fn(); } else { unlisten = fn; }
     });
-    return () => { cancelled = true; unlisten?.(); };
+    return () => { cancelled = true; listenPromise.then(fn => fn()); };
   }, []);
 
   // 获取模型列表
@@ -180,6 +178,7 @@ export default function TagSortPage() {
   };
 
   const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); setSuccessCnt(0); setFailCnt(0); setWarnCnt(0); setErrorFiles([]); setWarnFiles([]); setElapsed(''); }, []);
+  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   // 耗时计时器
   useEffect(() => {
@@ -392,18 +391,10 @@ export default function TagSortPage() {
           </div>
 
           {/* 操作按钮 */}
-          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-            <button className="btn btn-primary btn-lg" style={{ flex: 1, height: 48 }} onClick={handleStart}
-              disabled={processing || !inputPath || !outputPath || !endpoint || !modelName}>
-              {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 排序中...</> : <><Play style={{ width: 18, height: 18 }} /> 开始排序</>}
-            </button>
-            {processing && (
-              <button className="btn btn-lg" style={{ height: 48, background: 'rgba(248,113,113,0.1)', color: '#f87171', border: '1px solid rgba(248,113,113,0.3)' }}
-                onClick={() => invoke('cancel_tag_sorting')}>
-                <StopCircle style={{ width: 18, height: 18 }} />
-              </button>
-            )}
-          </div>
+          <ProcessButton processing={processing} onStart={handleStart}
+            disabled={!inputPath || !outputPath || !endpoint || !modelName}
+            cancelCommand="cancel_tag_sorting" startText="开始排序" processingText="排序中..."
+            onCancelLog={addCancelLog} />
 
           {/* 自定义进度日志 */}
           <div className="progress-section">

@@ -41,9 +41,16 @@ const EVENT_TASK_MAP: Record<string, string> = {
   'convert-progress': 'convert',
   'alpha-progress': 'alpha',
   'rename-progress': 'rename',
+  'crop-progress': 'crop',
+  'person-crop-progress': 'person-crop',
   'tagger-progress': 'tagger',
+  'python-env-progress': 'tagger',
   'llm-tagger-progress': 'llm-tagger',
   'tag-sort-progress': 'tag-sort',
+  'perspective-progress': 'perspective',
+  'blur-noise-progress': 'blur-noise',
+  'upscale-progress': 'upscale',
+  'cluster-progress': 'image-cluster',
 };
 
 export function TaskProvider({ children }: { children: ReactNode }) {

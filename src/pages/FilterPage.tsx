@@ -1,18 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import {
   ScanSearch,
   FolderOpen,
-  Play,
   Info,
-  Loader2,
   Trash2,
   Copy,
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
+import ProcessButton from '../components/ProcessButton';
 
 interface ProcessResult {
   success_count: number;
@@ -35,8 +34,8 @@ type ActionType = 'copy' | 'delete';
 const conditionOptions: { value: ConditionType; label: string; desc: string }[] = [
   { value: 'min_width', label: '最小宽度', desc: '筛选宽度低于设定值的图片' },
   { value: 'min_height', label: '最小高度', desc: '筛选高度低于设定值的图片' },
-  { value: 'below_resolution', label: '低于指定分辨率', desc: '筛选宽度或高度低于设定值的图片' },
-  { value: 'above_resolution', label: '高于指定分辨率', desc: '筛选宽度或高度高于设定值的图片' },
+  { value: 'below_resolution', label: '低于指定分辨率', desc: '筛选宽高均低于设定值的图片' },
+  { value: 'above_resolution', label: '高于指定分辨率', desc: '筛选宽高均高于设定值的图片' },
 ];
 
 export default function FilterPage() {
@@ -59,23 +58,24 @@ export default function FilterPage() {
   const needsHeight = condition !== 'min_width';
 
   useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
-    listen<ProgressPayload>('filter-progress', (event) => {
-      const p = event.payload;
-      setProgressCurrent(p.current);
-      setProgressTotal(p.total);
-      if (p.total > 0) setProgress((p.current / p.total) * 100);
-      if (p.status === 'done') setIsDone(true);
-      if (p.status === 'error') setHasError(true);
-      if (p.status !== 'processing') {
+    let active = true;
+    const p = listen<ProgressPayload>('filter-progress', (event) => {
+      if (!active) return;
+      const d = event.payload;
+      setProgressCurrent(d.current);
+      setProgressTotal(d.total);
+      if (d.total > 0) setProgress((d.current / d.total) * 100);
+      if (d.status === 'done') setIsDone(true);
+      if (d.status === 'error') setHasError(true);
+      if (d.status !== 'processing') {
         setLogs((prev) => [...prev, {
           time: getTimeStr(),
-          message: p.message,
-          status: p.status === 'done' ? 'info' : p.status as LogEntry['status'],
+          message: d.message,
+          status: d.status === 'done' ? 'info' : d.status as LogEntry['status'],
         }]);
       }
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    });
+    return () => { active = false; p.then(fn => fn()); };
   }, []);
 
   const selectInputFolder = async () => {
@@ -116,6 +116,7 @@ export default function FilterPage() {
   };
 
   const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
+  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   return (
     <div className="page">
@@ -232,11 +233,12 @@ export default function FilterPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
 
 
-          <button className={`btn ${action === 'delete' ? 'btn-danger' : 'btn-primary'} btn-lg`} style={{ width: '100%', height: 48 }}
-            onClick={handleProcess} disabled={processing || !inputPath || (action === 'copy' && !outputPath)}>
-            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 处理中...</> :
-              <><Play style={{ width: 18, height: 18 }} /> {action === 'delete' ? '开始筛选并删除' : '开始筛选并输出'}</>}
-          </button>
+          <ProcessButton processing={processing} onStart={handleProcess}
+            disabled={!inputPath || (action === 'copy' && !outputPath)}
+            cancelCommand="cancel_filter"
+            startText={action === 'delete' ? '开始筛选并删除' : '开始筛选并输出'}
+            processingText="处理中..."
+            onCancelLog={addCancelLog} />
 
           
             <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />

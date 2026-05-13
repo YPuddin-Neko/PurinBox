@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import {
@@ -10,6 +10,8 @@ import {
   Loader2,
   Download,
   ImageIcon,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 interface BucketImageInfo {
@@ -72,19 +74,22 @@ export default function BucketPreviewPage() {
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
 
   const [expandedBuckets, setExpandedBuckets] = useState<Set<number>>(new Set());
+  const [bucketPage, setBucketPage] = useState(0);
+  const BUCKETS_PER_PAGE = 3;
 
   useEffect(() => {
-    let u1: UnlistenFn | null = null;
-    let u2: UnlistenFn | null = null;
-    listen<ScanProgress>('bucket-progress', (e) => {
+    let active = true;
+    const p1 = listen<ScanProgress>('bucket-progress', (e) => {
+      if (!active) return;
       setScanMsg(e.payload.message);
       if (e.payload.total > 0) setScanProgress((e.payload.current / e.payload.total) * 100);
-    }).then(fn => { u1 = fn; });
-    listen<ScanProgress>('bucket-export-progress', (e) => {
+    });
+    const p2 = listen<ScanProgress>('bucket-export-progress', (e) => {
+      if (!active) return;
       setToast({ msg: e.payload.message, type: 'success' });
       setTimeout(() => setToast(null), 3000);
-    }).then(fn => { u2 = fn; });
-    return () => { u1?.(); u2?.(); };
+    });
+    return () => { active = false; p1.then(fn => fn()); p2.then(fn => fn()); };
   }, []);
 
   const selectInputFolder = async () => {
@@ -104,6 +109,7 @@ export default function BucketPreviewPage() {
     setScanProgress(0);
     setScanMsg('扫描中...');
     setExpandedBuckets(new Set());
+    setBucketPage(0);
     try {
       const result = await invoke<BucketAnalysis>('analyze_buckets', {
         options: { input_path: inputPath, res_width: resWidth, res_height: resHeight, steps, no_upscale: noUpscale, repeats },
@@ -254,10 +260,15 @@ export default function BucketPreviewPage() {
 
           </div>
 
-          {/* Bucket grid — fixed 3 columns */}
+          {/* Bucket grid — fixed 3 columns, paginated */}
+          {(() => {
+            const totalBucketPages = Math.ceil(analysis.buckets.length / BUCKETS_PER_PAGE);
+            const pageBuckets = analysis.buckets.slice(bucketPage * BUCKETS_PER_PAGE, (bucketPage + 1) * BUCKETS_PER_PAGE);
+            return (
+              <>
           <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-              {analysis.buckets.map(bucket => {
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'start' }}>
+              {pageBuckets.map(bucket => {
                 const color = bucketColor(bucket.aspect_ratio);
                 const isExpanded = expandedBuckets.has(bucket.index);
                 const isLandscape = bucket.bucket_width > bucket.bucket_height;
@@ -397,6 +408,29 @@ export default function BucketPreviewPage() {
               })}
             </div>
           </div>
+
+          {/* Pagination */}
+          {totalBucketPages > 1 && (
+            <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '6px 0' }}>
+              <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 30 }}
+                disabled={bucketPage === 0} onClick={() => setBucketPage(p => p - 1)}>
+                <ChevronLeft style={{ width: 14, height: 14 }} />
+              </button>
+              <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', fontWeight: 600, minWidth: 80, textAlign: 'center' }}>
+                {bucketPage + 1} / {totalBucketPages}
+              </span>
+              <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 30 }}
+                disabled={bucketPage >= totalBucketPages - 1} onClick={() => setBucketPage(p => p + 1)}>
+                <ChevronRight style={{ width: 14, height: 14 }} />
+              </button>
+              <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+                共 {analysis.buckets.length} 个桶
+              </span>
+            </div>
+          )}
+              </>
+            );
+          })()}
 
           {/* Export */}
           <div style={{

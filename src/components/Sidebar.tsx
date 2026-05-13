@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
+import { invoke } from '@tauri-apps/api/core';
 import {
   Home,
+  Crop,
+  ScanFace,
   Scaling,
   FlipHorizontal2,
   ScanSearch,
@@ -15,6 +18,11 @@ import {
   Grid3X3,
   Settings,
   PanelLeftClose,
+  Move3D,
+  Sparkles,
+  ZoomIn,
+  Network,
+  Copy,
 } from 'lucide-react';
 import '../styles/sidebar.css';
 import { getVersion } from '@tauri-apps/api/app';
@@ -28,6 +36,8 @@ const navSections: NavSection[] = [
   {
     title: '数据集预处理',
     items: [
+      { id: 'crop', label: '图片裁切', icon: <Crop />, path: '/crop' },
+      { id: 'person-crop', label: '三分法裁切', icon: <ScanFace />, path: '/person-crop' },
       { id: 'scale', label: '图片缩放', icon: <Scaling />, path: '/scale' },
       { id: 'flip', label: '图片处理', icon: <FlipHorizontal2 />, path: '/flip' },
       { id: 'filter', label: '分辨率筛选', icon: <ScanSearch />, path: '/filter' },
@@ -35,6 +45,8 @@ const navSections: NavSection[] = [
       { id: 'format-convert', label: '图片格式转换', icon: <FileType />, path: '/format-convert' },
       { id: 'alpha-convert', label: '转换透明通道', icon: <Layers />, path: '/alpha-convert' },
       { id: 'batch-rename', label: '批量重命名', icon: <TextCursorInput />, path: '/batch-rename' },
+      { id: 'perspective', label: '透视变换', icon: <Move3D />, path: '/perspective' },
+      { id: 'blur-noise', label: '模糊/噪点', icon: <Sparkles />, path: '/blur-noise' },
     ],
   },
   {
@@ -49,6 +61,9 @@ const navSections: NavSection[] = [
     items: [
       { id: 'tag-sort', label: '标签排序', icon: <ArrowUpDown />, path: '/tag-sort' },
       { id: 'bucket-preview', label: '分桶预览', icon: <Grid3X3 />, path: '/bucket-preview' },
+      { id: 'upscale', label: '图片超分', icon: <ZoomIn />, path: '/upscale' },
+      { id: 'image-cluster', label: '图片聚类', icon: <Network />, path: '/image-cluster' },
+      { id: 'image-dedup', label: '图片去重', icon: <Copy />, path: '/image-dedup' },
     ],
   },
   {
@@ -60,7 +75,43 @@ const navSections: NavSection[] = [
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const [appVersion, setAppVersion] = useState('');
+  // update status: 'checking' | 'latest' | 'update' | 'error'
+  const [updateStatus, setUpdateStatus] = useState<'checking' | 'latest' | 'update' | 'error'>('checking');
+  const [latestVersion, setLatestVersion] = useState('');
+  const [releaseUrl, setReleaseUrl] = useState('');
+
   useEffect(() => { getVersion().then(v => setAppVersion(v)).catch(() => {}); }, []);
+
+  useEffect(() => {
+    invoke<{ has_update: boolean; latest_version: string; release_url: string }>('check_for_updates')
+      .then(r => {
+        setUpdateStatus(r.has_update ? 'update' : 'latest');
+        setLatestVersion(r.latest_version);
+        setReleaseUrl(r.release_url);
+      })
+      .catch(() => setUpdateStatus('error'));
+  }, []);
+
+  const dotColor = updateStatus === 'latest' ? '#4ade80' : updateStatus === 'update' ? '#ef4444' : updateStatus === 'error' ? '#fbbf24' : 'var(--color-text-tertiary)';
+  const dotTitle = updateStatus === 'latest' ? '已是最新版本'
+    : updateStatus === 'update' ? `发现新版本 v${latestVersion}，点击前往下载`
+    : updateStatus === 'error' ? '更新检查失败，点击重试'
+    : '正在检查更新...';
+
+  const handleVersionClick = () => {
+    if (updateStatus === 'update' && releaseUrl) {
+      window.open(releaseUrl, '_blank');
+    } else if (updateStatus === 'error') {
+      setUpdateStatus('checking');
+      invoke<{ has_update: boolean; latest_version: string; release_url: string }>('check_for_updates')
+        .then(r => {
+          setUpdateStatus(r.has_update ? 'update' : 'latest');
+          setLatestVersion(r.latest_version);
+          setReleaseUrl(r.release_url);
+        })
+        .catch(() => setUpdateStatus('error'));
+    }
+  };
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
       <nav className="sidebar-nav">
@@ -86,7 +137,11 @@ export default function Sidebar() {
           </div>
         ))}
       </nav>
-      <div className="sidebar-version"><div className="sidebar-version-dot" /><span>v{appVersion} · Preview</span></div>
+      <div className="sidebar-version" title={dotTitle} onClick={handleVersionClick}
+        style={{ cursor: updateStatus === 'update' || updateStatus === 'error' ? 'pointer' : 'default' }}>
+        <div className="sidebar-version-dot" style={{ background: dotColor }} />
+        <span>v{appVersion} · Release{updateStatus === 'update' ? ` → v${latestVersion}` : ''}</span>
+      </div>
       <div className="sidebar-toggle">
         <button className="sidebar-toggle-btn" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开菜单' : '折叠菜单'}><PanelLeftClose /><span className="sidebar-item-label">{collapsed ? '展开' : '收起'}</span></button>
       </div>

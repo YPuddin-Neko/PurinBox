@@ -25,12 +25,18 @@ pub struct LlmTaggerOptions {
     /// Top P 采样参数（0~1，为 0 或负数时不发送）
     #[serde(default)]
     pub top_p: f64,
-    /// 是否跳过已有 .txt 描述文件的图片
+    /// 是否跳过已有 .txt/.json 描述文件的图片
     #[serde(default)]
     pub skip_existing: bool,
+    /// 输出格式: "txt" 或 "json"
+    #[serde(default = "default_llm_output_format")]
+    pub output_format: String,
+    #[serde(default)]
+    pub json_simplified: bool,
 }
 
 fn default_image_size() -> u32 { 1024 }
+fn default_llm_output_format() -> String { "txt".into() }
 
 #[derive(Serialize)]
 struct ChatMessage {
@@ -116,8 +122,15 @@ pub async fn start_llm_tagging(
             let stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
             let parent = file_path.parent().unwrap_or(Path::new("."));
             let txt_path = parent.join(format!("{}.txt", stem));
-            if txt_path.exists() {
-                let content = std::fs::read_to_string(&txt_path).unwrap_or_default();
+            let json_path = parent.join(format!("{}.json", stem));
+            let existing = if json_path.exists() {
+                std::fs::read_to_string(&json_path).ok()
+            } else if txt_path.exists() {
+                std::fs::read_to_string(&txt_path).ok()
+            } else {
+                None
+            };
+            if let Some(content) = existing {
                 if !content.trim().is_empty() {
                     success_count += 1;
                     let _ = app.emit("llm-tagger-progress", ProgressEvent {
@@ -175,8 +188,21 @@ pub async fn start_llm_tagging(
             Ok(tag_text) => {
                 let stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
                 let parent = file_path.parent().unwrap_or(Path::new("."));
-                let txt_path = parent.join(format!("{}.txt", stem));
-                match std::fs::write(&txt_path, &tag_text) {
+                let out_path = if options.output_format == "json" {
+                    parent.join(format!("{}.json", stem))
+                } else {
+                    parent.join(format!("{}.txt", stem))
+                };
+                let content = if options.output_format == "json" {
+                    if options.json_simplified {
+                        serde_json::to_string_pretty(&serde_json::json!({ "nl": tag_text })).unwrap_or_default()
+                    } else {
+                        serde_json::to_string_pretty(&serde_json::json!({ "ai_output": { "nl": tag_text } })).unwrap_or_default()
+                    }
+                } else {
+                    tag_text
+                };
+                match std::fs::write(&out_path, &content) {
                     Ok(_) => {
                         success_count += 1;
                         let _ = app.emit("llm-tagger-progress", ProgressEvent {

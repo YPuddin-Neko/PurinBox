@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
-import { FileType, FolderOpen, Play, Loader2, Info } from 'lucide-react';
+import { FileType, FolderOpen, Info } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
+import ProcessButton from '../components/ProcessButton';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -32,19 +33,20 @@ export default function FormatConvertPage() {
   const [hasError, setHasError] = useState(false);
 
   useEffect(() => {
-    let unlisten: UnlistenFn | null = null;
-    listen<ProgressPayload>('convert-progress', (event) => {
-      const p = event.payload;
-      setProgressCurrent(p.current);
-      setProgressTotal(p.total);
-      if (p.total > 0) setProgress((p.current / p.total) * 100);
-      if (p.status === 'done') setIsDone(true);
-      if (p.status === 'error') setHasError(true);
-      if (p.status !== 'processing') {
-        setLogs((prev) => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status as LogEntry['status'] }]);
+    let active = true;
+    const p = listen<ProgressPayload>('convert-progress', (event) => {
+      if (!active) return;
+      const d = event.payload;
+      setProgressCurrent(d.current);
+      setProgressTotal(d.total);
+      if (d.total > 0) setProgress((d.current / d.total) * 100);
+      if (d.status === 'done') setIsDone(true);
+      if (d.status === 'error') setHasError(true);
+      if (d.status !== 'processing') {
+        setLogs((prev) => [...prev, { time: getTimeStr(), message: d.message, status: d.status === 'done' ? 'info' : d.status as LogEntry['status'] }]);
       }
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    });
+    return () => { active = false; p.then(fn => fn()); };
   }, []);
 
   const selectInputFolder = async () => {
@@ -79,6 +81,7 @@ export default function FormatConvertPage() {
   };
 
   const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
+  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   return (
     <div className="page">
@@ -150,9 +153,10 @@ export default function FormatConvertPage() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <button className="btn btn-primary btn-lg" style={{ width: '100%', height: 48 }} onClick={handleProcess} disabled={processing || !inputPath || !outputPath}>
-            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 转换中...</> : <><Play style={{ width: 18, height: 18 }} /> 开始转换</>}
-          </button>
+          <ProcessButton processing={processing} onStart={handleProcess}
+            disabled={!inputPath || !outputPath}
+            cancelCommand="cancel_convert" startText="开始转换" processingText="转换中..."
+            onCancelLog={addCancelLog} />
 
           
             <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
