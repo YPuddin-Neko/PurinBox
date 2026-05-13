@@ -31,27 +31,7 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ## ✨ 新功能
-
-            - 标签管理支持 JSON 格式标签文件
-            - 新增图片超分工具
-            - 新增图片聚类工具
-            - 新增图片去重工具
-            - 新增图片裁切工具
-            - 新增三分法裁切工具
-            - 新增透视变换工具
-            - 新增模糊/噪点工具
-
-            ## 🔨 改进
-
-            - 日志组件新增下载进度条、速度显示、警告状态、耗时计时
-
-            ## 🐛 修复
-
-            - 修复 CL Tagger model 类别错误使用 argmax
-            - 修复 CL Tagger copyright/artist 使用了错误的阈值
-            - 修复 JSON 打标 quality/rating/model 标签混入 tags 列表
-            - 修复打标 count 标签互相覆盖（如 1girl 被 solo 覆盖）
+            修复一些小 bug
 
   # 2. 构建 Windows
   build-windows:
@@ -94,7 +74,7 @@ jobs:
             runner: macos-latest
             arch: arm64
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-latest
             arch: x64
     runs-on: ${{ matrix.runner }}
     steps:

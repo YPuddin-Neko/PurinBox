@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Play, Loader2, X, AlertTriangle } from 'lucide-react';
 
 /**
@@ -55,7 +56,6 @@ export default function ProcessButton({
       setCancelStage(1);
       onCancelLog?.('取消任务已提交，等待当前作业完毕后停止...');
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
         await invoke(cancelCommand);
       } catch (e) {
         console.error('cancel failed:', e);
@@ -65,7 +65,6 @@ export default function ProcessButton({
       setCancelStage(2);
       onCancelLog?.('强制结束任务');
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
         await invoke(forceCancelCommand || cancelCommand);
       } catch (e) {
         console.error('force cancel failed:', e);

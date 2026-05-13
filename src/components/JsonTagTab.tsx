@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import {
   FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,
   Image as ImageIcon, Loader2, RefreshCw, Tags, Sparkles, Eye, Shirt, TreePine, Lock, User, Layers, Languages
@@ -93,8 +94,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
   });
 
   const handleLoadFolder=useCallback(async()=>{
-    const {open}=await import('@tauri-apps/plugin-dialog');
-    const sel=await open({directory:true,multiple:false,title:'选择数据集文件夹'});
+    const sel=await dialogOpen({directory:true,multiple:false,title:'选择数据集文件夹'});
     if(!sel)return; setLoading(true);
     try{const r=await invoke<JsonDataset>('load_json_dataset',{folder:sel as string});
       setImages(r.images.map(img=>({...img,data:safeData(img.data),dirty:false})));setSelectedIdx(r.images.length>0?0:-1);
