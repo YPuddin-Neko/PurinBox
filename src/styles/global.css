@@ -54,6 +54,13 @@ input, textarea, [contenteditable="true"] {
   from { clip-path: circle(var(--ripple-r) at var(--ripple-x) var(--ripple-y)); }
   to   { clip-path: circle(0px at var(--ripple-x) var(--ripple-y)); }
 }
+
+/* Image grid performance: skip offscreen images during theme transition snapshot */
+.image-grid-perf {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 600px;
+}
+
 html, body {
   height: 100%;
   overflow: hidden;

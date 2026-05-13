@@ -250,32 +250,7 @@ export default function UpscalePage() {
                     )}
                   </div>
 
-                  {/* 下载按钮（仅 NCNN 引擎未下载时显示） */}
-                  {!engine.downloaded && !engine.use_python && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-                      <button className="btn btn-primary" onClick={handleDownload} disabled={downloading} style={{ height: 40 }}>
-                        {downloading ? (
-                          <><Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> {t('upscale.downloadingBtn')}</>
-                        ) : (
-                          <><Download style={{ width: 16, height: 16 }} /> {t('upscale.downloadBtn')} {engine.name}</>
-                        )}
-                      </button>
-                      {downloading && (
-                        <button className="btn btn-secondary" style={{ height: 34, color: '#f87171' }}
-                          onClick={() => invoke('cancel_upscale_download')}>
-                          <X style={{ width: 14, height: 14 }} /> {t('upscale.cancelDownload')}
-                        </button>
-                      )}
-                      {downloadProgress && downloading && (
-                        <div>
-                          <div style={{ height: 4, borderRadius: 2, background: 'var(--color-bg-tertiary)', overflow: 'hidden' }}>
-                            <div style={{ width: `${downloadProgress.percent}%`, height: '100%', background: 'var(--color-primary)', transition: 'width 0.3s' }} />
-                          </div>
-                          <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginTop: 4 }}>{downloadProgress.message}</div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+
 
                   {/* 模型/风格选择 */}
                   <div className="form-group">
@@ -361,11 +336,37 @@ export default function UpscalePage() {
 
         {/* 右侧 - 操作 + 日志 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <ProcessButton processing={processing} onStart={handleProcess}
-            disabled={!inputPath || !outputPath || !engine?.downloaded}
-            cancelCommand="cancel_upscale" forceCancelCommand="force_cancel_upscale"
-            startText={t('upscale.startUpscale')} processingText={t('upscale.upscaling')}
-            onCancelLog={addCancelLog} />
+          {engine && !engine.downloaded ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+              <button className="btn btn-primary" onClick={handleDownload} disabled={downloading} style={{ height: 48, fontSize: 14, fontWeight: 700 }}>
+                {downloading ? (
+                  <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {t('upscale.downloadingBtn')}</>
+                ) : (
+                  <><Download style={{ width: 18, height: 18 }} /> {t('upscale.downloadBtn')} {engine.name}</>
+                )}
+              </button>
+              {downloading && (
+                <button className="btn btn-secondary" style={{ height: 34, color: '#f87171' }}
+                  onClick={() => invoke('cancel_upscale_download')}>
+                  <X style={{ width: 14, height: 14 }} /> {t('upscale.cancelDownload')}
+                </button>
+              )}
+              {downloadProgress && downloading && (
+                <div>
+                  <div style={{ height: 6, borderRadius: 3, background: 'var(--color-bg-tertiary)', overflow: 'hidden' }}>
+                    <div style={{ width: `${downloadProgress.percent}%`, height: '100%', background: 'linear-gradient(90deg, #7c5cfc, #22d3ee)', transition: 'width 0.3s' }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginTop: 4 }}>{downloadProgress.message}</div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <ProcessButton processing={processing} onStart={handleProcess}
+              disabled={!inputPath || !outputPath || !engine?.downloaded}
+              cancelCommand="cancel_upscale" forceCancelCommand="force_cancel_upscale"
+              startText={t('upscale.startUpscale')} processingText={t('upscale.upscaling')}
+              onCancelLog={addCancelLog} />
+          )}
 
           <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
         </div>

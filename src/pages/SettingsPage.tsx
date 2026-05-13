@@ -850,7 +850,7 @@ export default function SettingsPage() {
           }
         }}
         title={t('settings.resetConfirmTitle')}
-        message={t('settings.resetConfirmMsg')}
+        message={t('settings.resetConfirmDialog')}
         confirmText={t('settings.cacheReset')}
         variant="error"
       />

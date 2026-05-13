@@ -846,7 +846,8 @@ const zhCN = {
     pipVersion: 'pip 版本',
     resetPythonEnv: '重置 Python 环境',
     resetConfirmTitle: '重置 Python 环境',
-    resetConfirmMsg: '确定要重置 Python 虚拟环境吗？这将删除所有已安装的包。',
+    resetConfirmMsg: '重置工具箱当前使用的Python环境',
+    resetConfirmDialog: '确定要重置 Python 虚拟环境吗？这将删除所有已安装的包。',
     // 关于
     about: '关于',
     // 监控
@@ -969,6 +970,7 @@ const zhCN = {
     entries: '条',
     clearLogs: '清空日志',
     noLogs: '暂无日志',
+    entriesHidden: '条旧日志已隐藏',
   },
 
   modal: {

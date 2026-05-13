@@ -59,11 +59,12 @@ export default function ImageClusterPage() {
       if (d.total > 0) setProgress((d.current / d.total) * 100);
       if (d.status === 'done') setIsDone(true);
       if (d.status === 'error') setHasError(true);
-      if (d.status !== 'processing') {
+      // Show log for all non-processing statuses + processing messages that have content
+      if (d.status !== 'processing' || d.message) {
         setLogs((prev) => [...prev, {
           time: getTimeStr(),
-          message: d.message,
-          status: d.status === 'done' ? 'info' : d.status as LogEntry['status'],
+          message: d.message || `${d.current}/${d.total}`,
+          status: d.status === 'done' ? 'info' : d.status === 'processing' ? 'info' : d.status as LogEntry['status'],
         }]);
       }
     });

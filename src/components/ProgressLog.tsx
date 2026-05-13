@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { CheckCircle2, XCircle, Loader2, Info, ScrollText, Trash2, Download, Timer, AlertTriangle } from 'lucide-react';
 import '../styles/progress.css';
 import { useTranslation } from 'react-i18next';
@@ -37,6 +37,8 @@ function formatElapsed(ms: number): string {
 }
 
 export { getTimeStr };
+
+const MAX_LOGS = 500;
 
 export default function ProgressLog({ progress, current, total, logs, isDone, hasError, onClearLogs, externalStartTime }: ProgressLogProps) {
   const { t } = useTranslation();
@@ -100,6 +102,13 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
 
   const speed = getSpeed();
 
+  // Cap logs to prevent unbounded memory/DOM growth
+  const displayLogs = useMemo(() => {
+    if (logs.length <= MAX_LOGS) return logs;
+    return logs.slice(logs.length - MAX_LOGS);
+  }, [logs]);
+  const truncated = logs.length - displayLogs.length;
+
   const statusIcon = (status: LogEntry['status']) => {
     switch (status) {
       case 'success':
@@ -154,7 +163,7 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
                   {elapsed}
                 </span>
               )}
-              <span className="log-panel-count">{logs.length} {t('progressLog.entries')}</span>
+              <span className="log-panel-count">{truncated > 0 ? `${displayLogs.length}/${logs.length}` : logs.length} {t('progressLog.entries')}</span>
               {onClearLogs && (
                 <button
                   className="btn btn-ghost btn-sm"
@@ -168,11 +177,17 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
             </div>
           </div>
           <div className="log-content" ref={logContainerRef} onScroll={handleScroll}>
-            {logs.length === 0 ? (
+            {displayLogs.length === 0 ? (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>{t('progressLog.noLogs')}</div>
-            ) : logs.map((log, i) => (
+            ) : (<>
+              {truncated > 0 && (
+                <div style={{ padding: '4px 12px', fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center', borderBottom: '1px solid var(--color-border)', background: 'rgba(124,92,252,0.04)' }}>
+                  ⋯ {truncated} {t('progressLog.entriesHidden')}
+                </div>
+              )}
+              {displayLogs.map((log, i) => (
               log.status === 'download' && log.dlPercent != null ? (
-                <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+                <div key={i} className={`log-entry ${i === displayLogs.length - 1 ? 'log-entry-new' : ''}`} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)' }}>
                     <span className="log-entry-time">{log.time}</span>
                     {statusIcon(log.status)}
@@ -182,18 +197,19 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
                     <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
                       <div style={{ height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #7c5cfc, #60a5fa)', width: `${log.dlPercent}%`, transition: 'width 0.3s ease' }} />
                     </div>
-                    <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#60a5fa', fontSize: 10, minWidth: 36, textAlign: 'right', flexShrink: 0 }}>{log.dlPercent.toFixed(1)}%</span>
+                    <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#60a5fa', fontSize: 10, minWidth: 36, textAlign: 'right', flexShrink: 0 }}>{log.dlPercent!.toFixed(1)}%</span>
                     {log.dlSpeed && <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>{log.dlSpeed}</span>}
                   </div>
                 </div>
               ) : (
-                <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
+                <div key={i} className={`log-entry ${i === displayLogs.length - 1 ? 'log-entry-new' : ''}`}>
                   <span className="log-entry-time">{log.time}</span>
                   {statusIcon(log.status)}
                   <span className={`log-entry-message ${log.status}`}>{log.message}</span>
                 </div>
               )
             ))}
+            </>)}
             <div ref={logEndRef} />
           </div>
         </div>

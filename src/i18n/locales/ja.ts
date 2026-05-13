@@ -812,7 +812,8 @@ const ja = {
     pipVersion: 'pip バージョン',
     resetPythonEnv: 'Python 環境をリセット',
     resetConfirmTitle: 'Python 環境をリセット',
-    resetConfirmMsg: 'Python 仮想環境をリセットしますか？インストール済みパッケージはすべて削除されます。',
+    resetConfirmMsg: 'ツールボックスが使用しているPython環境をリセットする',
+    resetConfirmDialog: 'Python環境をリセットしますか？インストール済みパッケージはすべて削除されます。',
     about: 'について',
     monitor: 'システムモニター',
     monitorInterval: '検出間隔',
@@ -924,6 +925,7 @@ const ja = {
     entries: '件',
     clearLogs: 'ログをクリア',
     noLogs: 'ログなし',
+    entriesHidden: '件の古いログが非表示',
   },
 
   modal: {

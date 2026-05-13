@@ -268,7 +268,7 @@ export default function BucketPreviewPage() {
             const pageBuckets = analysis.buckets.slice(bucketPage * BUCKETS_PER_PAGE, (bucketPage + 1) * BUCKETS_PER_PAGE);
             return (
               <>
-          <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+          <div className="image-grid-perf" style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'start' }}>
               {pageBuckets.map(bucket => {
                 const color = bucketColor(bucket.aspect_ratio);

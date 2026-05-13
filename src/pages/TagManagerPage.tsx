@@ -576,7 +576,7 @@ export default function TagManagerPage() {
               ))}
             </div>
           </div>
-          <div style={{flex:1,overflowY:'auto',padding:6}}>
+          <div className="image-grid-perf" style={{flex:1,overflowY:'auto',padding:6}}>
             {images.length===0?(
               <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)'}}>
                 <FolderOpen style={{width:32,height:32,opacity:0.2}} />

@@ -812,7 +812,8 @@ const en = {
     pipVersion: 'pip Version',
     resetPythonEnv: 'Reset Python Environment',
     resetConfirmTitle: 'Reset Python Environment',
-    resetConfirmMsg: 'Are you sure to reset the Python virtual environment? All installed packages will be removed.',
+    resetConfirmMsg: 'Reset the Python environment used by the toolbox',
+    resetConfirmDialog: 'Are you sure to reset the Python environment? All installed packages will be removed.',
     about: 'About',
     monitor: 'System Monitor',
     monitorInterval: 'Polling Interval',
@@ -926,6 +927,7 @@ const en = {
     entries: 'entries',
     clearLogs: 'Clear logs',
     noLogs: 'No logs',
+    entriesHidden: 'older entries hidden',
   },
 
   modal: {
