@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import NaturalLangTab from '../components/NaturalLangTab';
 import JsonTagTab, { type JsonTagTabHandle } from '../components/JsonTagTab';
+import TagAutocomplete from '../components/TagAutocomplete';
 
 type ImageItem = { filename: string; path: string; tags: string[]; dirty: boolean; };
 type CaptionItem = { filename: string; path: string; caption: string; dirty: boolean; };
@@ -672,11 +673,21 @@ export default function TagManagerPage() {
               {cur&&(cur.tags.length>0)&&!editingDanbooru&&<button onClick={()=>setEditingDanbooru(true)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:20,height:20,borderRadius:'50%',background:'rgba(74,222,128,0.10)',border:'1px solid rgba(74,222,128,0.25)',color:'#4ade80',cursor:'pointer',flexShrink:0,opacity:0.5,transition:'opacity 0.15s'}}
                 onMouseEnter={e=>e.currentTarget.style.opacity='1'} onMouseLeave={e=>e.currentTarget.style.opacity='0.5'}
               ><Plus style={{width:11,height:11}} /></button>}
-              {cur&&editingDanbooru&&<input autoFocus className="form-input" placeholder="输入标签, Enter 添加"
-                onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const v=(e.target as HTMLInputElement).value.trim().toLowerCase().replace(/_/g,' ');if(v&&!cur.tags.includes(v)){setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,tags:[...img.tags,v],dirty:true}:img));}(e.target as HTMLInputElement).value='';if(!e.shiftKey)setEditingDanbooru(false);}if(e.key==='Escape')setEditingDanbooru(false);}}
-                onBlur={e=>{const v=e.target.value.trim().toLowerCase().replace(/_/g,' ');if(v&&cur&&!cur.tags.includes(v)){setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,tags:[...img.tags,v],dirty:true}:img));}setEditingDanbooru(false);}}
-                onClick={e=>e.stopPropagation()}
-                style={{fontSize:11,height:26,border:'none',background:'transparent',padding:'0 6px',flex:'1 0 80px',minWidth:80,outline:'none'}} />}
+              {cur&&editingDanbooru&&<TagAutocomplete
+                autoFocus
+                placeholder="输入标签, Enter 添加"
+                clearOnSelect={true}
+                keepOpen={true}
+                onSelect={(tag) => {
+                  const v = tag.trim().toLowerCase().replace(/_/g, ' ');
+                  if (v && cur && !cur.tags.includes(v)) {
+                    setImages(p => p.map((img, i) => i === selectedIdx ? { ...img, tags: [...img.tags, v], dirty: true } : img));
+                  }
+                }}
+                onBlur={() => setEditingDanbooru(false)}
+                onKeyDown={(e) => { if (e.key === 'Escape') setEditingDanbooru(false); }}
+                inputStyle={{ fontSize: 11, height: 26, border: 'none', background: 'transparent', padding: '0 6px', flex: '1 0 80px', minWidth: 80, maxWidth: 200, outline: 'none' }}
+              />}
             </div>
           </div>
         </div>

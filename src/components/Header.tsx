@@ -134,51 +134,49 @@ export default function Header() {
       </div>
 
       {/* 中间：系统性能指标 */}
-      <div className="header-stats">
-        {stats && (
-          <>
-            <div className="header-stat-item" title={`${stats.cpu_name}\n${stats.cpu_cores} 核心`}>
-              <Cpu style={{ width: 13, height: 13, color: getUsageColor(stats.cpu_usage) }} />
-              <span className="header-stat-value" style={{ color: getUsageColor(stats.cpu_usage) }}>{stats.cpu_usage.toFixed(0)}%</span>
-              <MiniBar value={stats.cpu_usage} color={getUsageColor(stats.cpu_usage)} />
-            </div>
-            <div className="header-stat-divider" />
-            <div className="header-stat-item" title={`${formatBytes(stats.memory_used)} / ${formatBytes(stats.memory_total)}`}>
-              <MemoryStick style={{ width: 13, height: 13, color: getUsageColor(stats.memory_percent) }} />
-              <span className="header-stat-value" style={{ color: getUsageColor(stats.memory_percent) }}>{stats.memory_percent.toFixed(0)}%</span>
-              <MiniBar value={stats.memory_percent} color={getUsageColor(stats.memory_percent)} />
-            </div>
-            {stats.gpu_usage >= 0 ? (
-              <>
-                <div className="header-stat-divider" />
-                <div className="header-stat-item" title={`${stats.gpu_name}\nGPU: ${stats.gpu_usage.toFixed(0)}%`}>
-                  <MonitorDot style={{ width: 13, height: 13, color: getUsageColor(stats.gpu_usage) }} />
-                  <span className="header-stat-value" style={{ color: getUsageColor(stats.gpu_usage) }}>{stats.gpu_usage.toFixed(0)}%</span>
-                  <MiniBar value={stats.gpu_usage} color={getUsageColor(stats.gpu_usage)} />
-                </div>
-                {stats.vram_percent >= 0 && stats.vram_total > 0 && !stats.gpu_name.includes('Apple') && (
-                  <>
-                    <div className="header-stat-divider" />
-                    <div className="header-stat-item" title={`VRAM: ${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}`}>
-                      <MemoryStick style={{ width: 13, height: 13, color: getUsageColor(stats.vram_percent) }} />
-                      <span className="header-stat-value" style={{ color: getUsageColor(stats.vram_percent) }}>{stats.vram_percent.toFixed(0)}%</span>
-                      <MiniBar value={stats.vram_percent} color={getUsageColor(stats.vram_percent)} />
-                    </div>
-                  </>
-                )}
-              </>
-            ) : stats.gpu_name && !stats.gpu_name.includes('未检测') ? (
-              <>
-                <div className="header-stat-divider" />
-                <div className="header-stat-item" title={stats.gpu_name}>
-                  <MonitorDot style={{ width: 13, height: 13, color: '#a78bfa' }} />
-                  <span className="header-stat-value" style={{ color: '#a78bfa', fontSize: 10 }}>GPU</span>
-                </div>
-              </>
-            ) : null}
-          </>
-        )}
-      </div>
+      {stats ? (
+        <div className="header-stats">
+          <div className="header-stat-item" title={`${stats.cpu_name}\n${stats.cpu_cores} 核心`}>
+            <Cpu style={{ width: 13, height: 13, color: getUsageColor(stats.cpu_usage) }} />
+            <span className="header-stat-value" style={{ color: getUsageColor(stats.cpu_usage) }}>{stats.cpu_usage.toFixed(0)}%</span>
+            <MiniBar value={stats.cpu_usage} color={getUsageColor(stats.cpu_usage)} />
+          </div>
+          <div className="header-stat-divider" />
+          <div className="header-stat-item" title={`${formatBytes(stats.memory_used)} / ${formatBytes(stats.memory_total)}`}>
+            <MemoryStick style={{ width: 13, height: 13, color: getUsageColor(stats.memory_percent) }} />
+            <span className="header-stat-value" style={{ color: getUsageColor(stats.memory_percent) }}>{stats.memory_percent.toFixed(0)}%</span>
+            <MiniBar value={stats.memory_percent} color={getUsageColor(stats.memory_percent)} />
+          </div>
+          {stats.gpu_usage >= 0 ? (
+            <>
+              <div className="header-stat-divider" />
+              <div className="header-stat-item" title={`${stats.gpu_name}\nGPU: ${stats.gpu_usage.toFixed(0)}%`}>
+                <MonitorDot style={{ width: 13, height: 13, color: getUsageColor(stats.gpu_usage) }} />
+                <span className="header-stat-value" style={{ color: getUsageColor(stats.gpu_usage) }}>{stats.gpu_usage.toFixed(0)}%</span>
+                <MiniBar value={stats.gpu_usage} color={getUsageColor(stats.gpu_usage)} />
+              </div>
+              {stats.vram_percent >= 0 && stats.vram_total > 0 && !stats.gpu_name.includes('Apple') && (
+                <>
+                  <div className="header-stat-divider" />
+                  <div className="header-stat-item" title={`VRAM: ${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}`}>
+                    <MemoryStick style={{ width: 13, height: 13, color: getUsageColor(stats.vram_percent) }} />
+                    <span className="header-stat-value" style={{ color: getUsageColor(stats.vram_percent) }}>{stats.vram_percent.toFixed(0)}%</span>
+                    <MiniBar value={stats.vram_percent} color={getUsageColor(stats.vram_percent)} />
+                  </div>
+                </>
+              )}
+            </>
+          ) : stats.gpu_name && !stats.gpu_name.includes('未检测') ? (
+            <>
+              <div className="header-stat-divider" />
+              <div className="header-stat-item" title={stats.gpu_name}>
+                <MonitorDot style={{ width: 13, height: 13, color: '#a78bfa' }} />
+                <span className="header-stat-value" style={{ color: '#a78bfa', fontSize: 10 }}>GPU</span>
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : <div />}
 
       <div className="header-right">
         {/* 任务队列 */}

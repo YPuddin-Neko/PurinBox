@@ -24,7 +24,11 @@ fn get_exe_root() -> PathBuf {
 }
 
 fn default_cache_dir() -> PathBuf {
-    get_exe_root().join("tagcache")
+    if cfg!(target_os = "windows") {
+        get_exe_root().join("data").join("tagcache")
+    } else {
+        get_exe_root().join("tagcache")
+    }
 }
 
 fn get_db_path() -> PathBuf {
@@ -32,7 +36,7 @@ fn get_db_path() -> PathBuf {
     guard.clone().unwrap_or_else(|| default_cache_dir().join("tag_translations.db"))
 }
 
-fn open_db() -> Result<Connection, String> {
+pub fn open_db() -> Result<Connection, String> {
     let path = get_db_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -41,12 +45,51 @@ fn open_db() -> Result<Connection, String> {
         .map_err(|e| format!("打开翻译缓存数据库失败: {}", e))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS translations (
-            tag TEXT PRIMARY KEY,
+            tag TEXT NOT NULL,
             translated TEXT NOT NULL,
             lang TEXT NOT NULL DEFAULT 'zh-CN',
-            created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+            PRIMARY KEY (tag, lang)
         );"
-    ).map_err(|e| format!("创建翻译缓存表失败: {}", e))?;
+    ).map_err(|e| {
+        // 旧表 schema 不兼容时重建（旧表 PRIMARY KEY 仅为 tag）
+        let _ = conn.execute_batch("DROP TABLE IF EXISTS translations;
+            CREATE TABLE translations (
+                tag TEXT NOT NULL,
+                translated TEXT NOT NULL,
+                lang TEXT NOT NULL DEFAULT 'zh-CN',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                PRIMARY KEY (tag, lang)
+            );");
+        format!("创建翻译缓存表失败（已尝试重建）: {}", e)
+    })?;
+    // 检查旧表是否需要迁移：如果 PRIMARY KEY 不包含 lang，则重建
+    let needs_migrate: bool = conn
+        .prepare("PRAGMA table_info(translations)")
+        .and_then(|mut stmt| {
+            let infos: Vec<(i32, String, String, bool, Option<String>, i32)> = stmt
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            // pk 列: 最后一个字段是 pk 编号（0=非PK，>0=PK的第n列）
+            let pk_count = infos.iter().filter(|i| i.5 > 0).count();
+            Ok(pk_count < 2) // 如果 PK 只有1列，说明是旧 schema
+        })
+        .unwrap_or(false);
+    if needs_migrate {
+        let _ = conn.execute_batch(
+            "DROP TABLE translations;
+             CREATE TABLE translations (
+                 tag TEXT NOT NULL,
+                 translated TEXT NOT NULL,
+                 lang TEXT NOT NULL DEFAULT 'zh-CN',
+                 created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                 PRIMARY KEY (tag, lang)
+             );"
+        );
+    }
     Ok(conn)
 }
 
@@ -104,6 +147,9 @@ pub struct TranslatedItem {
 pub struct CacheStats {
     pub total: usize,
     pub db_size_bytes: u64,
+    pub zh_cn: usize,
+    pub ja: usize,
+    pub ko: usize,
 }
 
 // ═══════════════════════════════════════
@@ -660,10 +706,20 @@ pub fn get_translation_cache_stats() -> Result<CacheStats, String> {
     let total: usize = conn.query_row("SELECT COUNT(*) FROM translations", [], |row| row.get(0))
         .map_err(|e| format!("查询缓存统计失败: {}", e))?;
 
+    let count_lang = |lang: &str| -> usize {
+        conn.query_row(
+            "SELECT COUNT(*) FROM translations WHERE lang = ?1",
+            [lang], |row| row.get(0)
+        ).unwrap_or(0)
+    };
+    let zh_cn = count_lang("zh-CN");
+    let ja = count_lang("ja");
+    let ko = count_lang("ko");
+
     let db_path = get_db_path();
     let db_size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
-    Ok(CacheStats { total, db_size_bytes })
+    Ok(CacheStats { total, db_size_bytes, zh_cn, ja, ko })
 }
 
 /// 清空翻译缓存
@@ -727,4 +783,132 @@ pub async fn test_translation(
 
     let translated = results.first().cloned().unwrap_or_default();
     Ok(format!("hello → {}", translated))
+}
+
+/// 导出翻译缓存为 CSV 文件
+/// 格式: tag,translated,lang
+#[tauri::command]
+pub fn export_translation_csv(path: String) -> Result<u32, String> {
+    let conn = open_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT tag, translated, lang FROM translations ORDER BY lang, tag"
+    ).map_err(|e| format!("查询失败: {}", e))?;
+
+    let rows: Vec<(String, String, String)> = {
+        let mapped = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        }).map_err(|e| format!("查询失败: {}", e))?;
+        mapped.filter_map(|r| r.ok()).collect()
+    };
+
+    let mut csv_content = String::from("\u{FEFF}tag,translated,lang\n");
+    let escape = |s: &str| -> String {
+        if s.contains(',') || s.contains('"') || s.contains('\n') {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    };
+    for (tag, translated, lang) in &rows {
+        csv_content.push_str(&format!("{},{},{}\n", escape(tag), escape(translated), escape(lang)));
+    }
+
+    std::fs::write(&path, csv_content)
+        .map_err(|e| format!("写入文件失败: {}", e))?;
+
+    Ok(rows.len() as u32)
+}
+
+/// 导入翻译缓存 CSV 文件
+/// 格式要求: 第一行必须是 tag,translated,lang
+#[tauri::command]
+pub fn import_translation_csv(path: String) -> Result<(u32, u32, String), String> {
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+
+    let mut lines = content.lines();
+    let header = lines.next().ok_or("CSV 文件为空")?;
+    let header_lower = header.to_lowercase().replace(' ', "");
+    if header_lower != "tag,translated,lang" {
+        return Err(format!(
+            "CSV 格式不正确。\n预期表头: tag,translated,lang\n实际表头: {}\n\n请确保 CSV 文件包含三列: tag（原始标签）、translated（翻译结果）、lang（语言代码，如 zh-CN、ja、ko）",
+            header
+        ));
+    }
+
+    let valid_langs = ["zh-CN", "ja", "ko"];
+    let conn = open_db()?;
+    conn.execute_batch("BEGIN").map_err(|e| format!("开始事务失败: {}", e))?;
+    let mut stmt = conn.prepare(
+        "INSERT OR REPLACE INTO translations (tag, translated, lang) VALUES (?1, ?2, ?3)"
+    ).map_err(|e| format!("准备语句失败: {}", e))?;
+
+    let mut imported = 0u32;
+    let mut skipped = 0u32;
+    let mut errors: Vec<String> = Vec::new();
+
+    for (line_num, line) in lines.enumerate() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+
+        let parts = parse_csv_line(line);
+        if parts.len() < 3 {
+            skipped += 1;
+            if errors.len() < 5 {
+                errors.push(format!("第 {} 行: 列数不足 ({}列，需要3列)", line_num + 2, parts.len()));
+            }
+            continue;
+        }
+
+        let tag = parts[0].trim();
+        let translated = parts[1].trim();
+        let lang = parts[2].trim();
+
+        if tag.is_empty() || translated.is_empty() {
+            skipped += 1;
+            continue;
+        }
+
+        if !valid_langs.contains(&lang) {
+            skipped += 1;
+            if errors.len() < 5 {
+                errors.push(format!("第 {} 行: 不支持的语言 '{}'（支持: zh-CN, ja, ko）", line_num + 2, lang));
+            }
+            continue;
+        }
+
+        if stmt.execute(rusqlite::params![tag, translated, lang]).is_ok() {
+            imported += 1;
+        } else {
+            skipped += 1;
+        }
+    }
+
+    drop(stmt);
+    conn.execute_batch("COMMIT").map_err(|e| format!("提交事务失败: {}", e))?;
+    let msg = if errors.is_empty() { String::new() } else { errors.join("\n") };
+    Ok((imported, skipped, msg))
+}
+
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') { current.push('"'); chars.next(); }
+                else { in_quotes = false; }
+            } else { current.push(c); }
+        } else {
+            match c {
+                ',' => { result.push(current.clone()); current.clear(); }
+                '"' => { in_quotes = true; }
+                _ => { current.push(c); }
+            }
+        }
+    }
+    result.push(current);
+    result
 }

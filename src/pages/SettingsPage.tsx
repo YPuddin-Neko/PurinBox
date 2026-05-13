@@ -1,6 +1,7 @@
-import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, AlertTriangle, RefreshCw as RefreshIcon } from 'lucide-react';
+import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, AlertTriangle, RefreshCw as RefreshIcon, Database, Download, Upload, X } from 'lucide-react';
 import { useTheme } from '../components/ThemeProvider';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { ConfirmModal, AlertModal } from '../components/Modal';
 import CustomSelect from '../components/CustomSelect';
 import { invoke } from '@tauri-apps/api/core';
@@ -42,7 +43,7 @@ export default function SettingsPage() {
   const [bingRegion, setBingRegion] = useState(() => localStorage.getItem('bing_region') || '');
   const [showBingKey, setShowBingKey] = useState(false);
 
-  const [cacheStats, setCacheStats] = useState<{ total: number; db_size_bytes: number } | null>(null);
+  const [cacheStats, setCacheStats] = useState<{ total: number; db_size_bytes: number; zh_cn: number; ja: number; ko: number } | null>(null);
   const [clearing, setClearing] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -58,6 +59,16 @@ export default function SettingsPage() {
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateResult, setUpdateResult] = useState<{ has_update: boolean; latest_version: string; release_url: string } | null>(null);
   const [updateError, setUpdateError] = useState('');
+
+  // 标签数据库
+  const [tagDbStats, setTagDbStats] = useState<{ total_tags: number; translated_tags: number; db_size_bytes: number; has_data: boolean; source_file: string; import_date: string } | null>(null);
+  const [tagDbDownloading, setTagDbDownloading] = useState(false);
+  const [tagDbTranslating, setTagDbTranslating] = useState(false);
+  const [translateHover, setTranslateHover] = useState(false);
+  const [tagDbProgress, setTagDbProgress] = useState('');
+  const [tagDbClearConfirm, setTagDbClearConfirm] = useState(false);
+  const [tagDbLatest, setTagDbLatest] = useState('');
+  const [tagDbChecking, setTagDbChecking] = useState(false);
 
   // 代理设置
   const [proxyEnabled, setProxyEnabled] = useState(false);
@@ -97,7 +108,7 @@ export default function SettingsPage() {
   };
 
   const loadCacheStats = async () => {
-    try { setCacheStats(await invoke<{ total: number; db_size_bytes: number }>('get_translation_cache_stats')); } catch (e) { console.error(e); }
+    try { setCacheStats(await invoke<{ total: number; db_size_bytes: number; zh_cn: number; ja: number; ko: number }>('get_translation_cache_stats')); } catch (e) { console.error(e); }
   };
 
   const handleClearCache = async () => {
@@ -112,7 +123,72 @@ export default function SettingsPage() {
     try { setPythonInfo(await invoke<{ available: boolean; version: string; path: string }>('get_python_env_info')); } catch { setPythonInfo(null); }
   };
 
-  useEffect(() => { loadCacheStats(); loadCachePath(); getVersion().then(v => setAppVersion(v)).catch(() => {}); loadProxySettings(); loadPythonInfo(); }, []);
+  const loadTagDbStats = useCallback(async () => {
+    try {
+      const targetLang = localStorage.getItem('translate_target_lang') || 'zh-CN';
+      setTagDbStats(await invoke<{ total_tags: number; translated_tags: number; db_size_bytes: number; has_data: boolean; source_file: string; import_date: string }>('get_tag_db_stats', { targetLang }));
+    } catch (e) { console.error(e); }
+  }, []);
+
+  const handleDownloadTagDb = async () => {
+    // 如果已有数据，先检查是否有新版本
+    if (tagDbStats?.has_data) {
+      setTagDbDownloading(true); setTagDbProgress('正在检查更新...');
+      try {
+        const latest = await invoke<string>('check_tag_db_update');
+        setTagDbLatest(latest);
+        if (latest === tagDbStats.source_file) {
+          setTagDbProgress('标签数据已是最新版本');
+          setTagDbDownloading(false);
+          return;
+        }
+      } catch (e: any) {
+        setTagDbProgress(`检查更新失败: ${e?.message || e}`);
+        setTagDbDownloading(false);
+        return;
+      }
+    } else {
+      setTagDbDownloading(true);
+    }
+    setTagDbProgress('正在下载...');
+    try { await invoke('download_danbooru_tags'); await loadTagDbStats(); } catch (e: any) { setTagDbProgress(`失败: ${e?.message || e}`); }
+    finally { setTagDbDownloading(false); }
+  };
+
+  const handleTranslateTagDb = async () => {
+    setTagDbTranslating(true); setTagDbProgress('正在翻译...');
+    try { await invoke('translate_tag_db', { targetLang: localStorage.getItem('translate_target_lang') || 'zh-CN' }); await loadTagDbStats(); } catch (e: any) { setTagDbProgress(`失败: ${e?.message || e}`); }
+    finally { setTagDbTranslating(false); }
+  };
+
+  const handleClearTagDb = async () => {
+    try { await invoke('clear_tag_db'); await loadTagDbStats(); setTagDbProgress(''); } catch (e: any) { console.error(e); }
+  };
+
+  useEffect(() => {
+    loadCacheStats(); loadCachePath(); loadTagDbStats();
+    getVersion().then(v => setAppVersion(v)).catch(() => {});
+    loadProxySettings(); loadPythonInfo();
+    // 恢复后端忙碌状态
+    invoke<[boolean, boolean]>('is_tag_db_busy').then(([downloading, translating]) => {
+      setTagDbDownloading(downloading);
+      setTagDbTranslating(translating);
+    }).catch(() => {});
+    const unlisten = listen<{ status: string; message: string; current: number; total: number }>('tag-db-progress', (e) => {
+      setTagDbProgress(e.payload.message);
+      if (e.payload.status === 'translating') {
+        loadTagDbStats();
+        loadCacheStats();
+      }
+      if (e.payload.status === 'done') {
+        setTagDbDownloading(false);
+        setTagDbTranslating(false);
+        loadTagDbStats();
+        loadCacheStats();
+      }
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
 
   const loadProxySettings = async () => {
     try {
@@ -202,8 +278,8 @@ export default function SettingsPage() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          {/* System Monitor */}
-          <SystemMonitor />
+          {/* System Monitor - 仅在监控开启时显示 */}
+          {monitorInterval > 0 && <SystemMonitor />}
 
           {/* Appearance */}
           <div className="tool-panel">
@@ -245,7 +321,7 @@ export default function SettingsPage() {
             <div className="tool-panel-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                 <Activity style={{ width: 16, height: 16, color: '#4ade80' }} />
-                <span className="tool-panel-title">系统监控</span>
+                <span className="tool-panel-title">系统监控设置</span>
               </div>
             </div>
             <div>
@@ -274,9 +350,6 @@ export default function SettingsPage() {
                   );
                 })}
               </div>
-              <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 8, lineHeight: 1.6 }}>
-                控制顶栏和首页系统性能指标（CPU/RAM/GPU）的刷新频率。间隔越短数据越实时，但会略微增加系统开销。选择「关闭」将完全停止检测。
-              </p>
             </div>
           </div>
 
@@ -428,15 +501,14 @@ export default function SettingsPage() {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>目标语言</div>
-                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>翻译结果的目标语言</div>
+                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>影响标签翻译和自动补全中显示的翻译内容</div>
                   </div>
                   <CustomSelect value={targetLang}
-                    onChange={v => { setTargetLang(v); localStorage.setItem('translate_target_lang', v); }}
+                    onChange={v => { setTargetLang(v); localStorage.setItem('translate_target_lang', v); loadTagDbStats(); }}
                     options={[
                       { value: 'zh-CN', label: '中文' },
-                      { value: 'en', label: 'English' },
-                      { value: 'ja', label: '日本語' },
-                      { value: 'ko', label: '한국어' },
+                      { value: 'ja', label: '日语' },
+                      { value: 'ko', label: '韩语' },
                     ]}
                     compact
                     style={{ width: 120 }}
@@ -522,20 +594,155 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              {/* 缓存管理 */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>翻译缓存</div>
-                  <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                    {cacheStats ? `${cacheStats.total} 条记录 · ${formatSize(cacheStats.db_size_bytes)}` : '加载中...'}
+              <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>翻译缓存</div>
+                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
+                      {cacheStats ? `${cacheStats.total} 条记录 · ${formatSize(cacheStats.db_size_bytes)}` : '加载中...'}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn btn-ghost btn-sm" title="导出 CSV" onClick={async () => {
+                      try {
+                        const { save } = await import('@tauri-apps/plugin-dialog');
+                        const path = await save({ title: '导出翻译缓存', defaultPath: 'translations.csv', filters: [{ name: 'CSV', extensions: ['csv'] }] });
+                        if (path) {
+                          const count = await invoke<number>('export_translation_csv', { path });
+                          alert(`成功导出 ${count} 条翻译记录`);
+                        }
+                      } catch (e: any) { alert('导出失败: ' + e); }
+                    }} style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3 }}>
+                      <Download style={{ width: 11, height: 11 }} /> 导出
+                    </button>
+                    <button className="btn btn-ghost btn-sm" title="导入 CSV" onClick={async () => {
+                      try {
+                        const { open: dialogOpen } = await import('@tauri-apps/plugin-dialog');
+                        const path = await dialogOpen({ title: '导入翻译缓存 CSV', filters: [{ name: 'CSV', extensions: ['csv'] }] });
+                        if (path) {
+                          const [imported, skipped, errors] = await invoke<[number, number, string]>('import_translation_csv', { path });
+                          let msg = `导入完成：${imported} 条成功`;
+                          if (skipped > 0) msg += `，${skipped} 条跳过`;
+                          if (errors) msg += `\n\n${errors}`;
+                          alert(msg);
+                          loadCacheStats();
+                        }
+                      } catch (e: any) { alert('导入失败: ' + e); }
+                    }} style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3 }}>
+                      <Upload style={{ width: 11, height: 11 }} /> 导入
+                    </button>
+                    <button className="btn btn-secondary" onClick={handleClearCache} disabled={clearing || !cacheStats || cacheStats.total === 0}
+                      style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3, color: '#f87171' }}>
+                      <Trash2 style={{ width: 11, height: 11 }} />
+                      {clearing ? '清理中...' : '清空'}
+                    </button>
                   </div>
                 </div>
-                <button className="btn btn-secondary" onClick={handleClearCache} disabled={clearing || !cacheStats || cacheStats.total === 0}
-                  style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4, color: '#f87171' }}>
-                  <Trash2 style={{ width: 12, height: 12 }} />
-                  {clearing ? '清理中...' : '清空缓存'}
-                </button>
+                {/* 各语言翻译统计 */}
+                {cacheStats && (
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    {[{ label: '中文', count: cacheStats.zh_cn, color: '#f87171' },
+                      { label: '日语', count: cacheStats.ja, color: '#60a5fa' },
+                      { label: '韩语', count: cacheStats.ko, color: '#34d399' }].map(l => (
+                      <div key={l.label} style={{ flex: 1, padding: '6px 10px', borderRadius: 6, background: `${l.color}08`, border: `1px solid ${l.color}20` }}>
+                        <div style={{ fontSize: 9, color: l.color, fontWeight: 600, marginBottom: 2 }}>{l.label}</div>
+                        <div style={{ fontSize: 13, fontWeight: 800, color: l.count > 0 ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}>{l.count.toLocaleString()}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
+            </div>
+          </div>
+
+          {/* 标签数据库 */}
+          <div className="tool-panel">
+            <div className="tool-panel-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                <Database style={{ width: 16, height: 16, color: '#a78bfa' }} />
+                <span className="tool-panel-title">Danbooru 标签数据库</span>
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+              <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
+                下载 Danbooru 标签数据用于标签管理中的自动补全功能。
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>标签数据</div>
+                  <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
+                    {tagDbStats ? (tagDbStats.has_data
+                      ? `${tagDbStats.total_tags.toLocaleString()} 个标签 · 已翻译 ${tagDbStats.translated_tags.toLocaleString()} · ${formatSize(tagDbStats.db_size_bytes)}`
+                      : '未下载') : '加载中...'}
+                  </div>
+                  {tagDbStats?.has_data && tagDbStats.source_file && (
+                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span>版本: {(() => {
+                        const m = tagDbStats.source_file.match(/danbooru_(\d{4}-\d{2}-\d{2})/);
+                        return m ? m[1] : tagDbStats.source_file;
+                      })()}</span>
+                      {tagDbStats.import_date && (
+                        <span>· 导入于 {new Date(parseInt(tagDbStats.import_date) * 1000).toLocaleDateString()}</span>
+                      )}
+                      {tagDbLatest && tagDbLatest !== tagDbStats.source_file && (
+                        <span style={{ color: '#fbbf24', fontWeight: 600 }}>· 有新版本: {(() => {
+                          const m = tagDbLatest.match(/danbooru_(\d{4}-\d{2}-\d{2})/);
+                          return m ? m[1] : tagDbLatest;
+                        })()}</span>
+                      )}
+                      {tagDbLatest && tagDbLatest === tagDbStats.source_file && (
+                        <span style={{ color: '#4ade80' }}>· 已是最新</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  {tagDbStats?.has_data && (
+                    <button className="btn btn-ghost btn-sm" title="检查更新" disabled={tagDbDownloading || tagDbTranslating || tagDbChecking}
+                      onClick={async () => {
+                        setTagDbChecking(true);
+                        try { setTagDbLatest(await invoke<string>('check_tag_db_update')); } catch (e: any) { setTagDbProgress(`检查失败: ${e?.message || e}`); }
+                        finally { setTagDbChecking(false); }
+                      }}
+                      style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <RefreshIcon style={{ width: 12, height: 12, animation: tagDbChecking ? 'spin 1s linear infinite' : undefined, transition: 'transform 0.2s' }} />
+                    </button>
+                  )}
+                  <button className="btn btn-primary" onClick={handleDownloadTagDb}
+                    disabled={tagDbDownloading || tagDbTranslating || (!!tagDbLatest && tagDbLatest === tagDbStats?.source_file)}
+                    style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    {tagDbDownloading ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 12, height: 12 }} />}
+                    {tagDbDownloading ? '下载中...' : (tagDbStats?.has_data ? '更新' : '下载')}
+                  </button>
+                  {tagDbStats?.has_data && (
+                    <button className="btn btn-secondary"
+                      onClick={tagDbTranslating ? async () => { await invoke('cancel_tag_db_download'); } : handleTranslateTagDb}
+                      disabled={tagDbDownloading}
+                      onMouseEnter={() => setTranslateHover(true)}
+                      onMouseLeave={() => setTranslateHover(false)}
+                      style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4,
+                        ...(tagDbTranslating && translateHover ? { color: '#f87171', borderColor: 'rgba(248,113,113,0.3)' } : {})
+                      }}>
+                      {tagDbTranslating
+                        ? (translateHover
+                          ? <><X style={{ width: 12, height: 12 }} /> 取消</>
+                          : <><Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> 翻译中...</>)
+                        : <><Languages style={{ width: 12, height: 12 }} /> 翻译</>}
+                    </button>
+                  )}
+                  {tagDbStats?.has_data && (
+                    <button className="btn btn-secondary" onClick={() => setTagDbClearConfirm(true)} disabled={tagDbDownloading || tagDbTranslating}
+                      style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4, color: '#f87171' }}>
+                      <Trash2 style={{ width: 12, height: 12 }} /> 清空
+                    </button>
+                  )}
+                </div>
+              </div>
+              {tagDbProgress && (
+                <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', padding: '4px 8px', borderRadius: 4, background: 'var(--color-bg-secondary)' }}>
+                  {tagDbProgress}
+                </div>
+              )}
             </div>
           </div>
 
@@ -648,6 +855,15 @@ export default function SettingsPage() {
         onConfirm={doClearCache}
         title="清空缓存"
         message="确定清空所有翻译缓存？下次翻译将重新请求翻译接口。"
+        confirmText="清空"
+        variant="warning"
+      />
+      <ConfirmModal
+        open={tagDbClearConfirm}
+        onClose={() => setTagDbClearConfirm(false)}
+        onConfirm={handleClearTagDb}
+        title="清空标签数据库"
+        message="确定清空所有已下载的 Danbooru 标签数据？标签自动补全功能将不可用。"
         confirmText="清空"
         variant="warning"
       />

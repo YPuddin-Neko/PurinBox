@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
+import TagAutocomplete from './TagAutocomplete';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
@@ -300,11 +301,16 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
         {arr.length>0&&editingField!==editKey&&<button onClick={()=>setEditingField(editKey)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:18,height:18,borderRadius:'50%',background:cc.bg,border:`1px solid ${cc.bd}`,color:cc.tx,cursor:'pointer',flexShrink:0,opacity:0.5,transition:'opacity 0.15s'}}
           onMouseEnter={e=>e.currentTarget.style.opacity='1'} onMouseLeave={e=>e.currentTarget.style.opacity='0.5'}
         ><Plus style={{width:10,height:10}} /></button>}
-        {editingField===editKey&&<input autoFocus className="form-input" placeholder="输入标签, Enter 添加"
-          onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const v=(e.target as HTMLInputElement).value.trim();if(v)onAdd(v);(e.target as HTMLInputElement).value='';if(!e.shiftKey)setEditingField(null);}if(e.key==='Escape')setEditingField(null);}}
-          onBlur={e=>{const v=e.target.value.trim();if(v)onAdd(v);setEditingField(null);}}
-          onClick={e=>e.stopPropagation()}
-          style={{fontSize:11,height:24,border:'none',background:'transparent',padding:'0 4px',flex:'1 0 60px',minWidth:60,outline:'none'}} />}
+        {editingField===editKey&&<TagAutocomplete
+          autoFocus
+          placeholder="输入标签, Enter 添加"
+          clearOnSelect={true}
+          keepOpen={true}
+          onSelect={(v) => { if(v.trim())onAdd(v.trim()); }}
+          onBlur={() => setEditingField(null)}
+          onKeyDown={(e) => { if (e.key === 'Escape') setEditingField(null); }}
+          inputStyle={{fontSize:11,height:24,border:'none',background:'transparent',padding:'0 4px',flex:'1 0 60px',minWidth:60,outline:'none',maxWidth:200}}
+        />}
       </>)}
     </div>
     );
@@ -437,11 +443,16 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
                       {parts.length>0&&editingField!==fieldKey&&<button onClick={e=>{e.stopPropagation();setEditingField(fieldKey);}} style={{display:'flex',alignItems:'center',justifyContent:'center',width:18,height:18,borderRadius:'50%',background:bgChip,border:`1px solid ${bdChip}`,color,cursor:'pointer',flexShrink:0,opacity:0.5,transition:'opacity 0.15s'}}
                         onMouseEnter={e=>e.currentTarget.style.opacity='1'} onMouseLeave={e=>e.currentTarget.style.opacity='0.5'}
                       ><Plus style={{width:10,height:10}} /></button>}
-                      {editingField===fieldKey?<input autoFocus className="form-input" placeholder={ph}
-                        onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const v=(e.target as HTMLInputElement).value.trim();if(v)addOne(v);(e.target as HTMLInputElement).value='';if(!e.shiftKey)setEditingField(null);}if(e.key==='Escape')setEditingField(null);}}
-                        onBlur={e=>{const v=e.target.value.trim();if(v)addOne(v);setEditingField(null);}}
-                        onClick={e=>e.stopPropagation()}
-                        style={{fontSize:11,height:24,border:'none',background:'transparent',padding:'0 4px',flex:1,minWidth:60,outline:'none'}} />
+                      {editingField===fieldKey?<TagAutocomplete
+                        autoFocus
+                        placeholder={ph}
+                        clearOnSelect={true}
+                        keepOpen={true}
+                        onSelect={(v) => { if(v.trim())addOne(v.trim()); }}
+                        onBlur={() => setEditingField(null)}
+                        onKeyDown={(e) => { if (e.key === 'Escape') setEditingField(null); }}
+                        inputStyle={{fontSize:11,height:24,border:'none',background:'transparent',padding:'0 4px',flex:1,minWidth:60,outline:'none',maxWidth:200}}
+                      />
                       :parts.length===0&&<span style={{fontSize:10,color:'var(--color-text-tertiary)',fontStyle:'italic',lineHeight:'24px'}}>未读取到标签数据</span>}
                     </div>
                   );

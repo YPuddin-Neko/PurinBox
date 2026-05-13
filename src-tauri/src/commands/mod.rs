@@ -23,6 +23,7 @@ pub mod upscale;
 pub mod python_env;
 pub mod image_cluster;
 pub mod image_dedup;
+pub mod tag_db;
 
 /// 进度事件 payload
 #[derive(Debug, Clone, Serialize, Deserialize)]

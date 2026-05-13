@@ -19,7 +19,7 @@ use commands::tagger::{
 use commands::python_env::{reset_python_env, get_python_env_info};
 use commands::tagger::llm_tagger::{start_llm_tagging, fetch_llm_models, cancel_llm_tagging};
 use commands::tag_manager::{load_tag_dataset, save_single_tag_file, save_all_tag_files, save_caption_file, save_all_caption_files, load_caption_dataset, load_json_dataset, save_single_json_file, save_all_json_files};
-use commands::translator::{translate_tags, get_translation_cache_stats, clear_translation_cache, test_translation, get_cache_path, set_cache_path};
+use commands::translator::{translate_tags, get_translation_cache_stats, clear_translation_cache, test_translation, get_cache_path, set_cache_path, export_translation_csv, import_translation_csv};
 use commands::tag_sort::{start_tag_sorting, cancel_tag_sorting};
 use commands::api_config::{save_api_config, load_api_config};
 use commands::proxy_config::{save_proxy_config, load_proxy_config};
@@ -29,6 +29,7 @@ use commands::blur_noise::{blur_noise_images, cancel_blur_noise};
 use commands::upscale::{get_upscale_engines, download_upscale_engine, cancel_upscale_download, start_upscale, cancel_upscale, force_cancel_upscale};
 use commands::image_cluster::{start_image_cluster, cancel_image_cluster, force_cancel_image_cluster};
 use commands::image_dedup::{start_image_dedup, cancel_image_dedup, delete_dedup_files};
+use commands::tag_db::{get_tag_db_stats, download_danbooru_tags, cancel_tag_db_download, clear_tag_db, search_tags, translate_tag_db, is_tag_db_busy, check_tag_db_update};
 use commands::{scan_images, get_system_stats, check_for_updates};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -94,6 +95,8 @@ pub fn run() {
             test_translation,
             get_cache_path,
             set_cache_path,
+            export_translation_csv,
+            import_translation_csv,
             start_tag_sorting,
             cancel_tag_sorting,
             save_api_config,
@@ -119,6 +122,14 @@ pub fn run() {
             cancel_image_dedup,
             delete_dedup_files,
             check_for_updates,
+            get_tag_db_stats,
+            download_danbooru_tags,
+            cancel_tag_db_download,
+            clear_tag_db,
+            search_tags,
+            translate_tag_db,
+            is_tag_db_busy,
+            check_tag_db_update,
         ])
         .setup(|app| {
             // 初始化翻译缓存数据库路径（默认使用 exe 根目录/tagcache/）

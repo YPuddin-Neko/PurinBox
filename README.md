@@ -118,7 +118,6 @@ npm run tauri build
 | 图片处理 | image-rs, psd |
 | AI 推理 | ONNX Runtime (Python) |
 | 超分引擎 | Real-ESRGAN (Python) |
-| Python 管理 | 系统检测 + standalone 自动下载 |
 | 构建工具 | Vite 7 |
 | 样式 | 原生 CSS (CSS Variables) |
 | 图标 | Lucide React |

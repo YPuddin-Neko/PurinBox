@@ -13,7 +13,7 @@ interface AppSettingsContextType {
 
 const AppSettingsContext = createContext<AppSettingsContextType>({
   mode: 'dark', setMode: () => {}, resolved: 'dark',
-  monitorInterval: 3000, setMonitorInterval: () => {},
+  monitorInterval: 0, setMonitorInterval: () => {},
   cycleThemeWithRipple: () => {},
 });
 
@@ -27,7 +27,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const [monitorInterval, setMonitorIntervalRaw] = useState<number>(() => {
     const saved = localStorage.getItem('monitorInterval');
-    return saved ? Number(saved) : 3000;
+    return saved ? Number(saved) : 0;
   });
 
   const [systemDark, setSystemDark] = useState(
