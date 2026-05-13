@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
+import { useTranslation } from 'react-i18next';
 import {
   Network,
   FolderOpen,
@@ -21,18 +22,13 @@ interface ProgressPayload { current: number; total: number; filename: string; st
 type Algorithm = 'kmeans' | 'hdbscan';
 type FeatureType = 'style' | 'semantic' | 'fusion';
 
-const ALGORITHMS: { value: Algorithm; label: string; desc: string }[] = [
-  { value: 'kmeans', label: 'K-Means', desc: '指定分组数量' },
-  { value: 'hdbscan', label: 'HDBSCAN', desc: '自动发现分组' },
-];
-
-const FEATURES: { value: FeatureType; label: string; desc: string; color: string }[] = [
-  { value: 'style', label: '风格', desc: '纹理/色调/画风', color: '#f472b6' },
-  { value: 'semantic', label: '语义', desc: '内容/物体/场景', color: '#60a5fa' },
-  { value: 'fusion', label: '融合', desc: '自定义比例混合', color: '#a78bfa' },
+const ALGORITHMS_BASE: { value: Algorithm; label: string }[] = [
+  { value: 'kmeans', label: 'K-Means' },
+  { value: 'hdbscan', label: 'HDBSCAN' },
 ];
 
 export default function ImageClusterPage() {
+  const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [algorithm, setAlgorithm] = useState<Algorithm>('kmeans');
@@ -74,22 +70,22 @@ export default function ImageClusterPage() {
     return () => { active = false; p.then(fn => fn()); };
   }, []);
 
-  const selectInputFolder = async () => { const s = await open({ directory: true, multiple: false, title: '选择输入文件夹' }); if (s) setInputPath(s as string); };
-  const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: '选择输出文件夹' }); if (s) setOutputPath(s as string); };
+  const selectInputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') }); if (s) setInputPath(s as string); };
+  const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') }); if (s) setOutputPath(s as string); };
 
   const { addTask } = useTaskQueue();
 
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
-    setProcessing(true); addTask('image-cluster', '图片聚类');
+    setProcessing(true); addTask('image-cluster', t('imageCluster.taskName'));
     setProgress(0); setProgressCurrent(0); setProgressTotal(0); setIsDone(false); setHasError(false);
     setProcessStartTime(Date.now());
 
-    const algoLabel = ALGORITHMS.find(a => a.value === algorithm)?.label || algorithm;
-    const featLabel = FEATURES.find(f => f.value === featureType)?.label || featureType;
-    const paramStr = algorithm === 'kmeans' ? `分组数: ${nClusters}` : `最小簇: ${minClusterSize}`;
-    const deviceLabel = device === 'auto' ? 'GPU (自动)' : 'CPU';
-    setLogs([{ time: getTimeStr(), message: `开始聚类 | ${algoLabel} | ${featLabel} | ${paramStr} | ${deviceLabel}`, status: 'info' }]);
+    const algoLabel = ALGORITHMS_BASE.find(a => a.value === algorithm)?.label || algorithm;
+    const featLabel = featureType;
+    const paramStr = algorithm === 'kmeans' ? `${t('imageCluster.groupCount')}: ${nClusters}` : `${t('imageCluster.minClusterSize')}: ${minClusterSize}`;
+    const deviceLabel = device === 'auto' ? t('imageCluster.gpuAuto') : 'CPU';
+    setLogs([{ time: getTimeStr(), message: t('imageCluster.startMsg', { algo: algoLabel, feat: featLabel, param: paramStr, device: deviceLabel }), status: 'info' }]);
 
     try {
       await invoke<ProcessResult>('start_image_cluster', {
@@ -108,7 +104,7 @@ export default function ImageClusterPage() {
         },
       });
     } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true); setIsDone(true);
     } finally { setProcessing(false); }
   };
@@ -138,9 +134,9 @@ export default function ImageClusterPage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <Network style={{ width: 28, height: 28, color: '#a78bfa' }} />
-          <h1 className="page-title">图片聚类</h1>
+          <h1 className="page-title">{t('imageCluster.title')}</h1>
         </div>
-        <p className="page-subtitle">基于视觉特征自动将相似图片分组</p>
+        <p className="page-subtitle">{t('imageCluster.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
@@ -148,19 +144,19 @@ export default function ImageClusterPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 文件夹 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">文件夹选择</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('imageCluster.folderSelect')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <div className="form-group">
-                <label className="form-label">输入文件夹</label>
+                <label className="form-label">{t('blurNoise.inputFolder')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择包含图片的文件夹..." value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
               <div className="form-group">
-                <label className="form-label">输出文件夹</label>
+                <label className="form-label">{t('blurNoise.outputFolder')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="聚类结果将输出到子文件夹..." value={outputPath} onChange={e => setOutputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={e => setOutputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
@@ -170,7 +166,7 @@ export default function ImageClusterPage() {
           {/* 参数设置 */}
           <div className="tool-panel">
             <div className="tool-panel-header">
-              <span className="tool-panel-title">参数设置</span>
+              <span className="tool-panel-title">{t('imageCluster.paramSettings')}</span>
               <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                 {([{ value: 'cpu' as const, label: 'CPU', icon: <Cpu style={{ width: 13, height: 13 }} />, color: '#fbbf24' },
                   { value: 'auto' as const, label: 'GPU', icon: <Gpu style={{ width: 13, height: 13 }} />, color: '#4ade80' }] as const).map(d => (
@@ -190,9 +186,9 @@ export default function ImageClusterPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               {/* 聚类算法 */}
               <div className="form-group">
-                <label className="form-label">聚类算法</label>
+                <label className="form-label">{t('imageCluster.clusterAlgo')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  {ALGORITHMS.map(a => (
+                  {ALGORITHMS_BASE.map(a => (
                     <button key={a.value} onClick={() => setAlgorithm(a.value)} style={algoBtnStyle(algorithm === a.value)}>
                       {a.label}
                     </button>
@@ -202,9 +198,11 @@ export default function ImageClusterPage() {
 
               {/* 特征类型 */}
               <div className="form-group">
-                <label className="form-label">特征类型</label>
+                <label className="form-label">{t('imageCluster.featureType')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  {FEATURES.map(f => (
+                  {([{ value: 'style' as FeatureType, label: t('imageCluster.styleLabel'), desc: t('imageCluster.styleDesc'), color: '#f472b6' },
+                    { value: 'semantic' as FeatureType, label: t('imageCluster.semanticLabel'), desc: t('imageCluster.semanticDesc'), color: '#60a5fa' },
+                    { value: 'fusion' as FeatureType, label: t('imageCluster.fusionLabel'), desc: t('imageCluster.fusionDesc'), color: '#a78bfa' }]).map(f => (
                     <button key={f.value} onClick={() => setFeatureType(f.value)} style={featBtnStyle(featureType === f.value, f.color)}>
                       <span>{f.label}</span>
                       <span style={{ fontSize: 9, opacity: 0.7, fontWeight: 400 }}>{f.desc}</span>
@@ -216,11 +214,11 @@ export default function ImageClusterPage() {
               {/* 融合权重滑块 */}
               {featureType === 'fusion' && (
                 <div className="form-group" style={{ background: 'rgba(167,139,250,0.04)', border: '1px solid rgba(167,139,250,0.1)', borderRadius: 'var(--radius-sm)', padding: 'var(--space-3)' }}>
-                  <label className="form-label" style={{ marginBottom: 'var(--space-2)' }}>融合权重</label>
+                  <label className="form-label" style={{ marginBottom: 'var(--space-2)' }}>{t('imageCluster.fusionWeight')}</label>
                   {([
-                    { label: '风格', value: wStyle, set: setWStyle, color: '#f472b6' },
-                    { label: '语义', value: wSemantic, set: setWSemantic, color: '#60a5fa' },
-                    { label: '颜色', value: wColor, set: setWColor, color: '#fbbf24' },
+                    { label: t('imageCluster.styleLabel'), value: wStyle, set: setWStyle, color: '#f472b6' },
+                    { label: t('imageCluster.semanticLabel'), value: wSemantic, set: setWSemantic, color: '#60a5fa' },
+                    { label: t('imageCluster.colorLabel'), value: wColor, set: setWColor, color: '#fbbf24' },
                   ] as const).map(w => (
                     <div key={w.label} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 6 }}>
                       <span style={{ fontSize: 12, fontWeight: 600, color: w.color, width: 32, textAlign: 'right' }}>{w.label}</span>
@@ -230,41 +228,41 @@ export default function ImageClusterPage() {
                       <span style={{ fontSize: 12, fontWeight: 700, fontFamily: 'monospace', color: w.color, width: 28, textAlign: 'right' }}>{w.value.toFixed(1)}</span>
                     </div>
                   ))}
-                  <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>设为 0 则忽略该特征，权重越大影响越大</span>
+                  <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>{t('imageCluster.weightTip')}</span>
                 </div>
               )}
 
               {/* 分组参数 + 分布图主题 */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 'var(--space-4)', alignItems: 'start' }}>
                 <div className="form-group" style={{ marginBottom: 0, opacity: algorithm === 'kmeans' ? 1 : 0.4, transition: 'opacity 0.15s' }}>
-                  <label className="form-label">分组数量 (K)</label>
+                  <label className="form-label">{t('imageCluster.groupCount')}</label>
                   <input className="form-input" type="number" min={2} value={nClusters}
                     disabled={algorithm !== 'kmeans'}
                     onChange={(e) => { const v = parseInt(e.target.value); if (v >= 2) setNClusters(v); }}
                     style={{ height: 36 }} />
-                  <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>最小 2，超出自动限制</span>
+                  <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{t('imageCluster.groupCountTip')}</span>
                 </div>
                 <div className="form-group" style={{ marginBottom: 0, opacity: algorithm === 'hdbscan' ? 1 : 0.4, transition: 'opacity 0.15s' }}>
-                  <label className="form-label">最小簇大小</label>
+                  <label className="form-label">{t('imageCluster.minClusterSize')}</label>
                   <input className="form-input" type="number" min={2} value={minClusterSize}
                     disabled={algorithm !== 'hdbscan'}
                     onChange={(e) => { const v = parseInt(e.target.value); if (v >= 2) setMinClusterSize(v); }}
                     style={{ height: 36 }} />
-                  <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>越小分组越多越细</span>
+                  <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{t('imageCluster.minClusterSizeTip')}</span>
                 </div>
                 <div className="form-group" style={{ marginBottom: 0, minWidth: 140 }}>
-                  <label className="form-label">分布图主题</label>
+                  <label className="form-label">{t('imageCluster.mapTheme')}</label>
                   <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                    {([{ val: 'light' as const, label: '浅色', icon: <Sun style={{ width: 13, height: 13 }} /> },
-                      { val: 'dark' as const, label: '深色', icon: <Moon style={{ width: 13, height: 13 }} /> }]).map(t => (
-                      <button key={t.val} onClick={() => setMapTheme(t.val)} style={{
+                    {([{ val: 'light' as const, label: t('imageCluster.mapLight'), icon: <Sun style={{ width: 13, height: 13 }} /> },
+                      { val: 'dark' as const, label: t('imageCluster.mapDark'), icon: <Moon style={{ width: 13, height: 13 }} /> }]).map(th => (
+                      <button key={th.val} onClick={() => setMapTheme(th.val)} style={{
                         flex: 1, height: 36, borderRadius: 'var(--radius-sm)', fontSize: 12, fontWeight: 600,
                         cursor: 'pointer', transition: 'all 0.15s', textAlign: 'center',
                         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
-                        border: `1.5px solid ${mapTheme === t.val ? 'var(--color-accent-primary)' : 'var(--color-border)'}`,
-                        background: mapTheme === t.val ? 'rgba(124,92,252,0.08)' : 'transparent',
-                        color: mapTheme === t.val ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
-                      }}>{t.icon} {t.label}</button>
+                        border: `1.5px solid ${mapTheme === th.val ? 'var(--color-accent-primary)' : 'var(--color-border)'}`,
+                        background: mapTheme === th.val ? 'rgba(124,92,252,0.08)' : 'transparent',
+                        color: mapTheme === th.val ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
+                      }}>{th.icon} {th.label}</button>
                     ))}
                   </div>
                 </div>
@@ -275,8 +273,8 @@ export default function ImageClusterPage() {
                 <Info style={{ width: 13, height: 13, color: '#a78bfa', marginTop: 2, minWidth: 13 }} />
                 <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
                   {algorithm === 'kmeans'
-                    ? '使用 K-Means 需要预先指定分组数量。建议先用较大的 K 值，再根据结果调整。'
-                    : 'HDBSCAN 会自动发现分组数量，不需要预设。无法归入任何组的图片会放入 noise 文件夹。'
+                    ? t('imageCluster.kmeansTip')
+                    : t('imageCluster.hdbscanTip')
                   }
                 </span>
               </div>
@@ -289,7 +287,7 @@ export default function ImageClusterPage() {
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!inputPath || !outputPath}
             cancelCommand="cancel_image_cluster" forceCancelCommand="force_cancel_image_cluster"
-            startText="开始聚类" processingText="聚类中..."
+            startText={t('imageCluster.startCluster')} processingText={t('imageCluster.clustering')}
             onCancelLog={addCancelLog} />
           <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} externalStartTime={processStartTime} />
         </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, ReactNode } from 'react';
 import { AlertTriangle, Info, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface ModalProps {
   open: boolean;
@@ -10,6 +11,7 @@ interface ModalProps {
 }
 
 export function Modal({ open, onClose, title, children, variant = 'info' }: ModalProps) {
+  const { t } = useTranslation();
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -41,7 +43,7 @@ export function Modal({ open, onClose, title, children, variant = 'info' }: Moda
             {variant === 'error' || variant === 'warning'
               ? <AlertTriangle style={{ width: 18, height: 18, color: iconColor }} />
               : <Info style={{ width: 18, height: 18, color: iconColor }} />}
-            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)' }}>{title || '提示'}</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)' }}>{title || t('modal.hint')}</span>
           </div>
           <button onClick={onClose} style={{
             background: 'none', border: 'none', cursor: 'pointer', padding: 4, borderRadius: 6,
@@ -67,15 +69,18 @@ interface ConfirmModalProps {
   variant?: 'info' | 'warning' | 'error';
 }
 
-export function ConfirmModal({ open, onClose, onConfirm, title, message, confirmText = '确定', cancelText = '取消', variant = 'warning' }: ConfirmModalProps) {
+export function ConfirmModal({ open, onClose, onConfirm, title, message, confirmText, cancelText, variant = 'warning' }: ConfirmModalProps) {
+  const { t } = useTranslation();
+  const ct = confirmText || t('modal.confirm');
+  const cct = cancelText || t('modal.cancel');
   return (
-    <Modal open={open} onClose={onClose} title={title || '确认'} variant={variant}>
+    <Modal open={open} onClose={onClose} title={title || t('modal.confirmTitle')} variant={variant}>
       <div>{message}</div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-        <button className="btn btn-secondary btn-sm" onClick={onClose}>{cancelText}</button>
+        <button className="btn btn-secondary btn-sm" onClick={onClose}>{cct}</button>
         <button className="btn btn-primary btn-sm" onClick={() => { onConfirm(); onClose(); }}
           style={variant === 'error' ? { background: 'rgba(248,113,113,0.15)', color: '#f87171', borderColor: 'rgba(248,113,113,0.3)' } : undefined}>
-          {confirmText}
+          {ct}
         </button>
       </div>
     </Modal>
@@ -91,11 +96,12 @@ interface AlertModalProps {
 }
 
 export function AlertModal({ open, onClose, title, message, variant = 'error' }: AlertModalProps) {
+  const { t } = useTranslation();
   return (
-    <Modal open={open} onClose={onClose} title={title || '提示'} variant={variant}>
+    <Modal open={open} onClose={onClose} title={title || t('modal.hint')} variant={variant}>
       <div>{message}</div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-        <button className="btn btn-primary btn-sm" onClick={onClose}>确定</button>
+        <button className="btn btn-primary btn-sm" onClick={onClose}>{t('modal.confirm')}</button>
       </div>
     </Modal>
   );

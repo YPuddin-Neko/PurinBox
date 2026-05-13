@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
+import { useTranslation } from 'react-i18next';
 import {
   Sparkles,
   FolderOpen,
@@ -15,6 +16,7 @@ interface ProcessResult { success_count: number; fail_count: number; total: numb
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 
 export default function BlurNoisePage() {
+  const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [blurRadius, setBlurRadius] = useState(2.0);
@@ -48,25 +50,25 @@ export default function BlurNoisePage() {
     return () => { active = false; p.then(fn => fn()); };
   }, []);
 
-  const selectInputFolder = async () => { const s = await open({ directory: true, multiple: false, title: '选择输入文件夹' }); if (s) setInputPath(s as string); };
-  const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: '选择输出文件夹' }); if (s) setOutputPath(s as string); };
+  const selectInputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') }); if (s) setInputPath(s as string); };
+  const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') }); if (s) setOutputPath(s as string); };
 
   const { addTask } = useTaskQueue();
 
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
-    setProcessing(true); addTask('blur-noise', '模糊/噪点');
+    setProcessing(true); addTask('blur-noise', t('blurNoise.taskName'));
     setProgress(0); setProgressCurrent(0); setProgressTotal(0); setIsDone(false); setHasError(false);
     const parts = [];
-    if (blurRadius > 0) parts.push(`模糊半径: ${blurRadius.toFixed(1)}`);
-    if (noiseStrength > 0) parts.push(`噪点强度: ${noiseStrength}`);
-    setLogs([{ time: getTimeStr(), message: `开始处理 | ${parts.join(' | ')}`, status: 'info' }]);
+    if (blurRadius > 0) parts.push(`${t('blurNoise.blurLabel')}: ${blurRadius.toFixed(1)}`);
+    if (noiseStrength > 0) parts.push(`${t('blurNoise.noiseLabel')}: ${noiseStrength}`);
+    setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${t('pages.process')} | ${parts.join(' | ')}`, status: 'info' }]);
     try {
       await invoke<ProcessResult>('blur_noise_images', {
         options: { input_path: inputPath, output_path: outputPath, blur_radius: blurRadius, noise_strength: noiseStrength },
       });
     } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true); setIsDone(true);
     } finally { setProcessing(false); }
   };
@@ -79,28 +81,28 @@ export default function BlurNoisePage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <Sparkles style={{ width: 28, height: 28, color: '#60a5fa' }} />
-          <h1 className="page-title">模糊 / 噪点</h1>
+          <h1 className="page-title">{t('blurNoise.title')}</h1>
         </div>
-        <p className="page-subtitle">为图片添加高斯模糊和随机噪点</p>
+        <p className="page-subtitle">{t('blurNoise.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         {/* 左侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">参数设置</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('blurNoise.paramSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <div className="form-group">
-                <label className="form-label">输入文件夹</label>
+                <label className="form-label">{t('blurNoise.inputFolder')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择包含图片的文件夹..." value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('blurNoise.inputPlaceholder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
               <div className="form-group">
-                <label className="form-label">输出文件夹</label>
+                <label className="form-label">{t('blurNoise.outputFolder')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择输出目标文件夹..." value={outputPath} onChange={e => setOutputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('blurNoise.outputPlaceholder')} value={outputPath} onChange={e => setOutputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
@@ -108,27 +110,27 @@ export default function BlurNoisePage() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-4)' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>模糊半径</span>
+                    <span>{t('blurNoise.blurRadius')}</span>
                     <span style={{ fontFamily: 'monospace', color: '#60a5fa', fontSize: 'var(--font-size-sm)' }}>{blurRadius.toFixed(1)}</span>
                   </label>
                   <input type="range" min="0" max="10" step="0.5" value={blurRadius} onChange={(e) => setBlurRadius(Number(e.target.value))}
                     style={{ width: '100%', accentColor: '#60a5fa' }} />
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                    <span>0 (不模糊)</span>
-                    <span>10.0 (强模糊)</span>
+                    <span>{t('blurNoise.blurMin')}</span>
+                    <span>{t('blurNoise.blurMax')}</span>
                   </div>
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>噪点强度</span>
+                    <span>{t('blurNoise.noiseStrength')}</span>
                     <span style={{ fontFamily: 'monospace', color: '#a78bfa', fontSize: 'var(--font-size-sm)' }}>{noiseStrength}</span>
                   </label>
                   <input type="range" min="0" max="100" step="1" value={noiseStrength} onChange={(e) => setNoiseStrength(Number(e.target.value))}
                     style={{ width: '100%', accentColor: '#a78bfa' }} />
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                    <span>0 (无噪点)</span>
-                    <span>100 (强噪点)</span>
+                    <span>{t('blurNoise.noiseMin')}</span>
+                    <span>{t('blurNoise.noiseMax')}</span>
                   </div>
                 </div>
               </div>
@@ -136,7 +138,7 @@ export default function BlurNoisePage() {
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(96, 165, 250, 0.06)', border: '1px solid rgba(96, 165, 250, 0.1)' }}>
                 <Info style={{ width: 13, height: 13, color: '#60a5fa', marginTop: 2, minWidth: 13 }} />
                 <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-                  模糊和噪点可以同时使用，也可以只用其中一种（将另一个设为 0）。推荐模糊半径 1.0~3.0，噪点强度 5~25。
+                  {t('blurNoise.tip')}
                 </span>
               </div>
             </div>
@@ -147,7 +149,7 @@ export default function BlurNoisePage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!inputPath || !outputPath || (blurRadius <= 0 && noiseStrength <= 0)}
-            cancelCommand="cancel_blur_noise" startText="开始处理" processingText="处理中..."
+            cancelCommand="cancel_blur_noise" startText={t('blurNoise.startProcess')} processingText={t('pages.processing')}
             onCancelLog={addCancelLog} />
           <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
         </div>

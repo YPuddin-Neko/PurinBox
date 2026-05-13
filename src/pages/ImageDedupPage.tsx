@@ -8,12 +8,14 @@ import {
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
+import { useTranslation } from 'react-i18next';
 
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 interface DupGroup { paths: string[]; similarity: number; method: string; }
 interface DedupResult { total_images: number; duplicate_groups: DupGroup[]; scan_time_ms: number; }
 
 export default function ImageDedupPage() {
+  const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [dhashThreshold, setDhashThreshold] = useState(10);
   const [phashThreshold, setPhashThreshold] = useState(10);
@@ -60,7 +62,7 @@ export default function ImageDedupPage() {
   }, []);
 
   const pickFolder = useCallback(async () => {
-    const selected = await open({ directory: true, title: '选择图片文件夹' });
+    const selected = await open({ directory: true, title: t('pages.selectInputTitle') });
     if (selected) setInputPath(selected as string);
   }, []);
 
@@ -71,7 +73,7 @@ export default function ImageDedupPage() {
     setProcessStartTime(Date.now());
     setDupGroups([]); setSelectedForDelete(new Set()); setTotalImages(0);
     setCurrentPage(0);
-    setLogs([{ time: getTimeStr(), message: '开始扫描图片...', status: 'info' }]);
+    setLogs([{ time: getTimeStr(), message: t('imageDedup.scanStart'), status: 'info' }]);
     try {
       const result = await invoke<DedupResult>('start_image_dedup', {
         options: {
@@ -85,7 +87,7 @@ export default function ImageDedupPage() {
       setTotalImages(result.total_images);
       setLogs(prev => [...prev, {
         time: getTimeStr(),
-        message: `扫描完成: ${result.total_images} 张图片, 发现 ${result.duplicate_groups.length} 组重复, 耗时 ${(result.scan_time_ms / 1000).toFixed(1)}s`,
+        message: t('imageDedup.scanDone', { total: result.total_images, groups: result.duplicate_groups.length, time: (result.scan_time_ms / 1000).toFixed(1) }),
         status: 'success',
       }]);
       // auto-select all but first in each group for deletion
@@ -95,7 +97,7 @@ export default function ImageDedupPage() {
       });
       setSelectedForDelete(autoSelect);
     } catch (e: any) {
-      setLogs(prev => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs(prev => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true);
     } finally {
       setIsDone(true);
@@ -123,7 +125,7 @@ export default function ImageDedupPage() {
       });
       setLogs(prev => [...prev, {
         time: getTimeStr(),
-        message: `删除完成: 成功 ${result.deleted}, 失败 ${result.failed}`,
+        message: t('imageDedup.deleteDone', { ok: result.deleted, fail: result.failed }),
         status: result.failed > 0 ? 'warning' : 'success',
       }]);
       if (result.errors.length > 0) {
@@ -139,7 +141,7 @@ export default function ImageDedupPage() {
       );
       setSelectedForDelete(new Set());
     } catch (e: any) {
-      setLogs(prev => [...prev, { time: getTimeStr(), message: `删除失败: ${String(e)}`, status: 'error' }]);
+      setLogs(prev => [...prev, { time: getTimeStr(), message: `${t('imageDedup.deleteFailed')}: ${String(e)}`, status: 'error' }]);
     } finally {
       setDeleting(false);
     }
@@ -155,19 +157,19 @@ export default function ImageDedupPage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <Copy style={{ width: 28, height: 28, color: '#14b8a6' }} />
-          <h1 className="page-title">图片去重</h1>
+          <h1 className="page-title">{t('imageDedup.title')}</h1>
         </div>
-        <p className="page-subtitle">使用 dHash + pHash + 颜色直方图筛选重复图片</p>
+        <p className="page-subtitle">{t('imageDedup.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 20, minHeight: 'calc(100vh - 200px)' }}>
         {/* Left: settings */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={panel}>
-            <label style={label}>图片文件夹</label>
+            <label style={label}>{t('imageDedup.imageFolder')}</label>
             <div style={{ display: 'flex', gap: 6 }}>
               <input className="form-input" value={inputPath} onChange={e => setInputPath(e.target.value)}
-                placeholder="选择文件夹..." style={{ flex: 1, fontSize: 12 }} />
+                placeholder={t('imageDedup.selectFolderPlaceholder')} style={{ flex: 1, fontSize: 12 }} />
               <button className="btn btn-secondary" onClick={pickFolder} style={{ flexShrink: 0 }}>
                 <FolderOpen style={{ width: 14, height: 14 }} />
               </button>
@@ -176,42 +178,42 @@ export default function ImageDedupPage() {
 
           <div style={panel}>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: 12 }}>
-              算法参数
+              {t('imageDedup.algoParams')}
             </div>
 
             <div style={{ marginBottom: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <span style={label}>dHash 阈值</span>
+                <span style={label}>{t('imageDedup.dhashThreshold')}</span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: '#7c5cfc', fontFamily: 'monospace' }}>{dhashThreshold}</span>
               </div>
               <input type="range" min={1} max={20} value={dhashThreshold}
                 onChange={e => setDhashThreshold(Number(e.target.value))} style={slider} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                <span>严格 (1)</span><span>宽松 (20)</span>
+                <span>{t('imageDedup.strict')} (1)</span><span>{t('imageDedup.loose')} (20)</span>
               </div>
             </div>
 
             <div style={{ marginBottom: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <span style={label}>pHash 阈值</span>
+                <span style={label}>{t('imageDedup.phashThreshold')}</span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: '#7c5cfc', fontFamily: 'monospace' }}>{phashThreshold}</span>
               </div>
               <input type="range" min={1} max={20} value={phashThreshold}
                 onChange={e => setPhashThreshold(Number(e.target.value))} style={slider} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                <span>严格 (1)</span><span>宽松 (20)</span>
+                <span>{t('imageDedup.strict')} (1)</span><span>{t('imageDedup.loose')} (20)</span>
               </div>
             </div>
 
             <div style={{ marginBottom: 4 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <span style={label}>颜色阈值</span>
+                <span style={label}>{t('imageDedup.colorThreshold')}</span>
                 <span style={{ fontSize: 13, fontWeight: 700, color: '#7c5cfc', fontFamily: 'monospace' }}>{colorThreshold.toFixed(2)}</span>
               </div>
               <input type="range" min={0} max={100} value={Math.round(colorThreshold * 100)}
                 onChange={e => setColorThreshold(Number(e.target.value) / 100)} style={slider} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                <span>宽松 (0)</span><span>严格 (1.0)</span>
+                <span>{t('imageDedup.loose')} (0)</span><span>{t('imageDedup.strict')} (1.0)</span>
               </div>
             </div>
           </div>
@@ -219,7 +221,7 @@ export default function ImageDedupPage() {
           <ProcessButton processing={processing} onStart={handleStart}
             disabled={!inputPath}
             cancelCommand="cancel_image_dedup"
-            startText="执行去重扫描" processingText="扫描中..."
+            startText={t('imageDedup.startScan')} processingText={t('imageDedup.scanning')}
             onCancelLog={addCancelLog} />
 
           <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} externalStartTime={processStartTime} />
@@ -230,10 +232,10 @@ export default function ImageDedupPage() {
           {isDone && dupGroups.length > 0 && (
             <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
               {[
-                { label: '总图片', value: totalImages, color: '#60a5fa' },
-                { label: '重复组', value: dupGroups.length, color: '#f59e0b' },
-                { label: '重复图片', value: dupGroups.reduce((a, g) => a + g.paths.length - 1, 0), color: '#ef4444' },
-                { label: '已选删除', value: selectedForDelete.size, color: '#7c5cfc' },
+                { label: t('imageDedup.totalImages'), value: totalImages, color: '#60a5fa' },
+                { label: t('imageDedup.dupGroups'), value: dupGroups.length, color: '#f59e0b' },
+                { label: t('imageDedup.dupImages'), value: dupGroups.reduce((a, g) => a + g.paths.length - 1, 0), color: '#ef4444' },
+                { label: t('imageDedup.selectedDel'), value: selectedForDelete.size, color: '#7c5cfc' },
               ].map(s => (
                 <div key={s.label} style={{ ...panel, flex: 1, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
                   <span style={{ fontSize: 18, fontWeight: 800, color: s.color, fontFamily: 'monospace' }}>{s.value}</span>
@@ -247,7 +249,7 @@ export default function ImageDedupPage() {
           {dupGroups.length === 0 && (
             <div style={{ ...panel, flex: 1, minHeight: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, color: 'var(--color-text-tertiary)' }}>
               <Search style={{ width: 48, height: 48, opacity: 0.15 }} />
-              <span style={{ fontSize: 13 }}>{processing ? '正在扫描中...' : isDone ? '未发现重复图片' : '设置参数后点击执行扫描'}</span>
+              <span style={{ fontSize: 13 }}>{processing ? t('imageDedup.emptyScanning') : isDone ? t('imageDedup.emptyNoDup') : t('imageDedup.emptyHint')}</span>
             </div>
           )}
 
@@ -267,10 +269,10 @@ export default function ImageDedupPage() {
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                               <span style={{ fontSize: 9, fontWeight: 700, color: '#fff', background: '#ef4444', borderRadius: 4, padding: '1px 6px' }}>
-                                第 {gi + 1} 组
+                                {t('imageDedup.groupN', { n: gi + 1 })}
                               </span>
                               <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>
-                                {group.paths.length} 张
+                                {t('imageDedup.nImages', { n: group.paths.length })}
                               </span>
                             </div>
                             <button className="btn btn-ghost" style={{ fontSize: 9, padding: '1px 6px', height: 'auto' }}
@@ -284,7 +286,7 @@ export default function ImageDedupPage() {
                                   return next;
                                 });
                               }}>
-                              全选/取消
+                              {t('imageDedup.toggleAll')}
                             </button>
                           </div>
                           {/* images grid */}
@@ -319,7 +321,7 @@ export default function ImageDedupPage() {
                                       position: 'absolute', top: 4, left: 4, fontSize: 7, fontWeight: 700,
                                       color: '#fff', background: '#22c55e', borderRadius: 3, padding: '1px 4px',
                                     }}>
-                                      保留
+                                      {t('imageDedup.keep')}
                                     </div>
                                   )}
                                 </div>
@@ -352,18 +354,18 @@ export default function ImageDedupPage() {
                       <ChevronRight style={{ width: 14, height: 14 }} />
                     </button>
                     <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-                      共 {dupGroups.length} 组
+                      {t('imageDedup.totalGroups', { n: dupGroups.length })}
                     </span>
                   </div>
                   {/* delete actions */}
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button className="btn btn-secondary" onClick={() => setSelectedForDelete(new Set())}
                       style={{ fontSize: 10, height: 30, padding: '0 10px' }}>
-                      <X style={{ width: 10, height: 10 }} /> 清除选择
+                      <X style={{ width: 10, height: 10 }} /> {t('imageDedup.clearSelect')}
                     </button>
                     <button className="btn btn-danger" onClick={handleDelete} disabled={selectedForDelete.size === 0 || deleting}
                       style={{ fontSize: 10, height: 30, padding: '0 10px' }}>
-                      <Trash2 style={{ width: 10, height: 10 }} /> 删除选中 ({selectedForDelete.size})
+                      <Trash2 style={{ width: 10, height: 10 }} /> {t('imageDedup.deleteSelected')} ({selectedForDelete.size})
                     </button>
                   </div>
                 </div>
@@ -406,10 +408,10 @@ export default function ImageDedupPage() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <span style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>{fname}</span>
                 <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>
-                  第 {lightbox.groupIdx + 1} 组 · {idx + 1}/{group.paths.length}
+                  {t('imageDedup.groupOf', { g: lightbox.groupIdx + 1, i: idx + 1, t: group.paths.length })}
                 </span>
                 {idx === 0 && (
-                  <span style={{ fontSize: 10, fontWeight: 700, color: '#22c55e', background: 'rgba(34,197,94,0.15)', borderRadius: 4, padding: '1px 8px' }}>保留</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: '#22c55e', background: 'rgba(34,197,94,0.15)', borderRadius: 4, padding: '1px 8px' }}>{t('imageDedup.keep')}</span>
                 )}
                 <button onClick={() => toggleSelect(p)} style={{
                   padding: '3px 12px', borderRadius: 6, fontSize: 11, fontWeight: 600, border: 'none', cursor: 'pointer',
@@ -417,7 +419,7 @@ export default function ImageDedupPage() {
                   color: isSelected ? '#ef4444' : '#fff',
                   transition: 'all 0.15s',
                 }}>
-                  {isSelected ? '✓ 已选删除' : '选择删除'}
+                  {isSelected ? t('imageDedup.markedDel') : t('imageDedup.selectDel')}
                 </button>
               </div>
             </div>
@@ -434,7 +436,7 @@ export default function ImageDedupPage() {
               <ChevronRight style={{ width: 24, height: 24 }} />
             </button>
             {/* close hint */}
-            <div style={{ position: 'absolute', top: 20, right: 20, fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>点击背景关闭</div>
+            <div style={{ position: 'absolute', top: 20, right: 20, fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>{t('imageDedup.closeBg')}</div>
           </div>
         );
       })()}

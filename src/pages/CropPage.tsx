@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
+import { useTranslation } from 'react-i18next';
 import {
   Crop,
   FolderOpen,
@@ -39,6 +40,7 @@ const PRESETS = [
 ];
 
 export default function CropPage() {
+  const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [mode, setMode] = useState<'center' | 'aspect' | 'edges'>('center');
@@ -84,12 +86,12 @@ export default function CropPage() {
   }, []);
 
   const selectInputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择输入文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
     if (selected) setInputPath(selected as string);
   };
 
   const selectOutputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择输出文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') });
     if (selected) setOutputPath(selected as string);
   };
 
@@ -98,15 +100,15 @@ export default function CropPage() {
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
     setProcessing(true);
-    addTask('crop', '图片裁切');
+    addTask('crop', t('crop.taskName'));
     setProgress(0);
     setProgressCurrent(0);
     setProgressTotal(0);
     setIsDone(false);
     setHasError(false);
 
-    const modeLabel = mode === 'center' ? '中心裁切' : mode === 'aspect' ? '比例裁切' : '边缘裁切';
-    setLogs([{ time: getTimeStr(), message: `开始${modeLabel}处理`, status: 'info' }]);
+    const modeLabel = mode === 'center' ? t('crop.center') : mode === 'aspect' ? t('crop.aspect') : t('crop.edges');
+    setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${modeLabel}${t('pages.process')}`, status: 'info' }]);
 
     try {
       await invoke<ProcessResult>('crop_images', {
@@ -124,7 +126,7 @@ export default function CropPage() {
         },
       });
     } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true);
       setIsDone(true);
     } finally {
@@ -136,9 +138,9 @@ export default function CropPage() {
   const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   const modeCards: { key: 'center' | 'aspect' | 'edges'; icon: React.ReactNode; label: string; desc: string; color: string; colorAlpha: string }[] = [
-    { key: 'center', icon: <Maximize2 style={{ width: 18, height: 18 }} />, label: '中心裁切', desc: '从图片中心裁切到指定尺寸。适用于统一数据集分辨率，只保留中心区域内容。', color: '#4ade80', colorAlpha: 'rgba(74, 222, 128, ' },
-    { key: 'aspect', icon: <RatioIcon style={{ width: 18, height: 18 }} />, label: '比例裁切', desc: '按指定宽高比从中心裁切，去除多余边缘。适用于统一数据集的宽高比，如全部裁切为 1:1 正方形或 3:4 竖版。', color: '#818cf8', colorAlpha: 'rgba(129, 140, 248, ' },
-    { key: 'edges', icon: <Scissors style={{ width: 18, height: 18 }} />, label: '边缘裁切', desc: '指定上下左右各裁切多少像素。适用于去除图片边框、水印区域或黑边。', color: '#f59e0b', colorAlpha: 'rgba(245, 158, 11, ' },
+    { key: 'center', icon: <Maximize2 style={{ width: 18, height: 18 }} />, label: t('crop.center'), desc: t('crop.centerDesc'), color: '#4ade80', colorAlpha: 'rgba(74, 222, 128, ' },
+    { key: 'aspect', icon: <RatioIcon style={{ width: 18, height: 18 }} />, label: t('crop.aspect'), desc: t('crop.aspectDesc'), color: '#818cf8', colorAlpha: 'rgba(129, 140, 248, ' },
+    { key: 'edges', icon: <Scissors style={{ width: 18, height: 18 }} />, label: t('crop.edges'), desc: t('crop.edgesDesc'), color: '#f59e0b', colorAlpha: 'rgba(245, 158, 11, ' },
   ];
 
   return (
@@ -146,9 +148,9 @@ export default function CropPage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <Crop style={{ width: 28, height: 28, color: '#34d399' }} />
-          <h1 className="page-title">图片裁切</h1>
+          <h1 className="page-title">{t('crop.title')}</h1>
         </div>
-        <p className="page-subtitle">支持批量裁切图片，提供中心裁切、比例裁切和边缘裁切三种模式</p>
+        <p className="page-subtitle">{t('crop.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
@@ -156,19 +158,19 @@ export default function CropPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径设置 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">路径设置</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">输入路径（文件夹或单张图片）</label>
+                <label className="form-label">{t('pages.inputPath')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择图片所在文件夹..." value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
               <div className="form-group">
-                <label className="form-label">输出路径</label>
+                <label className="form-label">{t('pages.outputPath')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择输出文件夹..." value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
@@ -177,7 +179,7 @@ export default function CropPage() {
 
           {/* 裁切模式 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">裁切模式</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('crop.cropMode')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               {modeCards.map((mc) => (
                 <div key={mc.key} onClick={() => setMode(mc.key)} style={{
@@ -199,11 +201,11 @@ export default function CropPage() {
                     <div style={{ marginBottom: 'var(--space-3)' }}>
                       <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
                         <div className="form-group" style={{ flex: 1 }}>
-                          <label className="form-label">目标宽度 (px)</label>
+                          <label className="form-label">{t('crop.targetWidth')}</label>
                           <input className="form-input" type="number" value={centerW} onChange={(e) => setCenterW(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
                         </div>
                         <div className="form-group" style={{ flex: 1 }}>
-                          <label className="form-label">目标高度 (px)</label>
+                          <label className="form-label">{t('crop.targetHeight')}</label>
                           <input className="form-input" type="number" value={centerH} onChange={(e) => setCenterH(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
                         </div>
                       </div>
@@ -214,12 +216,12 @@ export default function CropPage() {
                     <div style={{ marginBottom: 'var(--space-3)' }}>
                       <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', alignItems: 'flex-end' }}>
                         <div className="form-group" style={{ flex: 1 }}>
-                          <label className="form-label">宽度比</label>
+                          <label className="form-label">{t('crop.widthRatio')}</label>
                           <input className="form-input" type="number" value={ratioW} onChange={(e) => setRatioW(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
                         </div>
                         <span style={{ paddingBottom: 10, fontWeight: 700, color: 'var(--color-text-tertiary)', fontSize: 18 }}>:</span>
                         <div className="form-group" style={{ flex: 1 }}>
-                          <label className="form-label">高度比</label>
+                          <label className="form-label">{t('crop.heightRatio')}</label>
                           <input className="form-input" type="number" value={ratioH} onChange={(e) => setRatioH(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
                         </div>
                       </div>
@@ -243,19 +245,19 @@ export default function CropPage() {
                     <div style={{ marginBottom: 'var(--space-3)' }}>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
                         <div className="form-group">
-                          <label className="form-label">上边距 (px)</label>
+                          <label className="form-label">{t('crop.cropTop')}</label>
                           <input className="form-input" type="number" value={cropTop} onChange={(e) => setCropTop(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={0} />
                         </div>
                         <div className="form-group">
-                          <label className="form-label">下边距 (px)</label>
+                          <label className="form-label">{t('crop.cropBottom')}</label>
                           <input className="form-input" type="number" value={cropBottom} onChange={(e) => setCropBottom(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={0} />
                         </div>
                         <div className="form-group">
-                          <label className="form-label">左边距 (px)</label>
+                          <label className="form-label">{t('crop.cropLeft')}</label>
                           <input className="form-input" type="number" value={cropLeft} onChange={(e) => setCropLeft(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={0} />
                         </div>
                         <div className="form-group">
-                          <label className="form-label">右边距 (px)</label>
+                          <label className="form-label">{t('crop.cropRight')}</label>
                           <input className="form-input" type="number" value={cropRight} onChange={(e) => setCropRight(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={0} />
                         </div>
                       </div>
@@ -276,7 +278,7 @@ export default function CropPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!inputPath || !outputPath}
-            cancelCommand="cancel_crop" startText="开始裁切" processingText="处理中..."
+            cancelCommand="cancel_crop" startText={t('crop.startCrop')} processingText={t('pages.processing')}
             onCancelLog={addCancelLog} />
 
           <ProgressLog

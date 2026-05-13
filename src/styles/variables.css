@@ -82,7 +82,7 @@
   --transition-slow: 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 
   /* ---- Layout ---- */
-  --sidebar-width: 180px;
+  --sidebar-width: 200px;
   --sidebar-collapsed-width: 68px;
   --header-height: 52px;
 }

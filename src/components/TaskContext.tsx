@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import i18next from 'i18next';
 
 export interface TaskInfo {
   id: string;
@@ -59,7 +60,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
   const addTask = useCallback((id: string, name: string) => {
     setTasks(prev => {
       const filtered = prev.filter(t => t.id !== id);
-      return [...filtered, { id, name, status: 'running', progress: 0, current: 0, total: 0, message: '准备中...', startTime: Date.now() }];
+      return [...filtered, { id, name, status: 'running', progress: 0, current: 0, total: 0, message: i18next.t('common.preparing'), startTime: Date.now() }];
     });
   }, []);
 
@@ -92,7 +93,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
           const progress = p.total > 0 ? (p.current / p.total) * 100 : 0;
           let status: TaskInfo['status'] = task.status;
           if (p.status === 'done') status = 'done';
-          else if (p.status === 'error' && p.message.includes('已取消')) status = 'cancelled';
+          else if (p.status === 'error' && (p.message.includes('已取消') || p.message.includes('cancelled'))) status = 'cancelled';
           return prev.map(t => t.id === taskId ? { ...t, progress, current: p.current, total: p.total, message: p.message, status } : t);
         });
       });

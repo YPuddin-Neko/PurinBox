@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
+import { useTranslation } from 'react-i18next';
 import { FileType, FolderOpen, Info } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
@@ -10,17 +11,19 @@ import ProcessButton from '../components/ProcessButton';
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 
-const targetFormats = [
-  { value: 'png', label: 'PNG', desc: '无损压缩，支持透明通道', color: '#4ade80' },
-  { value: 'jpg', label: 'JPG', desc: '有损压缩，体积小', color: '#ffa647' },
-  { value: 'jpeg', label: 'JPEG', desc: '同 JPG，有损压缩', color: '#ffa647' },
-  { value: 'bmp', label: 'BMP', desc: '无压缩位图格式', color: '#f87171' },
-  { value: 'webp', label: 'WebP', desc: '现代格式，体积更小', color: '#60a5fa' },
-];
-
-const sourceFormats = ['PNG', 'JPG', 'JPEG', 'WebP', 'BMP', 'TIFF', 'GIF', 'PSD'];
-
 export default function FormatConvertPage() {
+  const { t } = useTranslation();
+
+  const targetFormats = [
+    { value: 'png', label: 'PNG', desc: t('formatConvert.pngDesc'), color: '#4ade80' },
+    { value: 'jpg', label: 'JPG', desc: t('formatConvert.jpgDesc'), color: '#ffa647' },
+    { value: 'jpeg', label: 'JPEG', desc: t('formatConvert.jpegDesc'), color: '#ffa647' },
+    { value: 'bmp', label: 'BMP', desc: t('formatConvert.bmpDesc'), color: '#f87171' },
+    { value: 'webp', label: 'WebP', desc: t('formatConvert.webpDesc'), color: '#60a5fa' },
+  ];
+
+  const sourceFormats = ['PNG', 'JPG', 'JPEG', 'WebP', 'BMP', 'TIFF', 'GIF', 'PSD'];
+
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [targetFormat, setTargetFormat] = useState('png');
@@ -50,12 +53,12 @@ export default function FormatConvertPage() {
   }, []);
 
   const selectInputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择输入文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
     if (selected) setInputPath(selected as string);
   };
 
   const selectOutputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择输出文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') });
     if (selected) setOutputPath(selected as string);
   };
 
@@ -64,16 +67,16 @@ export default function FormatConvertPage() {
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
     setProcessing(true);
-    addTask('convert', '图片格式转换');
+    addTask('convert', t('formatConvert.taskName'));
     setProgress(0); setProgressCurrent(0); setProgressTotal(0);
     setIsDone(false); setHasError(false);
-    setLogs([{ time: getTimeStr(), message: `开始转换到 .${targetFormat} 格式`, status: 'info' }]);
+    setLogs([{ time: getTimeStr(), message: t('formatConvert.startConvertMsg', { format: targetFormat }), status: 'info' }]);
     try {
       await invoke<ProcessResult>('convert_format', {
         options: { input_path: inputPath, output_path: outputPath, target_format: targetFormat },
       });
     } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true); setIsDone(true);
     } finally {
       setProcessing(false);
@@ -88,28 +91,28 @@ export default function FormatConvertPage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <FileType style={{ width: 28, height: 28, color: '#ffa647' }} />
-          <h1 className="page-title">图片格式转换</h1>
+          <h1 className="page-title">{t('formatConvert.title')}</h1>
         </div>
-        <p className="page-subtitle">支持将主流图片格式（包括 PSD）转换到目标格式</p>
+        <p className="page-subtitle">{t('formatConvert.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">路径设置</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">输入路径</label>
+                <label className="form-label">{t('pages.inputPathShort')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择图片所在文件夹..." value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
               <div className="form-group">
-                <label className="form-label">输出路径</label>
+                <label className="form-label">{t('pages.outputPath')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择输出文件夹..." value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
@@ -118,7 +121,7 @@ export default function FormatConvertPage() {
 
           {/* 目标格式 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">目标格式</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('formatConvert.targetFormat')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               {targetFormats.map((fmt) => (
                 <div key={fmt.value} onClick={() => setTargetFormat(fmt.value)} style={{
@@ -142,7 +145,7 @@ export default function FormatConvertPage() {
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-3)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', background: 'rgba(255, 166, 71, 0.04)', border: '1px solid rgba(255, 166, 71, 0.1)' }}>
             <Info style={{ width: 18, height: 18, color: '#ffa647', marginTop: 2, minWidth: 18 }} />
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', lineHeight: 1.7 }}>
-              <strong style={{ color: 'var(--color-text-primary)' }}>支持的源格式：</strong>
+              <strong style={{ color: 'var(--color-text-primary)' }}>{t('formatConvert.supportedFormats')}</strong>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
                 {sourceFormats.map((f) => (
                   <span key={f} style={{ fontSize: 'var(--font-size-xs)', padding: '1px 8px', borderRadius: 'var(--radius-full)', background: 'rgba(255, 255, 255, 0.04)', border: '1px solid var(--color-border)', color: 'var(--color-text-secondary)' }}>{f}</span>
@@ -155,7 +158,7 @@ export default function FormatConvertPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!inputPath || !outputPath}
-            cancelCommand="cancel_convert" startText="开始转换" processingText="转换中..."
+            cancelCommand="cancel_convert" startText={t('formatConvert.startConvert')} processingText={t('formatConvert.converting')}
             onCancelLog={addCancelLog} />
 
           

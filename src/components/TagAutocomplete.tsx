@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
+import { useTranslation } from 'react-i18next';
 
 interface TagSuggestion {
   name: string;
@@ -52,7 +53,7 @@ interface TagAutocompleteProps {
 }
 
 export default function TagAutocomplete({
-  placeholder = '输入标签名搜索...',
+  placeholder,
   onSelect,
   clearOnSelect = true,
   inputStyle,
@@ -62,6 +63,8 @@ export default function TagAutocomplete({
   onBlur,
   onKeyDown,
 }: TagAutocompleteProps) {
+  const { t } = useTranslation();
+  const resolvedPlaceholder = placeholder || t('common.searchTags');
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState<TagSuggestion[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -288,7 +291,7 @@ export default function TagAutocomplete({
             }
           }, 150);
         }}
-        placeholder={placeholder}
+        placeholder={resolvedPlaceholder}
         autoFocus={autoFocus}
         style={{ fontSize: 11, height: 30, ...inputStyle }}
         autoComplete="off"

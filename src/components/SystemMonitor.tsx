@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppSettings } from './ThemeProvider';
 import { MonitorDot } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface SystemStats {
   cpu_usage: number; cpu_name: string; cpu_cores: number;
@@ -46,6 +47,7 @@ function getUsageColor(pct: number) {
 }
 
 export default function SystemMonitor() {
+  const { t } = useTranslation();
   const [stats, setStats] = useState<SystemStats | null>(null);
   const { monitorInterval } = useAppSettings();
 
@@ -68,24 +70,24 @@ export default function SystemMonitor() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-4)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
           <MonitorDot style={{ width: 16, height: 16, color: 'var(--color-accent-secondary)' }} />
-          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text-primary)' }}>系统监控</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('systemMonitor.title')}</span>
         </div>
         {stats && (
           <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-            {stats.cpu_name} · {stats.cpu_cores} 核心
+            {stats.cpu_name} · {stats.cpu_cores} {t('systemMonitor.cores')}
           </span>
         )}
       </div>
       {stats ? (
         <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'flex-start' }}>
-          <GaugeRing value={stats.cpu_usage} color={getUsageColor(stats.cpu_usage)} label="CPU" detail={`${stats.cpu_cores} 核心`} />
+          <GaugeRing value={stats.cpu_usage} color={getUsageColor(stats.cpu_usage)} label="CPU" detail={`${stats.cpu_cores} ${t('systemMonitor.cores')}`} />
           <GaugeRing value={stats.memory_percent} color={getUsageColor(stats.memory_percent)} label="RAM"
             detail={`${formatBytes(stats.memory_used)} / ${formatBytes(stats.memory_total)}`} />
           {stats.gpu_usage >= 0 ? (
             <>
               <GaugeRing value={stats.gpu_usage} color={getUsageColor(stats.gpu_usage)} label="GPU"
                 detail={stats.gpu_name}
-                subtitle={stats.gpu_name.includes('Apple') ? '统一内存' : undefined} />
+                subtitle={stats.gpu_name.includes('Apple') ? t('systemMonitor.unifiedMemory') : undefined} />
               {!stats.gpu_name.includes('Apple') && (
                 <GaugeRing value={stats.vram_percent >= 0 ? stats.vram_percent : 0}
                   color={stats.vram_percent >= 0 ? getUsageColor(stats.vram_percent) : '#5a5e78'}
@@ -99,13 +101,13 @@ export default function SystemMonitor() {
                 <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>N/A</span>
               </div>
               <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--color-text-primary)' }}>GPU</span>
-              <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>未检测到</span>
+              <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{t('systemMonitor.notDetected')}</span>
             </div>
           )}
         </div>
       ) : (
         <div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--space-6)', color: 'var(--color-text-tertiary)', fontSize: 12 }}>
-          {monitorInterval <= 0 ? '系统监控已关闭' : '正在检测系统性能...'}
+          {monitorInterval <= 0 ? t('systemMonitor.monitorOff') : t('systemMonitor.detecting')}
         </div>
       )}
     </div>

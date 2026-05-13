@@ -1,6 +1,7 @@
-import { Settings, Palette, Info, Sun, Moon, Monitor, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, AlertTriangle, RefreshCw as RefreshIcon, Database, Download, Upload, X } from 'lucide-react';
+import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, AlertTriangle, RefreshCw as RefreshIcon, Database, Download, Upload, X } from 'lucide-react';
 import { useTheme } from '../components/ThemeProvider';
 import { useState, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import { ConfirmModal, AlertModal } from '../components/Modal';
 import CustomSelect from '../components/CustomSelect';
@@ -9,24 +10,25 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import SystemMonitor from '../components/SystemMonitor';
 
-const intervalOptions = [
-  { value: 1000, label: '1 秒', desc: '实时' },
-  { value: 2000, label: '2 秒', desc: '较快' },
-  { value: 3000, label: '3 秒', desc: '默认' },
-  { value: 5000, label: '5 秒', desc: '节能' },
-  { value: 10000, label: '10 秒', desc: '低频' },
-  { value: 0, label: '关闭', desc: '不检测' },
-];
-
-const providerOptions = [
-  { value: 'google', label: 'Google 翻译' },
-  { value: 'bing', label: '微软必应翻译' },
-  { value: 'baidu', label: '百度翻译' },
-  { value: 'youdao', label: '有道翻译' },
-];
-
 export default function SettingsPage() {
-  const { mode, setMode, monitorInterval, setMonitorInterval } = useTheme();
+  const { t } = useTranslation();
+  const { monitorInterval, setMonitorInterval } = useTheme();
+
+  const intervalOptions = [
+    { value: 1000, label: t('settings.monitorSec', { n: 1 }), desc: t('settings.monitorRealtime') },
+    { value: 2000, label: t('settings.monitorSec', { n: 2 }), desc: t('settings.monitorFast') },
+    { value: 3000, label: t('settings.monitorSec', { n: 3 }), desc: t('settings.monitorDefault') },
+    { value: 5000, label: t('settings.monitorSec', { n: 5 }), desc: t('settings.monitorSave') },
+    { value: 10000, label: t('settings.monitorSec', { n: 10 }), desc: t('settings.monitorLow') },
+    { value: 0, label: t('settings.monitorOff'), desc: t('settings.monitorNone') },
+  ];
+
+  const providerOptions = [
+    { value: 'google', label: t('settings.providerGoogle') },
+    { value: 'bing', label: t('settings.providerBing') },
+    { value: 'baidu', label: t('settings.providerBaidu') },
+    { value: 'youdao', label: t('settings.providerYoudao') },
+  ];
   const [translateEnabled, setTranslateEnabled] = useState(() => localStorage.getItem('translate_enabled') === 'true');
   const [provider, setProvider] = useState(() => localStorage.getItem('translate_provider') || 'google');
   const [targetLang, setTargetLang] = useState(() => localStorage.getItem('translate_target_lang') || 'zh-CN');
@@ -128,36 +130,37 @@ export default function SettingsPage() {
       const targetLang = localStorage.getItem('translate_target_lang') || 'zh-CN';
       setTagDbStats(await invoke<{ total_tags: number; translated_tags: number; db_size_bytes: number; has_data: boolean; source_file: string; import_date: string }>('get_tag_db_stats', { targetLang }));
     } catch (e) { console.error(e); }
+  // Empty deps is intentional: localStorage is read fresh each call, no React state dependency needed
   }, []);
 
   const handleDownloadTagDb = async () => {
     // 如果已有数据，先检查是否有新版本
     if (tagDbStats?.has_data) {
-      setTagDbDownloading(true); setTagDbProgress('正在检查更新...');
+      setTagDbDownloading(true); setTagDbProgress(t('settings.checkingUpdate'));
       try {
         const latest = await invoke<string>('check_tag_db_update');
         setTagDbLatest(latest);
         if (latest === tagDbStats.source_file) {
-          setTagDbProgress('标签数据已是最新版本');
+          setTagDbProgress(t('settings.alreadyLatestVersion'));
           setTagDbDownloading(false);
           return;
         }
       } catch (e: any) {
-        setTagDbProgress(`检查更新失败: ${e?.message || e}`);
+        setTagDbProgress(`${t('settings.checkFailed')}: ${e?.message || e}`);
         setTagDbDownloading(false);
         return;
       }
     } else {
       setTagDbDownloading(true);
     }
-    setTagDbProgress('正在下载...');
-    try { await invoke('download_danbooru_tags'); await loadTagDbStats(); } catch (e: any) { setTagDbProgress(`失败: ${e?.message || e}`); }
+    setTagDbProgress(t('settings.downloading'));
+    try { await invoke('download_danbooru_tags'); await loadTagDbStats(); } catch (e: any) { setTagDbProgress(`${t('common.failed')}: ${e?.message || e}`); }
     finally { setTagDbDownloading(false); }
   };
 
   const handleTranslateTagDb = async () => {
-    setTagDbTranslating(true); setTagDbProgress('正在翻译...');
-    try { await invoke('translate_tag_db', { targetLang: localStorage.getItem('translate_target_lang') || 'zh-CN' }); await loadTagDbStats(); } catch (e: any) { setTagDbProgress(`失败: ${e?.message || e}`); }
+    setTagDbTranslating(true); setTagDbProgress(t('settings.translating'));
+    try { await invoke('translate_tag_db', { targetLang: localStorage.getItem('translate_target_lang') || 'zh-CN' }); await loadTagDbStats(); } catch (e: any) { setTagDbProgress(`${t('common.failed')}: ${e?.message || e}`); }
     finally { setTagDbTranslating(false); }
   };
 
@@ -201,7 +204,7 @@ export default function SettingsPage() {
     setProxySaving(true); setProxySaveMsg(null);
     try {
       await invoke('save_proxy_config', { enabled: proxyEnabled, llmProxy, proxyType, host: proxyHost, port: proxyPort, username: proxyUser, password: proxyPass });
-      setProxySaveMsg({ text: '保存成功', ok: true });
+      setProxySaveMsg({ text: t('settings.proxySaved'), ok: true });
     } catch (e: any) { setProxySaveMsg({ text: e?.message || String(e), ok: false }); }
     finally { setProxySaving(false); setTimeout(() => setProxySaveMsg(null), 3000); }
   };
@@ -211,13 +214,13 @@ export default function SettingsPage() {
   };
 
   const handleChangeCachePath = async () => {
-    const selected = await open({ directory: true, title: '选择翻译缓存目录' });
+    const selected = await open({ directory: true, title: t('settings.selectCacheDir') });
     if (selected && typeof selected === 'string') {
       try {
         await invoke('set_cache_path', { path: selected });
         setCachePath(selected);
         await loadCacheStats();
-      } catch (e: any) { setAlertMsg(`设置缓存路径失败: ${e?.message || e}`); }
+      } catch (e: any) { setAlertMsg(`${t('settings.setCachePathFailed')}: ${e?.message || e}`); }
     }
   };
 
@@ -226,7 +229,7 @@ export default function SettingsPage() {
       await invoke<string>('set_cache_path', { path: '' });
       setCachePath(await invoke<string>('get_cache_path'));
       await loadCacheStats();
-    } catch (e: any) { setAlertMsg(`重置失败: ${e?.message || e}`); }
+    } catch (e: any) { setAlertMsg(`${t('settings.resetFailed')}: ${e?.message || e}`); }
   };
 
   const formatSize = (bytes: number) => {
@@ -235,11 +238,7 @@ export default function SettingsPage() {
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   };
 
-  const themeOptions = [
-    { value: 'dark' as const, label: '深色模式', icon: <Moon style={{ width: 16, height: 16 }} />, desc: '深色背景，护眼模式' },
-    { value: 'light' as const, label: '浅色模式', icon: <Sun style={{ width: 16, height: 16 }} />, desc: '浅色背景，明亮清晰' },
-    { value: 'system' as const, label: '跟随系统', icon: <Monitor style={{ width: 16, height: 16 }} />, desc: '自动跟随操作系统设置' },
-  ];
+
 
   // 密钥输入框组件
   const SecretInput = ({ value, onChange, placeholder, show, onToggle }: { value: string; onChange: (v: string) => void; placeholder: string; show: boolean; onToggle: () => void }) => (
@@ -272,60 +271,27 @@ export default function SettingsPage() {
         <div className="page-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
             <Settings style={{ width: 28, height: 28, color: 'var(--color-text-secondary)' }} />
-            <h1 className="page-title">设置</h1>
+            <h1 className="page-title">{t('settings.title')}</h1>
           </div>
-          <p className="page-subtitle">配置工具箱的全局选项</p>
+          <p className="page-subtitle">{t('settings.aboutDesc')}</p>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* System Monitor - 仅在监控开启时显示 */}
           {monitorInterval > 0 && <SystemMonitor />}
 
-          {/* Appearance */}
-          <div className="tool-panel">
-            <div className="tool-panel-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <Palette style={{ width: 16, height: 16, color: 'var(--color-accent-primary)' }} />
-                <span className="tool-panel-title">外观</span>
-              </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 'var(--space-3)' }}>
-              {themeOptions.map(opt => {
-                const active = mode === opt.value;
-                return (
-                  <div key={opt.value} onClick={() => setMode(opt.value)} style={{
-                    padding: 'var(--space-4)', borderRadius: 'var(--radius-md)',
-                    border: `1.5px solid ${active ? 'var(--color-accent-primary)' : 'var(--color-border)'}`,
-                    background: active ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)',
-                    cursor: 'pointer', transition: 'all 0.2s', position: 'relative',
-                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)',
-                  }}>
-                    {active && (
-                      <div style={{ position: 'absolute', top: 8, right: 8, width: 18, height: 18, borderRadius: '50%', background: 'var(--color-accent-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Check style={{ width: 11, height: 11, color: '#fff' }} />
-                      </div>
-                    )}
-                    <div style={{ width: 36, height: 36, borderRadius: 'var(--radius-sm)', background: active ? 'rgba(124,92,252,0.12)' : 'rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: active ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)' }}>
-                      {opt.icon}
-                    </div>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{opt.label}</span>
-                    <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center' }}>{opt.desc}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+
 
           {/* Monitor Interval */}
           <div className="tool-panel">
             <div className="tool-panel-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                 <Activity style={{ width: 16, height: 16, color: '#4ade80' }} />
-                <span className="tool-panel-title">系统监控设置</span>
+                <span className="tool-panel-title">{t('settings.monitor')}</span>
               </div>
             </div>
             <div>
-              <label className="form-label" style={{ marginBottom: 8 }}>检测间隔</label>
+              <label className="form-label" style={{ marginBottom: 8 }}>{t('settings.monitorInterval')}</label>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--space-2)' }}>
                 {intervalOptions.map(opt => {
                   const active = monitorInterval === opt.value;
@@ -358,12 +324,12 @@ export default function SettingsPage() {
             <div className="tool-panel-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                 <Globe style={{ width: 16, height: 16, color: '#f59e0b' }} />
-                <span className="tool-panel-title">网络代理</span>
+                <span className="tool-panel-title">{t('settings.proxy')}</span>
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 {proxySaveMsg && <span style={{ fontSize: 10, color: proxySaveMsg.ok ? '#4ade80' : '#f87171' }}>{proxySaveMsg.text}</span>}
                 <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }} onClick={handleSaveProxy} disabled={proxySaving}>
-                  <Save style={{ width: 12, height: 12 }} /> {proxySaving ? '保存中...' : '保存'}
+                  <Save style={{ width: 12, height: 12 }} /> {proxySaving ? t('settings.proxySaving') : t('common.save')}
                 </button>
               </div>
             </div>
@@ -372,8 +338,8 @@ export default function SettingsPage() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                   <div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>启用代理</div>
-                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>全局网络代理</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.proxyEnabled')}</div>
+                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>{t('settings.proxy')}</div>
                   </div>
                   <div onClick={() => setProxyEnabled(!proxyEnabled)} style={{
                     width: 36, height: 20, borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s',
@@ -389,8 +355,8 @@ export default function SettingsPage() {
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                   <div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>LLM 代理</div>
-                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>允许LLM接口是否走代理</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.proxyLlm')}</div>
+                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>{t('settings.proxyLlmDesc')}</div>
                   </div>
                   <div onClick={() => setLlmProxy(!llmProxy)} style={{
                     width: 36, height: 20, borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s',
@@ -405,7 +371,7 @@ export default function SettingsPage() {
                   </div>
                 </div>
                 <div style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 5 }}>代理类型</div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 5 }}>{t('settings.proxyType')}</div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     {(['http', 'socks5'] as const).map(t => (
                       <button key={t} onClick={() => setProxyType(t)} style={{
@@ -422,11 +388,11 @@ export default function SettingsPage() {
               {/* 地址 + 端口 */}
               <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
                 <div style={{ flex: 1 }}>
-                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>代理地址</label>
+                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('settings.proxyHost')}</label>
                   <input className="form-input" placeholder="127.0.0.1" value={proxyHost} onChange={e => setProxyHost(e.target.value)} style={{ height: 32 }} />
                 </div>
                 <div style={{ width: 90 }}>
-                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>端口</label>
+                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('settings.proxyPort')}</label>
                   <input className="form-input" type="number" placeholder="7890" value={proxyPort} onChange={e => setProxyPort(Number(e.target.value))} style={{ height: 32 }} />
                 </div>
               </div>
@@ -434,13 +400,13 @@ export default function SettingsPage() {
               {/* 认证（可选） */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <div>
-                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>用户名（可选）</label>
-                  <input className="form-input" placeholder="无需认证留空" value={proxyUser} onChange={e => setProxyUser(e.target.value)} style={{ height: 32 }} />
+                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('settings.proxyUserOptional')}</label>
+                  <input className="form-input" placeholder={t('settings.proxyNoAuthHint')} value={proxyUser} onChange={e => setProxyUser(e.target.value)} style={{ height: 32 }} />
                 </div>
                 <div>
-                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>密码（可选）</label>
+                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('settings.proxyPassOptional')}</label>
                   <div style={{ position: 'relative' }}>
-                    <input className="form-input" type={showProxyPass ? 'text' : 'password'} placeholder="无需认证留空" value={proxyPass} onChange={e => setProxyPass(e.target.value)} style={{ paddingRight: 32, height: 32 }} />
+                    <input className="form-input" type={showProxyPass ? 'text' : 'password'} placeholder={t('settings.proxyNoAuthHint')} value={proxyPass} onChange={e => setProxyPass(e.target.value)} style={{ paddingRight: 32, height: 32 }} />
                     <button onClick={() => setShowProxyPass(!showProxyPass)} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', display: 'flex', padding: 2 }}>
                       {showProxyPass ? <EyeOff style={{ width: 13, height: 13 }} /> : <Eye style={{ width: 13, height: 13 }} />}
                     </button>
@@ -449,7 +415,7 @@ export default function SettingsPage() {
               </div>
 
               <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.6, margin: 0 }}>
-                代理将应用于所有网络请求，包括翻译 API、LLM 接口、模型下载等。修改后请点击“保存”，新任务将自动使用新配置。
+                {t('settings.proxyDesc')}
               </p>
             </div>
           </div>
@@ -459,7 +425,7 @@ export default function SettingsPage() {
             <div className="tool-panel-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                 <Languages style={{ width: 16, height: 16, color: '#60a5fa' }} />
-                <span className="tool-panel-title">翻译设置</span>
+                <span className="tool-panel-title">{t('settings.translation')}</span>
               </div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
@@ -467,8 +433,8 @@ export default function SettingsPage() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '12px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>启用翻译</div>
-                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>启用后支持标签管理的 Tag 翻译功能</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.enableTranslation')}</div>
+                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>{t('settings.enableTranslationDesc')}</div>
                   </div>
                   <div onClick={() => toggleTranslate(!translateEnabled)} style={{
                     width: 40, height: 22, borderRadius: 11, cursor: 'pointer', transition: 'all 0.2s',
@@ -485,11 +451,11 @@ export default function SettingsPage() {
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6, padding: '12px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>供应商设置</label>
+                    <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.translationProvider')}</label>
                     <button onClick={handleTestTranslation} disabled={testing}
                       style={{ fontSize: 10, color: testResult ? (testResult.ok ? '#4ade80' : '#f87171') : '#60a5fa', background: 'none', border: 'none', cursor: testing ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', gap: 3, padding: 0 }}>
                       {testing ? <Loader2 style={{ width: 10, height: 10, animation: 'spin 1s linear infinite' }} /> : <Zap style={{ width: 10, height: 10 }} />}
-                      {testing ? '测试中...' : testResult ? (testResult.ok ? testResult.msg : '测试失败') : '测试可用性'}
+                      {testing ? t('settings.testing') : testResult ? (testResult.ok ? testResult.msg : t('common.failed')) : t('settings.testTranslation')}
                     </button>
                   </div>
                   <CustomSelect value={provider} onChange={v => { changeProvider(v); setTestResult(null); }} options={providerOptions} compact />
@@ -500,15 +466,15 @@ export default function SettingsPage() {
               <div style={{ padding: '12px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>目标语言</div>
-                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>影响标签翻译和自动补全中显示的翻译内容</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.targetLanguage')}</div>
+                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>{t('settings.targetLanguageDesc')}</div>
                   </div>
                   <CustomSelect value={targetLang}
                     onChange={v => { setTargetLang(v); localStorage.setItem('translate_target_lang', v); loadTagDbStats(); }}
                     options={[
-                      { value: 'zh-CN', label: '中文' },
-                      { value: 'ja', label: '日语' },
-                      { value: 'ko', label: '韩语' },
+                      { value: 'zh-CN', label: t('settings.langZhCN') },
+                      { value: 'ja', label: t('settings.langJa') },
+                      { value: 'ko', label: t('settings.langKo') },
                     ]}
                     compact
                     style={{ width: 120 }}
@@ -520,18 +486,18 @@ export default function SettingsPage() {
               {provider === 'baidu' && (
                 <div style={{ padding: '14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    百度翻译 API 配置
-                    <LinkButton href="https://fanyi-api.baidu.com" text="申请密钥" />
+                    {t('settings.providerBaidu')} API
+                    <LinkButton href="https://fanyi-api.baidu.com" text={t('settings.applyLink')} />
                   </div>
                   <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>APP ID</label>
+                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.baiduAppId')}</label>
                     <input className="form-input" value={baiduAppid} onChange={e => saveLS('baidu_appid', e.target.value, setBaiduAppid)}
-                      placeholder="输入百度翻译 APP ID" style={{ fontSize: 12, height: 32 }} />
+                      placeholder={t('settings.baiduAppIdPlaceholder')} style={{ fontSize: 12, height: 32 }} />
                   </div>
                   <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>密钥</label>
+                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.baiduKey')}</label>
                     <SecretInput value={baiduKey} onChange={v => saveLS('baidu_key', v, setBaiduKey)}
-                      placeholder="输入百度翻译密钥" show={showBaiduKey} onToggle={() => setShowBaiduKey(!showBaiduKey)} />
+                      placeholder={t('settings.baiduKeyPlaceholder')} show={showBaiduKey} onToggle={() => setShowBaiduKey(!showBaiduKey)} />
                   </div>
                 </div>
               )}
@@ -539,18 +505,18 @@ export default function SettingsPage() {
               {provider === 'youdao' && (
                 <div style={{ padding: '14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    有道翻译 API 配置
-                    <LinkButton href="https://ai.youdao.com" text="申请密钥" />
+                    {t('settings.providerYoudao')} API
+                    <LinkButton href="https://ai.youdao.com" text={t('settings.applyLink')} />
                   </div>
                   <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>应用 ID</label>
+                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.youdaoAppKey')}</label>
                     <input className="form-input" value={youdaoAppKey} onChange={e => saveLS('youdao_app_key', e.target.value, setYoudaoAppKey)}
-                      placeholder="输入有道翻译应用 ID" style={{ fontSize: 12, height: 32 }} />
+                      placeholder={t('settings.youdaoAppKeyPlaceholder')} style={{ fontSize: 12, height: 32 }} />
                   </div>
                   <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>应用密钥</label>
+                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.youdaoAppSecret')}</label>
                     <SecretInput value={youdaoAppSecret} onChange={v => saveLS('youdao_app_secret', v, setYoudaoAppSecret)}
-                      placeholder="输入有道翻译应用密钥" show={showYoudaoKey} onToggle={() => setShowYoudaoKey(!showYoudaoKey)} />
+                      placeholder={t('settings.youdaoAppSecretPlaceholder')} show={showYoudaoKey} onToggle={() => setShowYoudaoKey(!showYoudaoKey)} />
                   </div>
                 </div>
               )}
@@ -558,18 +524,18 @@ export default function SettingsPage() {
               {provider === 'bing' && (
                 <div style={{ padding: '14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    微软必应翻译 API 配置
-                    <LinkButton href="https://portal.azure.com/#create/Microsoft.CognitiveServicesTextTranslation" text="申请密钥" />
+                    {t('settings.providerBing')} API
+                    <LinkButton href="https://portal.azure.com/#create/Microsoft.CognitiveServicesTextTranslation" text={t('settings.applyLink')} />
                   </div>
                   <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>订阅密钥</label>
+                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.bingKey')}</label>
                     <SecretInput value={bingKey} onChange={v => saveLS('bing_key', v, setBingKey)}
-                      placeholder="输入 Ocp-Apim-Subscription-Key" show={showBingKey} onToggle={() => setShowBingKey(!showBingKey)} />
+                      placeholder={t('settings.bingKeyPlaceholder')} show={showBingKey} onToggle={() => setShowBingKey(!showBingKey)} />
                   </div>
                   <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>区域（可选）</label>
+                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.bingRegion')}</label>
                     <input className="form-input" value={bingRegion} onChange={e => saveLS('bing_region', e.target.value, setBingRegion)}
-                      placeholder="如 eastasia、global 等，可留空" style={{ fontSize: 12, height: 32 }} />
+                      placeholder={t('settings.bingRegionPlaceholder')} style={{ fontSize: 12, height: 32 }} />
                   </div>
                 </div>
               )}
@@ -577,73 +543,73 @@ export default function SettingsPage() {
               {/* 缓存路径 */}
               <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>缓存路径</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.cachePath')}</div>
                   <div style={{ display: 'flex', gap: 4 }}>
                     <button className="btn btn-secondary" onClick={handleChangeCachePath}
                       style={{ fontSize: 10, height: 24, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3 }}>
-                      <FolderOpen style={{ width: 10, height: 10 }} />修改
+                      <FolderOpen style={{ width: 10, height: 10 }} />{t('settings.cacheModify')}
                     </button>
-                    <button className="btn btn-secondary" onClick={handleResetCachePath} title="重置为默认路径"
+                    <button className="btn btn-secondary" onClick={handleResetCachePath} title={t('settings.cacheReset')}
                       style={{ fontSize: 10, height: 24, padding: '0 6px', display: 'flex', alignItems: 'center' }}>
                       <RotateCcw style={{ width: 10, height: 10 }} />
                     </button>
                   </div>
                 </div>
                 <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', wordBreak: 'break-all', lineHeight: 1.5, background: 'var(--color-bg-secondary)', padding: '6px 8px', borderRadius: 4 }}>
-                  {cachePath || '加载中...'}
+                  {cachePath || t('common.loading')}
                 </div>
               </div>
 
               <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                   <div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>翻译缓存</div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.translationCache')}</div>
                     <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                      {cacheStats ? `${cacheStats.total} 条记录 · ${formatSize(cacheStats.db_size_bytes)}` : '加载中...'}
+                      {cacheStats ? `${t('settings.cacheRecords', { count: cacheStats.total })} · ${formatSize(cacheStats.db_size_bytes)}` : t('common.loading')}
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <button className="btn btn-ghost btn-sm" title="导出 CSV" onClick={async () => {
+                    <button className="btn btn-ghost btn-sm" title={t('settings.exportCsv')} onClick={async () => {
                       try {
                         const { save } = await import('@tauri-apps/plugin-dialog');
-                        const path = await save({ title: '导出翻译缓存', defaultPath: 'translations.csv', filters: [{ name: 'CSV', extensions: ['csv'] }] });
+                        const path = await save({ title: t('settings.exportCsv'), defaultPath: 'translations.csv', filters: [{ name: 'CSV', extensions: ['csv'] }] });
                         if (path) {
                           const count = await invoke<number>('export_translation_csv', { path });
-                          alert(`成功导出 ${count} 条翻译记录`);
+                          alert(t('settings.exportSuccess', { count }));
                         }
-                      } catch (e: any) { alert('导出失败: ' + e); }
+                      } catch (e: any) { alert(t('settings.exportFailed') + ': ' + e); }
                     }} style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3 }}>
-                      <Download style={{ width: 11, height: 11 }} /> 导出
+                      <Download style={{ width: 11, height: 11 }} /> {t('common.export')}
                     </button>
-                    <button className="btn btn-ghost btn-sm" title="导入 CSV" onClick={async () => {
+                    <button className="btn btn-ghost btn-sm" title={t('settings.importCsv')} onClick={async () => {
                       try {
                         const { open: dialogOpen } = await import('@tauri-apps/plugin-dialog');
-                        const path = await dialogOpen({ title: '导入翻译缓存 CSV', filters: [{ name: 'CSV', extensions: ['csv'] }] });
+                        const path = await dialogOpen({ title: t('settings.importCsv'), filters: [{ name: 'CSV', extensions: ['csv'] }] });
                         if (path) {
                           const [imported, skipped, errors] = await invoke<[number, number, string]>('import_translation_csv', { path });
-                          let msg = `导入完成：${imported} 条成功`;
-                          if (skipped > 0) msg += `，${skipped} 条跳过`;
+                          let msg = t('settings.importSuccess', { imported });
+                          if (skipped > 0) msg += t('settings.importSkipped', { skipped });
                           if (errors) msg += `\n\n${errors}`;
                           alert(msg);
                           loadCacheStats();
                         }
-                      } catch (e: any) { alert('导入失败: ' + e); }
+                      } catch (e: any) { alert(t('settings.importFailed') + ': ' + e); }
                     }} style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3 }}>
-                      <Upload style={{ width: 11, height: 11 }} /> 导入
+                      <Upload style={{ width: 11, height: 11 }} /> {t('common.import')}
                     </button>
                     <button className="btn btn-secondary" onClick={handleClearCache} disabled={clearing || !cacheStats || cacheStats.total === 0}
                       style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3, color: '#f87171' }}>
                       <Trash2 style={{ width: 11, height: 11 }} />
-                      {clearing ? '清理中...' : '清空'}
+                      {clearing ? t('settings.clearing') : t('settings.clearCache')}
                     </button>
                   </div>
                 </div>
                 {/* 各语言翻译统计 */}
                 {cacheStats && (
                   <div style={{ display: 'flex', gap: 8 }}>
-                    {[{ label: '中文', count: cacheStats.zh_cn, color: '#f87171' },
-                      { label: '日语', count: cacheStats.ja, color: '#60a5fa' },
-                      { label: '韩语', count: cacheStats.ko, color: '#34d399' }].map(l => (
+                    {[{ label: t('settings.langZhCN'), count: cacheStats.zh_cn, color: '#f87171' },
+                      { label: t('settings.langJa'), count: cacheStats.ja, color: '#60a5fa' },
+                      { label: t('settings.langKo'), count: cacheStats.ko, color: '#34d399' }].map(l => (
                       <div key={l.label} style={{ flex: 1, padding: '6px 10px', borderRadius: 6, background: `${l.color}08`, border: `1px solid ${l.color}20` }}>
                         <div style={{ fontSize: 9, color: l.color, fontWeight: 600, marginBottom: 2 }}>{l.label}</div>
                         <div style={{ fontSize: 13, fontWeight: 800, color: l.count > 0 ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)' }}>{l.count.toLocaleString()}</div>
@@ -660,48 +626,48 @@ export default function SettingsPage() {
             <div className="tool-panel-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                 <Database style={{ width: 16, height: 16, color: '#a78bfa' }} />
-                <span className="tool-panel-title">Danbooru 标签数据库</span>
+                <span className="tool-panel-title">{t('settings.tagDatabase')}</span>
               </div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
-                下载 Danbooru 标签数据用于标签管理中的自动补全功能。
+                {t('settings.tagDatabaseDesc')}{t('settings.tagDbSource')}: <a href="#" onClick={(e) => { e.preventDefault(); window.open('https://github.com/DraconicDragon/dbr-e621-lists-archive', '_blank'); }} style={{ color: 'var(--color-accent-primary)', textDecoration: 'none', cursor: 'pointer' }}>DraconicDragon/dbr-e621-lists-archive</a>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>标签数据</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.tagData')}</div>
                   <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
                     {tagDbStats ? (tagDbStats.has_data
-                      ? `${tagDbStats.total_tags.toLocaleString()} 个标签 · 已翻译 ${tagDbStats.translated_tags.toLocaleString()} · ${formatSize(tagDbStats.db_size_bytes)}`
-                      : '未下载') : '加载中...'}
+                      ? `${t('settings.tagCount', { count: tagDbStats.total_tags.toLocaleString() })} · ${t('settings.translatedCount', { count: tagDbStats.translated_tags.toLocaleString() })} · ${formatSize(tagDbStats.db_size_bytes)}`
+                      : t('settings.notDownloaded')) : t('common.loading')}
                   </div>
                   {tagDbStats?.has_data && tagDbStats.source_file && (
                     <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span>版本: {(() => {
+                      <span>{t('settings.versionLabel')}: {(() => {
                         const m = tagDbStats.source_file.match(/danbooru_(\d{4}-\d{2}-\d{2})/);
                         return m ? m[1] : tagDbStats.source_file;
                       })()}</span>
                       {tagDbStats.import_date && (
-                        <span>· 导入于 {new Date(parseInt(tagDbStats.import_date) * 1000).toLocaleDateString()}</span>
+                        <span>· {t('settings.importedAt')} {new Date(parseInt(tagDbStats.import_date) * 1000).toLocaleDateString()}</span>
                       )}
                       {tagDbLatest && tagDbLatest !== tagDbStats.source_file && (
-                        <span style={{ color: '#fbbf24', fontWeight: 600 }}>· 有新版本: {(() => {
+                        <span style={{ color: '#fbbf24', fontWeight: 600 }}>· {t('settings.newVersionAvailable')}: {(() => {
                           const m = tagDbLatest.match(/danbooru_(\d{4}-\d{2}-\d{2})/);
                           return m ? m[1] : tagDbLatest;
                         })()}</span>
                       )}
                       {tagDbLatest && tagDbLatest === tagDbStats.source_file && (
-                        <span style={{ color: '#4ade80' }}>· 已是最新</span>
+                        <span style={{ color: '#4ade80' }}>· {t('settings.alreadyLatest')}</span>
                       )}
                     </div>
                   )}
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                   {tagDbStats?.has_data && (
-                    <button className="btn btn-ghost btn-sm" title="检查更新" disabled={tagDbDownloading || tagDbTranslating || tagDbChecking}
+                    <button className="btn btn-ghost btn-sm" title={t('settings.checkUpdate')} disabled={tagDbDownloading || tagDbTranslating || tagDbChecking}
                       onClick={async () => {
                         setTagDbChecking(true);
-                        try { setTagDbLatest(await invoke<string>('check_tag_db_update')); } catch (e: any) { setTagDbProgress(`检查失败: ${e?.message || e}`); }
+                        try { setTagDbLatest(await invoke<string>('check_tag_db_update')); } catch (e: any) { setTagDbProgress(`${t('settings.checkFailed')}: ${e?.message || e}`); }
                         finally { setTagDbChecking(false); }
                       }}
                       style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -712,7 +678,7 @@ export default function SettingsPage() {
                     disabled={tagDbDownloading || tagDbTranslating || (!!tagDbLatest && tagDbLatest === tagDbStats?.source_file)}
                     style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4 }}>
                     {tagDbDownloading ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 12, height: 12 }} />}
-                    {tagDbDownloading ? '下载中...' : (tagDbStats?.has_data ? '更新' : '下载')}
+                    {tagDbDownloading ? t('settings.downloading') : (tagDbStats?.has_data ? t('common.update') : t('common.download'))}
                   </button>
                   {tagDbStats?.has_data && (
                     <button className="btn btn-secondary"
@@ -725,15 +691,15 @@ export default function SettingsPage() {
                       }}>
                       {tagDbTranslating
                         ? (translateHover
-                          ? <><X style={{ width: 12, height: 12 }} /> 取消</>
-                          : <><Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> 翻译中...</>)
-                        : <><Languages style={{ width: 12, height: 12 }} /> 翻译</>}
+                          ? <><X style={{ width: 12, height: 12 }} /> {t('settings.cancelTranslate')}</>
+                          : <><Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> {t('settings.translating')}</>)
+                        : <><Languages style={{ width: 12, height: 12 }} /> {t('settings.translate')}</>}
                     </button>
                   )}
                   {tagDbStats?.has_data && (
                     <button className="btn btn-secondary" onClick={() => setTagDbClearConfirm(true)} disabled={tagDbDownloading || tagDbTranslating}
                       style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4, color: '#f87171' }}>
-                      <Trash2 style={{ width: 12, height: 12 }} /> 清空
+                      <Trash2 style={{ width: 12, height: 12 }} /> {t('settings.clearData')}
                     </button>
                   )}
                 </div>
@@ -751,7 +717,7 @@ export default function SettingsPage() {
             <div className="tool-panel-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                 <AlertTriangle style={{ width: 16, height: 16, color: '#fbbf24' }} />
-                <span className="tool-panel-title">高级设置</span>
+                <span className="tool-panel-title">{t('settings.advanced')}</span>
               </div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
@@ -759,11 +725,11 @@ export default function SettingsPage() {
               <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div>
-                    <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>Python 环境</div>
+                    <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{t('settings.pythonEnv')}</div>
                     <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                      {pythonInfo === null ? '加载中...' : pythonInfo.available
+                      {pythonInfo === null ? t('common.loading') : pythonInfo.available
                         ? <><span style={{ color: '#4ade80' }}>✓</span> {pythonInfo.version}</>
-                        : <span style={{ color: '#f87171' }}>未检测到</span>
+                        : <span style={{ color: '#f87171' }}>{t('settings.pythonNotInstalled')}</span>
                       }
                     </div>
                     {pythonInfo?.available && (
@@ -778,13 +744,13 @@ export default function SettingsPage() {
               {/* 重置 Python */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
-                  <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>重置 Python 环境</div>
-                  <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>删除软件管理的 Python 虚拟环境和独立版本，下次使用时会自动重新配置</div>
+                  <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{t('settings.resetPythonEnv')}</div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{t('settings.resetConfirmMsg')}</div>
                 </div>
                 <button className="btn" onClick={() => setResetPythonConfirmOpen(true)} disabled={resettingPython}
                   style={{ background: 'rgba(248,113,113,0.1)', color: '#f87171', border: '1px solid rgba(248,113,113,0.3)', fontSize: 12, padding: '6px 14px', gap: 6 }}>
                   {resettingPython ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RotateCcw style={{ width: 14, height: 14 }} />}
-                  重置
+                  {t('settings.cacheReset')}
                 </button>
               </div>
             </div>
@@ -795,12 +761,12 @@ export default function SettingsPage() {
             <div className="tool-panel-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                 <Info style={{ width: 16, height: 16, color: 'var(--color-text-tertiary)' }} />
-                <span className="tool-panel-title">关于</span>
+                <span className="tool-panel-title">{t('settings.about')}</span>
               </div>
             </div>
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', lineHeight: 1.8 }}>
               <p><strong>PurinBox</strong> · v{appVersion}</p>
-              <p>基于 Tauri 2 + React + TypeScript 构建</p>
+              <p>Tauri 2 + React + TypeScript</p>
               <p style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <a href="https://github.com/YPuddin-Neko/PurinBox" target="_blank" rel="noreferrer"
                   style={{ color: '#60a5fa', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -810,22 +776,22 @@ export default function SettingsPage() {
               {/* Update check */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>检查更新</div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.checkForUpdate')}</div>
                   <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                    {updateChecking ? '正在检查...'
-                      : updateError ? `检查失败: ${updateError}`
+                    {updateChecking ? t('settings.checkingForUpdate')
+                      : updateError ? `${t('settings.updateCheckFailed')}: ${updateError}`
                       : updateResult
                         ? updateResult.has_update
-                          ? <span style={{ color: '#ef4444' }}>发现新版本 v{updateResult.latest_version}</span>
-                          : <span style={{ color: '#4ade80' }}>已是最新版本</span>
-                        : '点击检查是否有新版本'}
+                          ? <span style={{ color: '#ef4444' }}>{t('settings.hasUpdate', { version: updateResult.latest_version })}</span>
+                          : <span style={{ color: '#4ade80' }}>{t('settings.noUpdate')}</span>
+                        : t('settings.checkForUpdate')}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   {updateResult?.has_update && updateResult.release_url && (
                     <a href={updateResult.release_url} target="_blank" rel="noreferrer"
                       className="btn btn-primary" style={{ fontSize: 11, height: 28, padding: '0 12px', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <ExternalLink style={{ width: 11, height: 11 }} /> 前往下载
+                      <ExternalLink style={{ width: 11, height: 11 }} /> {t('settings.goToDownload')}
                     </a>
                   )}
                   <button className="btn btn-secondary" disabled={updateChecking}
@@ -839,7 +805,7 @@ export default function SettingsPage() {
                     }}
                     style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4 }}>
                     {updateChecking ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <RefreshIcon style={{ width: 12, height: 12 }} />}
-                    {updateChecking ? '检查中...' : '检查更新'}
+                    {updateChecking ? t('settings.checkingForUpdate') : t('settings.checkForUpdate')}
                   </button>
                 </div>
               </div>
@@ -853,18 +819,18 @@ export default function SettingsPage() {
         open={clearConfirmOpen}
         onClose={() => setClearConfirmOpen(false)}
         onConfirm={doClearCache}
-        title="清空缓存"
-        message="确定清空所有翻译缓存？下次翻译将重新请求翻译接口。"
-        confirmText="清空"
+        title={t('settings.clearCache')}
+        message={t('settings.clearConfirmMsg')}
+        confirmText={t('settings.clearCache')}
         variant="warning"
       />
       <ConfirmModal
         open={tagDbClearConfirm}
         onClose={() => setTagDbClearConfirm(false)}
         onConfirm={handleClearTagDb}
-        title="清空标签数据库"
-        message="确定清空所有已下载的 Danbooru 标签数据？标签自动补全功能将不可用。"
-        confirmText="清空"
+        title={t('settings.clearConfirmTitle')}
+        message={t('settings.clearConfirmMsg')}
+        confirmText={t('settings.clearData')}
         variant="warning"
       />
       <ConfirmModal
@@ -875,23 +841,23 @@ export default function SettingsPage() {
           setResettingPython(true);
           try {
             await invoke('reset_python_env');
-            setAlertMsg('Python 环境已重置');
+            setAlertMsg(t('settings.resetSuccess'));
             loadPythonInfo();
           } catch (e: any) {
-            setAlertMsg(`重置失败: ${e}`);
+            setAlertMsg(`${t('settings.resetFailed')}: ${e}`);
           } finally {
             setResettingPython(false);
           }
         }}
-        title="重置 Python 环境"
-        message="确定重置 Python 环境？将删除虚拟环境和下载的独立 Python."
-        confirmText="重置"
+        title={t('settings.resetConfirmTitle')}
+        message={t('settings.resetConfirmMsg')}
+        confirmText={t('settings.cacheReset')}
         variant="error"
       />
       <AlertModal
         open={!!alertMsg}
         onClose={() => setAlertMsg('')}
-        title="提示"
+        title={t('common.notice')}
         message={alertMsg}
       />
     </>

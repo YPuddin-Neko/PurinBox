@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
+import { useTranslation } from 'react-i18next';
 import {
   ScanSearch,
   FolderOpen,
@@ -31,14 +32,16 @@ interface ProgressPayload {
 type ConditionType = 'min_width' | 'min_height' | 'below_resolution' | 'above_resolution';
 type ActionType = 'copy' | 'delete';
 
-const conditionOptions: { value: ConditionType; label: string; desc: string }[] = [
-  { value: 'min_width', label: '最小宽度', desc: '筛选宽度低于设定值的图片' },
-  { value: 'min_height', label: '最小高度', desc: '筛选高度低于设定值的图片' },
-  { value: 'below_resolution', label: '低于指定分辨率', desc: '筛选宽高均低于设定值的图片' },
-  { value: 'above_resolution', label: '高于指定分辨率', desc: '筛选宽高均高于设定值的图片' },
-];
 
 export default function FilterPage() {
+  const { t } = useTranslation();
+
+  const conditionOptions: { value: ConditionType; label: string; desc: string }[] = [
+    { value: 'min_width', label: t('filter.condMinWidth'), desc: t('filter.condMinWidthDesc') },
+    { value: 'min_height', label: t('filter.condMinHeight'), desc: t('filter.condMinHeightDesc') },
+    { value: 'below_resolution', label: t('filter.condBelowRes'), desc: t('filter.condBelowResDesc') },
+    { value: 'above_resolution', label: t('filter.condAboveRes'), desc: t('filter.condAboveResDesc') },
+  ];
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [action, setAction] = useState<ActionType>('copy');
@@ -79,12 +82,12 @@ export default function FilterPage() {
   }, []);
 
   const selectInputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择输入文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
     if (selected) setInputPath(selected as string);
   };
 
   const selectOutputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择保存文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('filter.selectSaveFolder') });
     if (selected) setOutputPath(selected as string);
   };
 
@@ -94,20 +97,20 @@ export default function FilterPage() {
     if (!inputPath) return;
     if (action === 'copy' && !outputPath) return;
     setProcessing(true);
-    addTask('filter', '分辨率筛选');
+    addTask('filter', t('filter.taskName'));
     setProgress(0);
     setProgressCurrent(0);
     setProgressTotal(0);
     setIsDone(false);
     setHasError(false);
     const condLabel = conditionOptions.find((c) => c.value === condition)!.label;
-    setLogs([{ time: getTimeStr(), message: `开始筛选: 条件=${condLabel}, 操作=${action === 'copy' ? '输出' : '删除'}`, status: 'info' }]);
+    setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${t('filter.startFilter')}: ${condLabel}, ${action === 'copy' ? t('filter.actionCopy') : t('filter.actionDelete')}`, status: 'info' }]);
     try {
       await invoke<ProcessResult>('filter_by_resolution', {
         options: { input_path: inputPath, output_path: outputPath || inputPath, action, condition, width, height },
       });
     } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true);
       setIsDone(true);
     } finally {
@@ -123,9 +126,9 @@ export default function FilterPage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <ScanSearch style={{ width: 28, height: 28, color: '#ff6b9d' }} />
-          <h1 className="page-title">分辨率筛选</h1>
+          <h1 className="page-title">{t('filter.title')}</h1>
         </div>
-        <p className="page-subtitle">根据分辨率条件筛选图片，支持输出或删除符合条件的图片</p>
+        <p className="page-subtitle">{t('filter.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
@@ -133,20 +136,20 @@ export default function FilterPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径设置 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">路径设置</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">输入图片文件夹</label>
+                <label className="form-label">{t('filter.inputFolder')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择图片所在文件夹..." value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
               {needsOutput && (
                 <div className="form-group">
-                  <label className="form-label">保存路径（输出匹配的图片）</label>
+                  <label className="form-label">{t('filter.savePath')}</label>
                   <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                    <input className="form-input" placeholder="选择保存文件夹..." value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
+                    <input className="form-input" placeholder={t('filter.selectSaveFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
                     <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                   </div>
                 </div>
@@ -156,7 +159,7 @@ export default function FilterPage() {
 
           {/* 操作方式 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">操作方式</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('filter.actionMode')}</span></div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
               <div onClick={() => setAction('copy')} style={{
                 display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)',
@@ -166,8 +169,8 @@ export default function FilterPage() {
                 cursor: 'pointer', transition: 'all 0.2s',
               }}>
                 <Copy style={{ width: 24, height: 24, color: action === 'copy' ? '#4ade80' : 'var(--color-text-tertiary)' }} />
-                <span style={{ fontWeight: 700, fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}>输出</span>
-                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', textAlign: 'center' }}>将匹配的图片复制到指定目录</span>
+                <span style={{ fontWeight: 700, fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}>{t('filter.actionCopy')}</span>
+                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', textAlign: 'center' }}>{t('filter.actionCopyDesc')}</span>
               </div>
               <div onClick={() => setAction('delete')} style={{
                 display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)',
@@ -177,21 +180,21 @@ export default function FilterPage() {
                 cursor: 'pointer', transition: 'all 0.2s',
               }}>
                 <Trash2 style={{ width: 24, height: 24, color: action === 'delete' ? '#f87171' : 'var(--color-text-tertiary)' }} />
-                <span style={{ fontWeight: 700, fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}>删除</span>
-                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', textAlign: 'center' }}>直接删除匹配的图片</span>
+                <span style={{ fontWeight: 700, fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}>{t('filter.actionDelete')}</span>
+                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', textAlign: 'center' }}>{t('filter.actionDeleteDesc')}</span>
               </div>
             </div>
             {action === 'delete' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(248, 113, 113, 0.06)', border: '1px solid rgba(248, 113, 113, 0.15)', marginTop: 'var(--space-3)' }}>
                 <Info style={{ width: 14, height: 14, color: '#f87171', minWidth: 14 }} />
-                <span style={{ fontSize: 'var(--font-size-xs)', color: '#f87171' }}>注意：删除操作不可撤销，请确认后再执行</span>
+                <span style={{ fontSize: 'var(--font-size-xs)', color: '#f87171' }}>{t('filter.deleteWarning')}</span>
               </div>
             )}
           </div>
 
           {/* 筛选条件 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">筛选条件</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('filter.filterCondition')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               {conditionOptions.map((opt) => (
                 <div key={opt.value} onClick={() => setCondition(opt.value)} style={{
@@ -215,13 +218,13 @@ export default function FilterPage() {
             <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-4)' }}>
               {needsWidth && (
                 <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">{condition === 'min_width' ? '最小宽度 (px)' : '宽度 (px)'}</label>
+                  <label className="form-label">{condition === 'min_width' ? t('filter.minWidthPx') : t('filter.widthPx')}</label>
                   <input className="form-input" type="number" value={width} onChange={(e) => setWidth(Number(e.target.value))} min={1} />
                 </div>
               )}
               {needsHeight && (
                 <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label">{condition === 'min_height' ? '最小高度 (px)' : '高度 (px)'}</label>
+                  <label className="form-label">{condition === 'min_height' ? t('filter.minHeightPx') : t('filter.heightPx')}</label>
                   <input className="form-input" type="number" value={height} onChange={(e) => setHeight(Number(e.target.value))} min={1} />
                 </div>
               )}
@@ -236,8 +239,8 @@ export default function FilterPage() {
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!inputPath || (action === 'copy' && !outputPath)}
             cancelCommand="cancel_filter"
-            startText={action === 'delete' ? '开始筛选并删除' : '开始筛选并输出'}
-            processingText="处理中..."
+            startText={action === 'delete' ? t('filter.startFilterDelete') : t('filter.startFilterOutput')}
+            processingText={t('pages.processing')}
             onCancelLog={addCancelLog} />
 
           

@@ -114,6 +114,10 @@
 
 .sidebar-item-label {
   transition: opacity var(--transition-fast);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .sidebar.collapsed .sidebar-item-label {

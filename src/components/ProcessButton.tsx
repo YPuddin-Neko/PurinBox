@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Play, Loader2, X, AlertTriangle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 /**
  * 统一的处理/取消按钮组件
@@ -35,12 +36,15 @@ export default function ProcessButton({
   onStart,
   cancelCommand,
   forceCancelCommand,
-  startText = '开始处理',
+  startText,
   startIcon,
-  processingText = '处理中...',
+  processingText,
   style,
   onCancelLog,
 }: ProcessButtonProps) {
+  const { t } = useTranslation();
+  const resolvedStartText = startText || t('processButton.start');
+  const resolvedProcessingText = processingText || t('processButton.processing');
   const [hovered, setHovered] = useState(false);
   const [cancelStage, setCancelStage] = useState(0); // 0=none, 1=graceful, 2=force
 
@@ -54,7 +58,7 @@ export default function ProcessButton({
     if (cancelStage === 0) {
       // 第一次取消 → 优雅取消
       setCancelStage(1);
-      onCancelLog?.('取消任务已提交，等待当前作业完毕后停止...');
+      onCancelLog?.(t('processButton.cancelSubmitted'));
       try {
         await invoke(cancelCommand);
       } catch (e) {
@@ -63,7 +67,7 @@ export default function ProcessButton({
     } else {
       // 第二次取消 → 强制取消
       setCancelStage(2);
-      onCancelLog?.('强制结束任务');
+      onCancelLog?.(t('processButton.forceStop'));
       try {
         await invoke(forceCancelCommand || cancelCommand);
       } catch (e) {
@@ -80,7 +84,7 @@ export default function ProcessButton({
   // 决定显示内容
   const renderContent = () => {
     if (!processing) {
-      return <>{startIcon || <Play style={{ width: 18, height: 18 }} />} {startText}</>;
+      return <>{startIcon || <Play style={{ width: 18, height: 18 }} />} {resolvedStartText}</>;
     }
 
     if (cancelStage >= 1) {
@@ -88,16 +92,16 @@ export default function ProcessButton({
       return (
         <>
           <AlertTriangle style={{ width: 18, height: 18 }} />
-          {cancelStage === 2 ? '正在强制结束...' : '再次点击强制结束'}
+          {cancelStage === 2 ? t('processButton.forceEnding') : t('processButton.clickForce')}
         </>
       );
     }
 
     if (hovered) {
-      return <><X style={{ width: 18, height: 18 }} /> 取消</>;
+      return <><X style={{ width: 18, height: 18 }} /> {t('processButton.cancel')}</>;
     }
 
-    return <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {processingText}</>;
+    return <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {resolvedProcessingText}</>;
   };
 
   // 决定样式

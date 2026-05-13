@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
+import { useTranslation } from 'react-i18next';
 import {
   TextCursorInput,
   FolderOpen,
@@ -21,6 +22,7 @@ interface ProgressPayload { current: number; total: number; filename: string; st
 interface PreviewItem { original: string; renamed: string; }
 
 export default function BatchRenamePage() {
+  const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [prefix, setPrefix] = useState('img_');
   const [startNumber, setStartNumber] = useState(1);
@@ -54,7 +56,7 @@ export default function BatchRenamePage() {
   }, []);
 
   const selectFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择图片文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
     if (selected) {
       setInputPath(selected as string);
       setPreviews([]);
@@ -71,7 +73,7 @@ export default function BatchRenamePage() {
       setPreviews(result);
     } catch (e: any) {
       setPreviews([]);
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `预览失败: ${String(e)}`, status: 'error' }]);
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('batchRename.previewFailed')}: ${String(e)}`, status: 'error' }]);
     } finally {
       setPreviewLoading(false);
     }
@@ -98,17 +100,17 @@ export default function BatchRenamePage() {
   const handleExecute = async () => {
     if (!inputPath || previews.length === 0) return;
     setProcessing(true);
-    addTask('rename', '批量重命名');
+    addTask('rename', t('batchRename.taskName'));
     setProgress(0); setProgressCurrent(0); setProgressTotal(0);
     setIsDone(false); setHasError(false);
-    setLogs([{ time: getTimeStr(), message: `开始重命名: 前缀="${prefix}", 起始=${startNumber}, 位数=${digitCount}`, status: 'info' }]);
+    setLogs([{ time: getTimeStr(), message: t('batchRename.startMsg', { prefix, start: startNumber, digits: digitCount }), status: 'info' }]);
     try {
       await invoke<ProcessResult>('execute_rename', {
         options: { input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount, shuffle: shuffleOrder },
       });
       setPreviews([]);
     } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true); setIsDone(true);
     } finally {
       setProcessing(false);
@@ -126,9 +128,9 @@ export default function BatchRenamePage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <TextCursorInput style={{ width: 28, height: 28, color: '#38bdf8' }} />
-          <h1 className="page-title">图片批量重命名</h1>
+          <h1 className="page-title">{t('batchRename.title')}</h1>
         </div>
-        <p className="page-subtitle">按照规则批量重命名图片文件，支持自定义前缀、编号和打乱顺序</p>
+        <p className="page-subtitle">{t('batchRename.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 400px', gap: 'var(--space-6)' }}>
@@ -136,11 +138,11 @@ export default function BatchRenamePage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">图片文件夹</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('batchRename.imageFolder')}</span></div>
             <div className="form-group">
-              <label className="form-label">选择图片所在文件夹（将直接在原位重命名）</label>
+              <label className="form-label">{t('batchRename.folderDesc')}</label>
               <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                <input className="form-input" placeholder="选择文件夹..." value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                <input className="form-input" placeholder={t('batchRename.selectFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                 <button className="btn btn-secondary" onClick={selectFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
               </div>
             </div>
@@ -148,27 +150,27 @@ export default function BatchRenamePage() {
 
           {/* 命名规则 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">命名规则</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('batchRename.namingRule')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Type style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
-                  图片前缀
+                  {t('batchRename.prefix')}
                 </label>
-                <input className="form-input" value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="例如: img_" />
+                <input className="form-input" value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder={t('batchRename.prefixPlaceholder')} />
               </div>
               <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
                 <div className="form-group" style={{ flex: 1 }}>
                   <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Hash style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
-                    起始编号
+                    {t('batchRename.startNum')}
                   </label>
                   <input className="form-input" type="number" value={startNumber} onChange={(e) => setStartNumber(Number(e.target.value))} min={0} />
                 </div>
                 <div className="form-group" style={{ flex: 1 }}>
                   <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Hash style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
-                    编号位数
+                    {t('batchRename.digitCount')}
                   </label>
                   <input className="form-input" type="number" value={digitCount} onChange={(e) => setDigitCount(Number(e.target.value))} min={1} max={10} />
                 </div>
@@ -182,7 +184,7 @@ export default function BatchRenamePage() {
                 border: '1px solid rgba(56, 189, 248, 0.12)',
                 display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
               }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>命名示例:</span>
+                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>{t('batchRename.namingExample')}</span>
                 <span style={{ fontSize: 'var(--font-size-md)', fontWeight: 700, color: '#38bdf8', fontFamily: 'monospace' }}>{exampleName}</span>
               </div>
             </div>
@@ -192,11 +194,11 @@ export default function BatchRenamePage() {
           <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
             <button className="btn btn-secondary" style={{ flex: 1, height: 44 }} onClick={handlePreview} disabled={!inputPath || previewLoading}>
               {previewLoading ? <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> : <Eye style={{ width: 16, height: 16 }} />}
-              生成预览
+              {t('batchRename.generatePreview')}
             </button>
             <button className="btn btn-secondary" style={{ flex: 1, height: 44 }} onClick={handleShuffle} disabled={!inputPath || previewLoading}>
               <Shuffle style={{ width: 16, height: 16 }} />
-              打乱并预览
+              {t('batchRename.shufflePreview')}
             </button>
           </div>
 
@@ -204,17 +206,17 @@ export default function BatchRenamePage() {
           {previews.length > 0 && (
             <div className="tool-panel" style={{ padding: 0, overflow: 'hidden' }}>
               <div className="tool-panel-header" style={{ padding: 'var(--space-3) var(--space-4)' }}>
-                <span className="tool-panel-title">重命名预览</span>
-                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>{previews.length} 个文件</span>
+                <span className="tool-panel-title">{t('batchRename.previewTitle')}</span>
+                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>{t('batchRename.fileCount', { count: previews.length })}</span>
               </div>
               <div style={{ maxHeight: 360, overflowY: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
                     <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
                       <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'left', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600 }}>#</th>
-                      <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'left', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600 }}>原文件名</th>
+                      <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'left', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600 }}>{t('batchRename.originalName')}</th>
                       <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'center', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', width: 30 }}></th>
-                      <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'left', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600 }}>新文件名</th>
+                      <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'left', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600 }}>{t('batchRename.newName')}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -238,7 +240,7 @@ export default function BatchRenamePage() {
 
           <button className="btn btn-primary btn-lg" style={{ width: '100%', height: 48 }} onClick={handleExecute}
             disabled={processing || !inputPath || previews.length === 0}>
-            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> 重命名中...</> : <><Play style={{ width: 18, height: 18 }} /> 执行重命名</>}
+            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {t('batchRename.executing')}</> : <><Play style={{ width: 18, height: 18 }} /> {t('batchRename.executeRename')}</>}
           </button>
 
 

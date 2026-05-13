@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { ChevronDown, Check } from 'lucide-react';
 import '../styles/custom-select.css';
+import { useTranslation } from 'react-i18next';
 
 export interface SelectOption {
   value: string;
@@ -19,8 +20,10 @@ interface CustomSelectProps {
 }
 
 export default function CustomSelect({
-  value, options, onChange, placeholder = '请选择...', disabled = false, style, compact = false,
+  value, options, onChange, placeholder, disabled = false, style, compact = false,
 }: CustomSelectProps) {
+  const { t } = useTranslation();
+  const resolvedPlaceholder = placeholder || t('common.select');
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -78,7 +81,7 @@ export default function CustomSelect({
     >
       <div className="cs-trigger" onClick={() => !disabled && setOpen(o => !o)}>
         <span className={`cs-value ${!selected ? 'cs-placeholder' : ''}`}>
-          {selected ? selected.label : placeholder}
+          {selected ? selected.label : resolvedPlaceholder}
         </span>
         <ChevronDown className={`cs-arrow ${open ? 'cs-arrow-open' : ''}`} />
       </div>
@@ -96,7 +99,7 @@ export default function CustomSelect({
             </div>
           ))}
           {options.length === 0 && (
-            <div className="cs-empty">暂无选项</div>
+            <div className="cs-empty">{t('common.noOptions')}</div>
           )}
         </div>
       )}

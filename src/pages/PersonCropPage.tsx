@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
+import { useTranslation } from 'react-i18next';
 import {
   ScanFace, FolderOpen, Loader2, Info, User,
   PersonStanding, CircleUser, Eye, Download,
@@ -17,6 +18,7 @@ interface CropModelInfo { id: string; name: string; crop_type: string; size_mb: 
 interface DlProgress { downloaded: number; total: number; percent: number; speed_mbps: number; status: string; message: string; }
 
 export default function PersonCropPage() {
+  const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [useGpu, setUseGpu] = useState(() => localStorage.getItem('person_crop_gpu') === 'true');
@@ -53,12 +55,12 @@ export default function PersonCropPage() {
 
   const downloadAll = async () => {
     setDownloading(true);
-    setLogs(prev => [...prev, { time: getTimeStr(), message: '开始下载模型包...', status: 'info' }]);
+    setLogs(prev => [...prev, { time: getTimeStr(), message: t('personCrop.downloadStart'), status: 'info' }]);
     try {
       await invoke('download_person_crop_model', { modelId: 'all' });
       loadModels();
     } catch (e: any) {
-      setLogs(prev => [...prev, { time: getTimeStr(), message: `下载失败: ${String(e)}`, status: 'error' }]);
+      setLogs(prev => [...prev, { time: getTimeStr(), message: `${t('personCrop.downloadFailed')}: ${String(e)}`, status: 'error' }]);
     } finally { setDownloading(false); }
   };
 
@@ -101,16 +103,16 @@ export default function PersonCropPage() {
     return () => { active = false; p.then(fn => fn()); };
   }, []);
 
-  const selectInputFolder = async () => { const s = await open({ directory: true, multiple: false, title: '选择输入文件夹' }); if (s) setInputPath(s as string); };
-  const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: '选择输出文件夹' }); if (s) setOutputPath(s as string); };
+  const selectInputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') }); if (s) setInputPath(s as string); };
+  const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') }); if (s) setOutputPath(s as string); };
 
   const { addTask } = useTaskQueue();
 
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
-    setProcessing(true); addTask('person-crop', '三分法裁切');
+    setProcessing(true); addTask('person-crop', t('personCrop.taskName'));
     setProgress(0); setProgressCurrent(0); setProgressTotal(0); setIsDone(false); setHasError(false);
-    setLogs([{ time: getTimeStr(), message: '开始三分法裁切处理...', status: 'info' }]);
+    setLogs([{ time: getTimeStr(), message: t('personCrop.startMsg'), status: 'info' }]);
     try {
       await invoke<ProcessResult>('start_person_crop', {
         options: {
@@ -123,7 +125,7 @@ export default function PersonCropPage() {
         },
       });
     } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true); setIsDone(true);
     } finally { setProcessing(false); }
   };
@@ -145,7 +147,7 @@ export default function PersonCropPage() {
             <span style={{ color: enabled ? color : 'var(--color-text-tertiary)' }}>{icon}</span>
             <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{label}</span>
           </label>
-          {m && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: m.downloaded ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)', color: m.downloaded ? '#4ade80' : '#fbbf24', fontWeight: 600 }}>{m.downloaded ? '✓ 就绪' : '⬇ 待下载'}</span>}
+          {m && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: m.downloaded ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)', color: m.downloaded ? '#4ade80' : '#fbbf24', fontWeight: 600 }}>{m.downloaded ? t('personCrop.modelReady') : t('personCrop.modelPending')}</span>}
         </div>
         {enabled && <div style={{ paddingLeft: 32 }}>{children}</div>}
       </div>
@@ -154,7 +156,7 @@ export default function PersonCropPage() {
 
   const confSlider = (value: number, onChange: (v: number) => void, color: string) => (
     <div className="form-group">
-      <label className="form-label">置信度阈值</label>
+      <label className="form-label">{t('personCrop.confThreshold')}</label>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
         <input type="range" min={0.1} max={0.9} step={0.05} value={value} onChange={(e) => onChange(Number(e.target.value))} style={{ flex: 1, accentColor: color }} />
         <input className="form-input" type="number" value={value} onChange={(e) => onChange(Number(e.target.value))} step={0.05} min={0.1} max={0.9} style={{ width: 70, textAlign: 'center' }} />
@@ -164,7 +166,7 @@ export default function PersonCropPage() {
 
   const tagInput = (value: string, onChange: (v: string) => void, placeholder: string) => (
     <div className="form-group">
-      <label className="form-label">追加 Tag</label>
+      <label className="form-label">{t('personCrop.appendTag')}</label>
       <input className="form-input" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
     </div>
   );
@@ -189,50 +191,50 @@ export default function PersonCropPage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <ScanFace style={{ width: 28, height: 28, color: '#fb923c' }} />
-          <h1 className="page-title">三分法裁切</h1>
+          <h1 className="page-title">{t('personCrop.title')}</h1>
         </div>
-        <p className="page-subtitle">基于 DeepGHS 动漫专用检测模型，自动检测图片中的人物并按多个层级进行裁切</p>
+        <p className="page-subtitle">{t('personCrop.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径设置 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">裁切设置</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('personCrop.cropSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">输入文件夹</label>
+                <label className="form-label">{t('blurNoise.inputFolder')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择图片所在文件夹..." value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
               <div className="form-group">
-                <label className="form-label">输出文件夹</label>
+                <label className="form-label">{t('blurNoise.outputFolder')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择输出文件夹..." value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
               {/* 模型状态 + 下载 */}
               <div className="form-group">
-                <label className="form-label">检测模型</label>
+                <label className="form-label">{t('personCrop.detModel')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
                   <div style={{ flex: 1, padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>
                     {ms.allReady ? (
-                      <span style={{ color: '#4ade80' }}>✓ 所有模型已就绪 ({ms.ready}/{ms.total})</span>
+                      <span style={{ color: '#4ade80' }}>✓ {t('personCrop.allReady')} ({ms.ready}/{ms.total})</span>
                     ) : (
-                      <span style={{ color: '#fbbf24' }}>⬇ 需要下载模型 ({ms.ready}/{ms.total} 已就绪)</span>
+                      <span style={{ color: '#fbbf24' }}>⬇ {t('personCrop.needDownload')} ({ms.ready}/{ms.total} {t('personCrop.ready')})</span>
                     )}
                   </div>
                   <button className="btn btn-secondary" onClick={downloadAll} disabled={downloading || ms.allReady}
                     style={{ height: 36, padding: '0 12px', gap: 6, display: 'flex', alignItems: 'center' }}>
                     {downloading ? <Loader2 style={{ width: 15, height: 15, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 15, height: 15 }} />}
-                    {downloading ? '下载中...' : '下载模型'}
+                    {downloading ? t('personCrop.downloading') : t('personCrop.downloadModel')}
                   </button>
                 </div>
                 <div style={{ marginTop: 6, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>
-                  来源: <a href="https://huggingface.co/deepghs" target="_blank" rel="noreferrer" style={{ color: '#818cf8' }}>deepghs</a> — 动漫专用检测模型，每种裁切类型使用独立的专用模型
+                  {t('personCrop.modelSource')} <a href="https://huggingface.co/deepghs" target="_blank" rel="noreferrer" style={{ color: '#818cf8' }}>deepghs</a> — {t('personCrop.modelSourceDesc')}
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
@@ -255,58 +257,58 @@ export default function PersonCropPage() {
 
           {/* 检测选项 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">检测选项</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('personCrop.detOptions')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-              {detCard(personEnabled, setPersonEnabled, <PersonStanding style={{ width: 18, height: 18 }} />, '全身检测', '#4ade80', 'rgba(74, 222, 128, ', 'person', <>
+              {detCard(personEnabled, setPersonEnabled, <PersonStanding style={{ width: 18, height: 18 }} />, t('personCrop.fullBody'), '#4ade80', 'rgba(74, 222, 128, ', 'person', <>
                 {confSlider(personConf, setPersonConf, '#4ade80')}
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(74, 222, 128, 0.06)', border: '1px solid rgba(74, 222, 128, 0.1)', marginTop: 8 }}>
                   <Info style={{ width: 13, height: 13, color: '#4ade80', marginTop: 2, minWidth: 13 }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>使用专用全身检测模型，精确检测动漫角色完整身体并裁切。</span>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('personCrop.fullBodyTip')}</span>
                 </div>
               </>)}
 
-              {detCard(upperEnabled, setUpperEnabled, <User style={{ width: 18, height: 18 }} />, '半身检测', '#818cf8', 'rgba(129, 140, 248, ', 'halfbody', <>
+              {detCard(upperEnabled, setUpperEnabled, <User style={{ width: 18, height: 18 }} />, t('personCrop.halfBody'), '#818cf8', 'rgba(129, 140, 248, ', 'halfbody', <>
                 {confSlider(upperConf, setUpperConf, '#818cf8')}
                 {tagInput(upperTag, setUpperTag, 'upper body')}
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(129, 140, 248, 0.06)', border: '1px solid rgba(129, 140, 248, 0.1)', marginTop: 8 }}>
                   <Info style={{ width: 13, height: 13, color: '#818cf8', marginTop: 2, minWidth: 13 }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>使用专用半身检测模型，直接检测上半身区域。</span>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('personCrop.halfBodyTip')}</span>
                 </div>
               </>)}
 
-              {detCard(headEnabled, setHeadEnabled, <CircleUser style={{ width: 18, height: 18 }} />, '头部检测', '#f59e0b', 'rgba(245, 158, 11, ', 'head', <>
+              {detCard(headEnabled, setHeadEnabled, <CircleUser style={{ width: 18, height: 18 }} />, t('personCrop.headDet'), '#f59e0b', 'rgba(245, 158, 11, ', 'head', <>
                 {confSlider(headConf, setHeadConf, '#f59e0b')}
                 <div className="form-group" style={{ marginTop: 8, marginBottom: 4 }}>
                   <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>缩放系数</span>
+                    <span>{t('personCrop.scaleFactor')}</span>
                     <span style={{ fontFamily: 'monospace', color: '#f59e0b', fontSize: 'var(--font-size-sm)' }}>{headScale.toFixed(1)}x</span>
                   </label>
                   <input type="range" min="1.0" max="3.0" step="0.1" value={headScale} onChange={(e) => setHeadScale(Number(e.target.value))}
                     style={{ width: '100%', accentColor: '#f59e0b' }} />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}><span>1.0x (仅头部)</span><span>3.0x (更多周围)</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}><span>1.0x {t('personCrop.headOnly')}</span><span>3.0x {t('personCrop.moreAround')}</span></div>
                 </div>
                 {tagInput(headTag, setHeadTag, 'head view')}
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(245, 158, 11, 0.06)', border: '1px solid rgba(245, 158, 11, 0.1)', marginTop: 8 }}>
                   <Info style={{ width: 13, height: 13, color: '#f59e0b', marginTop: 2, minWidth: 13 }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>检测头部后按缩放系数扩大裁切区域，值越大包含越多周围区域。</span>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('personCrop.headTip')}</span>
                 </div>
               </>)}
 
-              {detCard(eyesEnabled, setEyesEnabled, <Eye style={{ width: 18, height: 18 }} />, '眼部检测', '#f472b6', 'rgba(244, 114, 182, ', 'eyes', <>
+              {detCard(eyesEnabled, setEyesEnabled, <Eye style={{ width: 18, height: 18 }} />, t('personCrop.eyesDet'), '#f472b6', 'rgba(244, 114, 182, ', 'eyes', <>
                 {confSlider(eyesConf, setEyesConf, '#f472b6')}
                 <div className="form-group" style={{ marginTop: 8, marginBottom: 4 }}>
                   <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>缩放系数</span>
+                    <span>{t('personCrop.scaleFactor')}</span>
                     <span style={{ fontFamily: 'monospace', color: '#f472b6', fontSize: 'var(--font-size-sm)' }}>{eyesScale.toFixed(1)}x</span>
                   </label>
                   <input type="range" min="1.0" max="4.0" step="0.1" value={eyesScale} onChange={(e) => setEyesScale(Number(e.target.value))}
                     style={{ width: '100%', accentColor: '#f472b6' }} />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}><span>1.0x (仅眼部)</span><span>4.0x (更多周围)</span></div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}><span>1.0x {t('personCrop.eyesOnly')}</span><span>4.0x {t('personCrop.moreAround')}</span></div>
                 </div>
                 {tagInput(eyesTag, setEyesTag, 'eyes view')}
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(244, 114, 182, 0.06)', border: '1px solid rgba(244, 114, 182, 0.1)', marginTop: 8 }}>
                   <Info style={{ width: 13, height: 13, color: '#f472b6', marginTop: 2, minWidth: 13 }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>检测眼部后按缩放系数扩大裁切区域，值越大包含越多周围区域。</span>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('personCrop.eyesTip')}</span>
                 </div>
               </>)}
             </div>
@@ -314,16 +316,16 @@ export default function PersonCropPage() {
 
           {/* 其他选项 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">其他选项</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('personCrop.otherOptions')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                 <input type="checkbox" checked={keepOriginalTags} onChange={(e) => setKeepOriginalTags(e.target.checked)} style={{ accentColor: '#7c5cfc', width: 16, height: 16 }} />
-                <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-sm)' }}>保留原始标签</span>
+                <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-sm)' }}>{t('personCrop.keepTags')}</span>
               </label>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(124, 92, 252, 0.06)', border: '1px solid rgba(124, 92, 252, 0.1)' }}>
                 <Info style={{ width: 13, height: 13, color: '#7c5cfc', marginTop: 2, minWidth: 13 }} />
                 <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-                  勾选后会将原图的 .txt 标签内容一并复制到裁切后的标签文件中。
+                  {t('personCrop.keepTagsTip')}
                 </span>
               </div>
             </div>
@@ -334,7 +336,7 @@ export default function PersonCropPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!inputPath || !outputPath || !ms.allReady}
-            cancelCommand="cancel_person_crop" startText="开始裁切" processingText="处理中..."
+            cancelCommand="cancel_person_crop" startText={t('personCrop.startCrop')} processingText={t('pages.processing')}
             onCancelLog={addCancelLog} />
           <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
         </div>

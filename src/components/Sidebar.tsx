@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { invoke } from '@tauri-apps/api/core';
+import { useTranslation } from 'react-i18next';
 import {
   Home,
   Crop,
@@ -27,52 +28,53 @@ import {
 import '../styles/sidebar.css';
 import { getVersion } from '@tauri-apps/api/app';
 
-interface NavItem { id: string; label: string; icon: React.ReactNode; path: string; }
-interface NavSection { title: string; items: NavItem[]; }
+interface NavItem { id: string; labelKey: string; icon: React.ReactNode; path: string; }
+interface NavSection { titleKey: string; items: NavItem[]; }
 
-const homeItem: NavItem = { id: 'home', label: '首页', icon: <Home />, path: '/' };
+const homeItem: NavItem = { id: 'home', labelKey: 'sidebar.home', icon: <Home />, path: '/' };
 
 const navSections: NavSection[] = [
   {
-    title: '数据集预处理',
+    titleKey: 'sidebar.sectionPreprocess',
     items: [
-      { id: 'crop', label: '图片裁切', icon: <Crop />, path: '/crop' },
-      { id: 'person-crop', label: '三分法裁切', icon: <ScanFace />, path: '/person-crop' },
-      { id: 'scale', label: '图片缩放', icon: <Scaling />, path: '/scale' },
-      { id: 'flip', label: '图片处理', icon: <FlipHorizontal2 />, path: '/flip' },
-      { id: 'filter', label: '分辨率筛选', icon: <ScanSearch />, path: '/filter' },
-      { id: 'file-keeper', label: '保留指定文件', icon: <FileCheck2 />, path: '/file-keeper' },
-      { id: 'format-convert', label: '图片格式转换', icon: <FileType />, path: '/format-convert' },
-      { id: 'alpha-convert', label: '转换透明通道', icon: <Layers />, path: '/alpha-convert' },
-      { id: 'batch-rename', label: '批量重命名', icon: <TextCursorInput />, path: '/batch-rename' },
-      { id: 'perspective', label: '透视变换', icon: <Move3D />, path: '/perspective' },
-      { id: 'blur-noise', label: '模糊/噪点', icon: <Sparkles />, path: '/blur-noise' },
+      { id: 'crop', labelKey: 'sidebar.crop', icon: <Crop />, path: '/crop' },
+      { id: 'person-crop', labelKey: 'sidebar.personCrop', icon: <ScanFace />, path: '/person-crop' },
+      { id: 'scale', labelKey: 'sidebar.scale', icon: <Scaling />, path: '/scale' },
+      { id: 'flip', labelKey: 'sidebar.imageProcess', icon: <FlipHorizontal2 />, path: '/flip' },
+      { id: 'filter', labelKey: 'sidebar.filter', icon: <ScanSearch />, path: '/filter' },
+      { id: 'file-keeper', labelKey: 'sidebar.fileKeeper', icon: <FileCheck2 />, path: '/file-keeper' },
+      { id: 'format-convert', labelKey: 'sidebar.formatConvert', icon: <FileType />, path: '/format-convert' },
+      { id: 'alpha-convert', labelKey: 'sidebar.alphaConvert', icon: <Layers />, path: '/alpha-convert' },
+      { id: 'batch-rename', labelKey: 'sidebar.batchRename', icon: <TextCursorInput />, path: '/batch-rename' },
+      { id: 'perspective', labelKey: 'sidebar.perspective', icon: <Move3D />, path: '/perspective' },
+      { id: 'blur-noise', labelKey: 'sidebar.blurNoise', icon: <Sparkles />, path: '/blur-noise' },
     ],
   },
   {
-    title: '数据集处理',
+    titleKey: 'sidebar.sectionDataset',
     items: [
-      { id: 'tagger', label: '图片打标', icon: <Tags />, path: '/tagger' },
-      { id: 'tag-manager', label: '标签管理', icon: <List />, path: '/tag-manager' },
+      { id: 'tagger', labelKey: 'sidebar.tagger', icon: <Tags />, path: '/tagger' },
+      { id: 'tag-manager', labelKey: 'sidebar.tagManager', icon: <List />, path: '/tag-manager' },
     ],
   },
   {
-    title: '高级工具',
+    titleKey: 'sidebar.sectionAdvanced',
     items: [
-      { id: 'tag-sort', label: '标签排序', icon: <ArrowUpDown />, path: '/tag-sort' },
-      { id: 'bucket-preview', label: '分桶预览', icon: <Grid3X3 />, path: '/bucket-preview' },
-      { id: 'upscale', label: '图片超分', icon: <ZoomIn />, path: '/upscale' },
-      { id: 'image-cluster', label: '图片聚类', icon: <Network />, path: '/image-cluster' },
-      { id: 'image-dedup', label: '图片去重', icon: <Copy />, path: '/image-dedup' },
+      { id: 'tag-sort', labelKey: 'sidebar.tagSort', icon: <ArrowUpDown />, path: '/tag-sort' },
+      { id: 'bucket-preview', labelKey: 'sidebar.bucketPreview', icon: <Grid3X3 />, path: '/bucket-preview' },
+      { id: 'upscale', labelKey: 'sidebar.upscale', icon: <ZoomIn />, path: '/upscale' },
+      { id: 'image-cluster', labelKey: 'sidebar.imageCluster', icon: <Network />, path: '/image-cluster' },
+      { id: 'image-dedup', labelKey: 'sidebar.imageDedup', icon: <Copy />, path: '/image-dedup' },
     ],
   },
   {
-    title: '系统',
-    items: [{ id: 'settings', label: '设置', icon: <Settings />, path: '/settings' }],
+    titleKey: 'sidebar.sectionSystem',
+    items: [{ id: 'settings', labelKey: 'sidebar.settings', icon: <Settings />, path: '/settings' }],
   },
 ];
 
 export default function Sidebar() {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
   const [appVersion, setAppVersion] = useState('');
   // update status: 'checking' | 'latest' | 'update' | 'error'
@@ -93,10 +95,10 @@ export default function Sidebar() {
   }, []);
 
   const dotColor = updateStatus === 'latest' ? '#4ade80' : updateStatus === 'update' ? '#ef4444' : updateStatus === 'error' ? '#fbbf24' : 'var(--color-text-tertiary)';
-  const dotTitle = updateStatus === 'latest' ? '已是最新版本'
-    : updateStatus === 'update' ? `发现新版本 v${latestVersion}，点击前往下载`
-    : updateStatus === 'error' ? '更新检查失败，点击重试'
-    : '正在检查更新...';
+  const dotTitle = updateStatus === 'latest' ? t('sidebar.latestVersion')
+    : updateStatus === 'update' ? t('sidebar.newVersion', { version: latestVersion })
+    : updateStatus === 'error' ? t('sidebar.checkFailed')
+    : t('sidebar.checking');
 
   const handleVersionClick = () => {
     if (updateStatus === 'update' && releaseUrl) {
@@ -120,18 +122,18 @@ export default function Sidebar() {
             className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
             end>
             <span className="sidebar-item-icon">{homeItem.icon}</span>
-            <span className="sidebar-item-label">{homeItem.label}</span>
+            <span className="sidebar-item-label">{t(homeItem.labelKey)}</span>
           </NavLink>
         </div>
         {navSections.map((section) => (
-          <div key={section.title} className="sidebar-section">
-            <div className="sidebar-section-title">{section.title}</div>
+          <div key={section.titleKey} className="sidebar-section">
+            <div className="sidebar-section-title">{t(section.titleKey)}</div>
             {section.items.map((item) => (
               <NavLink key={item.id} to={item.path}
                 className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
                 end={item.path === '/'}>
                 <span className="sidebar-item-icon">{item.icon}</span>
-                <span className="sidebar-item-label">{item.label}</span>
+                <span className="sidebar-item-label">{t(item.labelKey)}</span>
               </NavLink>
             ))}
           </div>
@@ -143,7 +145,7 @@ export default function Sidebar() {
         <span>v{appVersion} · Release{updateStatus === 'update' ? ` → v${latestVersion}` : ''}</span>
       </div>
       <div className="sidebar-toggle">
-        <button className="sidebar-toggle-btn" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开菜单' : '折叠菜单'}><PanelLeftClose /><span className="sidebar-item-label">{collapsed ? '展开' : '收起'}</span></button>
+        <button className="sidebar-toggle-btn" onClick={() => setCollapsed(!collapsed)} title={collapsed ? t('sidebar.expandMenu') : t('sidebar.collapseMenu')}><PanelLeftClose /><span className="sidebar-item-label">{collapsed ? t('sidebar.expand') : t('sidebar.collapse')}</span></button>
       </div>
     </aside>
   );

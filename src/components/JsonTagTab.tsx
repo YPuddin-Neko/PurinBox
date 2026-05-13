@@ -7,6 +7,7 @@ import {
   FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,
   Image as ImageIcon, Loader2, RefreshCw, Tags, Sparkles, Eye, Shirt, TreePine, Lock, User, Layers, Languages
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 // 完整格式类型定义
 interface JsonFixed { quality?: string; series?: string; artist?: string; }
@@ -18,10 +19,10 @@ interface JsonImageItem { path: string; filename: string; data: JsonTagData; has
 interface JsonDataset { folder: string; images: JsonImageItem[]; detected_format: string; }
 
 type AiCatKey = 'appearance' | 'tags' | 'environment';
-const AI_CATS = [
-  { key: 'appearance' as const, label: '外观特征', icon: Shirt, color: '#c084fc', bg: 'rgba(192,132,252,0.08)', bd: 'rgba(192,132,252,0.25)' },
-  { key: 'tags' as const, label: '表情/动作/构图', icon: Tags, color: '#60a5fa', bg: 'rgba(96,165,250,0.08)', bd: 'rgba(96,165,250,0.25)' },
-  { key: 'environment' as const, label: '环境/背景', icon: TreePine, color: '#34d399', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' },
+const AI_CATS_KEYS = [
+  { key: 'appearance' as const, labelKey: 'jsonTag.appearance', icon: Shirt, color: '#c084fc', bg: 'rgba(192,132,252,0.08)', bd: 'rgba(192,132,252,0.25)' },
+  { key: 'tags' as const, labelKey: 'jsonTag.tags', icon: Tags, color: '#60a5fa', bg: 'rgba(96,165,250,0.08)', bd: 'rgba(96,165,250,0.25)' },
+  { key: 'environment' as const, labelKey: 'jsonTag.environment', icon: TreePine, color: '#34d399', bg: 'rgba(52,211,153,0.08)', bd: 'rgba(52,211,153,0.25)' },
 ] as const;
 const chipC: Record<AiCatKey, {bg:string;bd:string;tx:string}> = {
   appearance:{bg:'rgba(192,132,252,0.10)',bd:'rgba(192,132,252,0.25)',tx:'#c084fc'},
@@ -41,6 +42,7 @@ export interface JsonTagTabHandle {
 }
 
 const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref) {
+  const { t } = useTranslation();
   const [images,setImages]=useState<JsonImageItem[]>([]);
   const [selectedIdx,setSelectedIdx]=useState(-1);
   const [folderPath,setFolderPath]=useState('');
@@ -95,7 +97,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
   });
 
   const handleLoadFolder=useCallback(async()=>{
-    const sel=await dialogOpen({directory:true,multiple:false,title:'选择数据集文件夹'});
+    const sel=await dialogOpen({directory:true,multiple:false,title:t('jsonTag.selectFolder')});
     if(!sel)return; setLoading(true);
     try{const r=await invoke<JsonDataset>('load_json_dataset',{folder:sel as string});
       setImages(r.images.map(img=>({...img,data:safeData(img.data),dirty:false})));setSelectedIdx(r.images.length>0?0:-1);
@@ -191,7 +193,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
         });
         if(nlResult.translations[0]?.translated)setNlTranslation(nlResult.translations[0].translated);
       }
-    }catch(e){console.error('翻译失败:',e);}finally{setTranslating(false);}
+    }catch(e){console.error('translate failed:',e);}finally{setTranslating(false);}
   },[cur]);
 
 
@@ -295,15 +297,15 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
           {isOverAfter&&<div style={{position:'absolute',right:-3,top:2,bottom:2,width:2,borderRadius:1,background:'#7c5cfc',zIndex:1}} />}
         </div>
         );})}
-      {arr.length===0&&!editKey&&<span style={{fontSize:10,color:'var(--color-text-tertiary)',fontStyle:'italic',lineHeight:'24px'}}>未读取到标签数据</span>}
+      {arr.length===0&&!editKey&&<span style={{fontSize:10,color:'var(--color-text-tertiary)',fontStyle:'italic',lineHeight:'24px'}}>{t('jsonTag.noTagData')}</span>}
       {editKey&&onAdd&&(<>
-        {arr.length===0&&editingField!==editKey&&<span onClick={()=>setEditingField(editKey)} style={{fontSize:10,color:'var(--color-text-tertiary)',fontStyle:'italic',lineHeight:'24px',cursor:'pointer'}}>未读取到标签数据</span>}
+        {arr.length===0&&editingField!==editKey&&<span onClick={()=>setEditingField(editKey)} style={{fontSize:10,color:'var(--color-text-tertiary)',fontStyle:'italic',lineHeight:'24px',cursor:'pointer'}}>{t('jsonTag.noTagData')}</span>}
         {arr.length>0&&editingField!==editKey&&<button onClick={()=>setEditingField(editKey)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:18,height:18,borderRadius:'50%',background:cc.bg,border:`1px solid ${cc.bd}`,color:cc.tx,cursor:'pointer',flexShrink:0,opacity:0.5,transition:'opacity 0.15s'}}
           onMouseEnter={e=>e.currentTarget.style.opacity='1'} onMouseLeave={e=>e.currentTarget.style.opacity='0.5'}
         ><Plus style={{width:10,height:10}} /></button>}
         {editingField===editKey&&<TagAutocomplete
           autoFocus
-          placeholder="输入标签, Enter 添加"
+          placeholder={t('jsonTag.inputTag')}
           clearOnSelect={true}
           keepOpen={true}
           onSelect={(v) => { if(v.trim())onAdd(v.trim()); }}
@@ -324,18 +326,18 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
           <div style={{display:'flex',gap:4,marginBottom:6}}>
             <div style={{position:'relative',flex:1}}>
               <Search style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:13,height:13,color:'var(--color-text-tertiary)'}} />
-              <input className="form-input" placeholder="搜索..." value={searchText} onChange={e=>setSearchText(e.target.value)} style={{paddingLeft:28,fontSize:11,height:30}} />
+              <input className="form-input" placeholder={t('jsonTag.search')} value={searchText} onChange={e=>setSearchText(e.target.value)} style={{paddingLeft:28,fontSize:11,height:30}} />
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={!folderPath||loading} title="刷新" style={{width:30,height:30,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><RefreshCw style={{width:13,height:13,animation:loading?'spin 1s linear infinite':undefined}} /></button>
+            <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={!folderPath||loading} title={t('jsonTag.refresh')} style={{width:30,height:30,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><RefreshCw style={{width:13,height:13,animation:loading?'spin 1s linear infinite':undefined}} /></button>
           </div>
           <div style={{display:'flex',gap:4}}>
-            {[{k:'all' as const,l:'全部',n:images.length},{k:'untagged' as const,l:'空标',n:images.length-taggedN},{k:'tagged' as const,l:'已标',n:taggedN}].map(t=>(
-              <button key={t.k} onClick={()=>setFilterMode(t.k)} style={{flex:1,padding:'3px 0',borderRadius:6,fontSize:10,fontWeight:500,background:filterMode===t.k?'rgba(124,92,252,0.15)':'transparent',color:filterMode===t.k?'#a78bfa':'var(--color-text-tertiary)',border:filterMode===t.k?'1px solid rgba(124,92,252,0.25)':'1px solid transparent'}}>{t.l} {t.n}</button>
+            {[{k:'all' as const,l:t('jsonTag.filterAll'),n:images.length},{k:'untagged' as const,l:t('jsonTag.filterUntagged'),n:images.length-taggedN},{k:'tagged' as const,l:t('jsonTag.filterTagged'),n:taggedN}].map(f=>(
+              <button key={f.k} onClick={()=>setFilterMode(f.k)} style={{flex:1,padding:'3px 0',borderRadius:6,fontSize:10,fontWeight:500,background:filterMode===f.k?'rgba(124,92,252,0.15)':'transparent',color:filterMode===f.k?'#a78bfa':'var(--color-text-tertiary)',border:filterMode===f.k?'1px solid rgba(124,92,252,0.25)':'1px solid transparent'}}>{f.l} {f.n}</button>
             ))}
           </div>
         </div>
         <div style={{flex:1,overflowY:'auto',padding:6}}>
-          {images.length===0?(<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)'}}><FolderOpen style={{width:32,height:32,opacity:0.2}} /><span style={{fontSize:11,opacity:0.6}}>加载文件夹以开始</span></div>):(
+          {images.length===0?(<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)'}}><FolderOpen style={{width:32,height:32,opacity:0.2}} /><span style={{fontSize:11,opacity:0.6}}>{t('jsonTag.loadHint')}</span></div>):(
             <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4}}>
               {filtered.map(img=>{const sel=img._i===selectedIdx;const src=convertFileSrc(img.path);const total=img.data.ai_output.appearance.length+img.data.ai_output.tags.length+img.data.ai_output.environment.length+img.data.from_path.appearance.length;return(
                 <div key={img._i} onClick={()=>setSelectedIdx(img._i)} style={{position:'relative',aspectRatio:'1',borderRadius:8,overflow:'hidden',cursor:'pointer',border:`2px solid ${sel?'#7c5cfc':'transparent'}`,boxShadow:sel?'0 0 0 1px rgba(124,92,252,0.3)':'none',transition:'all 0.15s',background:'var(--color-bg-input)'}}>
@@ -346,11 +348,11 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
             </div>
           )}
         </div>
-        {images.length>0&&<div style={{padding:'6px 10px',borderTop:'1px solid var(--color-border)',fontSize:10,color:'var(--color-text-tertiary)',textAlign:'center'}}>{filtered.length===images.length?`${images.length} 张`:`${filtered.length} / ${images.length}`}</div>}
+        {images.length>0&&<div style={{padding:'6px 10px',borderTop:'1px solid var(--color-border)',fontSize:10,color:'var(--color-text-tertiary)',textAlign:'center'}}>{filtered.length===images.length?t('jsonTag.nImages',{n:images.length}):t('jsonTag.nOfTotal',{n:filtered.length,total:images.length})}</div>}
       </div>
 
       {/* resize handle 1 */}
-      <div onMouseDown={e=>handleColResize('col1',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title="拖拽调整宽度">
+      <div onMouseDown={e=>handleColResize('col1',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title={t('jsonTag.dragWidth')}>
         <div style={{width:2,height:32,borderRadius:1,background:'var(--color-border)',transition:'background 0.15s'}} />
       </div>
 
@@ -361,7 +363,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
           <div style={phdr}>
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <ImageIcon style={{width:14,height:14,color:'#7c5cfc'}} />
-              <span style={ptitle}>预览</span>
+              <span style={ptitle}>{t('jsonTag.preview')}</span>
               {cur&&<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontWeight:400}}>{cur.filename}</span>}
             </div>
             <div style={{display:'flex',alignItems:'center',gap:6}}>
@@ -372,12 +374,12 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
           </div>
           <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.15)',minHeight:0,overflow:'hidden'}}>
             {cur?<img src={imgSrc} alt={cur.filename} draggable={false} style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',pointerEvents:'none'}} />
-              :<div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:8,color:'var(--color-text-tertiary)'}}><ImageIcon style={{width:48,height:48,opacity:0.2}} /><span style={{fontSize:12,opacity:0.6}}>{images.length===0?'加载文件夹后显示图片':'选择图片以预览'}</span></div>}
+              :<div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:8,color:'var(--color-text-tertiary)'}}><ImageIcon style={{width:48,height:48,opacity:0.2}} /><span style={{fontSize:12,opacity:0.6}}>{images.length===0?t('jsonTag.loadToShow'):t('jsonTag.selectToPreview')}</span></div>}
           </div>
         </div>
 
         {/* row resize handle */}
-        <div onMouseDown={handleRowResize} style={{height:6,cursor:'row-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title="拖拽调整高度">
+        <div onMouseDown={handleRowResize} style={{height:6,cursor:'row-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title={t('jsonTag.dragHeight')}>
           <div style={{width:32,height:2,borderRadius:1,background:'var(--color-border)',transition:'background 0.15s'}} />
         </div>
 
@@ -386,20 +388,20 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
           <div style={phdr}>
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <Sparkles style={{width:14,height:14,color:'#22d3ee'}} />
-              <span style={ptitle}>JSON 标签编辑</span>
-              {images.length>0&&<span style={{fontSize:9,padding:'2px 8px',borderRadius:10,background:simplified?'rgba(34,197,94,0.15)':'rgba(99,102,241,0.15)',color:simplified?'#22c55e':'#818cf8',fontWeight:700,border:`1px solid ${simplified?'rgba(34,197,94,0.25)':'rgba(99,102,241,0.25)'}`}}>{simplified?'简化格式':'完整格式'}</span>}
+              <span style={ptitle}>{t('jsonTag.jsonEditor')}</span>
+              {images.length>0&&<span style={{fontSize:9,padding:'2px 8px',borderRadius:10,background:simplified?'rgba(34,197,94,0.15)':'rgba(99,102,241,0.15)',color:simplified?'#22c55e':'#818cf8',fontWeight:700,border:`1px solid ${simplified?'rgba(34,197,94,0.25)':'rgba(99,102,241,0.25)'}`}}>{simplified?'Simplified':'Full'}</span>}
             </div>
             <div style={{display:'flex',alignItems:'center',gap:6}}>
-              <button className="btn btn-ghost btn-sm" onClick={handleTranslate} disabled={!cur||translating} title="翻译标签" style={{gap:4,fontSize:10,height:24,padding:'0 8px',color:Object.keys(translations).length>0?'#60a5fa':undefined}}>
+              <button className="btn btn-ghost btn-sm" onClick={handleTranslate} disabled={!cur||translating} title={t('jsonTag.translateTags')} style={{gap:4,fontSize:10,height:24,padding:'0 8px',color:Object.keys(translations).length>0?'#60a5fa':undefined}}>
                 {translating?<Loader2 style={{width:10,height:10,animation:'spin 1s linear infinite'}} />:<Languages style={{width:10,height:10}} />}
               </button>
               <button className="btn btn-primary" style={{fontSize:10,gap:4,height:24,padding:'0 10px'}} disabled={!cur||!cur.dirty||savingSingle} onClick={handleSaveSingle}>
-                {savingSingle?<Loader2 style={{width:10,height:10,animation:'spin 1s linear infinite'}} />:<Save style={{width:10,height:10}} />} 保存
+                {savingSingle?<Loader2 style={{width:10,height:10,animation:'spin 1s linear infinite'}} />:<Save style={{width:10,height:10}} />} {t('jsonTag.save')}
               </button>
             </div>
           </div>
           <div style={{flex:1,overflowY:'auto',padding:'12px 14px',display:'flex',flexDirection:'column',gap:14}}>
-            {!cur?<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic'}}>选择图片以编辑标签</span>:(<>
+            {!cur?<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('jsonTag.selectToEdit')}</span>:(<>
               {/* 单值/多值chip辅助 — 逗号分隔自动拆分为多个chip */}
               {(()=>{
                 const fieldChips=(fieldKey:string,val:string|undefined,onSet:(v:string)=>void,onClear:()=>void,color:string,ph:string)=>{
@@ -453,7 +455,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
                         onKeyDown={(e) => { if (e.key === 'Escape') setEditingField(null); }}
                         inputStyle={{fontSize:11,height:24,border:'none',background:'transparent',padding:'0 4px',flex:1,minWidth:60,outline:'none',maxWidth:200}}
                       />
-                      :parts.length===0&&<span style={{fontSize:10,color:'var(--color-text-tertiary)',fontStyle:'italic',lineHeight:'24px'}}>未读取到标签数据</span>}
+                      :parts.length===0&&<span style={{fontSize:10,color:'var(--color-text-tertiary)',fontStyle:'italic',lineHeight:'24px'}}>{t('jsonTag.noTagData')}</span>}
                     </div>
                   );
                 };
@@ -462,19 +464,19 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
               <div style={{marginBottom:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:6}}>
                   <Lock style={{width:11,height:11,color:'#f59e0b'}} />
-                  <span style={{fontSize:10,fontWeight:700,color:'#f59e0b'}}>fixed — 固定字段（不参与随机排列）</span>
+                  <span style={{fontSize:10,fontWeight:700,color:'#f59e0b'}}>{t('jsonTag.fixedSection')}</span>
                 </div>
                 <div style={{marginBottom:6}}>
-                  <span style={{fontSize:9,fontWeight:600,color:'#f59e0b',opacity:0.7,marginBottom:2,display:'block'}}>quality — 画质标签</span>
-                  {fieldChips('f.quality',cur.data.fixed.quality,v=>updateData(d=>{d.fixed.quality=v;return d;}),()=>updateData(d=>{d.fixed.quality=undefined;return d;}),'#f59e0b','输入标签, Enter 添加')}
+                  <span style={{fontSize:9,fontWeight:600,color:'#f59e0b',opacity:0.7,marginBottom:2,display:'block'}}>{t('jsonTag.qualityLabel')}</span>
+                  {fieldChips('f.quality',cur.data.fixed.quality,v=>updateData(d=>{d.fixed.quality=v;return d;}),()=>updateData(d=>{d.fixed.quality=undefined;return d;}),'#f59e0b',t('jsonTag.inputTag'))}
                 </div>
                 <div style={{marginBottom:6}}>
-                  <span style={{fontSize:9,fontWeight:600,color:'#f59e0b',opacity:0.7,marginBottom:2,display:'block'}}>series — 系列/作品名</span>
-                  {fieldChips('f.series',cur.data.fixed.series,v=>updateData(d=>{d.fixed.series=v;return d;}),()=>updateData(d=>{d.fixed.series=undefined;return d;}),'#f59e0b','输入标签, Enter 添加')}
+                  <span style={{fontSize:9,fontWeight:600,color:'#f59e0b',opacity:0.7,marginBottom:2,display:'block'}}>{t('jsonTag.seriesLabel')}</span>
+                  {fieldChips('f.series',cur.data.fixed.series,v=>updateData(d=>{d.fixed.series=v;return d;}),()=>updateData(d=>{d.fixed.series=undefined;return d;}),'#f59e0b',t('jsonTag.inputTag'))}
                 </div>
                 <div>
-                  <span style={{fontSize:9,fontWeight:600,color:'#f59e0b',opacity:0.7,marginBottom:2,display:'block'}}>artist — 画师名</span>
-                  {fieldChips('f.artist',cur.data.fixed.artist,v=>updateData(d=>{d.fixed.artist=v;return d;}),()=>updateData(d=>{d.fixed.artist=undefined;return d;}),'#f59e0b','输入标签, Enter 添加')}
+                  <span style={{fontSize:9,fontWeight:600,color:'#f59e0b',opacity:0.7,marginBottom:2,display:'block'}}>{t('jsonTag.artistLabel')}</span>
+                  {fieldChips('f.artist',cur.data.fixed.artist,v=>updateData(d=>{d.fixed.artist=v;return d;}),()=>updateData(d=>{d.fixed.artist=undefined;return d;}),'#f59e0b',t('jsonTag.inputTag'))}
                 </div>
               </div>
 
@@ -482,15 +484,15 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
               <div style={{marginBottom:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:6}}>
                   <User style={{width:11,height:11,color:'#f472b6'}} />
-                  <span style={{fontSize:10,fontWeight:700,color:'#f472b6'}}>character — 角色信息</span>
+                  <span style={{fontSize:10,fontWeight:700,color:'#f472b6'}}>{t('jsonTag.characterSection')}</span>
                 </div>
                 <div style={{marginBottom:6}}>
-                  <span style={{fontSize:9,fontWeight:600,color:'#f472b6',opacity:0.7,marginBottom:2,display:'block'}}>name — 角色名称</span>
-                  {fieldChips('c.name',cur.data.character.name||undefined,v=>updateData(d=>{d.character.name=v;return d;}),()=>updateData(d=>{d.character.name='';return d;}),'#f472b6','输入标签, Enter 添加')}
+                  <span style={{fontSize:9,fontWeight:600,color:'#f472b6',opacity:0.7,marginBottom:2,display:'block'}}>{t('jsonTag.nameLabel')}</span>
+                  {fieldChips('c.name',cur.data.character.name||undefined,v=>updateData(d=>{d.character.name=v;return d;}),()=>updateData(d=>{d.character.name='';return d;}),'#f472b6',t('jsonTag.inputTag'))}
                 </div>
                 <div>
-                  <span style={{fontSize:9,fontWeight:600,color:'#f472b6',opacity:0.7,marginBottom:2,display:'block'}}>variant — 角色变体描述</span>
-                  {fieldChips('c.variant',cur.data.character.variant||undefined,v=>updateData(d=>{d.character.variant=v;return d;}),()=>updateData(d=>{d.character.variant='';return d;}),'#f472b6','输入标签, Enter 添加')}
+                  <span style={{fontSize:9,fontWeight:600,color:'#f472b6',opacity:0.7,marginBottom:2,display:'block'}}>{t('jsonTag.variantLabel')}</span>
+                  {fieldChips('c.variant',cur.data.character.variant||undefined,v=>updateData(d=>{d.character.variant=v;return d;}),()=>updateData(d=>{d.character.variant='';return d;}),'#f472b6',t('jsonTag.inputTag'))}
                 </div>
               </div>
 
@@ -498,7 +500,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
               <div style={{marginBottom:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:6}}>
                   <Layers style={{width:11,height:11,color:'#22d3ee'}} />
-                  <span style={{fontSize:10,fontWeight:700,color:'#22d3ee'}}>from_path — 从目录路径自动提取的外观标签</span>
+                  <span style={{fontSize:10,fontWeight:700,color:'#22d3ee'}}>{t('jsonTag.fromPathSection')}</span>
                   <span style={{fontSize:9,padding:'0 5px',borderRadius:6,background:'rgba(34,211,238,0.08)',color:'#22d3ee',fontWeight:600}}>{cur.data.from_path.appearance.length}</span>
                 </div>
                 <div style={{padding:'5px 8px',borderRadius:'var(--radius-md)',background:'rgba(34,211,238,0.06)',border:'1px solid rgba(34,211,238,0.15)'}}>
@@ -510,17 +512,17 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
               <div style={{marginBottom:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:6}}>
                   <Sparkles style={{width:11,height:11,color:'#818cf8'}} />
-                  <span style={{fontSize:10,fontWeight:700,color:'#818cf8'}}>ai_output — VLM 打标输出</span>
+                  <span style={{fontSize:10,fontWeight:700,color:'#818cf8'}}>{t('jsonTag.aiOutputSection')}</span>
                 </div>
                 <div style={{marginBottom:6}}>
-                  <span style={{fontSize:9,fontWeight:600,color:'#818cf8',opacity:0.7,marginBottom:2,display:'block'}}>count — 人物数量标签</span>
-                  {fieldChips('ai.count',cur.data.ai_output.count,v=>updateData(d=>{d.ai_output.count=v;return d;}),()=>updateData(d=>{d.ai_output.count=undefined;return d;}),'#818cf8','输入标签, Enter 添加')}
+                  <span style={{fontSize:9,fontWeight:600,color:'#818cf8',opacity:0.7,marginBottom:2,display:'block'}}>{t('jsonTag.countLabel')}</span>
+                  {fieldChips('ai.count',cur.data.ai_output.count,v=>updateData(d=>{d.ai_output.count=v;return d;}),()=>updateData(d=>{d.ai_output.count=undefined;return d;}),'#818cf8',t('jsonTag.inputTag'))}
                 </div>
-                {AI_CATS.map(cat=>{const Icon=cat.icon;const arr=cur.data.ai_output[cat.key]||[];const cc=chipC[cat.key];const editKey=`ai.${cat.key}`;return(
+                {AI_CATS_KEYS.map(cat=>{const Icon=cat.icon;const arr=cur.data.ai_output[cat.key]||[];const cc=chipC[cat.key];const editKey=`ai.${cat.key}`;return(
                   <div key={cat.key} style={{marginBottom:6}}>
                     <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:4}}>
                       <Icon style={{width:11,height:11,color:cat.color}} />
-                      <span style={{fontSize:10,fontWeight:600,color:cat.color}}>{cat.label}</span>
+                      <span style={{fontSize:10,fontWeight:600,color:cat.color}}>{t(cat.labelKey)}</span>
                       <span style={{fontSize:9,padding:'0 5px',borderRadius:6,background:cat.bg,color:cat.color,fontWeight:600}}>{arr.length}</span>
                     </div>
                     <div style={{padding:'5px 8px',borderRadius:'var(--radius-md)',background:cat.bg,border:`1px solid ${cat.bd}`}}>
@@ -535,7 +537,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
               <div>
                 <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:6}}>
                   <Eye style={{width:11,height:11,color:'#94a3b8'}} />
-                  <span style={{fontSize:10,fontWeight:700,color:'#94a3b8'}}>nl — 自然语言描述</span>
+                  <span style={{fontSize:10,fontWeight:700,color:'#94a3b8'}}>{t('jsonTag.nlSection')}</span>
                 </div>
                 <textarea className="form-input" value={cur.data.ai_output.nl||''} onChange={e=>updateData(d=>{d.ai_output.nl=e.target.value||undefined;return d;})} placeholder="A girl stands under the sky..." style={{fontSize:11,minHeight:56,resize:'vertical',lineHeight:1.6,borderRadius:8,padding:'6px 10px'}} />
               </div>
@@ -546,7 +548,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
       </div>
 
       {/* resize handle 2 */}
-      <div onMouseDown={e=>handleColResize('col3',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title="拖拽调整宽度">
+      <div onMouseDown={e=>handleColResize('col3',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title={t('jsonTag.dragWidth')}>
         <div style={{width:2,height:32,borderRadius:1,background:'var(--color-border)',transition:'background 0.15s'}} />
       </div>
 
@@ -555,11 +557,11 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
         <div style={phdr}>
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <Eye style={{width:14,height:14,color:'#60a5fa'}} />
-            <span style={ptitle}>标签内容</span>
+            <span style={ptitle}>{t('jsonTag.tagContent')}</span>
           </div>
         </div>
         <div style={{flex:1,overflowY:'auto',padding:'10px 12px',fontSize:11}}>
-          {!cur?<span style={{color:'var(--color-text-tertiary)',fontStyle:'italic'}}>选择图片以查看标签</span>:(()=>{
+          {!cur?<span style={{color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('jsonTag.selectToView')}</span>:(()=>{
             // 构建只含有效数据的JSON对象
             const d=cur.data;
             const clean=(obj:Record<string,any>)=>{const r:Record<string,any>={};for(const[k,v]of Object.entries(obj)){if(v!==undefined&&v!==null&&v!=='')r[k]=v;}return Object.keys(r).length?r:undefined;};
@@ -597,10 +599,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
             }
             return json?(
               <pre style={{margin:0,whiteSpace:'pre-wrap',wordBreak:'break-all',fontFamily:'"SF Mono","Fira Code","Cascadia Code",Menlo,Consolas,monospace',fontSize:10,lineHeight:1.7,color:'var(--color-text-primary)'}}>{JSON.stringify(json,null,2)}</pre>
-            ):(<span style={{color:'var(--color-text-tertiary)',fontStyle:'italic'}}>暂无标签数据</span>);
+            ):(<span style={{color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('jsonTag.noTagDataView')}</span>);
           })()}
           {nlTranslation&&<div style={{marginTop:8,padding:'6px 8px',borderRadius:6,background:'rgba(148,163,184,0.06)',border:'1px solid rgba(148,163,184,0.1)',fontSize:10,color:'var(--color-text-tertiary)',lineHeight:1.6}}>
-            <span style={{fontWeight:600}}>NL 翻译:</span> {nlTranslation}
+            <span style={{fontWeight:600}}>{t('jsonTag.nlTranslation')}:</span> {nlTranslation}
           </div>}
         </div>
       </div>

@@ -13,6 +13,7 @@ import {
 import NaturalLangTab from '../components/NaturalLangTab';
 import JsonTagTab, { type JsonTagTabHandle } from '../components/JsonTagTab';
 import TagAutocomplete from '../components/TagAutocomplete';
+import { useTranslation } from 'react-i18next';
 
 type ImageItem = { filename: string; path: string; tags: string[]; dirty: boolean; };
 type CaptionItem = { filename: string; path: string; caption: string; dirty: boolean; };
@@ -51,6 +52,7 @@ const phdr:React.CSSProperties={display:'flex',alignItems:'center',justifyConten
 const ptitle:React.CSSProperties={fontSize:12,fontWeight:700,color:'var(--color-text-primary)',textTransform:'uppercase',letterSpacing:'0.5px'};
 
 export default function TagManagerPage() {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<'danbooru' | 'natural' | 'json'>('danbooru');
   const [images, setImages] = useState<ImageItem[]>([]);
   const [nlImages, setNlImages] = useState<CaptionItem[]>([]);
@@ -182,8 +184,8 @@ export default function TagManagerPage() {
       setTranslateProgress({ current: allTags.length, total: allTags.length });
       hideTimerRef.current = setTimeout(() => { setShowTranslateBar(false); setTranslateProgress(null); }, 3000);
     } catch (e: any) {
-      console.error('翻译失败:', e);
-      setAlertMsg(`翻译失败:\n${e?.message || e}`);
+      console.error('translate failed:', e);
+      setAlertMsg(`${t('tagManager.translateFail')}:\n${e?.message || e}`);
       setShowTranslateBar(false);
       setTranslateProgress(null);
     } finally {
@@ -194,7 +196,7 @@ export default function TagManagerPage() {
 
   // ── load folder ──
   const handleLoadFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择数据集文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('tagManager.selectFolder') });
     if (!selected) return;
     setLoading(true);
     try {
@@ -490,9 +492,9 @@ export default function TagManagerPage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <List style={{ width: 28, height: 28, color: '#7c5cfc' }} />
-          <h1 className="page-title">标签管理</h1>
+          <h1 className="page-title">{t('tagManager.title')}</h1>
         </div>
-        <p className="page-subtitle">可视化编辑训练图片的标签文件，支持 Danbooru 标签和自然语言</p>
+        <p className="page-subtitle">{t('tagManager.subtitle')}</p>
       </div>
 
       {/* Tab Bar + Actions */}
@@ -509,31 +511,31 @@ export default function TagManagerPage() {
             transition: 'all 0.2s', fontFamily: 'inherit',
             background: mode==='danbooru' ? 'var(--color-accent-primary)' : 'transparent',
             color: mode==='danbooru' ? '#fff' : 'var(--color-text-tertiary)',
-          }}>Danbooru 格式 (TXT)</button>
+          }}>{t('tagManager.danbooruTab')}</button>
           <button onClick={()=>setMode('natural')} style={{
             padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
             cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
             transition: 'all 0.2s', fontFamily: 'inherit',
             background: mode==='natural' ? 'var(--color-accent-primary)' : 'transparent',
             color: mode==='natural' ? '#fff' : 'var(--color-text-tertiary)',
-          }}>自然语言格式 (TXT)</button>
+          }}>{t('tagManager.naturalTab')}</button>
           <button onClick={()=>setMode('json')} style={{
             padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
             cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
             transition: 'all 0.2s', fontFamily: 'inherit',
             background: mode==='json' ? 'var(--color-accent-primary)' : 'transparent',
             color: mode==='json' ? '#fff' : 'var(--color-text-tertiary)',
-          }}>Danbooru+自然语言 (JSON)</button>
+          }}>{t('tagManager.jsonTab')}</button>
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
           {mode!=='json'&&<button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={handleLoadFolder} disabled={loading}>
-            {loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {loading?'加载中...':'加载文件夹'}
+            {loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {loading?t('tagManager.loading'):t('tagManager.loadFolder')}
           </button>}
           {mode==='json'&&<button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={()=>jsonTabRef.current?.loadFolder()} disabled={jsonTabRef.current?.loading}>
-            {jsonTabRef.current?.loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {jsonTabRef.current?.loading?'加载中...':'加载文件夹'}
+            {jsonTabRef.current?.loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {jsonTabRef.current?.loading?t('tagManager.loading'):t('tagManager.loadFolder')}
           </button>}
           {mode==='danbooru'&&<button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={dirtyCount===0||saving} onClick={handleSaveAll}>
-            {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} 全部保存{dirtyCount>0?` (${dirtyCount})`:''}
+            {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{dirtyCount>0?` (${dirtyCount})`:''}
           </button>}
           {mode==='natural'&&(()=>{const nlDirty=nlImages.filter(i=>i.dirty).length;return(
             <button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={nlDirty===0||saving} onClick={async()=>{
@@ -544,12 +546,12 @@ export default function TagManagerPage() {
                 setNlImages(p=>p.map(img=>img.dirty?{...img,dirty:false}:img));
               }catch(e){console.error(e);}finally{setSaving(false);}
             }}>
-              {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} 全部保存{nlDirty>0?` (${nlDirty})`:''}
+              {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{nlDirty>0?` (${nlDirty})`:''}
             </button>
           );})()}
           {mode==='json'&&(()=>{const jd=jsonTabRef.current?.dirtyCount||0;return(
             <button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={jd===0||jsonTabRef.current?.saving} onClick={()=>jsonTabRef.current?.saveAll()}>
-              {jsonTabRef.current?.saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} 全部保存{jd>0?` (${jd})`:''}
+              {jsonTabRef.current?.saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{jd>0?` (${jd})`:''}
             </button>
           );})()}
         </div>
@@ -564,13 +566,13 @@ export default function TagManagerPage() {
             <div style={{display:'flex',gap:4,position:'relative',marginBottom:6}}>
               <div style={{position:'relative',flex:1}}>
                 <Search style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:13,height:13,color:'var(--color-text-tertiary)'}} />
-                <input className="form-input" placeholder="搜索..." value={searchText} onChange={e=>setSearchText(e.target.value)} style={{paddingLeft:28,fontSize:11,height:30}} />
+                <input className="form-input" placeholder={t('tagManager.search')} value={searchText} onChange={e=>setSearchText(e.target.value)} style={{paddingLeft:28,fontSize:11,height:30}} />
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={!folderPath||loading} title="刷新" style={{width:30,height:30,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><RefreshCw style={{width:13,height:13,animation:loading?'spin 1s linear infinite':undefined}} /></button>
+              <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={!folderPath||loading} title={t('tagManager.refresh')} style={{width:30,height:30,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><RefreshCw style={{width:13,height:13,animation:loading?'spin 1s linear infinite':undefined}} /></button>
             </div>
             <div style={{display:'flex',gap:4}}>
-              {([{k:'all' as const,l:'全部',n:images.length},{k:'untagged' as const,l:'空标',n:images.length-taggedN},{k:'tagged' as const,l:'已标',n:taggedN}]).map(t=>(
-                <button key={t.k} onClick={()=>setFilterMode(t.k)} style={{flex:1,padding:'3px 0',borderRadius:6,fontSize:10,fontWeight:500,background:filterMode===t.k?'rgba(124,92,252,0.15)':'transparent',color:filterMode===t.k?'#a78bfa':'var(--color-text-tertiary)',border:filterMode===t.k?'1px solid rgba(124,92,252,0.25)':'1px solid transparent'}}>{t.l} {t.n}</button>
+              {([{k:'all' as const,l:t('tagManager.filterAll'),n:images.length},{k:'untagged' as const,l:t('tagManager.filterUntagged'),n:images.length-taggedN},{k:'tagged' as const,l:t('tagManager.filterTagged'),n:taggedN}]).map(t2=>(
+                <button key={t2.k} onClick={()=>setFilterMode(t2.k)} style={{flex:1,padding:'3px 0',borderRadius:6,fontSize:10,fontWeight:500,background:filterMode===t2.k?'rgba(124,92,252,0.15)':'transparent',color:filterMode===t2.k?'#a78bfa':'var(--color-text-tertiary)',border:filterMode===t2.k?'1px solid rgba(124,92,252,0.25)':'1px solid transparent'}}>{t2.l} {t2.n}</button>
               ))}
             </div>
           </div>
@@ -578,7 +580,7 @@ export default function TagManagerPage() {
             {images.length===0?(
               <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)'}}>
                 <FolderOpen style={{width:32,height:32,opacity:0.2}} />
-                <span style={{fontSize:11,opacity:0.6}}>加载文件夹以开始</span>
+                <span style={{fontSize:11,opacity:0.6}}>{t('tagManager.loadFolderHint')}</span>
               </div>
             ):(
               <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4}}>
@@ -591,11 +593,11 @@ export default function TagManagerPage() {
               </div>
             )}
           </div>
-          {images.length>0&&<div style={{padding:'6px 10px',borderTop:'1px solid var(--color-border)',fontSize:10,color:'var(--color-text-tertiary)',textAlign:'center'}}>{filtered.length===images.length?`${images.length} 张`:`${filtered.length} / ${images.length}`}</div>}
+          {images.length>0&&<div style={{padding:'6px 10px',borderTop:'1px solid var(--color-border)',fontSize:10,color:'var(--color-text-tertiary)',textAlign:'center'}}>{filtered.length===images.length?t('tagManager.nImages',{n:images.length}):t('tagManager.nOfTotal',{n:filtered.length,total:images.length})}</div>}
         </div>
 
         {/* resize handle 1 */}
-        <div onMouseDown={e=>handleResizeStart('col1',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title="拖拽调整宽度">
+        <div onMouseDown={e=>handleResizeStart('col1',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title={t('tagManager.dragWidth')}>
           <div style={{width:2,height:32,borderRadius:1,background:'var(--color-border)',transition:'background 0.15s'}} />
         </div>
 
@@ -606,7 +608,7 @@ export default function TagManagerPage() {
             <div style={phdr}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <ImageIcon style={{width:14,height:14,color:'#7c5cfc'}} />
-                <span style={ptitle}>预览</span>
+                <span style={ptitle}>{t('tagManager.preview')}</span>
                 {cur&&<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontWeight:400}}>{cur.filename}</span>}
               </div>
               {images.length>0&&(
@@ -623,14 +625,14 @@ export default function TagManagerPage() {
               ):(
                 <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:8,color:'var(--color-text-tertiary)'}}>
                   <ImageIcon style={{width:56,height:56,opacity:0.2}} />
-                  <span style={{fontSize:12,opacity:0.6}}>{images.length===0?'加载文件夹后显示图片':'选择图片以预览'}</span>
+                  <span style={{fontSize:12,opacity:0.6}}>{images.length===0?t('tagManager.loadToShowImg'):t('tagManager.selectToPreview')}</span>
                 </div>
               )}
             </div>
           </div>
 
           {/* row resize handle */}
-          <div onMouseDown={handleRowResizeStart} style={{height:6,cursor:'row-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title="拖拽调整高度">
+          <div onMouseDown={handleRowResizeStart} style={{height:6,cursor:'row-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title={t('tagManager.dragHeight')}>
             <div style={{width:32,height:2,borderRadius:1,background:'var(--color-border)',transition:'background 0.15s'}} />
           </div>
 
@@ -639,11 +641,11 @@ export default function TagManagerPage() {
             <div style={phdr}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <Tags style={{width:14,height:14,color:'#4ade80'}} />
-                <span style={ptitle}>图片标签</span>
+                <span style={ptitle}>{t('tagManager.imageTags')}</span>
                 <span style={{fontSize:10,padding:'1px 8px',borderRadius:10,background:cur?.dirty?'rgba(239,68,68,0.1)':'rgba(74,222,128,0.1)',color:cur?.dirty?'#ef4444':'#4ade80',fontWeight:600}}>{cur?.tags.length||0}</span>
               </div>
               <button className="btn btn-primary" style={{fontSize:10,gap:4,height:24,padding:'0 10px'}} disabled={!cur||!cur.dirty||savingSingle} onClick={handleSaveSingle}>
-                {savingSingle?<Loader2 style={{width:10,height:10,animation:'spin 1s linear infinite'}} />:<Save style={{width:10,height:10}} />} 保存
+                {savingSingle?<Loader2 style={{width:10,height:10,animation:'spin 1s linear infinite'}} />:<Save style={{width:10,height:10}} />} {t('tagManager.save')}
               </button>
             </div>
             <div style={{flex:1,padding:'10px 14px',display:'flex',flexWrap:'wrap',gap:5,alignContent:'flex-start',overflowY:'auto',touchAction:'none'}}
@@ -668,14 +670,14 @@ export default function TagManagerPage() {
                   </div>
                 );
               })}
-              {!cur&&<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic'}}>选择图片以编辑标签</span>}
-              {cur&&cur.tags.length===0&&!editingDanbooru&&<span onClick={()=>setEditingDanbooru(true)} style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic',cursor:'pointer'}}>暂无标签，点击添加标签</span>}
+              {!cur&&<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('tagManager.selectToEdit')}</span>}
+              {cur&&cur.tags.length===0&&!editingDanbooru&&<span onClick={()=>setEditingDanbooru(true)} style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic',cursor:'pointer'}}>{t('tagManager.noTagsClick')}</span>}
               {cur&&(cur.tags.length>0)&&!editingDanbooru&&<button onClick={()=>setEditingDanbooru(true)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:20,height:20,borderRadius:'50%',background:'rgba(74,222,128,0.10)',border:'1px solid rgba(74,222,128,0.25)',color:'#4ade80',cursor:'pointer',flexShrink:0,opacity:0.5,transition:'opacity 0.15s'}}
                 onMouseEnter={e=>e.currentTarget.style.opacity='1'} onMouseLeave={e=>e.currentTarget.style.opacity='0.5'}
               ><Plus style={{width:11,height:11}} /></button>}
               {cur&&editingDanbooru&&<TagAutocomplete
                 autoFocus
-                placeholder="输入标签, Enter 添加"
+                placeholder={t('tagManager.inputTagPlaceholder')}
                 clearOnSelect={true}
                 keepOpen={true}
                 onSelect={(tag) => {
@@ -693,7 +695,7 @@ export default function TagManagerPage() {
         </div>
 
         {/* resize handle 2 */}
-        <div onMouseDown={e=>handleResizeStart('col3',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title="拖拽调整宽度">
+        <div onMouseDown={e=>handleResizeStart('col3',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title={t('tagManager.dragWidth')}>
           <div style={{width:2,height:32,borderRadius:1,background:'var(--color-border)',transition:'background 0.15s'}} />
         </div>
 
@@ -704,15 +706,15 @@ export default function TagManagerPage() {
             <div style={phdr}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <BarChart3 style={{width:14,height:14,color:'#60a5fa'}} />
-                <span style={ptitle}>{tagListMode==='common'?'公共标签':'全部标签'}</span>
+                <span style={ptitle}>{tagListMode==='common'?t('tagManager.commonTags'):t('tagManager.allTags')}</span>
                 <span style={{fontSize:10,padding:'1px 8px',borderRadius:10,background:'rgba(96,165,250,0.1)',color:'#60a5fa',fontWeight:600}}>{filteredStats.length}</span>
               </div>
               <div style={{display:'flex',alignItems:'center',gap:4}}>
-                <button className="btn btn-ghost btn-sm" title="翻译标签" style={{width:22,height:22,padding:0,display:'flex',alignItems:'center',justifyContent:'center',color:Object.keys(translations).length>0?'#60a5fa':undefined}} onClick={handleTranslate} disabled={images.length===0||localStorage.getItem('translate_enabled')!=='true'||translating}>
+                <button className="btn btn-ghost btn-sm" title={t('tagManager.translateTags')} style={{width:22,height:22,padding:0,display:'flex',alignItems:'center',justifyContent:'center',color:Object.keys(translations).length>0?'#60a5fa':undefined}} onClick={handleTranslate} disabled={images.length===0||localStorage.getItem('translate_enabled')!=='true'||translating}>
                   <Languages style={{width:12,height:12}} />
                 </button>
                 <button className="btn btn-ghost btn-sm" style={{fontSize:9,height:22,padding:'0 6px'}} onClick={()=>setTagListMode(m=>m==='all'?'common':'all')} disabled={images.length===0}>
-                  {tagListMode==='all'?'公共':'全部'}
+                  {tagListMode==='all'?t('tagManager.commonLabel'):t('tagManager.allLabel')}
                 </button>
               </div>
             </div>
@@ -720,15 +722,15 @@ export default function TagManagerPage() {
               <div style={{display:'flex',gap:4}}>
                 <div style={{position:'relative',flex:1}}>
                   <Search style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:12,height:12,color:'var(--color-text-tertiary)'}} />
-                  <input className="form-input" placeholder="搜索标签..." value={globalSearch} onChange={e=>setGlobalSearch(e.target.value)} style={{paddingLeft:26,fontSize:11,height:28}} />
+                  <input className="form-input" placeholder={t('tagManager.searchTags')} value={globalSearch} onChange={e=>setGlobalSearch(e.target.value)} style={{paddingLeft:26,fontSize:11,height:28}} />
                 </div>
                 <button className="btn btn-ghost btn-sm" onClick={()=>setTagSortBy(b=>b==='freq'?'name':'freq')}
-                  title={tagSortBy==='freq'?'按频次排序':'按名称排序'}
+                  title={tagSortBy==='freq'?t('tagManager.sortByFreq'):t('tagManager.sortByName')}
                   style={{width:28,height:28,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:tagSortBy==='freq'?'#60a5fa':'#a78bfa'}}>
                   {tagSortBy==='freq'?<BarChart style={{width:13,height:13}} />:<Hash style={{width:13,height:13}} />}
                 </button>
                 <button className="btn btn-ghost btn-sm" onClick={()=>setTagSortDir(d=>d==='desc'?'asc':'desc')}
-                  title={tagSortDir==='desc'?'降序':'升序'}
+                  title={tagSortDir==='desc'?t('tagManager.descOrder'):t('tagManager.ascOrder')}
                   style={{width:28,height:28,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:'var(--color-text-tertiary)'}}>
                   <ArrowUpDown style={{width:13,height:13,transform:tagSortDir==='asc'?'scaleY(-1)':undefined,transition:'transform 0.2s'}} />
                 </button>
@@ -736,7 +738,7 @@ export default function TagManagerPage() {
             </div>
             {tagFilterActive&&<div style={{padding:'4px 10px',background:'linear-gradient(90deg,rgba(124,92,252,0.08),rgba(124,92,252,0.02))',borderBottom:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:6}}>
               <Filter style={{width:10,height:10,color:'#7c5cfc',flexShrink:0}} />
-              <span style={{fontSize:10,color:'#a78bfa',flex:1}}>筛选中 <b>{filtered.length}</b>/{images.length}</span>
+              <span style={{fontSize:10,color:'#a78bfa',flex:1}}>{t('tagManager.filtering')} <b>{filtered.length}</b>/{images.length}</span>
               <button onClick={()=>setTagFilterActive(false)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:16,height:16,borderRadius:'50%',background:'rgba(248,113,113,0.1)',border:'none',cursor:'pointer',color:'#f87171',padding:0,flexShrink:0}}><X style={{width:8,height:8}} /></button>
             </div>}
             <div style={{flex:1,overflowY:'auto',userSelect:'none'}}>
@@ -765,16 +767,16 @@ export default function TagManagerPage() {
                   </div>
                 );
               })}
-              {images.length===0&&<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)',padding:20}}><Tags style={{width:28,height:28,opacity:0.2}} /><span style={{fontSize:11,opacity:0.6}}>加载数据集后显示标签</span></div>}
-              {images.length>0&&filteredStats.length===0&&<div style={{padding:20,textAlign:'center',fontSize:11,color:'var(--color-text-tertiary)'}}>{globalSearch?'无匹配标签':tagListMode==='common'?'无公共标签':'暂无标签数据'}</div>}
+              {images.length===0&&<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)',padding:20}}><Tags style={{width:28,height:28,opacity:0.2}} /><span style={{fontSize:11,opacity:0.6}}>{t('tagManager.loadTagsHint')}</span></div>}
+              {images.length>0&&filteredStats.length===0&&<div style={{padding:20,textAlign:'center',fontSize:11,color:'var(--color-text-tertiary)'}}>{globalSearch?t('tagManager.noMatch'):tagListMode==='common'?t('tagManager.commonTags'):t('tagManager.noTags')}</div>}
             </div>
             <div style={{padding:'6px 12px',borderTop:'1px solid var(--color-border)',fontSize:10,color:'var(--color-text-tertiary)',display:'flex',justifyContent:'space-between'}}>
-              {selectedTags.size>0?<span style={{color:'#a78bfa'}}>已选 {selectedTags.size} 个</span>:<span>{tagStats.length} 种标签</span>}
-              <span>{taggedN}/{images.length} 已标注</span>
+              {selectedTags.size>0?<span style={{color:'#a78bfa'}}>{t('tagManager.selected',{n:selectedTags.size})}</span>:<span>{t('tagManager.nTagTypes',{n:tagStats.length})}</span>}
+              <span>{taggedN}/{images.length} {t('tagManager.tagged')}</span>
             </div>
             {showTranslateBar && translateProgress && (
               <div style={{padding:'5px 12px',borderTop:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:8,background:'rgba(96,165,250,0.04)'}}>
-                <span style={{fontSize:10,fontWeight:600,color:'#60a5fa',flexShrink:0}}>翻译进度</span>
+                <span style={{fontSize:10,fontWeight:600,color:'#60a5fa',flexShrink:0}}>{t('tagManager.translateProgress')}</span>
                 <div style={{flex:1,height:3,borderRadius:2,background:'var(--color-border)',overflow:'hidden'}}>
                   <div style={{
                     width:`${translateProgress.total > 0 ? (translateProgress.current / translateProgress.total) * 100 : 0}%`,
@@ -793,12 +795,12 @@ export default function TagManagerPage() {
           {/* 工具栏 */}
           <div style={{display:'flex',flexDirection:'column',gap:2,padding:'8px 4px',borderLeft:'1px solid var(--color-border)',alignItems:'center'}}>
             {[
-              {icon:<Filter style={{width:14,height:14}} />,tip:'按选中标签筛选图片（支持选中多个标签筛选）',onClick:()=>setTagFilterActive(v=>!v),disabled:images.length===0,color:tagFilterActive?'#7c5cfc':undefined},
-              {icon:<Replace style={{width:14,height:14}} />,tip:'替换标签',onClick:()=>{setShowReplaceModal(true);if(selectedTags.size===1)setReplaceFrom([...selectedTags][0]);},disabled:images.length===0},
-              {icon:<ListPlus style={{width:14,height:14}} />,tip:'批量添加标签',onClick:()=>setShowAddModal(true),disabled:images.length===0},
-              {icon:<Trash2 style={{width:14,height:14}} />,tip:'删除选中标签(全部图片)',onClick:handleBatchDelete,disabled:selectedTags.size===0,color:selectedTags.size>0?'#f87171':undefined},
-              {icon:<PlusCircle style={{width:14,height:14}} />,tip:'添加选中标签到当前图片',onClick:addSelectedToCurrent,disabled:!cur||selectedTags.size===0},
-              {icon:<MinusCircle style={{width:14,height:14}} />,tip:'从当前图片移除选中标签',onClick:removeSelectedFromCurrent,disabled:!cur||selectedTags.size===0||!curHasAllSelected,color:curHasAllSelected&&selectedTags.size>0?'#f87171':undefined},
+              {icon:<Filter style={{width:14,height:14}} />,tip:t('tagManager.filterByTag'),onClick:()=>setTagFilterActive(v=>!v),disabled:images.length===0,color:tagFilterActive?'#7c5cfc':undefined},
+              {icon:<Replace style={{width:14,height:14}} />,tip:t('tagManager.replaceTag'),onClick:()=>{setShowReplaceModal(true);if(selectedTags.size===1)setReplaceFrom([...selectedTags][0]);},disabled:images.length===0},
+              {icon:<ListPlus style={{width:14,height:14}} />,tip:t('tagManager.batchAdd'),onClick:()=>setShowAddModal(true),disabled:images.length===0},
+              {icon:<Trash2 style={{width:14,height:14}} />,tip:t('tagManager.deleteSelected'),onClick:handleBatchDelete,disabled:selectedTags.size===0,color:selectedTags.size>0?'#f87171':undefined},
+              {icon:<PlusCircle style={{width:14,height:14}} />,tip:t('tagManager.addToCurrent'),onClick:addSelectedToCurrent,disabled:!cur||selectedTags.size===0},
+              {icon:<MinusCircle style={{width:14,height:14}} />,tip:t('tagManager.removeFromCurrent'),onClick:removeSelectedFromCurrent,disabled:!cur||selectedTags.size===0||!curHasAllSelected,color:curHasAllSelected&&selectedTags.size>0?'#f87171':undefined},
             ].map((item,i)=>(
               <button key={i} className="btn btn-ghost" title={item.tip} disabled={item.disabled}
                 onClick={item.onClick}
@@ -822,26 +824,26 @@ export default function TagManagerPage() {
       {/* ═ 批量添加弹窗 ═ */}
       {showAddModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setShowAddModal(false)}>
         <div style={{background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',padding:20,width:380,maxWidth:'90vw'}} onClick={e=>e.stopPropagation()}>
-          <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>批量添加标签</h3>
-          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>标签内容（逗号分隔）</label>
+          <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>{t('tagManager.batchAddTitle')}</h3>
+          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>{t('tagManager.tagContent')}</label>
           <input className="form-input" placeholder="1girl, solo, smile" value={addTagInput}
             onChange={e=>setAddTagInput(e.target.value)}
             style={{fontSize:12,marginBottom:12}} />
           <div style={{display:'flex',gap:12,marginBottom:12}}>
             <label style={{fontSize:11,color:'var(--color-text-secondary)',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}>
-              <input type="radio" checked={addPosition==='start'} onChange={()=>setAddPosition('start')} /> 最前面
+              <input type="radio" checked={addPosition==='start'} onChange={()=>setAddPosition('start')} /> {t('tagManager.prepend')}
             </label>
             <label style={{fontSize:11,color:'var(--color-text-secondary)',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}>
-              <input type="radio" checked={addPosition==='end'} onChange={()=>setAddPosition('end')} /> 最后面
+              <input type="radio" checked={addPosition==='end'} onChange={()=>setAddPosition('end')} /> {t('tagManager.append')}
             </label>
           </div>
           <label style={{fontSize:11,color:'var(--color-text-secondary)',display:'flex',alignItems:'center',gap:4,cursor:'pointer',marginBottom:16}}>
             <input type="checkbox" checked={addOverwrite} onChange={e=>setAddOverwrite(e.target.checked)} />
-            如果标签已存在，先移除再添加到指定位置
+            {t('tagManager.overwriteIfExist')}
           </label>
           <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
-            <button className="btn btn-secondary" style={{height:30,fontSize:11}} onClick={()=>setShowAddModal(false)}>取消</button>
-            <button className="btn btn-primary" style={{height:30,fontSize:11}} onClick={handleBatchAdd} disabled={!addTagInput.trim()}>添加到全部图片</button>
+            <button className="btn btn-secondary" style={{height:30,fontSize:11}} onClick={()=>setShowAddModal(false)}>{t('tagManager.cancel')}</button>
+            <button className="btn btn-primary" style={{height:30,fontSize:11}} onClick={handleBatchAdd} disabled={!addTagInput.trim()}>{t('tagManager.addToAll')}</button>
           </div>
         </div>
       </div>}
@@ -849,10 +851,10 @@ export default function TagManagerPage() {
       {/* ═ 替换弹窗 ═ */}
       {showReplaceModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>{setShowReplaceModal(false);setReplaceDropOpen(false);}}>
         <div style={{background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',padding:20,width:380,maxWidth:'90vw'}} onClick={e=>e.stopPropagation()}>
-          <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>标签替换</h3>
-          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>原标签</label>
+          <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>{t('tagManager.replaceTitle')}</h3>
+          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>{t('tagManager.originalTag')}</label>
           <div style={{position:'relative',marginBottom:10}}>
-            <input className="form-input" placeholder="搜索并选择原标签..." value={replaceDropOpen ? replaceSearch : replaceFrom}
+            <input className="form-input" placeholder={t('tagManager.searchAndSelect')} value={replaceDropOpen ? replaceSearch : replaceFrom}
               onFocus={()=>{setReplaceDropOpen(true);setReplaceSearch('');}}
               onChange={e=>{setReplaceSearch(e.target.value);setReplaceDropOpen(true);}}
               style={{fontSize:12}} />
@@ -878,18 +880,18 @@ export default function TagManagerPage() {
                     </div>
                   ))}
                 {tagStats.filter(([tag])=>!replaceSearch || tag.includes(replaceSearch.toLowerCase())).length===0 && (
-                  <div style={{padding:'12px 10px',fontSize:11,color:'var(--color-text-tertiary)',textAlign:'center'}}>无匹配标签</div>
+                  <div style={{padding:'12px 10px',fontSize:11,color:'var(--color-text-tertiary)',textAlign:'center'}}>{t('tagManager.noMatch')}</div>
                 )}
               </div>
             )}
           </div>
-          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>替换为</label>
-          <input className="form-input" placeholder="新标签" value={replaceTo}
+          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>{t('tagManager.replaceTo')}</label>
+          <input className="form-input" placeholder={t('tagManager.newTag')} value={replaceTo}
             onChange={e=>setReplaceTo(e.target.value)}
             style={{fontSize:12,marginBottom:16}} />
           <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
-            <button className="btn btn-secondary" style={{height:30,fontSize:11}} onClick={()=>{setShowReplaceModal(false);setReplaceDropOpen(false);}}>取消</button>
-            <button className="btn btn-primary" style={{height:30,fontSize:11}} onClick={handleReplace} disabled={!replaceFrom.trim()||!replaceTo.trim()}>替换全部</button>
+            <button className="btn btn-secondary" style={{height:30,fontSize:11}} onClick={()=>{setShowReplaceModal(false);setReplaceDropOpen(false);}}>{t('tagManager.cancel')}</button>
+            <button className="btn btn-primary" style={{height:30,fontSize:11}} onClick={handleReplace} disabled={!replaceFrom.trim()||!replaceTo.trim()}>{t('tagManager.replaceAll')}</button>
           </div>
         </div>
       </div>}
@@ -898,7 +900,7 @@ export default function TagManagerPage() {
       <AlertModal
         open={!!alertMsg}
         onClose={() => setAlertMsg('')}
-        title="错误"
+        title={t('tagManager.errorTitle')}
         message={alertMsg}
       />
     </>

@@ -1,24 +1,26 @@
 import { useState } from 'react';
 import { Tags } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import AiTaggerTab from '../components/AiTaggerTab';
 import LlmTaggerTab from '../components/LlmTaggerTab';
 
-const tabs = [
-  { id: 'ai', label: 'Tagger 模型打标' },
-  { id: 'llm', label: 'LLM 模型打标' },
-];
-
 export default function TaggerPage() {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState('ai');
+
+  const tabs = [
+    { id: 'ai', label: t('tagger.aiTab') },
+    { id: 'llm', label: t('tagger.llmTab') },
+  ];
 
   return (
     <div className="page">
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <Tags style={{ width: 28, height: 28, color: '#f59e0b' }} />
-          <h1 className="page-title">图片打标</h1>
+          <h1 className="page-title">{t('tagger.title')}</h1>
         </div>
-        <p className="page-subtitle">使用 Tagger 模型或大语言模型自动为训练图片生成文本标签</p>
+        <p className="page-subtitle">{t('tagger.subtitle')}</p>
       </div>
 
       {/* Tab Bar */}

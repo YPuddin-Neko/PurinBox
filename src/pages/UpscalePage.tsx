@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
+import { useTranslation } from 'react-i18next';
 import {
   ZoomIn,
   FolderOpen,
@@ -32,6 +33,7 @@ interface DownloadProgress {
 }
 
 export default function UpscalePage() {
+  const { t } = useTranslation();
   const { addTask, updateTask } = useTaskQueue();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
@@ -115,11 +117,11 @@ export default function UpscalePage() {
   }, []);
 
   const selectInputFolder = async () => {
-    const p = await open({ directory: true, title: '选择输入文件夹' });
+    const p = await open({ directory: true, title: t('pages.selectInputTitle') });
     if (p) setInputPath(p as string);
   };
   const selectOutputFolder = async () => {
-    const p = await open({ directory: true, title: '选择输出文件夹' });
+    const p = await open({ directory: true, title: t('pages.selectOutputTitle') });
     if (p) setOutputPath(p as string);
   };
 
@@ -131,14 +133,14 @@ export default function UpscalePage() {
       await invoke('download_upscale_engine', { engineId: engine.id });
     } catch (e: any) {
       setDownloading(false);
-      setLogs(p => [...p, { time: getTimeStr(), message: `下载失败: ${String(e)}`, status: 'error' }]);
+      setLogs(p => [...p, { time: getTimeStr(), message: `${t('upscale.downloadFailed')}: ${String(e)}`, status: 'error' }]);
     }
   };
 
   const handleProcess = async () => {
     if (!engine || !engine.downloaded || !inputPath || !outputPath) return;
     setProcessing(true); setIsDone(false); setHasError(false); setProgress(0);
-    addTask('upscale', '图片超分');
+    addTask('upscale', t('upscale.taskName'));
     try {
       await invoke<ProcessResult>('start_upscale', {
         options: {
@@ -155,7 +157,7 @@ export default function UpscalePage() {
       });
     } catch (e: any) {
       setProcessing(false); setHasError(true);
-      setLogs(p => [...p, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs(p => [...p, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       updateTask('upscale', { status: 'error', message: String(e) });
     }
   };
@@ -165,9 +167,9 @@ export default function UpscalePage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <ZoomIn style={{ width: 28, height: 28, color: '#22d3ee' }} />
-          <h1 className="page-title">图片超分</h1>
+          <h1 className="page-title">{t('upscale.title')}</h1>
         </div>
-        <p className="page-subtitle">使用专门的超分模型放大图片分辨率</p>
+        <p className="page-subtitle">{t('upscale.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
@@ -176,19 +178,19 @@ export default function UpscalePage() {
 
           {/* 路径设置 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">路径设置</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">输入路径（文件夹）</label>
+                <label className="form-label">{t('pages.inputPathShort')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择包含图片的文件夹..." value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
               <div className="form-group">
-                <label className="form-label">输出路径</label>
+                <label className="form-label">{t('pages.outputPath')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择输出文件夹..." value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
@@ -198,7 +200,7 @@ export default function UpscalePage() {
           {/* 超分引擎 */}
           <div className="tool-panel">
             <div className="tool-panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span className="tool-panel-title">超分引擎</span>
+              <span className="tool-panel-title">{t('upscale.engine')}</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                 {([{ val: false, label: 'CPU', icon: <Cpu style={{ width: 13, height: 13 }} />, color: '#fbbf24' },
                   { val: true, label: 'GPU', icon: <Gpu style={{ width: 13, height: 13 }} />, color: '#4ade80' }] as const).map(d => (
@@ -241,10 +243,10 @@ export default function UpscalePage() {
                   <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', padding: '8px 12px', background: 'var(--color-bg-input)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--color-border)' }}>
                     {engine.description}
                     {!engine.downloaded && (
-                      <span style={{ color: '#f87171', marginLeft: 8 }}>（未下载 ~{engine.size_mb}MB）</span>
+                      <span style={{ color: '#f87171', marginLeft: 8 }}>（{t('upscale.notDownloaded')} ~{engine.size_mb}MB）</span>
                     )}
                     {engine.downloaded && (
-                      <span style={{ color: '#4ade80', marginLeft: 8 }}>✓ 已就绪</span>
+                      <span style={{ color: '#4ade80', marginLeft: 8 }}>{t('upscale.downloaded')}</span>
                     )}
                   </div>
 
@@ -253,15 +255,15 @@ export default function UpscalePage() {
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
                       <button className="btn btn-primary" onClick={handleDownload} disabled={downloading} style={{ height: 40 }}>
                         {downloading ? (
-                          <><Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> 下载中...</>
+                          <><Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> {t('upscale.downloadingBtn')}</>
                         ) : (
-                          <><Download style={{ width: 16, height: 16 }} /> 下载 {engine.name}</>
+                          <><Download style={{ width: 16, height: 16 }} /> {t('upscale.downloadBtn')} {engine.name}</>
                         )}
                       </button>
                       {downloading && (
                         <button className="btn btn-secondary" style={{ height: 34, color: '#f87171' }}
                           onClick={() => invoke('cancel_upscale_download')}>
-                          <X style={{ width: 14, height: 14 }} /> 取消下载
+                          <X style={{ width: 14, height: 14 }} /> {t('upscale.cancelDownload')}
                         </button>
                       )}
                       {downloadProgress && downloading && (
@@ -277,7 +279,7 @@ export default function UpscalePage() {
 
                   {/* 模型/风格选择 */}
                   <div className="form-group">
-                    <label className="form-label">{engine.id === 'realesrgan' ? '模型选择' : '风格选择'}</label>
+                    <label className="form-label">{engine.id === 'realesrgan' ? t('upscale.modelSelect') : t('upscale.styleSelect')}</label>
                     <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
                       {engine.models.map(m => (
                         <button key={m.id}
@@ -291,7 +293,7 @@ export default function UpscalePage() {
 
                   {/* 超分倍率 */}
                   <div className="form-group">
-                    <label className="form-label">超分倍率</label>
+                    <label className="form-label">{t('upscale.scaleRatio')}</label>
                     <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                       {engine.scales.map(s => (
                         <button key={s}
@@ -306,13 +308,13 @@ export default function UpscalePage() {
                   {/* 降噪等级 */}
                   {engine.supports_denoise && (
                     <div className="form-group">
-                      <label className="form-label">降噪等级</label>
+                      <label className="form-label">{t('upscale.denoiseLevel')}</label>
                       <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
                         {Array.from({ length: engine.denoise_range[1] - engine.denoise_range[0] + 1 }, (_, i) => engine.denoise_range[0] + i).map(n => (
                           <button key={n}
                             className={`btn btn-sm ${denoiseLevel === n ? 'btn-primary' : 'btn-secondary'}`}
                             onClick={() => setDenoiseLevel(n)}>
-                            {n === -1 ? '无降噪' : `等级 ${n}`}
+                            {n === -1 ? t('upscale.noDenoiseBtn') : t('upscale.levelBtn', { n })}
                           </button>
                         ))}
                       </div>
@@ -321,22 +323,22 @@ export default function UpscalePage() {
 
                   {/* TTA 增强 */}
                   <div className="form-group">
-                    <label className="form-label">TTA 增强</label>
+                    <label className="form-label">{t('upscale.tta')}</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
                       <button
                         className={`btn btn-sm ${tta ? 'btn-primary' : 'btn-secondary'}`}
                         onClick={() => setTta(!tta)}>
-                        {tta ? '已开启' : '关闭'}
+                        {tta ? t('upscale.ttaOn') : t('upscale.ttaOff')}
                       </button>
                       <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>
-                        8 方向翻转取平均，效果更好但速度慢 8 倍
+                        {t('upscale.ttaDesc')}
                       </span>
                     </div>
                   </div>
 
                   {/* 分块大小 */}
                   <div className="form-group">
-                    <label className="form-label">分块大小 (Tile Size)</label>
+                    <label className="form-label">{t('upscale.tileSize')}</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                       <input
                         className="form-input"
@@ -347,7 +349,7 @@ export default function UpscalePage() {
                         min={-1}
                       />
                       <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>
-                        -1则让模型自动决定
+                        {t('upscale.tileSizeDesc')}
                       </span>
                     </div>
                   </div>
@@ -362,7 +364,7 @@ export default function UpscalePage() {
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!inputPath || !outputPath || !engine?.downloaded}
             cancelCommand="cancel_upscale" forceCancelCommand="force_cancel_upscale"
-            startText="开始超分" processingText="超分中..."
+            startText={t('upscale.startUpscale')} processingText={t('upscale.upscaling')}
             onCancelLog={addCancelLog} />
 
           <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />

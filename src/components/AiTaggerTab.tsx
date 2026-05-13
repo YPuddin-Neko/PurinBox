@@ -8,6 +8,7 @@ import ProcessButton from './ProcessButton';
 import { useTaskQueue } from './TaskContext';
 import { ConfirmModal } from './Modal';
 import CustomSelect from './CustomSelect';
+import { useTranslation } from 'react-i18next';
 
 interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; supported_categories: string[]; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
@@ -15,18 +16,18 @@ interface ProgressPayload { current: number; total: number; filename: string; st
 interface OnnxModelInfo { input_size: number; input_format: string; input_shape: number[]; channels: number; }
 interface DownloadPayload { filename: string; downloaded: number; total: number; percent: number; speed_mbps: number; status: string; message: string; }
 
-const cats = [
-  { key: 'general', label: '通用标签', default: true },
-  { key: 'character', label: '角色标签', default: true },
-  { key: 'rating', label: '评级标签', default: false },
-  { key: 'artist', label: '作者标签', default: false },
-  { key: 'copyright', label: '版权标签', default: false },
-  { key: 'meta', label: '元信息标签', default: false },
-  { key: 'quality', label: '质量标签', default: false },
-  { key: 'model', label: '模型标签', default: false },
-];
-
 export default function AiTaggerTab() {
+  const { t } = useTranslation();
+  const cats = [
+    { key: 'general', label: t('aiTagger.catGeneral'), default: true },
+    { key: 'character', label: t('aiTagger.catCharacter'), default: true },
+    { key: 'rating', label: t('aiTagger.catRating'), default: false },
+    { key: 'artist', label: t('aiTagger.catArtist'), default: false },
+    { key: 'copyright', label: t('aiTagger.catCopyright'), default: false },
+    { key: 'meta', label: t('aiTagger.catMeta'), default: false },
+    { key: 'quality', label: t('aiTagger.catQuality'), default: false },
+    { key: 'model', label: t('aiTagger.catModel'), default: false },
+  ];
   const [inputPath, setInputPath] = useState('');
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -110,7 +111,7 @@ export default function AiTaggerTab() {
         // 下载结束，移除进度条日志
         setLogs(p => p.filter(l => l.status !== 'download'));
       } else if (d.status === 'error') {
-        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: `下载失败: ${d.message}`, status: 'error' }]);
+        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: `${t('aiTagger.downloadFail')}: ${d.message}`, status: 'error' }]);
       } else {
         const avgSpeed = d.speed_mbps > 0 ? `${d.speed_mbps.toFixed(1)} MB/s` : '';
         setLogs(p => {
@@ -149,14 +150,14 @@ export default function AiTaggerTab() {
       await new Promise(r => setTimeout(r, 300));
     }
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
-    setLogs([{ time: getTimeStr(), message: `开始打标 | 模型: ${cur?.name} | 硬件: ${useGpu ? 'GPU' : 'CPU'}`, status: 'info' }]);
-    addTask('tagger', `Tagger 打标 - ${cur?.name || '未知'}`);
+    setLogs([{ time: getTimeStr(), message: t('aiTagger.startMsg', { model: cur?.name, hw: useGpu ? 'GPU' : 'CPU' }), status: 'info' }]);
+    addTask('tagger', `${t('aiTagger.taskName')} - ${cur?.name || '?'}`);
     try {
       await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, output_format: outputFormat, json_simplified: jsonSimplified } });
       updateTask('tagger', { status: 'done' });
       await load();
     } catch (e: any) {
-      setLogs(p => [...p, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs(p => [...p, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasErr(true); setIsDone(true);
       updateTask('tagger', { status: 'error', message: String(e) });
     }
@@ -168,37 +169,37 @@ export default function AiTaggerTab() {
     if (f) setNModelPath(f as string);
   };
   const browseTags = async () => {
-    const f = await open({ multiple: false, filters: [{ name: '标签文件', extensions: ['csv', 'json'] }] });
+    const f = await open({ multiple: false, filters: [{ name: t('aiTagger.tagFileLabel'), extensions: ['csv', 'json'] }] });
     if (f) setNTagsPath(f as string);
   };
 
   const autoDetect = async () => {
-    if (!nModelPath) { setLogs(p => [...p, { time: getTimeStr(), message: '请先选择模型文件 (.onnx)', status: 'error' }]); return; }
+    if (!nModelPath) { setLogs(p => [...p, { time: getTimeStr(), message: t('aiTagger.selectOnnxFirst'), status: 'error' }]); return; }
     setDetecting(true);
     try {
       const info = await invoke<OnnxModelInfo>('detect_onnx_model_info', { modelPath: nModelPath });
       setNSize(info.input_size);
       setNFormat(info.input_format);
-      setLogs(p => [...p, { time: getTimeStr(), message: `✓ 自动检测成功 | 输入尺寸: ${info.input_size}px | 通道格式: ${info.input_format} | 形状: [${info.input_shape.join(', ')}]`, status: 'success' }]);
+      setLogs(p => [...p, { time: getTimeStr(), message: t('aiTagger.detectOk', { size: info.input_size, format: info.input_format, shape: info.input_shape.join(', ') }), status: 'success' }]);
     } catch (e: any) {
-      setLogs(p => [...p, { time: getTimeStr(), message: `自动检测失败: ${String(e)}`, status: 'error' }]);
+      setLogs(p => [...p, { time: getTimeStr(), message: `${t('aiTagger.detectFail')}: ${String(e)}`, status: 'error' }]);
     }
     setDetecting(false);
   };
 
   const handleImport = async () => {
     if (!nName || !nModelPath || !nTagsPath) {
-      setLogs(p => [...p, { time: getTimeStr(), message: '请填写名称并选择模型文件和标签文件', status: 'error' }]);
+      setLogs(p => [...p, { time: getTimeStr(), message: t('aiTagger.fillAllFields'), status: 'error' }]);
       return;
     }
     setImporting(true);
     try {
       await invoke<string>('import_local_tagger_model', { name: nName, modelPath: nModelPath, tagsPath: nTagsPath, inputSize: nSize, inputFormat: nFormat });
-      setLogs(p => [...p, { time: getTimeStr(), message: `✓ 模型 "${nName}" 导入成功`, status: 'success' }]);
+      setLogs(p => [...p, { time: getTimeStr(), message: t('aiTagger.importOk', { name: nName }), status: 'success' }]);
       setShowAdd(false); setNName(''); setNModelPath(''); setNTagsPath(''); setNSize(448); setNFormat('NHWC');
       await load();
     } catch (e: any) {
-      setLogs(p => [...p, { time: getTimeStr(), message: `导入失败: ${String(e)}`, status: 'error' }]);
+      setLogs(p => [...p, { time: getTimeStr(), message: `${t('aiTagger.importFail')}: ${String(e)}`, status: 'error' }]);
     }
     setImporting(false);
   };
@@ -206,11 +207,11 @@ export default function AiTaggerTab() {
   const handleDelete = async (id: string, name: string) => {
     try {
       await invoke('remove_custom_tagger_model', { id });
-      setLogs(p => [...p, { time: getTimeStr(), message: `已删除模型: ${name}`, status: 'info' }]);
+      setLogs(p => [...p, { time: getTimeStr(), message: `${t('aiTagger.deletedModel')}: ${name}`, status: 'info' }]);
       if (selectedModel === id) setSelectedModel('');
       await load();
     } catch (e: any) {
-      setLogs(p => [...p, { time: getTimeStr(), message: `删除失败: ${String(e)}`, status: 'error' }]);
+      setLogs(p => [...p, { time: getTimeStr(), message: `${t('aiTagger.deleteFail')}: ${String(e)}`, status: 'error' }]);
     }
   };
 
@@ -220,9 +221,9 @@ export default function AiTaggerTab() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
         {/* 数据集路径 */}
         <div className="tool-panel">
-          <div className="tool-panel-header"><span className="tool-panel-title">数据集路径</span></div>
+          <div className="tool-panel-header"><span className="tool-panel-title">{t('aiTagger.datasetPath')}</span></div>
           <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-            <input className="form-input" placeholder="选择图片文件夹..." value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
+            <input className="form-input" placeholder={t('aiTagger.selectFolder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
             <button className="btn btn-secondary" onClick={async () => { const s = await open({ directory: true, multiple: false }); if (s) setInputPath(s as string); }}><FolderOpen style={{ width: 16, height: 16 }} /></button>
           </div>
         </div>
@@ -230,23 +231,23 @@ export default function AiTaggerTab() {
         {/* 打标模型 */}
         <div className="tool-panel">
           <div className="tool-panel-header">
-            <span className="tool-panel-title">打标模型</span>
+            <span className="tool-panel-title">{t('aiTagger.taggerModel')}</span>
             <button className="btn btn-ghost btn-sm" onClick={() => setShowAdd(!showAdd)}>
-              {showAdd ? '✕ 关闭' : <><Plus style={{ width: 14, height: 14 }} /> 导入模型</>}
+              {showAdd ? t('aiTagger.close') : <><Plus style={{ width: 14, height: 14 }} /> {t('aiTagger.importModel')}</>}
             </button>
           </div>
           {showAdd && (
             <div style={{ padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', background: 'rgba(124,92,252,0.04)', border: '1px solid rgba(124,92,252,0.15)', marginBottom: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>名称：</label><input className="form-input" placeholder="例如: My Custom Tagger" value={nName} onChange={e => setNName(e.target.value)} style={{ width: '100%' }} /></div>
-              <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>模型文件 (.onnx)：</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder="选择 .onnx 文件..." value={nModelPath} onChange={e => setNModelPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseOnnx}><FileUp style={{ width: 14, height: 14 }} /> 浏览...</button></div></div>
-              <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>标签映射 (.csv / .json)：</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder="选择标签文件..." value={nTagsPath} onChange={e => setNTagsPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseTags}><FileUp style={{ width: 14, height: 14 }} /> 浏览...</button></div></div>
+              <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.nameLabel')}</label><input className="form-input" placeholder={t('aiTagger.namePlaceholder')} value={nName} onChange={e => setNName(e.target.value)} style={{ width: '100%' }} /></div>
+              <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.modelFile')}</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder={t('aiTagger.modelPlaceholder')} value={nModelPath} onChange={e => setNModelPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseOnnx}><FileUp style={{ width: 14, height: 14 }} /> {t('aiTagger.browse')}</button></div></div>
+              <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.tagMapping')}</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder={t('aiTagger.tagFilePlaceholder')} value={nTagsPath} onChange={e => setNTagsPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseTags}><FileUp style={{ width: 14, height: 14 }} /> {t('aiTagger.browse')}</button></div></div>
               <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
-                <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>输入通道：</label><CustomSelect value={nFormat} onChange={v => setNFormat(v)} options={[{ value: 'NHWC', label: 'NHWC' }, { value: 'NCHW', label: 'NCHW' }]} compact style={{ width: 90 }} /></div>
-                <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>输入尺寸：</label><input className="form-input" type="number" value={nSize} onChange={e => setNSize(Number(e.target.value))} style={{ width: 80 }} /></div>
-                <button className="btn btn-secondary btn-sm" onClick={autoDetect} disabled={detecting || !nModelPath} style={{ height: 34, whiteSpace: 'nowrap' }}>{detecting ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Search style={{ width: 14, height: 14 }} />} 自动识别</button>
-                <button className="btn btn-primary btn-sm" onClick={handleImport} disabled={importing || !nName || !nModelPath || !nTagsPath} style={{ height: 34 }}>{importing ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Plus style={{ width: 14, height: 14 }} />} 添加</button>
+                <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.inputChannel')}</label><CustomSelect value={nFormat} onChange={v => setNFormat(v)} options={[{ value: 'NHWC', label: 'NHWC' }, { value: 'NCHW', label: 'NCHW' }]} compact style={{ width: 90 }} /></div>
+                <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.inputSize')}</label><input className="form-input" type="number" value={nSize} onChange={e => setNSize(Number(e.target.value))} style={{ width: 80 }} /></div>
+                <button className="btn btn-secondary btn-sm" onClick={autoDetect} disabled={detecting || !nModelPath} style={{ height: 34, whiteSpace: 'nowrap' }}>{detecting ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Search style={{ width: 14, height: 14 }} />} {t('aiTagger.autoDetect')}</button>
+                <button className="btn btn-primary btn-sm" onClick={handleImport} disabled={importing || !nName || !nModelPath || !nTagsPath} style={{ height: 34 }}>{importing ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Plus style={{ width: 14, height: 14 }} />} {t('aiTagger.add')}</button>
               </div>
-              <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }}>💡 <b>输入通道</b>：NHWC = [批次,高,宽,通道数]（TensorFlow），NCHW = [批次,通道数,高,宽]（PyTorch）。建议使用「自动识别」。</div>
+              <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }} dangerouslySetInnerHTML={{ __html: t('aiTagger.channelTip') }} />
             </div>
           )}
           <CustomSelect value={selectedModel} onChange={v => setSelectedModel(v)}
@@ -254,16 +255,16 @@ export default function AiTaggerTab() {
           {cur && (
             <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>
               <span>{cur.description}</span>
-              <span style={{ padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: cur.is_downloaded ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)', color: cur.is_downloaded ? '#4ade80' : '#fbbf24' }}>{cur.is_downloaded ? '已下载' : '待下载'}</span>
+              <span style={{ padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: cur.is_downloaded ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)', color: cur.is_downloaded ? '#4ade80' : '#fbbf24' }}>{cur.is_downloaded ? t('aiTagger.downloaded') : t('aiTagger.toDownload')}</span>
               <span style={{ padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: 'rgba(124,92,252,0.1)', color: '#a78bfa' }}>{cur.input_format} · {cur.input_size}px</span>
-              {!cur.is_builtin && (<button className="btn btn-ghost btn-sm" onClick={() => setDeleteConfirm({ id: cur.id, name: cur.name })} style={{ marginLeft: 'auto', padding: '2px 6px', color: '#f87171' }}><Trash2 style={{ width: 12, height: 12 }} /> 删除</button>)}
+              {!cur.is_builtin && (<button className="btn btn-ghost btn-sm" onClick={() => setDeleteConfirm({ id: cur.id, name: cur.name })} style={{ marginLeft: 'auto', padding: '2px 6px', color: '#f87171' }}><Trash2 style={{ width: 12, height: 12 }} /> {t('aiTagger.deleteModel')}</button>)}
             </div>
           )}
         </div>
 
         {/* 标签分类与阈值 */}
         <div className="tool-panel">
-          <div className="tool-panel-header"><span className="tool-panel-title">标签分类与阈值</span></div>
+          <div className="tool-panel-header"><span className="tool-panel-title">{t('aiTagger.catAndThreshold')}</span></div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 'var(--space-3)' }}>
             {(()=>{ const curModel = models.find(m => m.id === selectedModel); const supported = new Set(curModel?.supported_categories || cats.map(c=>c.key)); return cats.map(c => { const on = enabled.has(c.key); const avail = supported.has(c.key); return (
               <div key={c.key} onClick={() => { if(!avail)return; setEnabled(p => { const n = new Set(p); on ? n.delete(c.key) : n.add(c.key); return n; }); }} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: `1px solid ${!avail ? 'var(--color-border)' : on ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: !avail ? 'rgba(0,0,0,0.04)' : on ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: avail ? 'pointer' : 'not-allowed', transition: 'all 0.15s', opacity: avail ? 1 : 0.35 }}>
@@ -272,60 +273,60 @@ export default function AiTaggerTab() {
               </div>); }); })()}
           </div>
           <div style={{ display: 'flex', gap: 'var(--space-4)' }}>
-            <div style={{ flex: 1 }}><label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ fontSize: 12 }}>通用阈值</span><span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', fontSize: 12 }}>{genTh.toFixed(2)}</span></label><input type="range" min="0.05" max="1" step="0.01" value={genTh} onChange={e => setGenTh(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} /></div>
-            <div style={{ flex: 1 }}><label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ fontSize: 12 }}>角色阈值</span><span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', fontSize: 12 }}>{charTh.toFixed(2)}</span></label><input type="range" min="0.05" max="1" step="0.01" value={charTh} onChange={e => setCharTh(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} /></div>
+            <div style={{ flex: 1 }}><label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ fontSize: 12 }}>{t('aiTagger.generalTh')}</span><span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', fontSize: 12 }}>{genTh.toFixed(2)}</span></label><input type="range" min="0.05" max="1" step="0.01" value={genTh} onChange={e => setGenTh(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} /></div>
+            <div style={{ flex: 1 }}><label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}><span style={{ fontSize: 12 }}>{t('aiTagger.charTh')}</span><span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', fontSize: 12 }}>{charTh.toFixed(2)}</span></label><input type="range" min="0.05" max="1" step="0.01" value={charTh} onChange={e => setCharTh(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} /></div>
           </div>
         </div>
 
         {/* 硬件设置 */}
         <div className="tool-panel">
           <div className="tool-panel-header">
-            <span className="tool-panel-title">硬件设置</span>
-            {gpuSupported && (<button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `GPU 检测异常: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>{cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} {isMac ? '检测 CoreML' : '检测 CUDA'}</button>)}
+            <span className="tool-panel-title">{t('aiTagger.hwSettings')}</span>
+            {gpuSupported && (<button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `${t('aiTagger.gpuDetectError')}: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>{cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} {isMac ? t('aiTagger.detectCoreML') : t('aiTagger.detectCUDA')}</button>)}
           </div>
-          {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6, marginBottom: 'var(--space-3)' }}>{cudaOk ? (isMac ? '✓ CoreML 可用，Neural Engine 加速已就绪' : '✓ CUDA 可用，GPU 加速已就绪') : (isMac ? '✗ CoreML 不可用 — 详情请查看日志' : '✗ CUDA 不可用 — 详情请查看日志')}</div>}
+          {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6, marginBottom: 'var(--space-3)' }}>{cudaOk ? (isMac ? t('aiTagger.coreMLOk') : t('aiTagger.cudaOk')) : (isMac ? t('aiTagger.coreMLFail') : t('aiTagger.cudaFail'))}</div>}
           <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
             <div onClick={() => setUseGpu(false)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1.5px solid ${!useGpu ? '#fbbf24' : 'var(--color-border)'}`, background: !useGpu ? 'rgba(251,191,36,0.07)' : 'var(--color-bg-input)', cursor: 'pointer' }}><Cpu style={{ width: 16, height: 16, color: !useGpu ? '#fbbf24' : 'var(--color-text-tertiary)' }} /><span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: !useGpu ? '#fbbf24' : 'var(--color-text-tertiary)' }}>CPU</span></div>
-            <div onClick={() => { if (gpuSupported) setUseGpu(true); }} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1.5px solid ${useGpu ? '#4ade80' : 'var(--color-border)'}`, background: useGpu ? 'rgba(74,222,128,0.07)' : 'var(--color-bg-input)', cursor: gpuSupported ? 'pointer' : 'not-allowed', opacity: gpuSupported ? 1 : 0.4 }}><Gpu style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} /><span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }}>GPU</span>{!gpuSupported && <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>(不可用)</span>}</div>
+            <div onClick={() => setUseGpu(true)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1.5px solid ${useGpu ? '#4ade80' : 'var(--color-border)'}`, background: useGpu ? 'rgba(74,222,128,0.07)' : 'var(--color-bg-input)', cursor: gpuSupported ? 'pointer' : 'not-allowed', opacity: gpuSupported ? 1 : 0.4 }}><Gpu style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} /><span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }}>GPU</span>{!gpuSupported && <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>({t('aiTagger.gpuUnavailable')})</span>}</div>
           </div>
         </div>
 
         {/* 其他设置 */}
         <div className="tool-panel">
-          <div className="tool-panel-header"><span className="tool-panel-title">其他设置</span></div>
+          <div className="tool-panel-header"><span className="tool-panel-title">{t('aiTagger.otherSettings')}</span></div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => setReplaceUnderscore(!replaceUnderscore)}>
               <div style={{ width: 16, height: 16, borderRadius: 4, minWidth: 16, border: `2px solid ${replaceUnderscore ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: replaceUnderscore ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{replaceUnderscore && <Check style={{ width: 10, height: 10, color: '#fff' }} />}</div>
-              <span style={{ fontSize: 12, fontWeight: 600 }}>替换下划线为空格</span>
+              <span style={{ fontSize: 12, fontWeight: 600 }}>{t('aiTagger.replaceUnderscore')}</span>
             </div>
             <div style={{ flex: 1 }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
-              <span style={{ color: 'var(--color-text-tertiary)', fontWeight: 500 }}>输出格式</span>
+              <span style={{ color: 'var(--color-text-tertiary)', fontWeight: 500 }}>{t('aiTagger.outputFormat')}</span>
               {(['txt', 'json'] as const).map(fmt => (
                 <button key={fmt} onClick={() => setOutputFormat(fmt)} style={{ padding: '2px 10px', borderRadius: 'var(--radius-sm)', border: `1px solid ${outputFormat === fmt ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: outputFormat === fmt ? 'rgba(124,92,252,0.08)' : 'transparent', color: outputFormat === fmt ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>.{fmt}</button>
               ))}
               {outputFormat==='json'&&(
                 <select className="form-input" value={jsonSimplified?'simplified':'full'} onChange={e=>{const v=e.target.value==='simplified';setJsonSimplified(v);localStorage.setItem('tagger_json_simplified',String(v));}} style={{fontSize:10,height:24,padding:'0 6px',width:'auto',marginLeft:2}}>
-                  <option value="full">完整格式</option>
-                  <option value="simplified">简化格式</option>
+                  <option value="full">{t('aiTagger.fullFormat')}</option>
+                  <option value="simplified">{t('aiTagger.simplified')}</option>
                 </select>
               )}
             </div>
           </div>
           <div style={{ marginBottom: 'var(--space-3)' }}>
-            <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>排除标签</label>
+            <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.excludeTags')}</label>
             <input className="form-input" placeholder="tag1, tag2, tag3 ..." value={excludeTags} onChange={e => setExcludeTags(e.target.value)} style={{ width: '100%' }} />
-            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>打标结果中将排除这些标签，多个用逗号分隔</div>
+            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{t('aiTagger.excludeTagsTip')}</div>
           </div>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-              <label className="form-label" style={{ fontSize: 11, margin: 0 }}>额外追加标签</label>
+              <label className="form-label" style={{ fontSize: 11, margin: 0 }}>{t('aiTagger.appendTags')}</label>
               <div style={{ display: 'flex', gap: 4 }}>
-                {(['prepend', 'append'] as const).map(pos => (<button key={pos} onClick={() => setAppendPosition(pos)} style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${appendPosition === pos ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: appendPosition === pos ? 'rgba(124,92,252,0.08)' : 'transparent', color: appendPosition === pos ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 10, fontWeight: 600, cursor: 'pointer' }}>{pos === 'prepend' ? '最前面' : '最后面'}</button>))}
+                {(['prepend', 'append'] as const).map(pos => (<button key={pos} onClick={() => setAppendPosition(pos)} style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${appendPosition === pos ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: appendPosition === pos ? 'rgba(124,92,252,0.08)' : 'transparent', color: appendPosition === pos ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 10, fontWeight: 600, cursor: 'pointer' }}>{pos === 'prepend' ? t('aiTagger.prepend') : t('aiTagger.append')}</button>))}
               </div>
             </div>
             <input className="form-input" placeholder="tag1, tag2, tag3 ..." value={appendTags} onChange={e => setAppendTags(e.target.value)} style={{ width: '100%' }} />
-            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>打标完成后追加这些标签到每个文件，多个用逗号分隔</div>
+            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{t('aiTagger.appendTagsTip')}</div>
           </div>
         </div>
       </div>
@@ -335,9 +336,9 @@ export default function AiTaggerTab() {
         <ProcessButton processing={processing} onStart={handleStart}
           disabled={!inputPath || !selectedModel || enabled.size === 0}
           cancelCommand="cancel_tagging" forceCancelCommand="cancel_tagging"
-          startText={cur && !cur.is_downloaded ? '下载并打标' : '开始打标'}
+          startText={cur && !cur.is_downloaded ? t('aiTagger.downloadAndTag') : t('aiTagger.startTag')}
           startIcon={cur && !cur.is_downloaded ? <Download style={{ width: 18, height: 18 }} /> : undefined}
-          processingText="打标中..."
+          processingText={t('aiTagger.tagging')}
           onCancelLog={addCancelLog} />
 
 
@@ -348,9 +349,9 @@ export default function AiTaggerTab() {
         open={!!deleteConfirm}
         onClose={() => setDeleteConfirm(null)}
         onConfirm={() => { if (deleteConfirm) handleDelete(deleteConfirm.id, deleteConfirm.name); }}
-        title="删除模型"
-        message={`确认删除自定义模型 "${deleteConfirm?.name}" 吗？\n模型文件也会被删除。`}
-        confirmText="删除"
+        title={t('aiTagger.deleteTitle')}
+        message={t('aiTagger.deleteMsg', { name: deleteConfirm?.name })}
+        confirmText={t('aiTagger.deleteConfirm')}
         variant="error"
       />
     </div>

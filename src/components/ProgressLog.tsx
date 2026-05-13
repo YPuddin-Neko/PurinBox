@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { CheckCircle2, XCircle, Loader2, Info, ScrollText, Trash2, Download, Timer, AlertTriangle } from 'lucide-react';
 import '../styles/progress.css';
+import { useTranslation } from 'react-i18next';
 
 export interface LogEntry {
   time: string;
@@ -32,12 +33,13 @@ function formatElapsed(ms: number): string {
   const sec = Math.floor(ms / 1000);
   const m = Math.floor(sec / 60);
   const s = sec % 60;
-  return m > 0 ? `${m}分${s}秒` : `${s}秒`;
+  return m > 0 ? `${m}m${s}s` : `${s}s`;
 }
 
 export { getTimeStr };
 
 export default function ProgressLog({ progress, current, total, logs, isDone, hasError, onClearLogs, externalStartTime }: ProgressLogProps) {
+  const { t } = useTranslation();
   const logEndRef = useRef<HTMLDivElement>(null);
   const [startTime, setStartTime] = useState<number>(0);
   const [elapsed, setElapsed] = useState('');
@@ -121,7 +123,7 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
       {/* Progress Bar */}
       <div className="progress-header">
         <span className="progress-label">
-          {isDone ? '处理完成' : '处理进度'}
+          {isDone ? t('progressLog.done') : t('progressLog.progress')}
         </span>
         <span className="progress-percent">
           {speed && <span style={{ marginRight: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{speed}</span>}
@@ -135,7 +137,7 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
         />
       </div>
       <div className="progress-count">
-        {current} / {total} 个文件
+        {current} / {total} {t('progressLog.files')}
       </div>
 
       {/* Log Panel */}
@@ -143,7 +145,7 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
           <div className="log-panel-header">
             <div className="log-panel-title">
               <ScrollText style={{ width: 14, height: 14 }} />
-              处理日志
+              {t('progressLog.logTitle')}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
               {elapsed && (
@@ -152,13 +154,13 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
                   {elapsed}
                 </span>
               )}
-              <span className="log-panel-count">{logs.length} 条</span>
+              <span className="log-panel-count">{logs.length} {t('progressLog.entries')}</span>
               {onClearLogs && (
                 <button
                   className="btn btn-ghost btn-sm"
                   onClick={onClearLogs}
                   style={{ padding: '2px 6px' }}
-                  title="清空日志"
+                  title={t('progressLog.clearLogs')}
                 >
                   <Trash2 style={{ width: 12, height: 12 }} />
                 </button>
@@ -167,7 +169,7 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
           </div>
           <div className="log-content" ref={logContainerRef} onScroll={handleScroll}>
             {logs.length === 0 ? (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>暂无日志</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>{t('progressLog.noLogs')}</div>
             ) : logs.map((log, i) => (
               log.status === 'download' && log.dlPercent != null ? (
                 <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>

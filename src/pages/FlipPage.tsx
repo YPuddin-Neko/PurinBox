@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
+import { useTranslation } from 'react-i18next';
 import {
   FlipHorizontal2,
   FlipVertical2,
@@ -29,13 +30,15 @@ interface ProgressPayload {
 
 type FlipDirection = 'horizontal' | 'vertical' | 'both';
 
-const flipOptions: { value: FlipDirection; label: string; desc: string; icon: React.ReactNode }[] = [
-  { value: 'horizontal', label: '水平翻转', desc: '将图片沿垂直中心轴进行左右镜像翻转', icon: <FlipHorizontal2 /> },
-  { value: 'vertical', label: '垂直翻转', desc: '将图片沿水平中心轴进行上下镜像翻转', icon: <FlipVertical2 /> },
-  { value: 'both', label: '水平 + 垂直翻转', desc: '同时进行水平和垂直镜像翻转，等同于旋转180°', icon: <RotateCcw /> },
-];
-
 export default function FlipPage() {
+  const { t } = useTranslation();
+
+  const flipOptions: { value: FlipDirection; label: string; desc: string; icon: React.ReactNode }[] = [
+    { value: 'horizontal', label: t('flip.horizontal'), desc: t('flip.horizontalDesc'), icon: <FlipHorizontal2 /> },
+    { value: 'vertical', label: t('flip.vertical'), desc: t('flip.verticalDesc'), icon: <FlipVertical2 /> },
+    { value: 'both', label: t('flip.both'), desc: t('flip.bothDesc'), icon: <RotateCcw /> },
+  ];
+
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [direction, setDirection] = useState<FlipDirection>('horizontal');
@@ -69,12 +72,12 @@ export default function FlipPage() {
   }, []);
 
   const selectInputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择输入文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
     if (selected) setInputPath(selected as string);
   };
 
   const selectOutputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择输出文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') });
     if (selected) setOutputPath(selected as string);
   };
 
@@ -83,20 +86,20 @@ export default function FlipPage() {
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
     setProcessing(true);
-    addTask('flip', '图片处理');
+    addTask('flip', t('flip.taskName'));
     setProgress(0);
     setProgressCurrent(0);
     setProgressTotal(0);
     setIsDone(false);
     setHasError(false);
     const dirLabel = flipOptions.find((o) => o.value === direction)!.label;
-    setLogs([{ time: getTimeStr(), message: `开始${dirLabel}处理`, status: 'info' }]);
+    setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${dirLabel}${t('pages.process')}`, status: 'info' }]);
     try {
       await invoke<ProcessResult>('flip_images', {
         options: { input_path: inputPath, output_path: outputPath, direction },
       });
     } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true);
       setIsDone(true);
     } finally {
@@ -112,9 +115,9 @@ export default function FlipPage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <FlipHorizontal2 style={{ width: 28, height: 28, color: '#00d4ff' }} />
-          <h1 className="page-title">图片处理</h1>
+          <h1 className="page-title">{t('flip.title')}</h1>
         </div>
-        <p className="page-subtitle">对图片进行水平或垂直镜像翻转，支持单个或批量处理</p>
+        <p className="page-subtitle">{t('flip.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
@@ -122,19 +125,19 @@ export default function FlipPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径设置 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">路径设置</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">输入路径（文件夹或单张图片）</label>
+                <label className="form-label">{t('pages.inputPath')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择图片所在文件夹..." value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
               <div className="form-group">
-                <label className="form-label">输出路径</label>
+                <label className="form-label">{t('pages.outputPath')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择输出文件夹..." value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
@@ -143,7 +146,7 @@ export default function FlipPage() {
 
           {/* 翻转选项 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">翻转方向</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('flip.flipDirection')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               {flipOptions.map((opt) => (
                 <div key={opt.value} onClick={() => setDirection(opt.value)} style={{
@@ -175,7 +178,7 @@ export default function FlipPage() {
 
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!inputPath || !outputPath}
-            cancelCommand="cancel_flip" startText="开始处理" processingText="处理中..."
+            cancelCommand="cancel_flip" startText={t('pages.startProcess')} processingText={t('pages.processing')}
             onCancelLog={addCancelLog} />
 
           

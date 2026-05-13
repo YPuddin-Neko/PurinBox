@@ -5,6 +5,7 @@ import {
   Save, ChevronLeft, ChevronRight, Search,
   Image as ImageIcon, Loader2, Languages, FileText, FolderOpen, RefreshCw
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 type ImageItem = { filename: string; path: string; caption: string; dirty: boolean; };
 
@@ -21,6 +22,7 @@ interface Props {
 
 
 export default function NaturalLangTab({ images, setImages, onRefresh }: Props) {
+  const { t } = useTranslation();
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [searchText, setSearchText] = useState('');
   const [filterMode, setFilterMode] = useState<'all' | 'tagged' | 'untagged'>('all');
@@ -91,7 +93,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
     const provider = localStorage.getItem('translate_provider') || 'google';
     const enabled = localStorage.getItem('translate_enabled') === 'true';
     if (!enabled) {
-      setTranslatedText('请先在设置中启用翻译功能');
+      setTranslatedText(t('naturalLang.enableTranslationFirst'));
       return;
     }
     setTranslating(true);
@@ -113,7 +115,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
         setTranslatedText(result.translations[0].translated);
       }
     } catch (e: any) {
-      setTranslatedText(`翻译失败: ${String(e)}`);
+      setTranslatedText(`${t('naturalLang.translateFailed')}: ${String(e)}`);
     } finally {
       setTranslating(false);
     }
@@ -132,13 +134,13 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
           <div style={{ display: 'flex', gap: 4, position: 'relative', marginBottom: 6 }}>
             <div style={{ position: 'relative', flex: 1 }}>
               <Search style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', width: 13, height: 13, color: 'var(--color-text-tertiary)' }} />
-              <input className="form-input" placeholder="搜索..." value={searchText} onChange={e => setSearchText(e.target.value)} style={{ paddingLeft: 28, fontSize: 11, height: 30 }} />
+              <input className="form-input" placeholder={t('common.search')} value={searchText} onChange={e => setSearchText(e.target.value)} style={{ paddingLeft: 28, fontSize: 11, height: 30 }} />
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={() => onRefresh?.()} disabled={!onRefresh} title="刷新" style={{ width: 30, height: 30, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><RefreshCw style={{ width: 13, height: 13 }} /></button>
+            <button className="btn btn-ghost btn-sm" onClick={() => onRefresh?.()} disabled={!onRefresh} title={t('common.refresh')} style={{ width: 30, height: 30, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><RefreshCw style={{ width: 13, height: 13 }} /></button>
           </div>
           <div style={{ display: 'flex', gap: 4 }}>
-            {([{ k: 'all' as const, l: '全部', n: images.length }, { k: 'untagged' as const, l: '空标', n: images.length - taggedN }, { k: 'tagged' as const, l: '已标', n: taggedN }]).map(t => (
-              <button key={t.k} onClick={() => setFilterMode(t.k)} style={{ flex: 1, padding: '3px 0', borderRadius: 6, fontSize: 10, fontWeight: 500, background: filterMode === t.k ? 'rgba(124,92,252,0.15)' : 'transparent', color: filterMode === t.k ? '#a78bfa' : 'var(--color-text-tertiary)', border: filterMode === t.k ? '1px solid rgba(124,92,252,0.25)' : '1px solid transparent' }}>{t.l} {t.n}</button>
+            {([{ k: 'all' as const, l: t('naturalLang.all'), n: images.length }, { k: 'untagged' as const, l: t('naturalLang.untagged'), n: images.length - taggedN }, { k: 'tagged' as const, l: t('naturalLang.tagged'), n: taggedN }]).map(f => (
+              <button key={f.k} onClick={() => setFilterMode(f.k)} style={{ flex: 1, padding: '3px 0', borderRadius: 6, fontSize: 10, fontWeight: 500, background: filterMode === f.k ? 'rgba(124,92,252,0.15)' : 'transparent', color: filterMode === f.k ? '#a78bfa' : 'var(--color-text-tertiary)', border: filterMode === f.k ? '1px solid rgba(124,92,252,0.25)' : '1px solid transparent' }}>{f.l} {f.n}</button>
             ))}
           </div>
         </div>
@@ -146,7 +148,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
           {images.length === 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 8, color: 'var(--color-text-tertiary)' }}>
               <FolderOpen style={{ width: 32, height: 32, opacity: 0.2 }} />
-              <span style={{ fontSize: 11, opacity: 0.6 }}>加载文件夹以开始</span>
+              <span style={{ fontSize: 11, opacity: 0.6 }}>{t('naturalLang.loadFolder')}</span>
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 4 }}>
@@ -159,11 +161,11 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
             </div>
           )}
         </div>
-        {images.length > 0 && <div style={{ padding: '6px 10px', borderTop: '1px solid var(--color-border)', fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center' }}>{filtered.length === images.length ? `${images.length} 张` : `${filtered.length} / ${images.length}`}</div>}
+        {images.length > 0 && <div style={{ padding: '6px 10px', borderTop: '1px solid var(--color-border)', fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center' }}>{filtered.length === images.length ? `${images.length} ${t('naturalLang.images')}` : `${filtered.length} / ${images.length}`}</div>}
       </div>
 
       {/* resize handle 1 */}
-      <div onMouseDown={e => handleResizeStart('col1', e)} style={{ width: 6, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} title="拖拽调整宽度">
+      <div onMouseDown={e => handleResizeStart('col1', e)} style={{ width: 6, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} title={t('common.dragResize')}>
         <div style={{ width: 2, height: 32, borderRadius: 1, background: 'var(--color-border)', transition: 'background 0.15s' }} />
       </div>
 
@@ -174,7 +176,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
           <div style={phdr}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <ImageIcon style={{ width: 14, height: 14, color: '#7c5cfc' }} />
-              <span style={ptitle}>预览</span>
+              <span style={ptitle}>{t('naturalLang.preview')}</span>
               {cur && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{cur.filename}</span>}
             </div>
             {images.length > 0 && (
@@ -191,7 +193,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: 'var(--color-text-tertiary)' }}>
                 <ImageIcon style={{ width: 56, height: 56, opacity: 0.2 }} />
-                <span style={{ fontSize: 12, opacity: 0.6 }}>{images.length === 0 ? '加载文件夹后显示图片' : '选择图片以预览'}</span>
+                <span style={{ fontSize: 12, opacity: 0.6 }}>{images.length === 0 ? t('naturalLang.loadFolderToShow') : t('naturalLang.selectToPreview')}</span>
               </div>
             )}
           </div>
@@ -199,7 +201,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
       </div>
 
       {/* resize handle 2 */}
-      <div onMouseDown={e => handleResizeStart('col3', e)} style={{ width: 6, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} title="拖拽调整宽度">
+      <div onMouseDown={e => handleResizeStart('col3', e)} style={{ width: 6, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} title={t('common.dragResize')}>
         <div style={{ width: 2, height: 32, borderRadius: 1, background: 'var(--color-border)', transition: 'background 0.15s' }} />
       </div>
 
@@ -210,10 +212,10 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
           <div style={phdr}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <FileText style={{ width: 14, height: 14, color: '#60a5fa' }} />
-              <span style={ptitle}>描述内容</span>
+              <span style={ptitle}>{t('naturalLang.captionContent')}</span>
             </div>
             <button className="btn btn-primary" style={{ fontSize: 10, gap: 4, height: 24, padding: '0 10px' }} disabled={!cur || !cur.dirty || savingSingle} onClick={handleSaveSingle}>
-              {savingSingle ? <Loader2 style={{ width: 10, height: 10, animation: 'spin 1s linear infinite' }} /> : <Save style={{ width: 10, height: 10 }} />} 保存
+              {savingSingle ? <Loader2 style={{ width: 10, height: 10, animation: 'spin 1s linear infinite' }} /> : <Save style={{ width: 10, height: 10 }} />} {t('common.save')}
             </button>
           </div>
           <div style={{ flex: 1, padding: '10px 14px', display: 'flex', flexDirection: 'column' }}>
@@ -226,7 +228,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
                 setImages(p => p.map((img, i) => i === selectedIdx ? { ...img, caption: val, dirty: true } : img));
               }}
               disabled={!cur}
-              placeholder={cur ? '输入图片描述...' : '选择图片以编辑描述'}
+              placeholder={cur ? t('naturalLang.inputCaption') : t('naturalLang.selectToEdit')}
               style={{ flex: 1, resize: 'none', fontSize: 12, fontFamily: 'monospace', lineHeight: 1.6, border: 'none', outline: 'none', boxShadow: 'none', background: 'transparent', color: 'var(--color-text-primary)', padding: 0, width: '100%' }}
             />
           </div>
@@ -237,16 +239,16 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
           <div style={phdr}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Languages style={{ width: 14, height: 14, color: '#4ade80' }} />
-              <span style={ptitle}>翻译</span>
+              <span style={ptitle}>{t('naturalLang.translation')}</span>
             </div>
             <button className="btn btn-primary" style={{ fontSize: 10, height: 24, padding: '0 10px', gap: 4 }}
               onClick={handleTranslate} disabled={!cur || !cur.caption.trim() || translating}>
               {translating ? <Loader2 style={{ width: 10, height: 10, animation: 'spin 1s linear infinite' }} /> : <Languages style={{ width: 10, height: 10 }} />}
-              翻译
+              {t('naturalLang.translate')}
             </button>
           </div>
           <div style={{ flex: 1, padding: '12px 14px', overflowY: 'auto', fontSize: 12, lineHeight: 1.7, color: 'var(--color-text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-            {translatedText || <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>点击翻译按钮查看翻译结果</span>}
+            {translatedText || <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>{t('naturalLang.clickToTranslate')}</span>}
           </div>
         </div>
       </div>

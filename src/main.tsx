@@ -1,5 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import './i18n';  // 初始化 i18n
+import i18next from 'i18next';
 import App from './App';
 
 // 自定义右键菜单
@@ -34,12 +36,12 @@ import App from './App';
     menu = document.createElement('div');
     menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:99999;min-width:120px;padding:4px;background:var(--color-bg-secondary);border:1px solid var(--color-border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.25);`;
 
-    menu.appendChild(createMenuItem('全选', () => { target.focus(); target.select(); }));
-    menu.appendChild(createMenuItem('复制', async () => {
+    menu.appendChild(createMenuItem(i18next.t('contextMenu.selectAll'), () => { target.focus(); target.select(); }));
+    menu.appendChild(createMenuItem(i18next.t('contextMenu.copy'), async () => {
       const sel = target.value.substring(target.selectionStart ?? 0, target.selectionEnd ?? 0);
       if (sel) await writeText(sel);
     }, !hasSelection));
-    menu.appendChild(createMenuItem('粘贴', async () => {
+    menu.appendChild(createMenuItem(i18next.t('contextMenu.paste'), async () => {
       try {
         const t = await readText();
         if (t) {

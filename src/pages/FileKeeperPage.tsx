@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
+import { useTranslation } from 'react-i18next';
 import { FileCheck2, FolderOpen, Shield } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
@@ -21,6 +22,7 @@ const allExtensions = [
 ];
 
 export default function FileKeeperPage() {
+  const { t } = useTranslation();
   const [folderPath, setFolderPath] = useState('');
   const [keepExts, setKeepExts] = useState<Set<string>>(new Set(['jpg', 'jpeg', 'png', 'webp', 'txt']));
   const [processing, setProcessing] = useState(false);
@@ -60,7 +62,7 @@ export default function FileKeeperPage() {
   const deselectAll = () => setKeepExts(new Set());
 
   const selectFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
     if (selected) setFolderPath(selected as string);
   };
 
@@ -69,16 +71,16 @@ export default function FileKeeperPage() {
   const handleProcess = async () => {
     if (!folderPath || keepExts.size === 0) return;
     setProcessing(true);
-    addTask('keeper', '保留指定文件');
+    addTask('keeper', t('fileKeeper.taskName'));
     setProgress(0); setProgressCurrent(0); setProgressTotal(0);
     setIsDone(false); setHasError(false);
-    setLogs([{ time: getTimeStr(), message: `开始处理, 保留: ${Array.from(keepExts).join(', ')}`, status: 'info' }]);
+    setLogs([{ time: getTimeStr(), message: t('fileKeeper.startMsg', { exts: Array.from(keepExts).join(', ') }), status: 'info' }]);
     try {
       await invoke<ProcessResult>('keep_specified_files', {
         options: { folder_path: folderPath, keep_extensions: Array.from(keepExts) },
       });
     } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true); setIsDone(true);
     } finally {
       setProcessing(false);
@@ -93,20 +95,20 @@ export default function FileKeeperPage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <FileCheck2 style={{ width: 28, height: 28, color: '#fbbf24' }} />
-          <h1 className="page-title">保留指定文件</h1>
+          <h1 className="page-title">{t('fileKeeper.title')}</h1>
         </div>
-        <p className="page-subtitle">勾选需要保留的文件类型，删除文件夹中其他所有文件</p>
+        <p className="page-subtitle">{t('fileKeeper.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">文件夹路径</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('fileKeeper.folderPath')}</span></div>
             <div className="form-group">
-              <label className="form-label">选择要处理的文件夹</label>
+              <label className="form-label">{t('fileKeeper.selectFolder')}</label>
               <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                <input className="form-input" placeholder="选择文件夹..." value={folderPath} onChange={(e) => setFolderPath(e.target.value)} style={{ flex: 1 }} />
+                <input className="form-input" placeholder={t('fileKeeper.selectFolderPlaceholder')} value={folderPath} onChange={(e) => setFolderPath(e.target.value)} style={{ flex: 1 }} />
                 <button className="btn btn-secondary" onClick={selectFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
               </div>
             </div>
@@ -115,10 +117,10 @@ export default function FileKeeperPage() {
           {/* 文件类型选择 */}
           <div className="tool-panel">
             <div className="tool-panel-header">
-              <span className="tool-panel-title">保留的文件类型</span>
+              <span className="tool-panel-title">{t('fileKeeper.keepTypes')}</span>
               <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                <button className="btn btn-ghost btn-sm" onClick={selectAll}>全选</button>
-                <button className="btn btn-ghost btn-sm" onClick={deselectAll}>取消全选</button>
+                <button className="btn btn-ghost btn-sm" onClick={selectAll}>{t('fileKeeper.selectAll')}</button>
+                <button className="btn btn-ghost btn-sm" onClick={deselectAll}>{t('fileKeeper.deselectAll')}</button>
               </div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 'var(--space-3)' }}>
@@ -158,7 +160,7 @@ export default function FileKeeperPage() {
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-3)', padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', background: 'rgba(251, 191, 36, 0.04)', border: '1px solid rgba(251, 191, 36, 0.1)' }}>
             <Shield style={{ width: 18, height: 18, color: '#fbbf24', marginTop: 2, minWidth: 18 }} />
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', lineHeight: 1.7 }}>
-              <strong style={{ color: '#f87171' }}>注意：</strong>此操作将<strong>永久删除</strong>文件夹中未被勾选类型的所有文件。请确保已备份重要数据。操作仅处理文件夹第一层目录，不递归子文件夹。
+              <strong style={{ color: '#f87171' }}>{t('fileKeeper.warning')}</strong>{t('fileKeeper.warningText')}
             </div>
           </div>
         </div>
@@ -167,7 +169,7 @@ export default function FileKeeperPage() {
 
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!folderPath || keepExts.size === 0}
-            cancelCommand="cancel_keeper" startText="删除其他文件" processingText="处理中..."
+            cancelCommand="cancel_keeper" startText={t('fileKeeper.startDelete')} processingText={t('pages.processing')}
             onCancelLog={addCancelLog} />
 
           

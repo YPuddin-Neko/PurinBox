@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
+import { useTranslation } from 'react-i18next';
 import { Layers, FolderOpen } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
@@ -10,12 +11,13 @@ import ProcessButton from '../components/ProcessButton';
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 
-const bgOptions = [
-  { value: 'white', label: '白色背景', desc: '用白色填充透明区域，适用于大部分训练场景', color: '#e8eaf0' },
-  { value: 'black', label: '黑色背景', desc: '用黑色填充透明区域', color: '#5a5e78' },
-];
-
 export default function AlphaConvertPage() {
+  const { t } = useTranslation();
+
+  const bgOptions = [
+    { value: 'white', label: t('alphaConvert.whiteBg'), desc: t('alphaConvert.whiteBgDesc'), color: '#e8eaf0' },
+    { value: 'black', label: t('alphaConvert.blackBg'), desc: t('alphaConvert.blackBgDesc'), color: '#5a5e78' },
+  ];
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [background, setBackground] = useState('white');
@@ -45,12 +47,12 @@ export default function AlphaConvertPage() {
   }, []);
 
   const selectInputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择输入文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
     if (selected) setInputPath(selected as string);
   };
 
   const selectOutputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择输出文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') });
     if (selected) setOutputPath(selected as string);
   };
 
@@ -59,16 +61,16 @@ export default function AlphaConvertPage() {
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
     setProcessing(true);
-    addTask('alpha', '转换透明通道');
+    addTask('alpha', t('alphaConvert.taskName'));
     setProgress(0); setProgressCurrent(0); setProgressTotal(0);
     setIsDone(false); setHasError(false);
-    setLogs([{ time: getTimeStr(), message: `开始检测并转换透明通道 (背景: ${background === 'white' ? '白色' : '黑色'})`, status: 'info' }]);
+    setLogs([{ time: getTimeStr(), message: t('alphaConvert.startMsg', { bg: background === 'white' ? t('alphaConvert.bgWhite') : t('alphaConvert.bgBlack') }), status: 'info' }]);
     try {
       await invoke<ProcessResult>('convert_alpha', {
         options: { input_path: inputPath, output_path: outputPath, background },
       });
     } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `错误: ${String(e)}`, status: 'error' }]);
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true); setIsDone(true);
     } finally {
       setProcessing(false);
@@ -83,28 +85,28 @@ export default function AlphaConvertPage() {
       <div className="page-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <Layers style={{ width: 28, height: 28, color: '#c084fc' }} />
-          <h1 className="page-title">转换透明通道</h1>
+          <h1 className="page-title">{t('alphaConvert.title')}</h1>
         </div>
-        <p className="page-subtitle">检测图片是否包含透明通道，并将透明区域转换为指定背景色</p>
+        <p className="page-subtitle">{t('alphaConvert.subtitle')}</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">路径设置</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">输入路径</label>
+                <label className="form-label">{t('pages.inputPathShort')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择图片所在文件夹..." value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
               <div className="form-group">
-                <label className="form-label">输出路径</label>
+                <label className="form-label">{t('pages.outputPath')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择输出文件夹..." value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
+                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
               </div>
@@ -113,7 +115,7 @@ export default function AlphaConvertPage() {
 
           {/* 背景色 */}
           <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">透明区域填充</span></div>
+            <div className="tool-panel-header"><span className="tool-panel-title">{t('alphaConvert.fillArea')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               {bgOptions.map((opt) => (
                 <div key={opt.value} onClick={() => setBackground(opt.value)} style={{
@@ -145,7 +147,7 @@ export default function AlphaConvertPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!inputPath || !outputPath}
-            cancelCommand="cancel_alpha" startText="开始转换" processingText="处理中..."
+            cancelCommand="cancel_alpha" startText={t('alphaConvert.startConvert')} processingText={t('pages.processing')}
             onCancelLog={addCancelLog} />
           <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
         </div>

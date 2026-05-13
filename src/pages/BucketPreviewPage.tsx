@@ -13,6 +13,7 @@ import {
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface BucketImageInfo {
   path: string;
@@ -53,6 +54,7 @@ function bucketColor(ratio: number): string {
 }
 
 export default function BucketPreviewPage() {
+  const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [resWidth, setResWidth] = useState(1024);
   const [resHeight, setResHeight] = useState(1024);
@@ -93,12 +95,12 @@ export default function BucketPreviewPage() {
   }, []);
 
   const selectInputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择训练集图片文件夹' });
+    const selected = await open({ directory: true, multiple: false, title: t('bucketPreview.selectDataset') });
     if (selected) setInputPath(selected as string);
   };
 
   const selectExportFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择分桶导出路径' });
+    const selected = await open({ directory: true, multiple: false, title: t('bucketPreview.selectExport') });
     if (selected) setExportPath(selected as string);
   };
 
@@ -107,7 +109,7 @@ export default function BucketPreviewPage() {
     setAnalyzing(true);
     setAnalysis(null);
     setScanProgress(0);
-    setScanMsg('扫描中...');
+    setScanMsg(t('bucketPreview.scanning'));
     setExpandedBuckets(new Set());
     setBucketPage(0);
     try {
@@ -116,7 +118,7 @@ export default function BucketPreviewPage() {
       });
       setAnalysis(result);
     } catch (e: any) {
-      setScanMsg(`错误: ${String(e)}`);
+      setScanMsg(`${t('pages.errorPrefix')}: ${String(e)}`);
     } finally {
       setAnalyzing(false);
     }
@@ -134,7 +136,7 @@ export default function BucketPreviewPage() {
       const msg = await invoke<string>('export_buckets', { analysis, outputPath: exportPath, repeats });
       showToast(msg, 'success');
     } catch (e: any) {
-      showToast(`导出失败: ${String(e)}`, 'error');
+      showToast(`${t('bucketPreview.exportFailed')}: ${String(e)}`, 'error');
     } finally {
       setExporting(false);
     }
@@ -169,34 +171,34 @@ export default function BucketPreviewPage() {
       <div className="page-header" style={{ flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
           <Grid3X3 style={{ width: 28, height: 28, color: '#f59e0b' }} />
-          <h1 className="page-title">分桶预览</h1>
+          <h1 className="page-title">{t('bucketPreview.title')}</h1>
         </div>
-        <p className="page-subtitle">预览训练集图片的 Bucket 分桶结果</p>
+        <p className="page-subtitle">{t('bucketPreview.subtitle')}</p>
       </div>
 
       {/* Params */}
       <div className="tool-panel" style={{ flexShrink: 0 }}>
-        <div className="tool-panel-header"><span className="tool-panel-title">参数设置</span></div>
+        <div className="tool-panel-header"><span className="tool-panel-title">{t('bucketPreview.paramSettings')}</span></div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           <div className="form-group">
-            <label className="form-label">训练集文件夹</label>
+            <label className="form-label">{t('bucketPreview.datasetFolder')}</label>
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-              <input className="form-input" placeholder="选择训练集图片所在文件夹..." value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
+              <input className="form-input" placeholder={t('bucketPreview.datasetPlaceholder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
               <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
             </div>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr) auto', gap: 8, alignItems: 'end' }}>
             <div>
-              <label className="form-label" style={{ fontSize: 10 }}>分辨率宽</label>
+              <label className="form-label" style={{ fontSize: 10 }}>{t('bucketPreview.resWidth')}</label>
               <input className="form-input" type="number" value={resWidth} onChange={e => setResWidth(Number(e.target.value))} min={64} step={64} style={{ height: 32 }} />
             </div>
             <div>
-              <label className="form-label" style={{ fontSize: 10 }}>分辨率高</label>
+              <label className="form-label" style={{ fontSize: 10 }}>{t('bucketPreview.resHeight')}</label>
               <input className="form-input" type="number" value={resHeight} onChange={e => setResHeight(Number(e.target.value))} min={64} step={64} style={{ height: 32 }} />
             </div>
             <div style={{ position: 'relative' }}>
-              <label className="form-label" style={{ fontSize: 10, color: stepsError ? '#ef4444' : undefined }}>桶分辨率划分单位</label>
+              <label className="form-label" style={{ fontSize: 10, color: stepsError ? '#ef4444' : undefined }}>{t('bucketPreview.stepsLabel')}</label>
               <input className="form-input" type="number" value={steps} onChange={e => setSteps(Number(e.target.value))} min={32} step={32} style={{
                 height: 32,
                 borderColor: stepsError ? '#ef4444' : undefined,
@@ -205,7 +207,7 @@ export default function BucketPreviewPage() {
               {stepsError && <div style={{
                 position: 'absolute', top: '100%', left: 0, marginTop: 2,
                 fontSize: 9, color: '#ef4444', whiteSpace: 'nowrap',
-              }}>最小 32，且必须是 64 的倍数</div>}
+              }}>{t('bucketPreview.stepsError')}</div>}
             </div>
             <div>
               <label className="form-label" style={{ fontSize: 10 }}>Repeats</label>
@@ -221,7 +223,7 @@ export default function BucketPreviewPage() {
               cursor: 'pointer', userSelect: 'none', flexShrink: 0,
               transition: 'all 0.2s',
             }}>
-              <span style={{ fontSize: 10, color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>不使用桶放大</span>
+              <span style={{ fontSize: 10, color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>{t('bucketPreview.noUpscale')}</span>
               <div style={{
                 width: 30, height: 16, borderRadius: 8, transition: 'all 0.2s',
                 background: noUpscale ? 'var(--color-accent-primary)' : 'var(--color-border)',
@@ -239,7 +241,7 @@ export default function BucketPreviewPage() {
             </div>}
             {!analyzing && <div style={{ flex: 1 }} />}
             <button className="btn btn-primary" style={{ height: 34, padding: '0 20px', flexShrink: 0 }} onClick={handleAnalyze} disabled={analyzing || !inputPath || stepsError}>
-              {analyzing ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> 预览中...</> : <><Play style={{ width: 14, height: 14 }} /> 开始预览</>}
+              {analyzing ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('bucketPreview.previewing')}</> : <><Play style={{ width: 14, height: 14 }} /> {t('bucketPreview.startPreview')}</>}
             </button>
           </div>
         </div>
@@ -252,11 +254,11 @@ export default function BucketPreviewPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0, marginBottom: 'var(--space-3)' }}>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#4ade80' }} />
-              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{analysis.bucket_count} 个桶</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('bucketPreview.nBuckets', { n: analysis.bucket_count })}</span>
             </div>
-            <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{analysis.total_images} 张图片</span>
-            <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>总 count: {analysis.total_count}</span>
-            {analysis.skipped.length > 0 && <span style={{ fontSize: 11, color: '#f87171' }}>⚠ {analysis.skipped.length} 个文件读取失败</span>}
+            <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.nImages', { n: analysis.total_images })}</span>
+            <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.totalCount', { n: analysis.total_count })}</span>
+            {analysis.skipped.length > 0 && <span style={{ fontSize: 11, color: '#f87171' }}>{t('bucketPreview.readFail', { n: analysis.skipped.length })}</span>}
 
           </div>
 
@@ -273,7 +275,7 @@ export default function BucketPreviewPage() {
                 const isExpanded = expandedBuckets.has(bucket.index);
                 const isLandscape = bucket.bucket_width > bucket.bucket_height;
                 const isPortrait = bucket.bucket_height > bucket.bucket_width;
-                const orientLabel = isLandscape ? '横' : isPortrait ? '竖' : '方';
+                const orientLabel = isLandscape ? t('bucketPreview.orientLandscape') : isPortrait ? t('bucketPreview.orientPortrait') : t('bucketPreview.orientSquare');
                 const maxSide = 34;
                 const ratio = bucket.bucket_width / bucket.bucket_height;
                 const pw = ratio >= 1 ? maxSide : Math.round(maxSide * ratio);
@@ -337,7 +339,7 @@ export default function BucketPreviewPage() {
                         color: 'var(--color-text-tertiary)', textAlign: 'center', lineHeight: 1.3,
                         transition: 'font-size 0.3s ease',
                       }}>
-                        {bucket.image_count} 张 · count {bucket.total_count}
+                        {bucket.image_count} {t('bucketPreview.nImagesShort', { n: '' }).trim()} · count {bucket.total_count}
                       </div>
                       {/* Mini bar — hides when expanded */}
                       <div style={{
@@ -424,7 +426,7 @@ export default function BucketPreviewPage() {
                 <ChevronRight style={{ width: 14, height: 14 }} />
               </button>
               <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-                共 {analysis.buckets.length} 个桶
+                {t('bucketPreview.allBuckets', { n: analysis.buckets.length })}
               </span>
             </div>
           )}
@@ -448,15 +450,15 @@ export default function BucketPreviewPage() {
             }}>
               {enableExport && <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 5L4 7L8 3" stroke="#fff" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>}
             </div>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)', whiteSpace: 'nowrap' }}>导出分桶结果</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)', whiteSpace: 'nowrap' }}>{t('bucketPreview.exportResult')}</span>
             {enableExport && (
               <>
                 <div style={{ flex: 1, display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder="选择导出目标文件夹..." value={exportPath} onChange={e => setExportPath(e.target.value)} style={{ flex: 1, height: 32, fontSize: 12 }} />
+                  <input className="form-input" placeholder={t('bucketPreview.exportPlaceholder')} value={exportPath} onChange={e => setExportPath(e.target.value)} style={{ flex: 1, height: 32, fontSize: 12 }} />
                   <button className="btn btn-secondary" onClick={selectExportFolder} style={{ height: 32 }}><FolderOpen style={{ width: 14, height: 14 }} /></button>
                 </div>
                 <button className="btn btn-primary" style={{ height: 32, padding: '0 16px', fontSize: 12, whiteSpace: 'nowrap' }} onClick={handleExport} disabled={exporting || !exportPath}>
-                  {exporting ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> 导出中...</> : <><Download style={{ width: 14, height: 14 }} /> 导出</>}
+                  {exporting ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('bucketPreview.exporting')}</> : <><Download style={{ width: 14, height: 14 }} /> {t('bucketPreview.export')}</>}
                 </button>
               </>
             )}
@@ -469,7 +471,7 @@ export default function BucketPreviewPage() {
       {!analysis && !analyzing && (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, opacity: 0.5 }}>
           <ImageIcon style={{ width: 48, height: 48, color: 'var(--color-text-tertiary)' }} />
-          <span style={{ fontSize: 14, color: 'var(--color-text-tertiary)' }}>设置参数后点击"开始预览"查看分桶结果</span>
+          <span style={{ fontSize: 14, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.emptyHint')}</span>
         </div>
       )}
     </div>
