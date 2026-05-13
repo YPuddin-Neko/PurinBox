@@ -30,8 +30,7 @@ jobs:
           name: 'PurinBox ${{ github.ref_name }}'
           draft: false
           prerelease: false
-          body: |
-            修复一些小 bug
+          generate_release_notes: true
 
   # 2. 构建 Windows
   build-windows:
