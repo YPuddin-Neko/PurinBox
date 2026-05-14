@@ -69,10 +69,6 @@ const navSections: NavSection[] = [
       { id: 'dataset-balancer', labelKey: 'sidebar.datasetBalancer', icon: <Scale />, path: '/dataset-balancer' },
     ],
   },
-  {
-    titleKey: 'sidebar.sectionSystem',
-    items: [{ id: 'settings', labelKey: 'sidebar.settings', icon: <Settings />, path: '/settings' }],
-  },
 ];
 
 export default function Sidebar() {
@@ -141,13 +137,21 @@ export default function Sidebar() {
           </div>
         ))}
       </nav>
-      <div className="sidebar-version" title={dotTitle} onClick={handleVersionClick}
-        style={{ cursor: updateStatus === 'update' || updateStatus === 'error' ? 'pointer' : 'default' }}>
-        <div className="sidebar-version-dot" style={{ background: dotColor }} />
-        <span>v{appVersion} · Release{updateStatus === 'update' ? ` → v${latestVersion}` : ''}</span>
-      </div>
       <div className="sidebar-toggle">
         <button className="sidebar-toggle-btn" onClick={() => setCollapsed(!collapsed)} title={collapsed ? t('sidebar.expandMenu') : t('sidebar.collapseMenu')}><PanelLeftClose /><span className="sidebar-item-label">{collapsed ? t('sidebar.expand') : t('sidebar.collapse')}</span></button>
+      </div>
+      <div className="sidebar-toggle" style={{borderTop: 'none', paddingTop: 0}}>
+        <NavLink to="/settings"
+          className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
+          style={{margin: 0, width: '100%'}}>
+          <span className="sidebar-item-icon"><Settings /></span>
+          <span className="sidebar-item-label">{t('sidebar.settings')}</span>
+        </NavLink>
+      </div>
+      <div className="sidebar-version" title={dotTitle} onClick={handleVersionClick}
+        style={{ cursor: updateStatus === 'update' || updateStatus === 'error' ? 'pointer' : 'default', background: 'none', border: 'none' }}>
+        <div className="sidebar-version-dot" style={{ background: dotColor }} />
+        <span>v{appVersion} · Release{updateStatus === 'update' ? ` → v${latestVersion}` : ''}</span>
       </div>
     </aside>
   );

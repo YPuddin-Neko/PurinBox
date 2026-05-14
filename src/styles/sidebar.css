@@ -93,7 +93,7 @@
   top: 50%;
   transform: translateY(-50%);
   width: 3px;
-  height: 60%;
+  height: 20px;
   background: var(--color-accent-primary);
   border-radius: 0 var(--radius-full) var(--radius-full) 0;
 }

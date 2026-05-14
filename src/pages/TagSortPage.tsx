@@ -17,16 +17,16 @@ import ProcessButton from '../components/ProcessButton';
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 
-const defaultPrompt = `请对以下tags进行排序，按顺序：角色数量(例如:1girl等)→ 角色名字+特征 → 服装 → 表情细节 → 服装细节 → 视角 → 动作场景 → 其他。
+const defaultPrompt = `Please sort the following tags in this order: character count (e.g. 1girl) → character name → series/source → artist → features → clothing → expression details → clothing details → camera angle/perspective → actions → scene/environment → others.
 
-重要规则：
-1. 只重新排列现有tags的顺序
-2. 不要添加任何新tag，不要删除任何原始tag
-3. 只返回tag，逗号分隔
+Important rules:
+1. Only rearrange the order of existing tags
+2. Do NOT add any new tags, do NOT remove any original tags
+3. Return ONLY the sorted tags, comma-separated
 
-需要排序的tags: {tags}
+Tags to sort: {tags}
 
-排序后的tags:`;
+Sorted tags:`;
 
 export default function TagSortPage() {
   const { t } = useTranslation();

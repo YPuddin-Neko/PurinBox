@@ -389,7 +389,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <Sparkles style={{width:14,height:14,color:'#22d3ee'}} />
               <span style={ptitle}>{t('jsonTag.jsonEditor')}</span>
-              {images.length>0&&<span style={{fontSize:9,padding:'2px 8px',borderRadius:10,background:simplified?'rgba(34,197,94,0.15)':'rgba(99,102,241,0.15)',color:simplified?'#22c55e':'#818cf8',fontWeight:700,border:`1px solid ${simplified?'rgba(34,197,94,0.25)':'rgba(99,102,241,0.25)'}`}}>{simplified?'Simplified':'Full'}</span>}
+              {images.length>0&&<span style={{fontSize:9,padding:'2px 8px',borderRadius:10,background:simplified?'rgba(34,197,94,0.15)':'rgba(99,102,241,0.15)',color:simplified?'#22c55e':'#818cf8',fontWeight:700,border:`1px solid ${simplified?'rgba(34,197,94,0.25)':'rgba(99,102,241,0.25)'}`}}>{simplified?t('jsonTag.simplified'):t('jsonTag.full')}</span>}
             </div>
             <div style={{display:'flex',alignItems:'center',gap:6}}>
               <button className="btn btn-ghost btn-sm" onClick={handleTranslate} disabled={!cur||translating} title={t('jsonTag.translateTags')} style={{gap:4,fontSize:10,height:24,padding:'0 8px',color:Object.keys(translations).length>0?'#60a5fa':undefined}}>

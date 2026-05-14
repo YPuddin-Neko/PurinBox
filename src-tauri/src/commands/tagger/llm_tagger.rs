@@ -194,10 +194,30 @@ pub async fn start_llm_tagging(
                     parent.join(format!("{}.txt", stem))
                 };
                 let content = if options.output_format == "json" {
-                    if options.json_simplified {
-                        serde_json::to_string_pretty(&serde_json::json!({ "nl": tag_text })).unwrap_or_default()
+                    // 尝试解析 LLM 返回的 JSON（结构化输出）
+                    // 先清理可能的 markdown 代码块包裹
+                    let cleaned = tag_text.trim();
+                    let cleaned = if cleaned.starts_with("```json") {
+                        cleaned.strip_prefix("```json").unwrap_or(cleaned)
+                            .strip_suffix("```").unwrap_or(cleaned)
+                            .trim()
+                    } else if cleaned.starts_with("```") {
+                        cleaned.strip_prefix("```").unwrap_or(cleaned)
+                            .strip_suffix("```").unwrap_or(cleaned)
+                            .trim()
                     } else {
-                        serde_json::to_string_pretty(&serde_json::json!({ "ai_output": { "nl": tag_text } })).unwrap_or_default()
+                        cleaned
+                    };
+                    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(cleaned) {
+                        // LLM 直接返回了有效 JSON，格式化输出
+                        serde_json::to_string_pretty(&json_val).unwrap_or_default()
+                    } else {
+                        // 无法解析为 JSON，按纯文本包裹到 nl 字段
+                        if options.json_simplified {
+                            serde_json::to_string_pretty(&serde_json::json!({ "nl": tag_text })).unwrap_or_default()
+                        } else {
+                            serde_json::to_string_pretty(&serde_json::json!({ "ai_output": { "nl": tag_text } })).unwrap_or_default()
+                        }
                     }
                 } else {
                     tag_text

@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Real-ESRGAN 超分推理脚本 (自包含，仅依赖 torch + cv2)
-内嵌 RRDBNet / SRVGGNetCompact 架构定义和 tile 推理逻辑。
+"""Real-ESRGAN 超分推理脚本 (onnxruntime 版本)
+使用 onnxruntime 进行推理，支持 CUDA / CoreML / CPU。
+不依赖 PyTorch。
 """
 
-import argparse, json, math, os, sys, traceback
+import argparse, json, math, os, sys
 import cv2
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 # ── JSON 输出 ──────────────────────────────────────
 
@@ -25,88 +23,33 @@ def emit_progress(cur, total, fname, status, msg=""):
     emit({"type": "progress", "current": cur, "total": total,
           "filename": fname, "status": status, "message": msg or f"[{cur}/{total}] {fname}"})
 
-# ── 模型架构 ───────────────────────────────────────
+# ── 模型配置 ───────────────────────────────────────
 
-class ResidualDenseBlock(nn.Module):
-    def __init__(self, nf=64, gc=32):
-        super().__init__()
-        self.conv1 = nn.Conv2d(nf, gc, 3, 1, 1)
-        self.conv2 = nn.Conv2d(nf + gc, gc, 3, 1, 1)
-        self.conv3 = nn.Conv2d(nf + 2 * gc, gc, 3, 1, 1)
-        self.conv4 = nn.Conv2d(nf + 3 * gc, gc, 3, 1, 1)
-        self.conv5 = nn.Conv2d(nf + 4 * gc, nf, 3, 1, 1)
-        self.act = nn.LeakyReLU(0.2, True)
+MODEL_CONFIGS = {
+    "realesrgan-x4plus": {
+        "scale": 4,
+        "onnx_file": "RealESRGAN_x4plus.onnx",
+    },
+    "realesrgan-x4plus-anime": {
+        "scale": 4,
+        "onnx_file": "RealESRGAN_x4plus_anime_6B.onnx",
+    },
+}
 
-    def forward(self, x):
-        x1 = self.act(self.conv1(x))
-        x2 = self.act(self.conv2(torch.cat((x, x1), 1)))
-        x3 = self.act(self.conv3(torch.cat((x, x1, x2), 1)))
-        x4 = self.act(self.conv4(torch.cat((x, x1, x2, x3), 1)))
-        x5 = self.conv5(torch.cat((x, x1, x2, x3, x4), 1))
-        return x5 * 0.2 + x
-
-class RRDB(nn.Module):
-    def __init__(self, nf, gc=32):
-        super().__init__()
-        self.rdb1 = ResidualDenseBlock(nf, gc)
-        self.rdb2 = ResidualDenseBlock(nf, gc)
-        self.rdb3 = ResidualDenseBlock(nf, gc)
-
-    def forward(self, x):
-        out = self.rdb3(self.rdb2(self.rdb1(x)))
-        return out * 0.2 + x
-
-class RRDBNet(nn.Module):
-    def __init__(self, num_in_ch=3, num_out_ch=3, scale=4, num_feat=64, num_block=23, num_grow_ch=32):
-        super().__init__()
-        self.scale = scale
-        self.conv_first = nn.Conv2d(num_in_ch, num_feat, 3, 1, 1)
-        self.body = nn.Sequential(*[RRDB(num_feat, num_grow_ch) for _ in range(num_block)])
-        self.conv_body = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
-        self.conv_up1 = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
-        self.conv_up2 = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
-        self.conv_hr = nn.Conv2d(num_feat, num_feat, 3, 1, 1)
-        self.conv_last = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
-        self.lrelu = nn.LeakyReLU(0.2, True)
-
-    def forward(self, x):
-        feat = self.conv_first(x)
-        feat = feat + self.conv_body(self.body(feat))
-        feat = self.lrelu(self.conv_up1(F.interpolate(feat, scale_factor=2, mode="nearest")))
-        feat = self.lrelu(self.conv_up2(F.interpolate(feat, scale_factor=2, mode="nearest")))
-        return self.conv_last(self.lrelu(self.conv_hr(feat)))
-
-class SRVGGNetCompact(nn.Module):
-    def __init__(self, num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=16, upscale=4, act_type="prelu"):
-        super().__init__()
-        self.upscale = upscale
-        body = [nn.Conv2d(num_in_ch, num_feat, 3, 1, 1)]
-        body.append(nn.PReLU(num_feat) if act_type == "prelu" else nn.LeakyReLU(0.1, True))
-        for _ in range(num_conv):
-            body.append(nn.Conv2d(num_feat, num_feat, 3, 1, 1))
-            body.append(nn.PReLU(num_feat) if act_type == "prelu" else nn.LeakyReLU(0.1, True))
-        body.append(nn.Conv2d(num_feat, num_out_ch * upscale * upscale, 3, 1, 1))
-        self.body = nn.ModuleList(body)
-        self.upsampler = nn.PixelShuffle(upscale)
-
-    def forward(self, x):
-        out = x
-        for m in self.body:
-            out = m(out)
-        out = self.upsampler(out)
-        return out + F.interpolate(x, scale_factor=self.upscale, mode="nearest")
+SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
 
 # ── Tile 推理 ──────────────────────────────────────
 
-def tile_process(img_tensor, model, scale, tile_size=0, tile_pad=10, device="cpu", half=False):
-    """分块推理 + 重叠融合，避免拼接痕迹"""
+def tile_process(img_np, session, input_name, output_name, scale, tile_size=0, tile_pad=10):
+    """分块推理 + 重叠融合，避免拼接痕迹
+    img_np: (1, 3, H, W) float32 numpy array
+    """
     if tile_size <= 0:
-        with torch.no_grad():
-            return model(img_tensor)
+        return session.run([output_name], {input_name: img_np})[0]
 
-    _, _, h, w = img_tensor.shape
+    _, _, h, w = img_np.shape
     out_h, out_w = h * scale, w * scale
-    output = img_tensor.new_zeros((1, 3, out_h, out_w))
+    output = np.zeros((1, 3, out_h, out_w), dtype=np.float32)
 
     tiles_y = math.ceil(h / tile_size)
     tiles_x = math.ceil(w / tile_size)
@@ -120,9 +63,8 @@ def tile_process(img_tensor, model, scale, tile_size=0, tile_pad=10, device="cpu
             in_y0 = max(ofs_y - tile_pad, 0)
             in_y1 = min(ofs_y + tile_size + tile_pad, h)
 
-            tile = img_tensor[:, :, in_y0:in_y1, in_x0:in_x1]
-            with torch.no_grad():
-                out_tile = model(tile)
+            tile = img_np[:, :, in_y0:in_y1, in_x0:in_x1]
+            out_tile = session.run([output_name], {input_name: tile})[0]
 
             # 从 out_tile 中截取不含 pad 的区域
             crop_x0 = (ofs_x - in_x0) * scale
@@ -136,64 +78,67 @@ def tile_process(img_tensor, model, scale, tile_size=0, tile_pad=10, device="cpu
             out_y1 = min(out_y0 + tile_size * scale, out_h)
 
             output[:, :, out_y0:out_y1, out_x0:out_x1] = out_tile[:, :, crop_y0:crop_y1, crop_x0:crop_x1]
+
     return output
 
-# ── 模型配置 ───────────────────────────────────────
+# ── 设备检测 ───────────────────────────────────────
 
-MODEL_CONFIGS = {
-    "realesrgan-x4plus": {
-        "build": lambda: RRDBNet(3, 3, 4, 64, 23, 32),
-        "scale": 4,
-        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
-        "file": "RealESRGAN_x4plus.pth",
-    },
-    "realesrgan-x4plus-anime": {
-        "build": lambda: RRDBNet(3, 3, 4, 64, 6, 32),
-        "scale": 4,
-        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
-        "file": "RealESRGAN_x4plus_anime_6B.pth",
-    },
-    "realesr-animevideov3": {
-        "build": lambda: SRVGGNetCompact(3, 3, 64, 16, 4, "prelu"),
-        "scale": 4,
-        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
-        "file": "realesr-animevideov3.pth",
-    },
-}
+def create_session(onnx_path, device):
+    """创建 onnxruntime InferenceSession，自动选择最佳 EP"""
+    import onnxruntime as ort
 
-SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
+    # 必须使用绝对路径，否则 onnxruntime 无法定位 .onnx.data 外部权重文件
+    onnx_path = os.path.abspath(onnx_path)
+
+    providers = []
+    actual_device = "cpu"
+
+    if device != "cpu":
+        available = ort.get_available_providers()
+
+        # CUDA (Windows/Linux)
+        if "CUDAExecutionProvider" in available:
+            providers.append("CUDAExecutionProvider")
+            actual_device = "cuda"
+        # CoreML (macOS Apple Silicon)
+        elif "CoreMLExecutionProvider" in available:
+            providers.append(("CoreMLExecutionProvider", {
+                "MLComputeUnits": "ALL",  # Use ANE + GPU + CPU
+            }))
+            actual_device = "coreml"
+
+    providers.append("CPUExecutionProvider")
+
+    sess_opts = ort.SessionOptions()
+    sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+    try:
+        session = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=providers)
+    except Exception as e:
+        # GPU EP failed (e.g. CoreML doesn't support some ops) — fall back to CPU
+        emit_log(f"GPU 加载失败 ({e})，回退到 CPU")
+        actual_device = "cpu"
+        session = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=["CPUExecutionProvider"])
+
+    active_ep = session.get_providers()[0] if session.get_providers() else "CPUExecutionProvider"
+
+    if "CUDA" in active_ep:
+        try:
+            import subprocess
+            r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                               capture_output=True, text=True, timeout=5)
+            gpu_name = r.stdout.strip().split("\n")[0] if r.returncode == 0 else "NVIDIA GPU"
+        except Exception:
+            gpu_name = "NVIDIA GPU"
+        emit_log(f"使用 GPU: {gpu_name} (CUDA)")
+    elif "CoreML" in active_ep:
+        emit_log("使用 GPU: Apple Silicon (CoreML)")
+    else:
+        emit_log("使用 CPU 推理")
+
+    return session, actual_device
 
 # ── 工具函数 ───────────────────────────────────────
-
-def weights_dir():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "realesrgan_weights")
-
-def download_weights(url, dest):
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    if os.path.exists(dest):
-        return
-    emit_log(f"正在下载模型权重: {os.path.basename(dest)}")
-    torch.hub.download_url_to_file(url, dest, progress=False)
-    emit_log("模型权重下载完成")
-
-def detect_device(requested):
-    if requested == "cpu":
-        return "cpu"
-    if requested == "cuda" and torch.cuda.is_available():
-        emit_log(f"使用 GPU: {torch.cuda.get_device_name(0)} (CUDA)")
-        return "cuda"
-    if requested == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        emit_log("使用 GPU: Apple Silicon (MPS)")
-        return "mps"
-    if requested == "auto":
-        if torch.cuda.is_available():
-            emit_log(f"使用 GPU: {torch.cuda.get_device_name(0)} (CUDA)")
-            return "cuda"
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            emit_log("使用 GPU: Apple Silicon (MPS)")
-            return "mps"
-    emit_log("使用 CPU 推理")
-    return "cpu"
 
 def collect_images(path):
     if os.path.isfile(path):
@@ -229,37 +174,26 @@ def main():
     emit_log(f"找到 {total} 张图片")
     os.makedirs(args.output, exist_ok=True)
 
-    # 设备
-    device = detect_device(args.device)
-    half = device == "cuda"
+    # 加载 ONNX 模型
+    wdir = args.weights_dir if args.weights_dir else os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "models", "realesrgan_weights")
+    onnx_path = os.path.join(wdir, cfg["onnx_file"])
 
-    # 下载权重
-    wdir = args.weights_dir if args.weights_dir else weights_dir()
-    wpath = os.path.join(wdir, cfg["file"])
-    try:
-        download_weights(cfg["url"], wpath)
-    except Exception as e:
-        emit_error(f"模型权重下载失败: {e}")
+    if not os.path.exists(onnx_path):
+        emit_error(f"模型文件不存在: {onnx_path}")
         sys.exit(1)
 
-    # 构建模型
     emit_log("正在加载模型...")
-    model = cfg["build"]()
-    loadnet = torch.load(wpath, map_location="cpu", weights_only=True)
-    for key in ("params_ema", "params"):
-        if key in loadnet:
-            loadnet = loadnet[key]
-            break
-    model.load_state_dict(loadnet, strict=True)
-    model.eval().to(device)
-    if half:
-        model.half()
+    session, device = create_session(onnx_path, args.device)
 
+    input_name = session.get_inputs()[0].name
+    output_name = session.get_outputs()[0].name
     native_scale = cfg["scale"]
     out_scale = args.scale
     tile_size = args.tile if args.tile > 0 else 0
 
-    emit_log(f"模型: {args.model}, 设备: {device}, 倍率: {out_scale}x")
+    device_name = {"coreml": "CoreML", "cuda": "CUDA", "cpu": "CPU"}.get(device, device)
+    emit_log(f"模型: {args.model}, 设备: {device_name}, 倍率: {out_scale}x")
 
     success, fail = 0, 0
     for i, fpath in enumerate(files):
@@ -280,19 +214,36 @@ def main():
             else:
                 has_alpha = False
 
-            # BGR → RGB（模型期望 RGB 输入）
+            # BGR → RGB
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             img_f = img.astype(np.float32) / 255.0
-            tensor = torch.from_numpy(img_f).permute(2, 0, 1).unsqueeze(0).to(device)
-            if half:
-                tensor = tensor.half()
+            # HWC → NCHW
+            tensor = np.transpose(img_f, (2, 0, 1))[np.newaxis, ...]
 
             # 推理
-            output = tile_process(tensor, model, native_scale, tile_size, 10, device, half)
+            if args.tta:
+                # TTA: 8 种变换取平均
+                outputs = []
+                for flip_h in [False, True]:
+                    for rot in [0, 1, 2, 3]:
+                        t = tensor.copy()
+                        if flip_h:
+                            t = t[:, :, :, ::-1].copy()
+                        if rot > 0:
+                            t = np.rot90(t, rot, axes=(2, 3)).copy()
+                        out = tile_process(t, session, input_name, output_name, native_scale, tile_size)
+                        if rot > 0:
+                            out = np.rot90(out, -rot, axes=(2, 3)).copy()
+                        if flip_h:
+                            out = out[:, :, :, ::-1].copy()
+                        outputs.append(out)
+                output = np.mean(outputs, axis=0)
+            else:
+                output = tile_process(tensor, session, input_name, output_name, native_scale, tile_size)
 
-            # 后处理: RGB → BGR（cv2 保存需要 BGR）
-            output = output.squeeze(0).float().clamp(0, 1).cpu().numpy()
-            output = (output.transpose(1, 2, 0) * 255.0).round().astype(np.uint8)
+            # 后处理: NCHW → HWC, RGB → BGR
+            output = output.squeeze(0).clip(0, 1)
+            output = (np.transpose(output, (1, 2, 0)) * 255.0).round().astype(np.uint8)
             output = cv2.cvtColor(output, cv2.COLOR_RGB2BGR)
 
             # 如果目标倍率 != native_scale，resize
@@ -303,7 +254,8 @@ def main():
 
             # alpha 通道处理
             if has_alpha:
-                alpha_up = cv2.resize(alpha, (output.shape[1], output.shape[0]), interpolation=cv2.INTER_LANCZOS4)
+                alpha_up = cv2.resize(alpha, (output.shape[1], output.shape[0]),
+                                      interpolation=cv2.INTER_LANCZOS4)
                 if alpha_up.ndim == 2:
                     alpha_up = alpha_up[:, :, np.newaxis]
                 output = np.concatenate([output, alpha_up], axis=2)
