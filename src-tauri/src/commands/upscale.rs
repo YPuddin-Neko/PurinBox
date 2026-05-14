@@ -462,14 +462,14 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
     let weights_dir = realesrgan_weights_dir();
     std::fs::create_dir_all(&weights_dir).ok();
 
-    // ONNX models (single file, no external data)
+    // ONNX models (single file, weights embedded)
     let onnx_models: &[(&str, &str)] = &[
         ("RealESRGAN_x4plus.onnx", "https://github.com/YPuddin-Neko/PurinBox/releases/download/models/RealESRGAN_x4plus.onnx"),
         ("RealESRGAN_x4plus_anime_6B.onnx", "https://github.com/YPuddin-Neko/PurinBox/releases/download/models/RealESRGAN_x4plus_anime_6B.onnx"),
     ];
 
     let client = crate::commands::proxy_config::build_http_client()
-        .user_agent("PurinBox/0.3.5")
+        .user_agent("PurinBox/0.3.7")
         .timeout(std::time::Duration::from_secs(600))
         .build()
         .map_err(|e| format!("HTTP 客户端失败: {}", e))?;
@@ -839,8 +839,8 @@ async fn run_python_upscale(
             for line in reader.lines().flatten() {
                 let clean = line.trim();
                 if clean.is_empty() { continue; }
-                // 过滤 onnxruntime 内部日志（CoreML GetCapability 等）
-                if clean.contains("[W:onnxruntime:") || clean.contains("[E:onnxruntime:") || clean.contains("[I:onnxruntime:") {
+                // 过滤 onnxruntime 内部日志（仅 Warning/Info，保留 Error）
+                if clean.contains("[W:onnxruntime:") || clean.contains("[I:onnxruntime:") {
                     continue;
                 }
                 let _ = app_err.emit("upscale-progress", ProgressEvent {

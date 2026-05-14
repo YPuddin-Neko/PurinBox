@@ -11,7 +11,11 @@ import numpy as np
 # ── JSON 输出 ──────────────────────────────────────
 
 def emit(data):
-    print(json.dumps(data, ensure_ascii=False), flush=True)
+    # Windows 中文系统 stdout 默认 GBK，无法编码 ✓✗ 等 Unicode
+    # 直接写 bytes 到 stdout.buffer 避免编码错误
+    line = json.dumps(data, ensure_ascii=False) + "\n"
+    sys.stdout.buffer.write(line.encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 def emit_log(msg):
     emit({"type": "log", "message": msg})
@@ -87,7 +91,8 @@ def create_session(onnx_path, device):
     """创建 onnxruntime InferenceSession，自动选择最佳 EP"""
     import onnxruntime as ort
 
-    # 必须使用绝对路径，否则 onnxruntime 无法定位 .onnx.data 外部权重文件
+    emit_log(f"onnxruntime {ort.__version__}, 可用 EP: {ort.get_available_providers()}")
+
     onnx_path = os.path.abspath(onnx_path)
 
     providers = []
@@ -149,6 +154,10 @@ def collect_images(path):
 # ── 主函数 ─────────────────────────────────────────
 
 def main():
+    # Windows: 注册 CUDA DLL 目录（必须在 import onnxruntime 之前）
+    from cuda_dll_helper import register_cuda_dlls
+    register_cuda_dlls()
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)
@@ -271,4 +280,11 @@ def main():
     emit({"type": "done", "success": success, "fail": fail, "total": total})
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        import traceback
+        emit_error(f"脚本异常: {e}\n{traceback.format_exc()}")
+        sys.exit(1)

@@ -9,7 +9,9 @@ import numpy as np
 # ── JSON 输出 ──────────────────────────────────────
 
 def emit(data):
-    print(json.dumps(data, ensure_ascii=False), flush=True)
+    line = json.dumps(data, ensure_ascii=False) + "\n"
+    sys.stdout.buffer.write(line.encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 def emit_log(msg):
     emit({"type": "log", "message": msg})

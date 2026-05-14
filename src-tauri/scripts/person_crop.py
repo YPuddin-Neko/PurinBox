@@ -276,18 +276,24 @@ def process_image(models, image_path, options, output_dir):
     
     return {'status': 'success', 'message': f'裁切: {", ".join(results)}'}
 
+def _emit(data):
+    """输出 JSON line 到 stdout (Windows GBK 安全)"""
+    line = json.dumps(data) + "\n"
+    sys.stdout.buffer.write(line.encode("utf-8"))
+    sys.stdout.buffer.flush()
+
 def main():
     """主循环: stdin 读取 JSON, stdout 输出结果"""
     # 读取初始化配置
     init_line = sys.stdin.readline().strip()
     if not init_line:
-        print(json.dumps({"error": "未收到初始化配置"}), flush=True)
+        _emit({"error": "未收到初始化配置"})
         return
     
     try:
         config = json.loads(init_line)
     except json.JSONDecodeError as e:
-        print(json.dumps({"error": f"JSON 解析失败: {e}"}), flush=True)
+        _emit({"error": f"JSON 解析失败: {e}"})
         return
     
     # 加载多个模型
@@ -295,7 +301,7 @@ def main():
     use_gpu = config.get('use_gpu', False)
     
     if not model_paths:
-        print(json.dumps({"error": "未指定模型路径"}), flush=True)
+        _emit({"error": "未指定模型路径"})
         return
     
     models = {}
@@ -305,17 +311,17 @@ def main():
             sys.stderr.flush()
             models[crop_type] = load_model(path, use_gpu)
     except Exception as e:
-        print(json.dumps({"error": f"模型加载失败: {e}"}), flush=True)
+        _emit({"error": f"模型加载失败: {e}"})
         return
     
     loaded_types = list(models.keys())
     sys.stderr.write(f"[person_crop] 已加载 {len(models)} 个模型: {', '.join(loaded_types)}\n")
     sys.stderr.flush()
     
-    print(json.dumps({
+    _emit({
         "status": "ready",
         "models_loaded": loaded_types
-    }), flush=True)
+    })
     
     # 处理循环
     for line in sys.stdin:
@@ -326,12 +332,12 @@ def main():
         try:
             cmd = json.loads(line)
         except json.JSONDecodeError:
-            print(json.dumps({"status": "error", "message": "JSON 解析失败"}), flush=True)
+            _emit({"status": "error", "message": "JSON 解析失败"})
             continue
         
         action = cmd.get('action')
         if action != 'process':
-            print(json.dumps({"status": "error", "message": f"未知操作: {action}"}), flush=True)
+            _emit({"status": "error", "message": f"未知操作: {action}"})
             continue
         
         image_path = cmd.get('image_path', '')
@@ -340,11 +346,11 @@ def main():
         
         try:
             result = process_image(models, image_path, options, output_dir)
-            print(json.dumps(result), flush=True)
+            _emit(result)
         except Exception as e:
             sys.stderr.write(f"[person_crop] 处理失败 {image_path}: {traceback.format_exc()}\n")
             sys.stderr.flush()
-            print(json.dumps({"status": "error", "message": str(e)}), flush=True)
+            _emit({"status": "error", "message": str(e)})
 
 if __name__ == '__main__':
     main()

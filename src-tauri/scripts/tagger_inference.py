@@ -21,17 +21,23 @@ import traceback
 import numpy as np
 from pathlib import Path
 
+def _emit(data):
+    """输出 JSON line 到 stdout (Windows GBK 安全)"""
+    line = json.dumps(data, ensure_ascii=False) + "\n"
+    sys.stdout.buffer.write(line.encode("utf-8"))
+    sys.stdout.buffer.flush()
+
 def log(msg):
     """输出日志到 stdout (JSON line)"""
-    print(json.dumps({"type": "log", "message": msg}), flush=True)
+    _emit({"type": "log", "message": msg})
 
 def error(msg):
     """输出错误到 stdout (JSON line)"""
-    print(json.dumps({"type": "error", "message": msg}), flush=True)
+    _emit({"type": "error", "message": msg})
 
 def result(data):
     """输出结果到 stdout (JSON line)"""
-    print(json.dumps(data), flush=True)
+    _emit(data)
 
 def preprocess_image(image_path, target_size, input_format):
     """预处理图片"""
@@ -366,91 +372,9 @@ def _build_simplified_json(selected_tags):
     return out
 
 def main():
-    # Windows Python 3.8+: 必须在 import onnxruntime 前注册 CUDA DLL 目录
-    # 否则 onnxruntime_providers_cuda.dll 加载时找不到 CUDA/cuDNN 依赖
-    if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
-        cuda_dirs = set()
-
-        def add_dir_with_subdirs(d):
-            """添加目录及其子目录"""
-            if os.path.isdir(d):
-                cuda_dirs.add(d)
-                try:
-                    for sub in os.listdir(d):
-                        sub_path = os.path.join(d, sub)
-                        if os.path.isdir(sub_path):
-                            cuda_dirs.add(sub_path)
-                except PermissionError:
-                    pass
-
-        def read_reg_env(name):
-            """从 Windows 注册表读取环境变量（GUI 进程可能没有最新值）"""
-            import subprocess
-            for root in [r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", r"HKCU\Environment"]:
-                try:
-                    result = subprocess.run(["reg", "query", root, "/v", name],
-                                          capture_output=True, text=True, creationflags=0x08000000)
-                    for line in result.stdout.splitlines():
-                        line = line.strip()
-                        if line.startswith(name):
-                            parts = line.split(None, 2)
-                            if len(parts) >= 3:
-                                return parts[2]
-                except Exception:
-                    pass
-            return None
-
-        # 1. CUDA 路径：从环境变量读取 + 注册表回退
-        cuda_paths = {}
-        for key, val in os.environ.items():
-            if key in ("CUDA_PATH", "CUDA_HOME") or key.startswith("CUDA_PATH_V"):
-                cuda_paths[key] = val
-        # 注册表补充
-        if "CUDA_PATH" not in cuda_paths:
-            reg_val = read_reg_env("CUDA_PATH")
-            if reg_val:
-                cuda_paths["CUDA_PATH"] = reg_val
-
-        for key, val in cuda_paths.items():
-            bin_dir = os.path.join(val, "bin")
-            bin_x64 = os.path.join(val, "bin", "x64")  # cuDNN 9.x
-            lib_x64 = os.path.join(val, "lib", "x64")
-            for d in [bin_dir, bin_x64, lib_x64]:
-                if os.path.isdir(d):
-                    cuda_dirs.add(d)
-
-        # 2. cuDNN 路径：从环境变量读取
-        cudnn_path = os.environ.get("CUDNN_PATH", "")
-        if cudnn_path:
-            # cuDNN 9.x 结构: bin/12.x 子目录
-            add_dir_with_subdirs(os.path.join(cudnn_path, "bin"))
-            add_dir_with_subdirs(os.path.join(cudnn_path, "lib"))
-
-        # 3. 搜索 PATH 中包含 CUDA/cuDNN DLL 的目录 + 子目录
-        for p in os.environ.get("PATH", "").split(os.pathsep):
-            if os.path.isdir(p):
-                try:
-                    for f in os.listdir(p):
-                        fl = f.lower()
-                        if fl.startswith("cudnn") or fl.startswith("cublas") or fl.startswith("cufft") or fl.startswith("nvinfer"):
-                            add_dir_with_subdirs(p)
-                            break
-                except PermissionError:
-                    pass
-
-        # 注册所有目录：同时加到 PATH 和 add_dll_directory
-        # onnxruntime 的 C++ 层用 LoadLibrary 加载 cuDNN，只看 PATH
-        current_path = os.environ.get("PATH", "")
-        new_dirs = []
-        for d in sorted(cuda_dirs):
-            try:
-                os.add_dll_directory(d)
-            except OSError:
-                pass
-            if d not in current_path:
-                new_dirs.append(d)
-        if new_dirs:
-            os.environ["PATH"] = os.pathsep.join(new_dirs) + os.pathsep + current_path
+    # Windows: 注册 CUDA DLL 目录（必须在 import onnxruntime 之前）
+    from cuda_dll_helper import register_cuda_dlls
+    register_cuda_dlls()
 
     import onnxruntime as ort
 
