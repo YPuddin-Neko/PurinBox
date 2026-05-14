@@ -373,6 +373,7 @@ def _build_simplified_json(selected_tags):
 
 def main():
     # Windows: 注册 CUDA DLL 目录（必须在 import onnxruntime 之前）
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from cuda_dll_helper import register_cuda_dlls
     register_cuda_dlls()
 
