@@ -159,7 +159,12 @@ fn engine_binary(engine: &EngineDef) -> PathBuf {
 
 fn is_engine_ready(engine: &EngineDef) -> bool {
     if engine.use_python {
-        return is_python_torch_ready();
+        // Python engines need both PyTorch AND model weights
+        if !is_python_torch_ready() {
+            return false;
+        }
+        // Check if at least one .pth weight file exists in the weights directory
+        return has_realesrgan_weights();
     }
     engine_binary(engine).exists()
 }
@@ -178,6 +183,37 @@ fn is_python_torch_ready() -> bool {
         cmd.creation_flags(0x08000000);
     }
     cmd.output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// 检查 Real-ESRGAN 权重目录是否存在且包含 .pth 文件
+fn has_realesrgan_weights() -> bool {
+    let weights = get_realesrgan_weights_dir();
+    if !weights.exists() {
+        return false;
+    }
+    weights.read_dir()
+        .map(|rd| rd.flatten().any(|e| {
+            e.path().extension().map(|ext| ext == "pth").unwrap_or(false)
+        }))
+        .unwrap_or(false)
+}
+
+/// 获取 Real-ESRGAN 权重目录
+fn get_realesrgan_weights_dir() -> PathBuf {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let base = if cfg!(debug_assertions) {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or(exe_dir)
+    } else {
+        exe_dir
+    };
+    base.join("models").join("realesrgan_weights")
 }
 
 // ===== Commands =====
@@ -232,6 +268,11 @@ pub async fn download_upscale_engine(app: tauri::AppHandle, engine_id: String) -
             status: "done".into(), message: format!("{} 已就绪", engine.name),
         });
         return Ok("already_ready".into());
+    }
+
+    // Python engine: install deps + download model weights
+    if engine.use_python {
+        return download_python_engine(&app, engine).await;
     }
 
     let dest_dir = engine_dir(engine.id);
@@ -385,6 +426,118 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path, _bin_name: &str) -> Result<(), 
 #[tauri::command]
 pub fn cancel_upscale_download() {
     DOWNLOAD_CANCEL.store(true, Ordering::SeqCst);
+}
+
+/// Real-ESRGAN Python 引擎下载: 安装 PyTorch 依赖 + 下载模型权重
+async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> Result<String, String> {
+    let emit = |pct: f32, msg: String| {
+        let _ = app.emit("upscale-download", UpscaleDownloadProgress {
+            downloaded: 0, total: 0, percent: pct, speed_mbps: 0.0,
+            status: "downloading".into(), message: msg,
+        });
+    };
+
+    // Step 1: Ensure Python + PyTorch
+    if !is_python_torch_ready() {
+        emit(5.0, "正在检查 Python 环境...".into());
+        let python = super::python_env::setup_python_env(app).await?;
+
+        emit(10.0, "正在安装 PyTorch + OpenCV（首次约 500MB-2GB）...".into());
+        let p = python.clone();
+        let app2 = app.clone();
+        tokio::task::spawn_blocking(move || {
+            super::python_env::pip_install_with_python(&app2, &p, &["torch", "torchvision", "opencv-python-headless"])
+        }).await
+        .map_err(|e| format!("安装线程异常: {}", e))??;
+        emit(40.0, "PyTorch 安装完成".into());
+    } else {
+        emit(40.0, "PyTorch 已就绪".into());
+    }
+
+    // Step 2: Download model weights
+    let weights_dir = get_realesrgan_weights_dir();
+    std::fs::create_dir_all(&weights_dir).map_err(|e| format!("创建权重目录失败: {}", e))?;
+
+    // Model weight URLs (same as Python script)
+    let weight_files = vec![
+        ("RealESRGAN_x4plus.pth", "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth"),
+        ("RealESRGAN_x4plus_anime_6B.pth", "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"),
+        ("realesr-animevideov3.pth", "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth"),
+    ];
+
+    let client = crate::commands::proxy_config::build_http_client()
+        .user_agent("PurinBox/0.3.1")
+        .timeout(std::time::Duration::from_secs(1200))
+        .build()
+        .map_err(|e| format!("HTTP 客户端失败: {}", e))?;
+
+    let weight_count = weight_files.len();
+    for (idx, (filename, url)) in weight_files.iter().enumerate() {
+        if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
+            return Err("下载已取消".into());
+        }
+
+        let dest = weights_dir.join(filename);
+        if dest.exists() {
+            let base_pct = 40.0 + (idx as f32 + 1.0) / weight_count as f32 * 55.0;
+            emit(base_pct, format!("{} 已存在，跳过", filename));
+            continue;
+        }
+
+        let base_pct = 40.0 + idx as f32 / weight_count as f32 * 55.0;
+        emit(base_pct, format!("正在下载 {} ({}/{})...", filename, idx + 1, weight_count));
+
+        let resp = client.get(*url).send().await.map_err(|e| format!("请求失败: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {} 下载 {} 失败", resp.status(), filename));
+        }
+
+        let total_size = resp.content_length().unwrap_or(0);
+        let mut stream = resp.bytes_stream();
+        let mut file = tokio::fs::File::create(&dest).await
+            .map_err(|e| format!("创建文件失败: {}", e))?;
+        let mut downloaded: u64 = 0;
+        let mut last_t = std::time::Instant::now();
+        let start = std::time::Instant::now();
+
+        while let Some(chunk) = stream.next().await {
+            if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
+                drop(file);
+                let _ = tokio::fs::remove_file(&dest).await;
+                return Err("下载已取消".into());
+            }
+            let chunk = chunk.map_err(|e| format!("下载失败: {}", e))?;
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await
+                .map_err(|e| format!("写入失败: {}", e))?;
+            downloaded += chunk.len() as u64;
+
+            let now = std::time::Instant::now();
+            if now.duration_since(last_t).as_millis() >= 500 || (total_size > 0 && downloaded >= total_size) {
+                last_t = now;
+                let file_pct = if total_size > 0 { downloaded as f32 / total_size as f32 } else { 0.0 };
+                let overall_pct = 40.0 + (idx as f32 + file_pct) / weight_count as f32 * 55.0;
+                let avg = { let t = start.elapsed().as_secs_f64(); if t > 0.0 { downloaded as f64 / t / 1_048_576.0 } else { 0.0 } };
+                let mb_done = downloaded as f64 / 1_048_576.0;
+                let msg = if total_size > 0 {
+                    format!("{} — {:.1}/{:.1} MB ({:.1} MB/s)", filename, mb_done, total_size as f64 / 1_048_576.0, avg)
+                } else {
+                    format!("{} — {:.1} MB ({:.1} MB/s)", filename, mb_done, avg)
+                };
+                let _ = app.emit("upscale-download", UpscaleDownloadProgress {
+                    downloaded, total: total_size, percent: overall_pct, speed_mbps: avg,
+                    status: "downloading".into(), message: msg,
+                });
+            }
+        }
+    }
+
+    let _ = app.emit("upscale-download", UpscaleDownloadProgress {
+        downloaded: 0, total: 0, percent: 100.0, speed_mbps: 0.0,
+        status: "done".into(),
+        message: format!("{} — 下载完成 ✓", engine.name),
+    });
+
+    Ok("done".into())
 }
 
 // ===== Python Engine Setup =====

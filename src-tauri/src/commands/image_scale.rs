@@ -127,11 +127,21 @@ fn process_scale(
     let output_path = output_dir.join(&filename);
 
     if should_process {
+        // Area-based proportional scaling (preserves aspect ratio)
+        // Target area = target_w * target_h, scale ratio = sqrt(target_area / orig_area)
+        let target_area = target_w as f64 * target_h as f64;
+        let orig_area = orig_w as f64 * orig_h as f64;
+        let scale = (target_area / orig_area).sqrt();
+
+        // Calculate new dimensions, round to nearest multiple of 64
+        let new_w = ((orig_w as f64 * scale / 64.0).round() * 64.0).max(64.0) as u32;
+        let new_h = ((orig_h as f64 * scale / 64.0).round() * 64.0).max(64.0) as u32;
+
         let filter = FilterType::Lanczos3;
-        let resized = img.resize_exact(target_w, target_h, filter);
+        let resized = img.resize_exact(new_w, new_h, filter);
         resized.save(&output_path)
             .map_err(|e| format!("无法保存图片: {}", e))?;
-        Ok(format!("[缩放] {} ({}x{} → {}x{})", filename, orig_w, orig_h, target_w, target_h))
+        Ok(format!("[缩放] {} ({}x{} → {}x{})", filename, orig_w, orig_h, new_w, new_h))
     } else {
         std::fs::copy(file_path, &output_path)
             .map_err(|e| format!("无法复制图片: {}", e))?;
