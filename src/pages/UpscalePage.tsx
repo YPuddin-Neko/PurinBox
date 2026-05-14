@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
+import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 
@@ -86,14 +87,20 @@ export default function UpscalePage() {
         if (d.message?.includes('失败') && !d.message?.includes('失败 0')) setHasError(true);
         setLogs(p => [...p, { time: getTimeStr(), message: d.message, status: 'success' }]);
         updateTask('upscale', { status: 'done', message: d.message });
-      } else if (d.status !== 'processing') {
+      } else if (d.status === 'processing') {
+        // Show the first processing event ("开始超分") as info log, then just update progress
+        if (d.current === 0) {
+          setLogs(p => [...p, { time: getTimeStr(), message: d.message, status: 'info' }]);
+        }
+        setProgressCurrent(d.current); setProgressTotal(d.total);
+        if (d.total > 0) setProgress(Math.round((d.current / d.total) * 100));
+      } else {
+        // info, success per-file, error
         const pct = d.total > 0 ? Math.round(((d.current) / d.total) * 100) : 0;
         setProgress(pct); setProgressCurrent(d.current); setProgressTotal(d.total);
         if (d.status === 'error') setHasError(true);
         setLogs(p => [...p, { time: getTimeStr(), message: d.message, status: d.status }]);
         updateTask('upscale', { status: 'running', message: `${d.current}/${d.total}` });
-      } else {
-        setProgressCurrent(d.current); setProgressTotal(d.total);
       }
     });
     return () => { unlisten.then(fn => fn()); };
@@ -104,7 +111,7 @@ export default function UpscalePage() {
     const unlisten = listen<DownloadProgress>('upscale-download', (e) => {
       const d = e.payload;
       if (d.status === 'done' || d.status === 'cancelled') {
-        setLogs(p => p.filter(l => l.status !== 'download'));
+        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: d.message, status: 'success' }]);
         invoke<UpscaleEngineInfo[]>('get_upscale_engines').then(setEngines).catch(() => {});
       } else if (d.status === 'error') {
         setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: d.message, status: 'error' }]);
@@ -121,6 +128,9 @@ export default function UpscalePage() {
     return () => { unlisten.then(fn => fn()); };
   }, []);
 
+  // Python 环境事件（统一 hook）
+  usePythonEnvEvents(processing, setLogs);
+
   const selectInputFolder = async () => {
     const p = await open({ directory: true, title: t('pages.selectInputTitle') });
     if (p) setInputPath(p as string);
@@ -136,7 +146,8 @@ export default function UpscalePage() {
     addTask('upscale', t('upscale.taskName'));
     try {
       // If engine not downloaded, download first
-      if (!engine.downloaded) {
+      // For Python engines, always run setup to ensure deps + weights are ready
+      if (!engine.downloaded || engine.use_python) {
         setLogs([{ time: getTimeStr(), message: t('upscale.downloadingEngine', { name: engine.name }), status: 'info' }]);
         await invoke('download_upscale_engine', { engineId: engine.id });
         // Refresh engines list
@@ -244,7 +255,7 @@ export default function UpscalePage() {
                   <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', padding: '8px 12px', background: 'var(--color-bg-input)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--color-border)' }}>
                     {engine.description}
                     {!engine.downloaded && (
-                      <span style={{ color: '#f87171', marginLeft: 8 }}>（{t('upscale.notDownloaded')} ~{engine.size_mb}MB）</span>
+                      <span style={{ color: '#f87171', marginLeft: 8 }}>（{t('upscale.notDownloaded')}）</span>
                     )}
                     {engine.downloaded && (
                       <span style={{ color: '#4ade80', marginLeft: 8 }}>{t('upscale.downloaded')}</span>

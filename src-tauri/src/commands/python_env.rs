@@ -159,6 +159,12 @@ pub fn reset_python_env() -> Result<String, String> {
     Ok("Python 环境已重置".to_string())
 }
 
+/// 手动部署 Python 环境（设置页按钮）
+#[tauri::command]
+pub async fn deploy_python_env(app: tauri::AppHandle) -> Result<String, String> {
+    setup_python_env(&app).await
+}
+
 /// 获取 Python 环境信息（供设置页显示）
 #[tauri::command]
 pub fn get_python_env_info() -> Result<PythonEnvInfo, String> {
@@ -327,12 +333,10 @@ pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> 
     }
 
     // 2. 优先检测系统 Python
-    if let Some((sys_python, sys_version)) = detect_system_python() {
-        emit_progress(app, &format!("检测到系统 Python: {} ({})", sys_version, sys_python), "success");
+    if let Some((sys_python, _sys_version)) = detect_system_python() {
 
         // 用系统 Python 创建 venv（如果 venv python 不可用）
         if !venv_python.exists() || !is_ready() {
-            emit_progress(app, "正在使用系统 Python 创建虚拟环境...", "info");
             let venv_dir = get_venv_dir();
             // 清理旧的 venv（可能有残留的 broken symlink）
             if venv_dir.exists() {
@@ -353,17 +357,17 @@ pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> 
             let output = cmd.output().map_err(|e| format!("创建 venv 失败: {}", e))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                emit_progress(app, &format!("系统 Python 创建 venv 失败: {}，将下载独立版本", stderr), "info");
+                emit_progress(app, &format!("@pythonEnv.venvFailed|{}", stderr.to_string().chars().take(100).collect::<String>()), "info");
                 // 失败则回退到下载 standalone
                 return setup_with_standalone(app).await;
             }
-            emit_progress(app, "✓ 虚拟环境已创建（使用系统 Python）", "success");
+
         }
 
         if is_cancelled() { return Err("已取消".into()); }
 
         // 安装依赖
-        emit_progress(app, "正在安装推理依赖 (onnxruntime, numpy, pillow)...", "info");
+
         install_deps(app)?;
 
         if is_cancelled() { return Err("已取消".into()); }
@@ -372,12 +376,12 @@ pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> 
             return Err("Python 环境安装后验证失败".into());
         }
 
-        emit_progress(app, "✓ Python 推理环境准备完成（使用系统 Python）", "success");
+
+        emit_progress(app, "@pythonEnv.ready", "success");
         return Ok(venv_python.to_string_lossy().to_string());
     }
 
     // 3. 系统没有 Python，下载 standalone 版本
-    emit_progress(app, "未检测到系统 Python，将下载独立 Python 环境...", "info");
     setup_with_standalone(app).await
 }
 
@@ -388,7 +392,6 @@ async fn setup_with_standalone(app: &tauri::AppHandle) -> Result<String, String>
 
     // 下载 standalone Python
     if !python_exe.exists() {
-        emit_progress(app, "正在下载 Python 运行环境...", "info");
         download_python(app).await?;
     }
 
@@ -396,14 +399,13 @@ async fn setup_with_standalone(app: &tauri::AppHandle) -> Result<String, String>
 
     // 创建 venv
     if !venv_python.exists() {
-        emit_progress(app, "正在创建 Python 虚拟环境...", "info");
         create_venv(app)?;
     }
 
     if is_cancelled() { return Err("已取消".into()); }
 
     // 安装依赖
-    emit_progress(app, "正在安装推理依赖 (onnxruntime, numpy, pillow)...", "info");
+
     install_deps(app)?;
 
     if is_cancelled() { return Err("已取消".into()); }
@@ -413,7 +415,8 @@ async fn setup_with_standalone(app: &tauri::AppHandle) -> Result<String, String>
         return Err("Python 环境安装后验证失败".into());
     }
 
-    emit_progress(app, "✓ Python 推理环境准备完成", "success");
+
+    emit_progress(app, "@pythonEnv.ready", "success");
     Ok(venv_python.to_string_lossy().to_string())
 }
 
@@ -428,7 +431,7 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
             .map_err(|e| format!("创建 env 目录失败: {}", e))?;
     }
 
-    emit_progress(app, &format!("下载: {}", info.url.split('/').next_back().unwrap_or("python")), "info");
+    emit_progress(app, &format!("@pythonEnv.downloading|{}", info.url.split('/').next_back().unwrap_or("python")), "info");
 
     // 下载
     let client = crate::commands::proxy_config::build_http_client()
@@ -494,7 +497,7 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
         status: "done".to_string(),
         message: "Python 下载完成".to_string(),
     });
-    emit_progress(app, "正在解压 Python...", "info");
+    emit_progress(app, "@pythonEnv.extracting", "info");
 
     // 解压到临时目录
     let extract_tmp = env_dir.join("_python_extract_tmp");
@@ -544,7 +547,7 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
         return Err(format!("Python 解压后未找到: {}", python_exe.display()));
     }
 
-    emit_progress(app, "✓ Python 下载完成", "success");
+    emit_progress(app, "@pythonEnv.downloadDone", "success");
     Ok(())
 }
 
@@ -588,7 +591,7 @@ fn create_venv(app: &tauri::AppHandle) -> Result<(), String> {
         return Err(format!("创建 venv 失败: {}", stderr));
     }
 
-    emit_progress(app, "✓ 虚拟环境已创建", "success");
+    emit_progress(app, "@pythonEnv.venvCreated", "success");
     Ok(())
 }
 
@@ -607,10 +610,10 @@ pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
 
     let python = get_active_python()?;
 
-    emit_progress(app, "安装 onnxruntime-gpu==1.25.1 (需要 cuDNN 9.x)...", "info");
+    emit_progress(app, "@pythonEnv.installGpu", "info");
 
     // 先卸载 CPU 版
-    emit_progress(app, "卸载 CPU 版 onnxruntime...", "info");
+    emit_progress(app, "@pythonEnv.uninstallCpu", "info");
     {
         let mut cmd = std::process::Command::new(&python);
         cmd.args(["-m", "pip", "uninstall", "-y", "onnxruntime"]);
@@ -655,12 +658,24 @@ fn get_active_python() -> Result<String, String> {
 
 /// 使用指定 Python 执行 pip install（公开供其他模块调用）
 pub fn pip_install_with_python(app: &tauri::AppHandle, python: &str, deps: &[&str]) -> Result<(), String> {
-    for dep in deps {
+    let total = deps.len();
+    for (i, dep) in deps.iter().enumerate() {
         if is_cancelled() {
             return Err("已取消".into());
         }
 
-        emit_progress(app, &format!("安装 {}...", dep), "info");
+        let msg = format!("@pythonEnv.installingDep|{}|{}|{}", dep, i + 1, total);
+
+        // Emit download-style progress bar (single inline entry, no log spam)
+        let _ = app.emit(DOWNLOAD_EVENT, PythonDownloadProgress {
+            filename: dep.to_string(),
+            downloaded: i as u64,
+            total: total as u64,
+            percent: (i as f32 / total as f32) * 100.0,
+            speed_mbps: 0.0,
+            status: "downloading".into(),
+            message: msg,
+        });
 
         let mut cmd = std::process::Command::new(python);
         cmd.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", dep]);
@@ -676,9 +691,18 @@ pub fn pip_install_with_python(app: &tauri::AppHandle, python: &str, deps: &[&st
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("安装 {} 失败: {}", dep, stderr));
         }
-
-        emit_progress(app, &format!("✓ {} 已安装", dep), "success");
     }
+
+    // Emit done to clear progress bar
+    let _ = app.emit(DOWNLOAD_EVENT, PythonDownloadProgress {
+        filename: String::new(),
+        downloaded: total as u64,
+        total: total as u64,
+        percent: 100.0,
+        speed_mbps: 0.0,
+        status: "done".into(),
+        message: "@pythonEnv.depsInstalled".into(),
+    });
 
     Ok(())
 }

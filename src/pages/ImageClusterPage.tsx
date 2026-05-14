@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
+import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -70,6 +71,9 @@ export default function ImageClusterPage() {
     });
     return () => { active = false; p.then(fn => fn()); };
   }, []);
+
+  // Python 环境事件（统一 hook）
+  usePythonEnvEvents(processing, setLogs);
 
   const selectInputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') }); if (s) setInputPath(s as string); };
   const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') }); if (s) setOutputPath(s as string); };

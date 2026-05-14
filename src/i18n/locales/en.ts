@@ -809,11 +809,16 @@ const en = {
     proxySave: 'Save Proxy Settings',
     proxySaving: 'Saving...',
     proxySaveSuccess: 'Saved',
-    advanced: 'Advanced',
+    envSettings: 'Environment',
     pythonEnv: 'Python Environment',
     pythonVersion: 'Python Version',
     pipVersion: 'pip Version',
     resetPythonEnv: 'Reset Python Environment',
+    deployPythonEnv: 'Deploy Python Environment',
+    deployPythonDesc: 'Python environment is required for tagger/upscale features',
+    deployEnv: 'Deploy',
+    deploySuccess: 'Python environment deployed successfully',
+    deployFailed: 'Python environment deployment failed',
     resetConfirmTitle: 'Reset Python Environment',
     resetConfirmMsg: 'Reset the Python environment used by the toolbox',
     resetConfirmDialog: 'Are you sure to reset the Python environment? All installed packages will be removed.',
@@ -868,7 +873,18 @@ const en = {
     bingRegionPlaceholder: 'e.g. eastasia, global, leave empty',
   },
 
-
+  pythonEnv: {
+    ready: '✓ Python environment ready',
+    installingDep: 'Installing {{dep}} ({{current}}/{{total}})',
+    depsInstalled: 'Dependencies installed',
+    downloading: 'Downloading: {{filename}}',
+    extracting: 'Extracting Python...',
+    downloadDone: '✓ Python download complete',
+    venvCreated: '✓ Virtual environment created',
+    venvFailed: 'System Python venv failed: {{error}}, downloading standalone',
+    installGpu: 'Installing onnxruntime-gpu==1.25.1 (requires cuDNN 9.x)...',
+    uninstallCpu: 'Uninstalling CPU onnxruntime...',
+  },
 
   jsonTag: {
     appearance: 'Appearance',

@@ -159,11 +159,27 @@ fn engine_binary(engine: &EngineDef) -> PathBuf {
 
 fn is_engine_ready(engine: &EngineDef) -> bool {
     if engine.use_python {
-        // Python engines: check PyTorch + cv2 are installed
-        // Model weights are auto-downloaded by the Python script at runtime
-        return is_python_deps_ready();
+        // Python engine: need deps (torch+cv2) AND at least one model weight
+        return is_python_deps_ready() && has_any_esrgan_weight();
     }
     engine_binary(engine).exists()
+}
+
+/// Real-ESRGAN 模型权重目录 — 统一到 models/upscale_engines/realesrgan/ 下
+fn realesrgan_weights_dir() -> PathBuf {
+    engine_dir("realesrgan")
+}
+
+/// 检查是否有至少一个 ESRGAN 模型权重文件
+fn has_any_esrgan_weight() -> bool {
+    let dir = realesrgan_weights_dir();
+    if !dir.exists() { return false; }
+    // 检查常用的 .pth 文件
+    dir.read_dir().ok().map(|mut entries| {
+        entries.any(|e| {
+            e.ok().map(|e| e.path().extension().map(|ext| ext == "pth").unwrap_or(false)).unwrap_or(false)
+        })
+    }).unwrap_or(false)
 }
 
 /// 检查 Python + PyTorch + cv2 是否已安装
@@ -467,87 +483,77 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
             super::python_env::pip_install_with_python(&app2, &p, &["opencv-python-headless"])
         }).await
         .map_err(|e| format!("安装线程异常: {}", e))??;
-        emit(90.0, "downloading", "OpenCV 安装完成".into());
+        emit(80.0, "downloading", "OpenCV 安装完成".into());
     } else {
-        emit(90.0, "downloading", "OpenCV 已就绪".into());
+        emit(80.0, "downloading", "OpenCV 已就绪".into());
     }
 
-    emit(100.0, "done", format!("{} 环境准备完成 ✓（模型权重将在首次使用时自动下载）", engine.name));
+    if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
+        return Err("下载已取消".into());
+    }
+
+    // Step 4: Download default model weight (RealESRGAN_x4plus.pth)
+    let weights_dir = realesrgan_weights_dir();
+    let default_weight = weights_dir.join("RealESRGAN_x4plus.pth");
+    if !default_weight.exists() {
+        emit(85.0, "downloading", "正在下载模型权重 RealESRGAN_x4plus.pth ...".into());
+        std::fs::create_dir_all(&weights_dir).ok();
+        let url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth";
+        let client = crate::commands::proxy_config::build_http_client()
+            .user_agent("PurinBox/0.3.4")
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .map_err(|e| format!("HTTP 客户端失败: {}", e))?;
+        let resp = client.get(url).send().await.map_err(|e| format!("模型下载请求失败: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("模型下载失败 HTTP {}", resp.status()));
+        }
+        let total_size = resp.content_length().unwrap_or(0);
+        let mut stream = resp.bytes_stream();
+        let mut file = tokio::fs::File::create(&default_weight).await
+            .map_err(|e| format!("创建权重文件失败: {}", e))?;
+        let mut downloaded: u64 = 0;
+        let start = std::time::Instant::now();
+        let mut last_t = std::time::Instant::now();
+
+        while let Some(chunk) = stream.next().await {
+            if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
+                drop(file);
+                let _ = tokio::fs::remove_file(&default_weight).await;
+                return Err("下载已取消".into());
+            }
+            let chunk = chunk.map_err(|e| format!("下载失败: {}", e))?;
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await
+                .map_err(|e| format!("写入失败: {}", e))?;
+            downloaded += chunk.len() as u64;
+
+            let now = std::time::Instant::now();
+            if now.duration_since(last_t).as_millis() >= 500 || (total_size > 0 && downloaded >= total_size) {
+                last_t = now;
+                let avg = { let t = start.elapsed().as_secs_f64(); if t > 0.0 { downloaded as f64 / t / 1_048_576.0 } else { 0.0 } };
+                let mb_done = downloaded as f64 / 1_048_576.0;
+                let pct = if total_size > 0 { 85.0 + (downloaded as f64 / total_size as f64) * 14.0 } else { 90.0 };
+                let msg = if total_size > 0 {
+                    format!("模型权重 — {:.1}/{:.1} MB ({:.1} MB/s)", mb_done, total_size as f64 / 1_048_576.0, avg)
+                } else {
+                    format!("模型权重 — {:.1} MB ({:.1} MB/s)", mb_done, avg)
+                };
+                let _ = app.emit("upscale-download", UpscaleDownloadProgress {
+                    downloaded, total: total_size, percent: pct as f32, speed_mbps: avg,
+                    status: "downloading".into(), message: msg,
+                });
+            }
+        }
+        emit(99.0, "downloading", "模型权重下载完成".into());
+    } else {
+        emit(99.0, "downloading", "模型权重已就绪".into());
+    }
+
+    emit(100.0, "done", format!("{} 准备完成 ✓", engine.name));
 
     Ok("done".into())
 }
 
-// ===== Python Engine Setup =====
-
-/// 确保 Python 超分依赖已安装，进度显示在处理日志中
-async fn ensure_python_upscale_deps(app: &tauri::AppHandle) -> Result<(), String> {
-    let emit_log = |msg: &str| {
-        let _ = app.emit("upscale-progress", ProgressEvent {
-            current: 0, total: 0, filename: String::new(),
-            status: "info".to_string(), message: msg.to_string(),
-        });
-    };
-
-    // 1. 确保 Python 环境就绪
-    emit_log("正在检查 Python 环境...");
-    let python = super::python_env::setup_python_env(app).await?;
-
-    // 2. 检查 torch 是否已安装
-    let has_torch = {
-        let p = python.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new(&p);
-            cmd.args(["-c", "import torch; print(torch.__version__)"]);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output().map(|o| o.status.success()).unwrap_or(false)
-        }).await.unwrap_or(false)
-    };
-
-    if !has_torch {
-        emit_log("正在安装 PyTorch（首次安装约 500MB-2GB，请耐心等待）...");
-        let p = python.clone();
-        let app2 = app.clone();
-        tokio::task::spawn_blocking(move || {
-            super::python_env::pip_install_with_python(&app2, &p, &["torch", "torchvision", "opencv-python-headless"])
-        }).await
-        .map_err(|e| format!("安装线程异常: {}", e))??;
-        emit_log("PyTorch 安装完成");
-    }
-
-    // 3. 检查 cv2 是否已安装
-    let has_cv2 = {
-        let p = python.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new(&p);
-            cmd.args(["-c", "import cv2"]);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output().map(|o| o.status.success()).unwrap_or(false)
-        }).await.unwrap_or(false)
-    };
-
-    if !has_cv2 {
-        emit_log("正在安装 OpenCV...");
-        let p = python.clone();
-        let app2 = app.clone();
-        tokio::task::spawn_blocking(move || {
-            super::python_env::pip_install_with_python(&app2, &p, &["opencv-python-headless"])
-        }).await
-        .map_err(|e| format!("安装线程异常: {}", e))??;
-        emit_log("OpenCV 安装完成");
-    }
-
-    emit_log("环境检查完成");
-
-    Ok(())
-}
 
 // ===== Upscale Processing =====
 
@@ -573,14 +579,14 @@ pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Re
     let engine = ENGINES.iter().find(|e| e.id == options.engine_id)
         .ok_or_else(|| format!("未知引擎: {}", options.engine_id))?;
 
-    if !is_engine_ready(engine) {
-        return Err(format!("{} 尚未下载，请先下载", engine.name));
+    // Python 引擎: 依赖已在 download_upscale_engine 中安装完成
+    if engine.use_python {
+        return run_python_upscale(&app, &options).await;
     }
 
-    // Python 引擎: 自动检查并安装依赖，进度显示在日志中
-    if engine.use_python {
-        ensure_python_upscale_deps(&app).await?;
-        return run_python_upscale(&app, &options).await;
+    // NCNN 引擎: 检查二进制是否存在
+    if !engine_binary(engine).exists() {
+        return Err(format!("{} 尚未下载，请先下载", engine.name));
     }
 
     let bin = engine_binary(engine);
@@ -809,6 +815,8 @@ async fn run_python_upscale(
     let tta = options.tta;
     let app_clone = app.clone();
 
+    let weights_dir = realesrgan_weights_dir();
+
     tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new(&python);
         cmd.arg(script.to_string_lossy().as_ref())
@@ -818,6 +826,7 @@ async fn run_python_upscale(
             .arg("--scale").arg(scale.to_string())
             .arg("--tile").arg(if tile < 0 { "0".to_string() } else { tile.to_string() })
             .arg("--device").arg(&device)
+            .arg("--weights-dir").arg(&weights_dir)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .env("PYTHONUNBUFFERED", "1");

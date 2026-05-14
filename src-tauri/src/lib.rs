@@ -16,7 +16,7 @@ use commands::tagger::{
     get_gpu_runtime_status, download_gpu_runtime, cancel_gpu_runtime_download,
     cancel_tagging,
 };
-use commands::python_env::{reset_python_env, get_python_env_info};
+use commands::python_env::{reset_python_env, deploy_python_env, get_python_env_info};
 use commands::tagger::llm_tagger::{start_llm_tagging, fetch_llm_models, cancel_llm_tagging};
 use commands::tag_manager::{load_tag_dataset, save_single_tag_file, save_all_tag_files, save_caption_file, save_all_caption_files, load_caption_dataset, load_json_dataset, save_single_json_file, save_all_json_files};
 use commands::translator::{translate_tags, get_translation_cache_stats, clear_translation_cache, test_translation, get_cache_path, set_cache_path, export_translation_csv, import_translation_csv};
@@ -75,6 +75,7 @@ pub fn run() {
             cancel_gpu_runtime_download,
             cancel_tagging,
             reset_python_env,
+            deploy_python_env,
             get_python_env_info,
             start_llm_tagging,
             fetch_llm_models,

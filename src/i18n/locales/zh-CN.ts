@@ -842,12 +842,17 @@ const zhCN = {
     proxySave: '保存代理设置',
     proxySaving: '保存中...',
     proxySaveSuccess: '保存成功',
-    // 高级设置
-    advanced: '高级设置',
+    // 环境设置
+    envSettings: '环境设置',
     pythonEnv: 'Python 环境',
     pythonVersion: 'Python 版本',
     pipVersion: 'pip 版本',
     resetPythonEnv: '重置 Python 环境',
+    deployPythonEnv: '部署 Python 环境',
+    deployPythonDesc: '使用打标/超分等功能前需要部署 Python 环境',
+    deployEnv: '部署环境',
+    deploySuccess: 'Python 环境部署成功',
+    deployFailed: 'Python 环境部署失败',
     resetConfirmTitle: '重置 Python 环境',
     resetConfirmMsg: '重置工具箱当前使用的Python环境',
     resetConfirmDialog: '确定要重置 Python 虚拟环境吗？这将删除所有已安装的包。',
@@ -911,7 +916,18 @@ const zhCN = {
     bingRegionPlaceholder: '如 eastasia、global 等，可留空',
   },
 
-
+  pythonEnv: {
+    ready: '✓ Python 环境已就绪',
+    installingDep: '安装依赖 {{dep}} ({{current}}/{{total}})',
+    depsInstalled: '依赖安装完成',
+    downloading: '下载: {{filename}}',
+    extracting: '正在解压 Python...',
+    downloadDone: '✓ Python 下载完成',
+    venvCreated: '✓ 虚拟环境已创建',
+    venvFailed: '系统 Python 创建 venv 失败: {{error}}，将下载独立版本',
+    installGpu: '安装 onnxruntime-gpu==1.25.1 (需要 cuDNN 9.x)...',
+    uninstallCpu: '卸载 CPU 版 onnxruntime...',
+  },
 
   jsonTag: {
     appearance: '外观特征',

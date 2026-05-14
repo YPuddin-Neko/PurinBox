@@ -212,6 +212,7 @@ def main():
     ap.add_argument("--tile", type=int, default=0)
     ap.add_argument("--tta", action="store_true")
     ap.add_argument("--device", default="auto")
+    ap.add_argument("--weights-dir", default=None, help="Override weights directory")
     args = ap.parse_args()
 
     cfg = MODEL_CONFIGS.get(args.model)
@@ -233,7 +234,8 @@ def main():
     half = device == "cuda"
 
     # 下载权重
-    wpath = os.path.join(weights_dir(), cfg["file"])
+    wdir = args.weights_dir if args.weights_dir else weights_dir()
+    wpath = os.path.join(wdir, cfg["file"])
     try:
         download_weights(cfg["url"], wpath)
     except Exception as e:

@@ -268,11 +268,12 @@ pub async fn start_person_crop(
     CANCEL_FLAG.store(false, Ordering::SeqCst);
 
     // Ensure Python environment is ready (onnxruntime + numpy + pillow)
+    super::python_env::setup_python_env(&app).await?;
+
     let _ = app.emit("person-crop-progress", ProgressEvent {
         current: 0, total: 0, filename: String::new(),
-        status: "info".to_string(), message: "正在检查 Python 环境...".to_string(),
+        status: "info".to_string(), message: "开始裁切...".to_string(),
     });
-    super::python_env::setup_python_env(&app).await?;
 
     tokio::task::spawn_blocking(move || {
         run_person_crop(&app, &options)

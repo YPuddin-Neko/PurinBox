@@ -9,6 +9,7 @@ import { useTaskQueue } from './TaskContext';
 import { ConfirmModal } from './Modal';
 import CustomSelect from './CustomSelect';
 import { useTranslation } from 'react-i18next';
+import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 
 interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; supported_categories: string[]; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
@@ -97,18 +98,16 @@ export default function AiTaggerTab() {
       setLogs(prev => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }]);
     };
     const u1 = listen<ProgressPayload>('tagger-progress', handler);
-    const u2 = listen<ProgressPayload>('python-env-progress', handler);
-    return () => { active = false; u1.then(fn => fn()); u2.then(fn => fn()); };
+    return () => { active = false; u1.then(fn => fn()); };
   }, []);
 
-  // 下载进度事件 → 更新日志中的下载条目
+  // 下载进度事件（tagger 模型下载）
   useEffect(() => {
     let active = true;
     const handler = (e: { payload: DownloadPayload }) => {
       if (!active) return;
       const d = e.payload;
       if (d.status === 'done' || d.status === 'cancelled') {
-        // 下载结束，移除进度条日志
         setLogs(p => p.filter(l => l.status !== 'download'));
       } else if (d.status === 'error') {
         setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: `${t('aiTagger.downloadFail')}: ${d.message}`, status: 'error' }]);
@@ -117,19 +116,17 @@ export default function AiTaggerTab() {
         setLogs(p => {
           const idx = p.findIndex(l => l.status === 'download');
           const entry: LogEntry = { time: getTimeStr(), message: d.message, status: 'download', dlPercent: d.percent, dlSpeed: avgSpeed };
-          if (idx >= 0) {
-            const next = [...p];
-            next[idx] = entry;
-            return next;
-          }
+          if (idx >= 0) { const next = [...p]; next[idx] = entry; return next; }
           return [...p, entry];
         });
       }
     };
     const u1 = listen<DownloadPayload>('tagger-download', handler);
-    const u2 = listen<DownloadPayload>('python-env-download', handler);
-    return () => { active = false; u1.then(fn => fn()); u2.then(fn => fn()); };
+    return () => { active = false; u1.then(fn => fn()); };
   }, []);
+
+  // Python 环境事件（统一 hook）
+  usePythonEnvEvents(processing, setLogs);
 
   const { addTask, updateTask } = useTaskQueue();
   const cur = models.find(m => m.id === selectedModel);

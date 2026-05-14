@@ -1,4 +1,4 @@
-import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, AlertTriangle, RefreshCw as RefreshIcon, Database, Download, Upload, X } from 'lucide-react';
+import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, Terminal, RefreshCw as RefreshIcon, Database, Download, Upload, X, Play } from 'lucide-react';
 import { useTheme } from '../components/ThemeProvider';
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -716,8 +716,8 @@ export default function SettingsPage() {
           <div className="tool-panel">
             <div className="tool-panel-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <AlertTriangle style={{ width: 16, height: 16, color: '#fbbf24' }} />
-                <span className="tool-panel-title">{t('settings.advanced')}</span>
+                <Terminal style={{ width: 16, height: 16, color: '#38bdf8' }} />
+                <span className="tool-panel-title">{t('settings.envSettings')}</span>
               </div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
@@ -741,17 +741,36 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              {/* 重置 Python */}
+              {/* Python 操作按钮 */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
-                  <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{t('settings.resetPythonEnv')}</div>
-                  <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{t('settings.resetConfirmMsg')}</div>
+                  <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{pythonInfo?.available ? t('settings.resetPythonEnv') : t('settings.deployPythonEnv')}</div>
+                  <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{pythonInfo?.available ? t('settings.resetConfirmMsg') : t('settings.deployPythonDesc')}</div>
                 </div>
-                <button className="btn" onClick={() => setResetPythonConfirmOpen(true)} disabled={resettingPython}
-                  style={{ background: 'rgba(248,113,113,0.1)', color: '#f87171', border: '1px solid rgba(248,113,113,0.3)', fontSize: 12, padding: '6px 14px', gap: 6 }}>
-                  {resettingPython ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RotateCcw style={{ width: 14, height: 14 }} />}
-                  {t('settings.cacheReset')}
-                </button>
+                {pythonInfo?.available ? (
+                  <button className="btn" onClick={() => setResetPythonConfirmOpen(true)} disabled={resettingPython}
+                    style={{ background: 'rgba(248,113,113,0.1)', color: '#f87171', border: '1px solid rgba(248,113,113,0.3)', fontSize: 12, padding: '6px 14px', gap: 6 }}>
+                    {resettingPython ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RotateCcw style={{ width: 14, height: 14 }} />}
+                    {t('settings.cacheReset')}
+                  </button>
+                ) : (
+                  <button className="btn" onClick={async () => {
+                    setResettingPython(true);
+                    try {
+                      await invoke('deploy_python_env');
+                      setAlertMsg(t('settings.deploySuccess'));
+                      loadPythonInfo();
+                    } catch (e: any) {
+                      setAlertMsg(`${t('settings.deployFailed')}: ${e}`);
+                    } finally {
+                      setResettingPython(false);
+                    }
+                  }} disabled={resettingPython}
+                    style={{ background: 'rgba(74,222,128,0.1)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)', fontSize: 12, padding: '6px 14px', gap: 6 }}>
+                    {resettingPython ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Play style={{ width: 14, height: 14 }} />}
+                    {t('settings.deployEnv')}
+                  </button>
+                )}
               </div>
             </div>
           </div>
