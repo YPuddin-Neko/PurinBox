@@ -75,7 +75,7 @@ export default function UpscalePage() {
     setDenoiseLevel(engine.supports_denoise ? -1 : 0);
     // Force GPU on if engine doesn't support CPU
     if (!engine.supports_cpu) setUseGpu(true);
-  }, [selectedEngine, engines]);
+  }, [selectedEngine]);
 
   // Listen to progress events
   useEffect(() => {
@@ -271,7 +271,10 @@ export default function UpscalePage() {
                       {engine.models.map(m => (
                         <button key={m.id}
                           className={`btn btn-sm ${selectedModel === m.id ? 'btn-primary' : 'btn-secondary'}`}
-                          onClick={() => setSelectedModel(m.id)}>
+                          onClick={() => {
+                            setSelectedModel(m.id);
+                            if (m.id === 'models-nose') setDenoiseLevel(-1);
+                          }}>
                           {m.name}
                         </button>
                       ))}
@@ -294,8 +297,11 @@ export default function UpscalePage() {
 
                   {/* 降噪等级 */}
                   {engine.supports_denoise && (
-                    <div className="form-group">
-                      <label className="form-label">{t('upscale.denoiseLevel')}</label>
+                    <div className="form-group" style={{ opacity: selectedModel === 'models-nose' ? 0.4 : 1, pointerEvents: selectedModel === 'models-nose' ? 'none' : 'auto' }}>
+                      <label className="form-label">
+                        {t('upscale.denoiseLevel')}
+                        {selectedModel === 'models-nose' && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginLeft: 8 }}>{t('upscale.noDenoiseModelHint')}</span>}
+                      </label>
                       <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
                         {Array.from({ length: engine.denoise_range[1] - engine.denoise_range[0] + 1 }, (_, i) => engine.denoise_range[0] + i).map(n => (
                           <button key={n}

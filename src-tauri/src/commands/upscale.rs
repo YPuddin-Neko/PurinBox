@@ -81,7 +81,7 @@ const ENGINES: &[EngineDef] = &[
     EngineDef {
         id: "realesrgan",
         name: "Real-ESRGAN",
-        description: "通用超分，真人/动漫/风景 (依赖PyTorch环境)",
+        description: "通用超分，真人/动漫/风景 (ONNX 推理)",
         bin_name: "",
         size_mb: 0.0,
         scales: &[2, 4],
@@ -92,14 +92,13 @@ const ENGINES: &[EngineDef] = &[
         models: &[
             ("realesrgan-x4plus", "通用 (x4plus)", "realesrgan-x4plus"),
             ("realesrgan-x4plus-anime", "动漫 (x4plus-anime)", "realesrgan-x4plus-anime"),
-            ("realesr-animevideov3", "动漫视频 (animevideov3)", "realesr-animevideov3"),
         ],
         #[cfg(target_os = "macos")]
-        download_url: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-macos.zip",
+        download_url: "",
         #[cfg(target_os = "windows")]
-        download_url: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip",
+        download_url: "",
         #[cfg(target_os = "linux")]
-        download_url: "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip",
+        download_url: "",
     },
     EngineDef {
         id: "waifu2x",
@@ -170,26 +169,25 @@ fn realesrgan_weights_dir() -> PathBuf {
     engine_dir("realesrgan")
 }
 
-/// 检查是否有至少一个 ESRGAN 模型权重文件
+/// 检查是否有至少一个 ESRGAN 模型权重文件 (.onnx)
 fn has_any_esrgan_weight() -> bool {
     let dir = realesrgan_weights_dir();
     if !dir.exists() { return false; }
-    // 检查常用的 .pth 文件
     dir.read_dir().ok().map(|mut entries| {
         entries.any(|e| {
-            e.ok().map(|e| e.path().extension().map(|ext| ext == "pth").unwrap_or(false)).unwrap_or(false)
+            e.ok().map(|e| e.path().extension().map(|ext| ext == "onnx").unwrap_or(false)).unwrap_or(false)
         })
     }).unwrap_or(false)
 }
 
-/// 检查 Python + PyTorch + cv2 是否已安装
+/// 检查 Python + onnxruntime + cv2 是否已安装
 fn is_python_deps_ready() -> bool {
     let python = match super::python_env::get_python_exe() {
         Some(p) => p,
         None => return false,
     };
     let mut cmd = std::process::Command::new(&python);
-    cmd.args(["-c", "import torch; import cv2"]);
+    cmd.args(["-c", "import onnxruntime; import cv2"]);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -420,7 +418,7 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
         });
     };
 
-    // Step 1: Ensure Python environment
+    // Step 1: Ensure Python environment (onnxruntime already installed by setup_python_env)
     emit(5.0, "downloading", "正在检查 Python 环境...".into());
     let python = super::python_env::setup_python_env(app).await?;
 
@@ -428,39 +426,7 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
         return Err("下载已取消".into());
     }
 
-    // Step 2: Check and install PyTorch
-    let has_torch = {
-        let p = python.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new(&p);
-            cmd.args(["-c", "import torch"]);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output().map(|o| o.status.success()).unwrap_or(false)
-        }).await.unwrap_or(false)
-    };
-
-    if !has_torch {
-        emit(10.0, "downloading", "正在安装 PyTorch（首次约 500MB-2GB）...".into());
-        let p = python.clone();
-        let app2 = app.clone();
-        tokio::task::spawn_blocking(move || {
-            super::python_env::pip_install_with_python(&app2, &p, &["torch", "torchvision"])
-        }).await
-        .map_err(|e| format!("安装线程异常: {}", e))??;
-        emit(60.0, "downloading", "PyTorch 安装完成".into());
-    } else {
-        emit(60.0, "downloading", "PyTorch 已就绪".into());
-    }
-
-    if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
-        return Err("下载已取消".into());
-    }
-
-    // Step 3: Check and install OpenCV
+    // Step 2: Check and install OpenCV (only additional dep needed)
     let has_cv2 = {
         let p = python.clone();
         tokio::task::spawn_blocking(move || {
@@ -476,42 +442,57 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
     };
 
     if !has_cv2 {
-        emit(70.0, "downloading", "正在安装 OpenCV...".into());
+        emit(15.0, "downloading", "正在安装 OpenCV...".into());
         let p = python.clone();
         let app2 = app.clone();
         tokio::task::spawn_blocking(move || {
             super::python_env::pip_install_with_python(&app2, &p, &["opencv-python-headless"])
         }).await
         .map_err(|e| format!("安装线程异常: {}", e))??;
-        emit(80.0, "downloading", "OpenCV 安装完成".into());
+        emit(30.0, "downloading", "OpenCV 安装完成".into());
     } else {
-        emit(80.0, "downloading", "OpenCV 已就绪".into());
+        emit(30.0, "downloading", "OpenCV 已就绪".into());
     }
 
     if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
         return Err("下载已取消".into());
     }
 
-    // Step 4: Download default model weight (RealESRGAN_x4plus.pth)
+    // Step 3: Download ONNX model weights
     let weights_dir = realesrgan_weights_dir();
-    let default_weight = weights_dir.join("RealESRGAN_x4plus.pth");
-    if !default_weight.exists() {
-        emit(85.0, "downloading", "正在下载模型权重 RealESRGAN_x4plus.pth ...".into());
-        std::fs::create_dir_all(&weights_dir).ok();
-        let url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth";
-        let client = crate::commands::proxy_config::build_http_client()
-            .user_agent("PurinBox/0.3.4")
-            .timeout(std::time::Duration::from_secs(600))
-            .build()
-            .map_err(|e| format!("HTTP 客户端失败: {}", e))?;
-        let resp = client.get(url).send().await.map_err(|e| format!("模型下载请求失败: {}", e))?;
-        if !resp.status().is_success() {
-            return Err(format!("模型下载失败 HTTP {}", resp.status()));
+    std::fs::create_dir_all(&weights_dir).ok();
+
+    // ONNX models (single file, no external data)
+    let onnx_models: &[(&str, &str)] = &[
+        ("RealESRGAN_x4plus.onnx", "https://github.com/YPuddin-Neko/PurinBox/releases/download/models/RealESRGAN_x4plus.onnx"),
+        ("RealESRGAN_x4plus_anime_6B.onnx", "https://github.com/YPuddin-Neko/PurinBox/releases/download/models/RealESRGAN_x4plus_anime_6B.onnx"),
+    ];
+
+    let client = crate::commands::proxy_config::build_http_client()
+        .user_agent("PurinBox/0.3.5")
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| format!("HTTP 客户端失败: {}", e))?;
+
+    let total_files = onnx_models.len();
+    for (fi, (filename, url)) in onnx_models.iter().enumerate() {
+        let dest = weights_dir.join(filename);
+        if dest.exists() {
+            let base_pct = 30.0 + ((fi + 1) as f32 / total_files as f32) * 68.0;
+            emit(base_pct, "downloading", format!("{} 已存在，跳过", filename));
+            continue;
         }
+
+        let resp = client.get(*url).send().await
+            .map_err(|e| format!("{} 下载请求失败: {}", filename, e))?;
+        if !resp.status().is_success() {
+            return Err(format!("{} 下载失败 HTTP {}", filename, resp.status()));
+        }
+
         let total_size = resp.content_length().unwrap_or(0);
         let mut stream = resp.bytes_stream();
-        let mut file = tokio::fs::File::create(&default_weight).await
-            .map_err(|e| format!("创建权重文件失败: {}", e))?;
+        let mut file = tokio::fs::File::create(&dest).await
+            .map_err(|e| format!("创建文件失败: {}", e))?;
         let mut downloaded: u64 = 0;
         let start = std::time::Instant::now();
         let mut last_t = std::time::Instant::now();
@@ -519,7 +500,7 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
         while let Some(chunk) = stream.next().await {
             if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
                 drop(file);
-                let _ = tokio::fs::remove_file(&default_weight).await;
+                let _ = tokio::fs::remove_file(&dest).await;
                 return Err("下载已取消".into());
             }
             let chunk = chunk.map_err(|e| format!("下载失败: {}", e))?;
@@ -532,21 +513,20 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
                 last_t = now;
                 let avg = { let t = start.elapsed().as_secs_f64(); if t > 0.0 { downloaded as f64 / t / 1_048_576.0 } else { 0.0 } };
                 let mb_done = downloaded as f64 / 1_048_576.0;
-                let pct = if total_size > 0 { 85.0 + (downloaded as f64 / total_size as f64) * 14.0 } else { 90.0 };
+                let base_pct = 30.0 + (fi as f32 / total_files as f32) * 68.0;
+                let file_pct = if total_size > 0 { (downloaded as f32 / total_size as f32) * (68.0 / total_files as f32) } else { 0.0 };
+                let pct = base_pct + file_pct;
                 let msg = if total_size > 0 {
-                    format!("模型权重 — {:.1}/{:.1} MB ({:.1} MB/s)", mb_done, total_size as f64 / 1_048_576.0, avg)
+                    format!("{} — {:.1}/{:.1} MB ({:.1} MB/s)", filename, mb_done, total_size as f64 / 1_048_576.0, avg)
                 } else {
-                    format!("模型权重 — {:.1} MB ({:.1} MB/s)", mb_done, avg)
+                    format!("{} — {:.1} MB ({:.1} MB/s)", filename, mb_done, avg)
                 };
                 let _ = app.emit("upscale-download", UpscaleDownloadProgress {
-                    downloaded, total: total_size, percent: pct as f32, speed_mbps: avg,
+                    downloaded, total: total_size, percent: pct, speed_mbps: avg,
                     status: "downloading".into(), message: msg,
                 });
             }
         }
-        emit(99.0, "downloading", "模型权重下载完成".into());
-    } else {
-        emit(99.0, "downloading", "模型权重已就绪".into());
     }
 
     emit(100.0, "done", format!("{} 准备完成 ✓", engine.name));
@@ -852,13 +832,17 @@ async fn run_python_upscale(
         let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
         let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
 
-        // stderr 线程: 输出 Python 警告到日志
+        // stderr 线程: 输出 Python 警告到日志（过滤 onnxruntime 内部告警）
         let app_err = app_clone.clone();
         std::thread::spawn(move || {
             let reader = std::io::BufReader::new(stderr);
             for line in reader.lines().flatten() {
                 let clean = line.trim();
                 if clean.is_empty() { continue; }
+                // 过滤 onnxruntime 内部日志（CoreML GetCapability 等）
+                if clean.contains("[W:onnxruntime:") || clean.contains("[E:onnxruntime:") || clean.contains("[I:onnxruntime:") {
+                    continue;
+                }
                 let _ = app_err.emit("upscale-progress", ProgressEvent {
                     current: 0, total: 0, filename: String::new(),
                     status: "warning".to_string(),
