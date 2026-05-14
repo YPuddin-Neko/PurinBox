@@ -6,7 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { ConfirmModal, AlertModal } from '../components/Modal';
 import CustomSelect from '../components/CustomSelect';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
 import SystemMonitor from '../components/SystemMonitor';
 
@@ -571,7 +571,7 @@ export default function SettingsPage() {
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button className="btn btn-ghost btn-sm" title={t('settings.exportCsv')} onClick={async () => {
                       try {
-                        const { save } = await import('@tauri-apps/plugin-dialog');
+                        // save is statically imported at top
                         const path = await save({ title: t('settings.exportCsv'), defaultPath: 'translations.csv', filters: [{ name: 'CSV', extensions: ['csv'] }] });
                         if (path) {
                           const count = await invoke<number>('export_translation_csv', { path });
@@ -583,7 +583,7 @@ export default function SettingsPage() {
                     </button>
                     <button className="btn btn-ghost btn-sm" title={t('settings.importCsv')} onClick={async () => {
                       try {
-                        const { open: dialogOpen } = await import('@tauri-apps/plugin-dialog');
+                        const dialogOpen = open;
                         const path = await dialogOpen({ title: t('settings.importCsv'), filters: [{ name: 'CSV', extensions: ['csv'] }] });
                         if (path) {
                           const [imported, skipped, errors] = await invoke<[number, number, string]>('import_translation_csv', { path });
