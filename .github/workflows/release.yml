@@ -86,16 +86,19 @@ jobs:
           node-version: 22
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Ensure cargo in PATH
         run: |
+          # Remove broken cargo shim if it points to rustup-init
+          if cargo --version 2>&1 | grep -q "rustup-init"; then
+            echo "cargo is a rustup-init shim, installing toolchain..."
+            rustup-init -y --default-toolchain stable --target ${{ matrix.target }}
+            source "$HOME/.cargo/env"
+          else
+            rustup default stable
+            rustup target add ${{ matrix.target }}
+          fi
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          source "$HOME/.cargo/env" 2>/dev/null || true
-          rustup default stable
           cargo --version
+          rustc --version
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
