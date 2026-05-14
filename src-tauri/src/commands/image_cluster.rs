@@ -156,6 +156,32 @@ async fn ensure_cluster_deps(app: &tauri::AppHandle) -> Result<(), String> {
         emit_log("umap-learn 安装完成");
     }
 
+    // 检查 pillow (PIL)
+    let has_pillow = {
+        let p = python.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new(&p);
+            cmd.args(["-c", "from PIL import Image"]);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+            }
+            cmd.output().map(|o| o.status.success()).unwrap_or(false)
+        }).await.unwrap_or(false)
+    };
+
+    if !has_pillow {
+        emit_log("正在安装 Pillow...");
+        let p = python.clone();
+        let app2 = app.clone();
+        tokio::task::spawn_blocking(move || {
+            super::python_env::pip_install_with_python(&app2, &p, &["pillow"])
+        }).await
+        .map_err(|e| format!("安装线程异常: {}", e))??;
+        emit_log("Pillow 安装完成");
+    }
+
     emit_log("环境检查完成");
     Ok(())
 }

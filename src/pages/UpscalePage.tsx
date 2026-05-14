@@ -48,6 +48,7 @@ export default function UpscalePage() {
   const [processing, setProcessing] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
+  const [dlHover, setDlHover] = useState(false);
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [progress, setProgress] = useState(0);
@@ -334,23 +335,33 @@ export default function UpscalePage() {
           </div>
         </div>
 
-        {/* 右侧 - 操作 + 日志 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {engine && !engine.downloaded ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <button className="btn btn-primary" onClick={handleDownload} disabled={downloading} style={{ height: 48, fontSize: 14, fontWeight: 700 }}>
+              <button
+                className={`btn ${downloading && dlHover ? '' : 'btn-primary'} btn-lg`}
+                onClick={downloading ? () => invoke('cancel_upscale_download') : handleDownload}
+                onMouseEnter={() => setDlHover(true)}
+                onMouseLeave={() => setDlHover(false)}
+                style={{
+                  width: '100%', height: 48, transition: 'all 0.15s ease',
+                  ...(downloading && dlHover ? {
+                    background: 'rgba(248, 113, 113, 0.1)',
+                    color: '#f87171',
+                    border: '1px solid rgba(248, 113, 113, 0.3)',
+                  } : {}),
+                }}
+              >
                 {downloading ? (
-                  <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {t('upscale.downloadingBtn')}</>
+                  dlHover ? (
+                    <><X style={{ width: 18, height: 18 }} /> {t('upscale.cancelDownload')}</>
+                  ) : (
+                    <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {t('upscale.downloadingBtn')}</>
+                  )
                 ) : (
                   <><Download style={{ width: 18, height: 18 }} /> {t('upscale.downloadBtn')} {engine.name}</>
                 )}
               </button>
-              {downloading && (
-                <button className="btn btn-secondary" style={{ height: 34, color: '#f87171' }}
-                  onClick={() => invoke('cancel_upscale_download')}>
-                  <X style={{ width: 14, height: 14 }} /> {t('upscale.cancelDownload')}
-                </button>
-              )}
               {downloadProgress && downloading && (
                 <div>
                   <div style={{ height: 6, borderRadius: 3, background: 'var(--color-bg-tertiary)', overflow: 'hidden' }}>

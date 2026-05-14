@@ -581,6 +581,32 @@ async fn ensure_python_upscale_deps(app: &tauri::AppHandle) -> Result<(), String
         emit_log("PyTorch 安装完成");
     }
 
+    // 3. 检查 cv2 是否已安装
+    let has_cv2 = {
+        let p = python.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new(&p);
+            cmd.args(["-c", "import cv2"]);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+            }
+            cmd.output().map(|o| o.status.success()).unwrap_or(false)
+        }).await.unwrap_or(false)
+    };
+
+    if !has_cv2 {
+        emit_log("正在安装 OpenCV...");
+        let p = python.clone();
+        let app2 = app.clone();
+        tokio::task::spawn_blocking(move || {
+            super::python_env::pip_install_with_python(&app2, &p, &["opencv-python-headless"])
+        }).await
+        .map_err(|e| format!("安装线程异常: {}", e))??;
+        emit_log("OpenCV 安装完成");
+    }
+
     emit_log("环境检查完成");
 
     Ok(())
