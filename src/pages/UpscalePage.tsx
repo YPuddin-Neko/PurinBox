@@ -7,8 +7,6 @@ import { useTranslation } from 'react-i18next';
 import {
   ZoomIn,
   FolderOpen,
-  Loader2,
-  X,
   Download,
   CheckCircle2,
   Cpu,
@@ -46,9 +44,6 @@ export default function UpscalePage() {
   const [useGpu, setUseGpu] = useState(true);
   const [tileSize, setTileSize] = useState(-1);
   const [processing, setProcessing] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
-  const [dlHover, setDlHover] = useState(false);
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [progress, setProgress] = useState(0);
@@ -104,14 +99,23 @@ export default function UpscalePage() {
     return () => { unlisten.then(fn => fn()); };
   }, []);
 
-  // Listen to download events
+  // Listen to download events — inline progress in ProgressLog (same as tagger)
   useEffect(() => {
     const unlisten = listen<DownloadProgress>('upscale-download', (e) => {
       const d = e.payload;
-      setDownloadProgress(d);
-      if (d.status === 'done') {
-        setDownloading(false);
+      if (d.status === 'done' || d.status === 'cancelled') {
+        setLogs(p => p.filter(l => l.status !== 'download'));
         invoke<UpscaleEngineInfo[]>('get_upscale_engines').then(setEngines).catch(() => {});
+      } else if (d.status === 'error') {
+        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: d.message, status: 'error' }]);
+      } else {
+        const avgSpeed = d.speed_mbps > 0 ? `${d.speed_mbps.toFixed(1)} MB/s` : '';
+        setLogs(p => {
+          const idx = p.findIndex(l => l.status === 'download');
+          const entry: LogEntry = { time: getTimeStr(), message: d.message, status: 'download', dlPercent: d.percent, dlSpeed: avgSpeed };
+          if (idx >= 0) { const next = [...p]; next[idx] = entry; return next; }
+          return [...p, entry];
+        });
       }
     });
     return () => { unlisten.then(fn => fn()); };
@@ -126,23 +130,19 @@ export default function UpscalePage() {
     if (p) setOutputPath(p as string);
   };
 
-  const handleDownload = async () => {
-    if (!engine) return;
-    setDownloading(true);
-    setDownloadProgress(null);
-    try {
-      await invoke('download_upscale_engine', { engineId: engine.id });
-    } catch (e: any) {
-      setDownloading(false);
-      setLogs(p => [...p, { time: getTimeStr(), message: `${t('upscale.downloadFailed')}: ${String(e)}`, status: 'error' }]);
-    }
-  };
-
   const handleProcess = async () => {
-    if (!engine || !engine.downloaded || !inputPath || !outputPath) return;
+    if (!engine || !inputPath || !outputPath) return;
     setProcessing(true); setIsDone(false); setHasError(false); setProgress(0);
     addTask('upscale', t('upscale.taskName'));
     try {
+      // If engine not downloaded, download first
+      if (!engine.downloaded) {
+        setLogs([{ time: getTimeStr(), message: t('upscale.downloadingEngine', { name: engine.name }), status: 'info' }]);
+        await invoke('download_upscale_engine', { engineId: engine.id });
+        // Refresh engines list
+        const updated = await invoke<UpscaleEngineInfo[]>('get_upscale_engines');
+        setEngines(updated);
+      }
       await invoke<ProcessResult>('start_upscale', {
         options: {
           input_path: inputPath,
@@ -336,48 +336,13 @@ export default function UpscalePage() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          {engine && !engine.downloaded ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <button
-                className={`btn ${downloading && dlHover ? '' : 'btn-primary'} btn-lg`}
-                onClick={downloading ? () => invoke('cancel_upscale_download') : handleDownload}
-                onMouseEnter={() => setDlHover(true)}
-                onMouseLeave={() => setDlHover(false)}
-                style={{
-                  width: '100%', height: 48, transition: 'all 0.15s ease',
-                  ...(downloading && dlHover ? {
-                    background: 'rgba(248, 113, 113, 0.1)',
-                    color: '#f87171',
-                    border: '1px solid rgba(248, 113, 113, 0.3)',
-                  } : {}),
-                }}
-              >
-                {downloading ? (
-                  dlHover ? (
-                    <><X style={{ width: 18, height: 18 }} /> {t('upscale.cancelDownload')}</>
-                  ) : (
-                    <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {t('upscale.downloadingBtn')}</>
-                  )
-                ) : (
-                  <><Download style={{ width: 18, height: 18 }} /> {t('upscale.downloadBtn')} {engine.name}</>
-                )}
-              </button>
-              {downloadProgress && downloading && (
-                <div>
-                  <div style={{ height: 6, borderRadius: 3, background: 'var(--color-bg-tertiary)', overflow: 'hidden' }}>
-                    <div style={{ width: `${downloadProgress.percent}%`, height: '100%', background: 'linear-gradient(90deg, #7c5cfc, #22d3ee)', transition: 'width 0.3s' }} />
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginTop: 4 }}>{downloadProgress.message}</div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <ProcessButton processing={processing} onStart={handleProcess}
-              disabled={!inputPath || !outputPath || !engine?.downloaded}
-              cancelCommand="cancel_upscale" forceCancelCommand="force_cancel_upscale"
-              startText={t('upscale.startUpscale')} processingText={t('upscale.upscaling')}
-              onCancelLog={addCancelLog} />
-          )}
+          <ProcessButton processing={processing} onStart={handleProcess}
+            disabled={!inputPath || !outputPath}
+            cancelCommand="cancel_upscale" forceCancelCommand="force_cancel_upscale"
+            startText={engine && !engine.downloaded ? t('upscale.downloadAndUpscale') : t('upscale.startUpscale')}
+            startIcon={engine && !engine.downloaded ? <Download style={{ width: 18, height: 18 }} /> : undefined}
+            processingText={t('upscale.upscaling')}
+            onCancelLog={addCancelLog} />
 
           <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
         </div>

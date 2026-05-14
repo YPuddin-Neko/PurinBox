@@ -21,6 +21,7 @@ import BlurNoisePage from './pages/BlurNoisePage';
 import UpscalePage from './pages/UpscalePage';
 import ImageClusterPage from './pages/ImageClusterPage';
 import ImageDedupPage from './pages/ImageDedupPage';
+import DatasetBalancerPage from './pages/DatasetBalancerPage';
 import SettingsPage from './pages/SettingsPage';
 import './styles/global.css';
 import './styles/sidebar.css';
@@ -48,6 +49,7 @@ const persistentPages = [
   { path: '/upscale', component: UpscalePage },
   { path: '/image-cluster', component: ImageClusterPage },
   { path: '/image-dedup', component: ImageDedupPage },
+  { path: '/dataset-balancer', component: DatasetBalancerPage },
 ];
 
 // 无状态页面走 Routes

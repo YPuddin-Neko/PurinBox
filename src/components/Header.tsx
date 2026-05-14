@@ -29,6 +29,7 @@ const routeI18nMap: Record<string, string> = {
   '/upscale': 'sidebar.upscale',
   '/image-cluster': 'sidebar.imageCluster',
   '/image-dedup': 'sidebar.imageDedup',
+  '/dataset-balancer': 'sidebar.datasetBalancer',
   '/settings': 'sidebar.settings',
 };
 

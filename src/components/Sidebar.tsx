@@ -24,6 +24,7 @@ import {
   ZoomIn,
   Network,
   Copy,
+  Scale,
 } from 'lucide-react';
 import '../styles/sidebar.css';
 import { getVersion } from '@tauri-apps/api/app';
@@ -65,6 +66,7 @@ const navSections: NavSection[] = [
       { id: 'upscale', labelKey: 'sidebar.upscale', icon: <ZoomIn />, path: '/upscale' },
       { id: 'image-cluster', labelKey: 'sidebar.imageCluster', icon: <Network />, path: '/image-cluster' },
       { id: 'image-dedup', labelKey: 'sidebar.imageDedup', icon: <Copy />, path: '/image-dedup' },
+      { id: 'dataset-balancer', labelKey: 'sidebar.datasetBalancer', icon: <Scale />, path: '/dataset-balancer' },
     ],
   },
   {
