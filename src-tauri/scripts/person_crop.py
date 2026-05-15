@@ -284,8 +284,11 @@ def _emit(data):
 
 def main():
     """主循环: stdin 读取 JSON, stdout 输出结果"""
+    import io
+    stdin_reader = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
+
     # 读取初始化配置
-    init_line = sys.stdin.readline().strip()
+    init_line = stdin_reader.readline().strip()
     if not init_line:
         _emit({"error": "未收到初始化配置"})
         return
@@ -324,7 +327,7 @@ def main():
     })
     
     # 处理循环
-    for line in sys.stdin:
+    for line in stdin_reader:
         line = line.strip()
         if not line or line == 'EXIT':
             break

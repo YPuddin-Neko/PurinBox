@@ -385,7 +385,12 @@ def main():
     input_size = 448
     input_name = None
 
-    for line in sys.stdin:
+    # Windows 上 sys.stdin 默认用 GBK 编码，但 Rust 发送的是 UTF-8
+    # 必须用 buffer 以二进制读取再手动 UTF-8 解码
+    import io
+    stdin_reader = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
+
+    for line in stdin_reader:
         line = line.strip()
         if not line:
             continue
