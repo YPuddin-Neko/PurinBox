@@ -301,10 +301,8 @@ export default function DatasetBalancerPage() {
             </div>
             {mode === 'by_epoch' ? (
               <div>
-                <label className="form-label" style={{ fontSize: 10, marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
-                  <span>Epochs</span><span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace' }}>{epochs}</span>
-                </label>
-                <input type="range" min={1} max={100} value={epochs} onChange={e => setEpochs(Number(e.target.value))} style={{ width: '100%', accentColor: '#f59e0b' }} />
+                <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>Epochs</label>
+                <input className="form-input" type="number" min={1} value={epochs} onChange={e => setEpochs(Math.max(1, Number(e.target.value)))} style={{ width: '100%' }} />
               </div>
             ) : (
               <div>

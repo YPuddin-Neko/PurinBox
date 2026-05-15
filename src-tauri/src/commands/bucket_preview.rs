@@ -11,12 +11,18 @@ pub struct BucketOptions {
     pub res_width: u32,
     /// 训练分辨率高
     pub res_height: u32,
-    /// bucket_reso_steps (对齐粒度，如 32/64)
+    /// bucket_reso_steps (对齐粒度，如 32/64/128)
     pub steps: u32,
     /// 是否禁止放大（小图不拉伸）
     pub no_upscale: bool,
     /// repeat 次数
     pub repeats: u32,
+    /// 桶最小分辨率边长 (min_bucket_reso)
+    pub min_bucket_reso: Option<u32>,
+    /// 桶最大分辨率边长 (max_bucket_reso)
+    pub max_bucket_reso: Option<u32>,
+    /// 分桶策略: "legacy" | "nearest_only"
+    pub bucket_mode: Option<String>,
 }
 
 /// 单张图片的分桶信息
@@ -75,22 +81,122 @@ struct ScanProgress {
     message: String,
 }
 
-/// 计算图片的目标桶分辨率
-fn calculate_bucket_reso(w: u32, h: u32, max_area: f64, steps: u32, no_upscale: bool) -> (u32, u32) {
-    let img_area = w as f64 * h as f64;
-    let mut scale = (max_area / img_area).sqrt();
+/// sd-scripts round_to_steps: 先四舍五入再向下对齐到 steps
+fn round_to_steps(x: f64, steps: u32) -> u32 {
+    let v = (x + 0.5) as u32;
+    let aligned = v - v % steps;
+    aligned.max(steps)
+}
 
-    if no_upscale && scale > 1.0 {
-        scale = 1.0;
+/// 生成候选桶分辨率列表（对应 sd-scripts model_util.make_bucket_resolutions）
+fn make_bucket_resolutions(max_reso: (u32, u32), min_size: u32, max_size: u32, divisible: u32) -> Vec<(u32, u32)> {
+    let max_area = max_reso.0 as u64 * max_reso.1 as u64;
+    let mut resos = std::collections::BTreeSet::new();
+
+    // 正方形桶
+    let sq = ((max_area as f64).sqrt() / divisible as f64) as u32 * divisible;
+    resos.insert((sq, sq));
+
+    // 从 min_size 到 max_size 枚举宽度
+    let mut width = min_size;
+    while width <= max_size {
+        let height = std::cmp::min(
+            max_size,
+            ((max_area / width as u64) / divisible as u64) as u32 * divisible,
+        );
+        if height >= min_size {
+            resos.insert((width, height));
+            resos.insert((height, width));
+        }
+        width += divisible;
     }
 
-    let new_w = (w as f64 * scale + 0.5) as u32;
-    let new_h = (h as f64 * scale + 0.5) as u32;
+    resos.into_iter().collect()
+}
 
-    let bucket_w = (new_w as f64 / steps as f64).round().max(1.0) as u32 * steps;
-    let bucket_h = (new_h as f64 / steps as f64).round().max(1.0) as u32 * steps;
+/// nearest_only 模式：根据实际图片尺寸生成最匹配的桶
+/// 对应 lora-rescripts BucketManager.make_buckets_by_nearest_image_aspect
+fn make_buckets_by_nearest(image_sizes: &[(u32, u32)], max_area: f64, reso_steps: u32, min_size: u32) -> Vec<(u32, u32)> {
+    let min_edge = reso_steps.max(min_size);
+    let mut resos = std::collections::BTreeSet::new();
 
-    (bucket_w, bucket_h)
+    for &(w, h) in image_sizes {
+        if w == 0 || h == 0 { continue; }
+        let aspect = w as f64 / h as f64;
+        let target_w = (max_area * aspect).sqrt();
+        let target_h = max_area / target_w;
+
+        // 方案1: 先对齐宽度
+        let b_w_rounded = round_to_steps(target_w, reso_steps).max(min_edge);
+        let b_h_in_wr = round_to_steps(b_w_rounded as f64 / aspect, reso_steps).max(min_edge);
+        let ar_w_rounded = b_w_rounded as f64 / b_h_in_wr as f64;
+
+        // 方案2: 先对齐高度
+        let b_h_rounded = round_to_steps(target_h, reso_steps).max(min_edge);
+        let b_w_in_hr = round_to_steps(b_h_rounded as f64 * aspect, reso_steps).max(min_edge);
+        let ar_h_rounded = b_w_in_hr as f64 / b_h_rounded as f64;
+
+        if (ar_w_rounded - aspect).abs() <= (ar_h_rounded - aspect).abs() {
+            resos.insert((b_w_rounded, b_h_in_wr));
+        } else {
+            resos.insert((b_w_in_hr, b_h_rounded));
+        }
+    }
+
+    resos.into_iter().collect()
+}
+
+/// 对单张图片选择最佳桶（预定义桶匹配模式）
+/// 对应 sd-scripts BucketManager.select_bucket（use_predefined_buckets=true）
+fn select_bucket_predefined(w: u32, h: u32, predefined_resos: &[(u32, u32)]) -> (u32, u32) {
+    let aspect = w as f64 / h as f64;
+    // 如果原图分辨率恰好在列表中则直接用
+    if predefined_resos.contains(&(w, h)) {
+        return (w, h);
+    }
+    let mut best_idx = 0;
+    let mut best_err = f64::MAX;
+    for (i, &(bw, bh)) in predefined_resos.iter().enumerate() {
+        let err = (bw as f64 / bh as f64 - aspect).abs();
+        if err < best_err {
+            best_err = err;
+            best_idx = i;
+        }
+    }
+    predefined_resos[best_idx]
+}
+
+/// legacy + no_upscale 模式的桶选择（直接 round 对齐）
+fn select_bucket_no_upscale(w: u32, h: u32, max_area: f64, reso_steps: u32) -> (u32, u32) {
+    let aspect = w as f64 / h as f64;
+
+    if (w as f64 * h as f64) > max_area {
+        // 图片太大，按面积等比缩小后选最佳对齐方案
+        let resized_w = (max_area * aspect).sqrt();
+        let resized_h = max_area / resized_w;
+
+        let b_w_rounded = round_to_steps(resized_w, reso_steps);
+        let b_h_in_wr = round_to_steps(b_w_rounded as f64 / aspect, reso_steps);
+        let ar_w_rounded = b_w_rounded as f64 / b_h_in_wr as f64;
+
+        let b_h_rounded = round_to_steps(resized_h, reso_steps);
+        let b_w_in_hr = round_to_steps(b_h_rounded as f64 * aspect, reso_steps);
+        let ar_h_rounded = b_w_in_hr as f64 / b_h_rounded as f64;
+
+        let resized_size = if (ar_w_rounded - aspect).abs() < (ar_h_rounded - aspect).abs() {
+            (b_w_rounded, (b_w_rounded as f64 / aspect + 0.5) as u32)
+        } else {
+            ((b_h_rounded as f64 * aspect + 0.5) as u32, b_h_rounded)
+        };
+        let bw = resized_size.0 - resized_size.0 % reso_steps;
+        let bh = resized_size.1 - resized_size.1 % reso_steps;
+        (bw.max(reso_steps), bh.max(reso_steps))
+    } else {
+        // 图片不需要缩小，直接向下对齐到 reso_steps
+        let bw = w - w % reso_steps;
+        let bh = h - h % reso_steps;
+        (bw.max(reso_steps), bh.max(reso_steps))
+    }
 }
 
 /// 分析分桶（不复制文件，仅计算）
@@ -107,6 +213,13 @@ pub async fn analyze_buckets(
     let max_area = options.res_width as f64 * options.res_height as f64;
     let steps = options.steps.max(1);
     let repeats = options.repeats.max(1);
+    let bucket_mode = options.bucket_mode.as_deref().unwrap_or("legacy");
+
+    // min/max bucket reso（仅 no_upscale=false 且 legacy 模式时有效）
+    let min_size = options.min_bucket_reso.unwrap_or(256).max(steps);
+    let max_size = options.max_bucket_reso
+        .unwrap_or(std::cmp::max(options.res_width, options.res_height))
+        .max(std::cmp::max(options.res_width, options.res_height));
 
     // 收集图片文件
     let supported_exts = ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"];
@@ -137,6 +250,63 @@ pub async fn analyze_buckets(
         message: format!("正在扫描 {} 张图片...", file_count),
     });
 
+    // nearest_only 需要先读取所有图片尺寸
+    if bucket_mode == "nearest_only" {
+        let mut image_sizes: Vec<(u32, u32)> = Vec::new();
+        let mut image_data: Vec<(std::path::PathBuf, String, u32, u32)> = Vec::new();
+        let mut skipped: Vec<(String, String)> = Vec::new();
+        let mut processed = 0u32;
+
+        for file_path in &image_files {
+            let name = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            match image::image_dimensions(file_path) {
+                Ok((w, h)) => {
+                    image_sizes.push((w, h));
+                    image_data.push((file_path.clone(), name, w, h));
+                }
+                Err(e) => { skipped.push((name, e.to_string())); }
+            }
+            processed += 1;
+            if processed.is_multiple_of(50) || processed == file_count {
+                let _ = app.emit("bucket-progress", ScanProgress {
+                    current: processed, total: file_count,
+                    status: "processing".to_string(),
+                    message: format!("已分析 {}/{}", processed, file_count),
+                });
+            }
+        }
+
+        // 根据实际图片尺寸生成桶列表
+        let predefined_resos = make_buckets_by_nearest(&image_sizes, max_area, steps, min_size);
+
+        // 分配图片到桶
+        let mut bucket_map: std::collections::BTreeMap<(u32, u32), Vec<BucketImageInfo>> =
+            std::collections::BTreeMap::new();
+        for (file_path, name, w, h) in &image_data {
+            let (bw, bh) = select_bucket_predefined(*w, *h, &predefined_resos);
+            bucket_map.entry((bw, bh)).or_default().push(BucketImageInfo {
+                path: file_path.to_string_lossy().to_string(),
+                name: name.clone(),
+                orig_width: *w,
+                orig_height: *h,
+            });
+        }
+
+        return build_analysis_result(&app, bucket_map, skipped, repeats, file_count);
+    }
+
+    // legacy 模式
+    // 决定是否使用预定义桶
+    let use_predefined = !options.no_upscale;
+    let predefined_resos = if use_predefined {
+        make_bucket_resolutions(
+            (options.res_width, options.res_height),
+            min_size, max_size, steps,
+        )
+    } else {
+        vec![] // no_upscale legacy 不需要
+    };
+
     // 分桶
     let mut bucket_map: std::collections::BTreeMap<(u32, u32), Vec<BucketImageInfo>> =
         std::collections::BTreeMap::new();
@@ -144,40 +314,44 @@ pub async fn analyze_buckets(
     let mut processed = 0u32;
 
     for file_path in &image_files {
-        let name = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
+        let name = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
         match image::image_dimensions(file_path) {
             Ok((w, h)) => {
-                let (bw, bh) = calculate_bucket_reso(w, h, max_area, steps, options.no_upscale);
-                let img_info = BucketImageInfo {
+                let (bw, bh) = if use_predefined {
+                    select_bucket_predefined(w, h, &predefined_resos)
+                } else {
+                    select_bucket_no_upscale(w, h, max_area, steps)
+                };
+                bucket_map.entry((bw, bh)).or_default().push(BucketImageInfo {
                     path: file_path.to_string_lossy().to_string(),
                     name,
                     orig_width: w,
                     orig_height: h,
-                };
-                bucket_map.entry((bw, bh)).or_default().push(img_info);
+                });
             }
-            Err(e) => {
-                skipped.push((name, e.to_string()));
-            }
+            Err(e) => { skipped.push((name, e.to_string())); }
         }
-
         processed += 1;
         if processed.is_multiple_of(50) || processed == file_count {
             let _ = app.emit("bucket-progress", ScanProgress {
-                current: processed,
-                total: file_count,
+                current: processed, total: file_count,
                 status: "processing".to_string(),
                 message: format!("已分析 {}/{}", processed, file_count),
             });
         }
     }
 
-    // 构建结果
+    build_analysis_result(&app, bucket_map, skipped, repeats, file_count)
+}
+
+/// 构建分桶分析结果
+fn build_analysis_result(
+    app: &tauri::AppHandle,
+    bucket_map: std::collections::BTreeMap<(u32, u32), Vec<BucketImageInfo>>,
+    skipped: Vec<(String, String)>,
+    repeats: u32,
+    file_count: u32,
+) -> Result<BucketAnalysis, String> {
     let mut buckets: Vec<BucketGroup> = Vec::new();
     let mut total_images = 0u32;
 

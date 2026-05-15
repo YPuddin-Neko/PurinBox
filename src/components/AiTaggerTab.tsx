@@ -303,10 +303,17 @@ export default function AiTaggerTab() {
                 <button key={fmt} onClick={() => setOutputFormat(fmt)} style={{ padding: '2px 10px', borderRadius: 'var(--radius-sm)', border: `1px solid ${outputFormat === fmt ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: outputFormat === fmt ? 'rgba(124,92,252,0.08)' : 'transparent', color: outputFormat === fmt ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>.{fmt}</button>
               ))}
               {outputFormat==='json'&&(
-                <select className="form-input" value={jsonSimplified?'simplified':'full'} onChange={e=>{const v=e.target.value==='simplified';setJsonSimplified(v);localStorage.setItem('tagger_json_simplified',String(v));}} style={{fontSize:10,height:24,padding:'0 6px',width:'auto',marginLeft:2}}>
-                  <option value="full">{t('aiTagger.fullFormat')}</option>
-                  <option value="simplified">{t('aiTagger.simplified')}</option>
-                </select>
+                <>
+                  {(['full', 'simplified'] as const).map(mode => (
+                    <button key={mode} onClick={() => { const v = mode === 'simplified'; setJsonSimplified(v); localStorage.setItem('tagger_json_simplified', String(v)); }} style={{
+                      padding: '2px 10px', borderRadius: 'var(--radius-sm)',
+                      border: `1px solid ${(mode === 'simplified') === jsonSimplified ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                      background: (mode === 'simplified') === jsonSimplified ? 'rgba(124,92,252,0.08)' : 'transparent',
+                      color: (mode === 'simplified') === jsonSimplified ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
+                      fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                    }}>{mode === 'full' ? t('aiTagger.fullFormat') : t('aiTagger.simplified')}</button>
+                  ))}
+                </>
               )}
             </div>
           </div>

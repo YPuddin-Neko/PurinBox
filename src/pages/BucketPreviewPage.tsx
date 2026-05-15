@@ -56,13 +56,28 @@ function bucketColor(ratio: number): string {
 export default function BucketPreviewPage() {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
-  const [resWidth, setResWidth] = useState(1024);
-  const [resHeight, setResHeight] = useState(1024);
-  const [steps, setSteps] = useState(32);
+  const [resolution, setResolution] = useState('1024,1024');
+  const [bucketRange, setBucketRange] = useState('256,2048');
+  const [steps, setSteps] = useState(128);
   const [noUpscale, setNoUpscale] = useState(true);
   const [repeats, setRepeats] = useState(1);
+  const [bucketMode, setBucketMode] = useState('legacy');
+
+  // 解析分辨率
+  const parsePair = (s: string): [number, number] | null => {
+    const parts = s.split(/[,xX×]/).map(p => parseInt(p.trim()));
+    if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) return [parts[0], parts[1]];
+    return null;
+  };
+  const resPair = parsePair(resolution);
+  const rangePair = parsePair(bucketRange);
+  const resWidth = resPair?.[0] ?? 1024;
+  const resHeight = resPair?.[1] ?? 1024;
+  const minBucketReso = rangePair?.[0] ?? 256;
+  const maxBucketReso = rangePair?.[1] ?? 2048;
 
   const stepsError = steps < 32 || (steps > 32 && steps % 64 !== 0);
+  const resError = !resPair;
 
 
   const [analyzing, setAnalyzing] = useState(false);
@@ -114,7 +129,17 @@ export default function BucketPreviewPage() {
     setBucketPage(0);
     try {
       const result = await invoke<BucketAnalysis>('analyze_buckets', {
-        options: { input_path: inputPath, res_width: resWidth, res_height: resHeight, steps, no_upscale: noUpscale, repeats },
+        options: {
+          input_path: inputPath,
+          res_width: resWidth,
+          res_height: resHeight,
+          steps,
+          no_upscale: noUpscale,
+          repeats,
+          min_bucket_reso: noUpscale ? null : minBucketReso,
+          max_bucket_reso: noUpscale ? null : maxBucketReso,
+          bucket_mode: bucketMode,
+        },
       });
       setAnalysis(result);
     } catch (e: any) {
@@ -188,16 +213,25 @@ export default function BucketPreviewPage() {
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr) auto', gap: 8, alignItems: 'end' }}>
-            <div>
-              <label className="form-label" style={{ fontSize: 10 }}>{t('bucketPreview.resWidth')}</label>
-              <input className="form-input" type="number" value={resWidth} onChange={e => setResWidth(Number(e.target.value))} min={64} step={64} style={{ height: 32 }} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
+            {/* 训练分辨率 */}
+            <div style={{ position: 'relative', flex: '1 1 120px', minWidth: 100 }}>
+              <label className="form-label" style={{ fontSize: 10, color: resError ? '#ef4444' : undefined }}>{t('bucketPreview.resolution')}</label>
+              <input className="form-input" placeholder={t('bucketPreview.resolutionPlaceholder')} value={resolution} onChange={e => setResolution(e.target.value)} style={{
+                height: 32,
+                borderColor: resError ? '#ef4444' : undefined,
+                boxShadow: resError ? '0 0 0 1px #ef4444' : undefined,
+              }} />
             </div>
-            <div>
-              <label className="form-label" style={{ fontSize: 10 }}>{t('bucketPreview.resHeight')}</label>
-              <input className="form-input" type="number" value={resHeight} onChange={e => setResHeight(Number(e.target.value))} min={64} step={64} style={{ height: 32 }} />
+
+            {/* 桶分辨率范围 (仅 no_upscale=false 时可用) */}
+            <div style={{ flex: '1 1 120px', minWidth: 100, opacity: noUpscale ? 0.35 : 1, pointerEvents: noUpscale ? 'none' : 'auto', transition: 'opacity 0.2s' }}>
+              <label className="form-label" style={{ fontSize: 10 }}>{t('bucketPreview.bucketRange')}</label>
+              <input className="form-input" placeholder={t('bucketPreview.bucketRangePlaceholder')} value={bucketRange} onChange={e => setBucketRange(e.target.value)} style={{ height: 32 }} />
             </div>
-            <div style={{ position: 'relative' }}>
+
+            {/* 桶分辨率划分单位 */}
+            <div style={{ position: 'relative', width: 90 }}>
               <label className="form-label" style={{ fontSize: 10, color: stepsError ? '#ef4444' : undefined }}>{t('bucketPreview.stepsLabel')}</label>
               <input className="form-input" type="number" value={steps} onChange={e => setSteps(Number(e.target.value))} min={32} step={32} style={{
                 height: 32,
@@ -209,12 +243,30 @@ export default function BucketPreviewPage() {
                 fontSize: 9, color: '#ef4444', whiteSpace: 'nowrap',
               }}>{t('bucketPreview.stepsError')}</div>}
             </div>
-            <div>
+
+            {/* Repeats */}
+            <div style={{ width: 60 }}>
               <label className="form-label" style={{ fontSize: 10 }}>Repeats</label>
               <input className="form-input" type="number" value={repeats} onChange={e => setRepeats(Number(e.target.value))} min={1} style={{ height: 32 }} />
             </div>
 
-            {/* 不使用桶放大 */}
+            {/* 分桶策略 pill buttons */}
+            <div>
+              <label className="form-label" style={{ fontSize: 10 }}>{t('bucketPreview.bucketMode')}</label>
+              <div style={{ display: 'flex', gap: 2, height: 32, alignItems: 'center' }}>
+                {([['legacy', t('bucketPreview.modeLegacy')], ['nearest_only', t('bucketPreview.modeNearest')]] as const).map(([val, label]) => (
+                  <button key={val} onClick={() => setBucketMode(val)} style={{
+                    padding: '4px 10px', borderRadius: 'var(--radius-sm)',
+                    border: `1px solid ${bucketMode === val ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                    background: bucketMode === val ? 'rgba(124,92,252,0.08)' : 'transparent',
+                    color: bucketMode === val ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
+                    fontSize: 11, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 0.15s',
+                  }}>{label}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* 桶不放大图片 */}
             <div onClick={() => setNoUpscale(!noUpscale)} style={{
               display: 'flex', alignItems: 'center', gap: 8, height: 32,
               padding: '0 10px', borderRadius: 'var(--radius-md)',
