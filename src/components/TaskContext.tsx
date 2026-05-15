@@ -93,7 +93,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
           const progress = p.total > 0 ? (p.current / p.total) * 100 : 0;
           let status: TaskInfo['status'] = task.status;
           if (p.status === 'done') status = 'done';
-          else if (p.status === 'error' && (p.message.includes('已取消') || p.message.includes('cancelled'))) status = 'cancelled';
+          else if (p.status === 'error' && /已取消|cancel/i.test(p.message)) status = 'cancelled';
           return prev.map(t => t.id === taskId ? { ...t, progress, current: p.current, total: p.total, message: p.message, status } : t);
         });
       });

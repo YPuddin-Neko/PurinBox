@@ -199,7 +199,7 @@ fn detect_gpu() -> (String, f32, u64, u64, f32) {
     }
 
     // 3. 未检测到
-    ("未检测到 GPU".into(), -1.0, 0, 0, -1.0)
+    (String::new(), -1.0, 0, 0, -1.0)
 }
 
 /// 通过 nvidia-smi 检测 NVIDIA 显卡（Windows 上隐藏控制台窗口）

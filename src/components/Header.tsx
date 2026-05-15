@@ -181,7 +181,7 @@ export default function Header() {
                 </>
               )}
             </>
-          ) : stats.gpu_name && !stats.gpu_name.includes('未检测') && !stats.gpu_name.includes('Not detected') ? (
+          ) : stats.gpu_name && stats.gpu_name.length > 0 ? (
             <>
               <div className="header-stat-divider" />
               <div className="header-stat-item" title={stats.gpu_name}>

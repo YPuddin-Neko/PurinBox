@@ -91,8 +91,6 @@ def create_session(onnx_path, device):
     """创建 onnxruntime InferenceSession，自动选择最佳 EP"""
     import onnxruntime as ort
 
-    emit_log(f"onnxruntime {ort.__version__}, 可用 EP: {ort.get_available_providers()}")
-
     onnx_path = os.path.abspath(onnx_path)
 
     providers = []
@@ -231,25 +229,33 @@ def main():
             tensor = np.transpose(img_f, (2, 0, 1))[np.newaxis, ...]
 
             # 推理
-            if args.tta:
-                # TTA: 8 种变换取平均
-                outputs = []
-                for flip_h in [False, True]:
-                    for rot in [0, 1, 2, 3]:
-                        t = tensor.copy()
-                        if flip_h:
-                            t = t[:, :, :, ::-1].copy()
-                        if rot > 0:
-                            t = np.rot90(t, rot, axes=(2, 3)).copy()
-                        out = tile_process(t, session, input_name, output_name, native_scale, tile_size)
-                        if rot > 0:
-                            out = np.rot90(out, -rot, axes=(2, 3)).copy()
-                        if flip_h:
-                            out = out[:, :, :, ::-1].copy()
-                        outputs.append(out)
-                output = np.mean(outputs, axis=0)
-            else:
-                output = tile_process(tensor, session, input_name, output_name, native_scale, tile_size)
+            def _do_inference(ts, t_session, t_input, t_output, t_scale, t_tile):
+                if args.tta:
+                    outputs = []
+                    for flip_h in [False, True]:
+                        for rot in [0, 1, 2, 3]:
+                            t = ts.copy()
+                            if flip_h:
+                                t = t[:, :, :, ::-1].copy()
+                            if rot > 0:
+                                t = np.rot90(t, rot, axes=(2, 3)).copy()
+                            out = tile_process(t, t_session, t_input, t_output, t_scale, t_tile)
+                            if rot > 0:
+                                out = np.rot90(out, -rot, axes=(2, 3)).copy()
+                            if flip_h:
+                                out = out[:, :, :, ::-1].copy()
+                            outputs.append(out)
+                    return np.mean(outputs, axis=0)
+                else:
+                    return tile_process(ts, t_session, t_input, t_output, t_scale, t_tile)
+
+            try:
+                output = _do_inference(tensor, session, input_name, output_name, native_scale, tile_size)
+            except Exception as inf_err:
+                err_msg = str(inf_err)
+                if "CUDA" in err_msg or "Resize" in err_msg or "ORT" in err_msg or "onnxruntime" in err_msg.lower():
+                    raise RuntimeError(f"GPU 显存不足，请在设置中开启分块处理或降低图片分辨率") from inf_err
+                raise
 
             # 后处理: NCHW → HWC, RGB → BGR
             output = output.squeeze(0).clip(0, 1)

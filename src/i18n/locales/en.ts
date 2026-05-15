@@ -197,6 +197,8 @@ const en = {
     taskName: 'Image Scale',
     startUp: 'Upscale',
     startDown: 'Downscale',
+    startBoth: 'Upscale + Downscale',
+    resizeHint: 'Images already above/below target will be skipped; when both checked, upscale runs first then downscale',
   },
 
   filter: {
@@ -343,7 +345,7 @@ const en = {
     ttaOff: 'Disabled',
     ttaDesc: '8-direction flip averaging, better quality but 8x slower',
     tileSize: 'Tile Size',
-    tileSizeDesc: 'Set to 256 for large images or lower-end devices to avoid OOM (-1 for model auto)',
+    tileSizeDesc: '(-1 for model auto), if VRAM overflow occurs try setting tile size manually',
     notDownloaded: 'Not downloaded',
     downloaded: '✓ Ready',
     downloadFailed: 'Download failed',

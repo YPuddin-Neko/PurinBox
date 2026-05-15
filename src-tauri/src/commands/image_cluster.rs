@@ -240,25 +240,44 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
         // stderr 线程
         let app_err = app_clone.clone();
         std::thread::spawn(move || {
-            let reader = std::io::BufReader::new(stderr);
-            for line in reader.lines().flatten() {
-                let clean = line.trim();
-                if clean.is_empty() { continue; }
-                // 跳过 PyTorch 模型下载进度条（包含大量 % 符号的行）
-                if clean.matches('%').count() > 3 { continue; }
-                // 跳过常见无害警告
-                if clean.contains("UserWarning") || clean.contains("FutureWarning") { continue; }
-                if clean.contains("RuntimeWarning") { continue; }
-                if clean.starts_with("Downloading:") || clean.starts_with("100%") { continue; }
-                // 跳过 Python warnings 模块的碎片行
-                if clean == "warn(" || clean.starts_with("warnings.warn(") { continue; }
-                if clean.contains("site-packages/") && clean.contains(".py:") { continue; }
-                if clean.starts_with("eigenvalues") || clean.starts_with("scipy.") { continue; }
-                let _ = app_err.emit("cluster-progress", ProgressEvent {
-                    current: 0, total: 0, filename: String::new(),
-                    status: "warning".to_string(),
-                    message: format!("[Python] {}", clean),
-                });
+            let mut reader = std::io::BufReader::new(stderr);
+            let mut buf = Vec::new();
+            use std::io::Read;
+            let mut byte = [0u8; 1];
+            loop {
+                match reader.read(&mut byte) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if byte[0] == b'\n' {
+                            let line = String::from_utf8(buf.clone())
+                                .unwrap_or_else(|_| String::from_utf8_lossy(&buf).to_string());
+                            buf.clear();
+                            let clean = line.trim();
+                            if clean.is_empty() { continue; }
+                            // 去除 ANSI 转义序列
+                            let clean = clean.replace(|c: char| c == '\x1b', "")
+                                .replace("[0m", "").replace("[1m", "")
+                                .replace("[31m", "").replace("[33m", "");
+                            let clean = clean.trim();
+                            if clean.is_empty() { continue; }
+                            if clean.matches('%').count() > 3 { continue; }
+                            if clean.contains("UserWarning") || clean.contains("FutureWarning") { continue; }
+                            if clean.contains("RuntimeWarning") { continue; }
+                            if clean.starts_with("Downloading:") || clean.starts_with("100%") { continue; }
+                            if clean == "warn(" || clean.starts_with("warnings.warn(") { continue; }
+                            if clean.contains("site-packages/") && clean.contains(".py:") { continue; }
+                            if clean.starts_with("eigenvalues") || clean.starts_with("scipy.") { continue; }
+                            let _ = app_err.emit("cluster-progress", ProgressEvent {
+                                current: 0, total: 0, filename: String::new(),
+                                status: "warning".to_string(),
+                                message: format!("[Python] {}", clean),
+                            });
+                        } else if byte[0] != b'\r' {
+                            buf.push(byte[0]);
+                        }
+                    }
+                    Err(_) => break,
+                }
             }
         });
 

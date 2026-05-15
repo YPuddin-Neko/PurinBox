@@ -33,7 +33,8 @@ export default function ScalePage() {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
-  const [mode, setMode] = useState<'upscale' | 'downscale'>('upscale');
+  const [enableUpscale, setEnableUpscale] = useState(true);
+  const [enableDownscale, setEnableDownscale] = useState(false);
   const [upWidth, setUpWidth] = useState(1024);
   const [upHeight, setUpHeight] = useState(1024);
   const [downWidth, setDownWidth] = useState(512);
@@ -45,9 +46,6 @@ export default function ScalePage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
-
-  const targetWidth = mode === 'upscale' ? upWidth : downWidth;
-  const targetHeight = mode === 'upscale' ? upHeight : downHeight;
 
   // Listen for progress events
   useEffect(() => {
@@ -90,8 +88,25 @@ export default function ScalePage() {
 
   const { addTask } = useTaskQueue();
 
+  // Determine mode string
+  const getMode = () => {
+    if (enableUpscale && enableDownscale) return 'both';
+    if (enableUpscale) return 'upscale';
+    if (enableDownscale) return 'downscale';
+    return '';
+  };
+
+  const getModeLabel = () => {
+    const mode = getMode();
+    if (mode === 'both') return t('scale.startBoth');
+    if (mode === 'upscale') return t('scale.startUp');
+    if (mode === 'downscale') return t('scale.startDown');
+    return '';
+  };
+
   const handleProcess = async () => {
-    if (!inputPath || !outputPath) return;
+    const mode = getMode();
+    if (!inputPath || !outputPath || !mode) return;
     setProcessing(true);
     addTask('scale', t('scale.taskName'));
     setProgress(0);
@@ -99,20 +114,25 @@ export default function ScalePage() {
     setProgressTotal(0);
     setIsDone(false);
     setHasError(false);
-    setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${mode === 'upscale' ? t('scale.startUp') : t('scale.startDown')}${t('pages.process')} → ${targetWidth}×${targetHeight}`, status: 'info' }]);
+
+    const targetW = mode === 'downscale' ? downWidth : upWidth;
+    const targetH = mode === 'downscale' ? downHeight : upHeight;
+    const label = getModeLabel();
+    setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${label}${t('pages.process')} → ${targetW}×${targetH}`, status: 'info' }]);
     try {
       await invoke<ProcessResult>('scale_images', {
         options: {
           input_path: inputPath,
           output_path: outputPath,
           mode,
-          target_width: targetWidth,
-          target_height: targetHeight,
+          target_width: targetW,
+          target_height: targetH,
+          down_target_width: mode === 'both' ? downWidth : 0,
+          down_target_height: mode === 'both' ? downHeight : 0,
         },
       });
       // done
     } catch (e: any) {
-
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
       setHasError(true);
       setIsDone(true);
@@ -123,6 +143,8 @@ export default function ScalePage() {
 
   const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
   const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
+
+  const canStart = inputPath && outputPath && (enableUpscale || enableDownscale);
 
   return (
     <div className="page">
@@ -163,20 +185,26 @@ export default function ScalePage() {
             <div className="tool-panel-header"><span className="tool-panel-title">{t('scale.scaleOptions')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               {/* 上采样 */}
-              <div onClick={() => setMode('upscale')} style={{
+              <div onClick={() => setEnableUpscale(!enableUpscale)} style={{
                 padding: 'var(--space-4)', borderRadius: 'var(--radius-md)',
-                border: `1px solid ${mode === 'upscale' ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                background: mode === 'upscale' ? 'rgba(124, 92, 252, 0.06)' : 'var(--color-bg-input)',
+                border: `1px solid ${enableUpscale ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                background: enableUpscale ? 'rgba(124, 92, 252, 0.06)' : 'var(--color-bg-input)',
                 cursor: 'pointer', transition: 'all 0.2s',
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
-                  <div style={{ width: 20, height: 20, borderRadius: '50%', border: `2px solid ${mode === 'upscale' ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {mode === 'upscale' && <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-accent-primary)' }} />}
+                  <div style={{
+                    width: 18, height: 18, borderRadius: 4,
+                    border: `2px solid ${enableUpscale ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`,
+                    background: enableUpscale ? 'var(--color-accent-primary)' : 'transparent',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.15s',
+                  }}>
+                    {enableUpscale && <span style={{ color: '#fff', fontSize: 12, fontWeight: 700, lineHeight: 1 }}>✓</span>}
                   </div>
-                  <ArrowUpCircle style={{ width: 18, height: 18, color: mode === 'upscale' ? '#4ade80' : 'var(--color-text-tertiary)' }} />
+                  <ArrowUpCircle style={{ width: 18, height: 18, color: enableUpscale ? '#4ade80' : 'var(--color-text-tertiary)' }} />
                   <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{t('scale.upscale')}</span>
                 </div>
-                <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
+                <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', opacity: enableUpscale ? 1 : 0.4, pointerEvents: enableUpscale ? 'auto' : 'none' }}>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label">{t('scale.width')}</label>
                     <input className="form-input" type="number" value={upWidth} onChange={(e) => setUpWidth(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
@@ -195,20 +223,26 @@ export default function ScalePage() {
               </div>
 
               {/* 下采样 */}
-              <div onClick={() => setMode('downscale')} style={{
+              <div onClick={() => setEnableDownscale(!enableDownscale)} style={{
                 padding: 'var(--space-4)', borderRadius: 'var(--radius-md)',
-                border: `1px solid ${mode === 'downscale' ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                background: mode === 'downscale' ? 'rgba(124, 92, 252, 0.06)' : 'var(--color-bg-input)',
+                border: `1px solid ${enableDownscale ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                background: enableDownscale ? 'rgba(124, 92, 252, 0.06)' : 'var(--color-bg-input)',
                 cursor: 'pointer', transition: 'all 0.2s',
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
-                  <div style={{ width: 20, height: 20, borderRadius: '50%', border: `2px solid ${mode === 'downscale' ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {mode === 'downscale' && <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-accent-primary)' }} />}
+                  <div style={{
+                    width: 18, height: 18, borderRadius: 4,
+                    border: `2px solid ${enableDownscale ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`,
+                    background: enableDownscale ? 'var(--color-accent-primary)' : 'transparent',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.15s',
+                  }}>
+                    {enableDownscale && <span style={{ color: '#fff', fontSize: 12, fontWeight: 700, lineHeight: 1 }}>✓</span>}
                   </div>
-                  <ArrowDownCircle style={{ width: 18, height: 18, color: mode === 'downscale' ? '#60a5fa' : 'var(--color-text-tertiary)' }} />
+                  <ArrowDownCircle style={{ width: 18, height: 18, color: enableDownscale ? '#60a5fa' : 'var(--color-text-tertiary)' }} />
                   <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{t('scale.downscale')}</span>
                 </div>
-                <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
+                <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', opacity: enableDownscale ? 1 : 0.4, pointerEvents: enableDownscale ? 'auto' : 'none' }}>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label">{t('scale.width')}</label>
                     <input className="form-input" type="number" value={downWidth} onChange={(e) => setDownWidth(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
@@ -225,6 +259,14 @@ export default function ScalePage() {
                   </span>
                 </div>
               </div>
+
+              {/* 提示文字 */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(251, 191, 36, 0.06)', border: '1px solid rgba(251, 191, 36, 0.15)' }}>
+                <Info style={{ width: 14, height: 14, color: '#fbbf24', marginTop: 2, minWidth: 14 }} />
+                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
+                  {t('scale.resizeHint')}
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -233,7 +275,7 @@ export default function ScalePage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 执行按钮 */}
           <ProcessButton processing={processing} onStart={handleProcess}
-            disabled={!inputPath || !outputPath}
+            disabled={!canStart}
             cancelCommand="cancel_scale" startText={t('scale.startScale')} processingText={t('pages.processing')}
             onCancelLog={addCancelLog} />
 

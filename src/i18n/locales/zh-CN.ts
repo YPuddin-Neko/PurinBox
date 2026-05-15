@@ -207,6 +207,8 @@ const zhCN = {
     taskName: '图片缩放',
     startUp: '上采样',
     startDown: '下采样',
+    startBoth: '上采样 + 下采样',
+    resizeHint: '高于/低于目标分辨率的图片会被跳过; 同时勾选时按先上采样后下采样的顺序执行',
   },
 
   // ═══════════════ 分辨率筛选 ═══════════════
@@ -361,7 +363,7 @@ const zhCN = {
     ttaOff: '关闭',
     ttaDesc: '8 方向翻转取平均，效果更好但速度慢 8 倍',
     tileSize: '分块大小 (Tile Size)',
-    tileSizeDesc: '大图或性能较差的设备建议设为 256 以避免内存不足(-1为模型自动决定)',
+    tileSizeDesc: '(-1为模型自动决定), 如果遇到显存溢出问题可以根据情况尝试手动设置分块大小',
     notDownloaded: '未下载',
     downloaded: '✓ 已就绪',
     downloadFailed: '下载失败',

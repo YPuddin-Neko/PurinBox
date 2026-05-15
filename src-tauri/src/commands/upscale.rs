@@ -835,19 +835,42 @@ async fn run_python_upscale(
         // stderr 线程: 输出 Python 警告到日志（过滤 onnxruntime 内部告警）
         let app_err = app_clone.clone();
         std::thread::spawn(move || {
-            let reader = std::io::BufReader::new(stderr);
-            for line in reader.lines().flatten() {
-                let clean = line.trim();
-                if clean.is_empty() { continue; }
-                // 过滤 onnxruntime 内部日志（仅 Warning/Info，保留 Error）
-                if clean.contains("[W:onnxruntime:") || clean.contains("[I:onnxruntime:") {
-                    continue;
+            let mut reader = std::io::BufReader::new(stderr);
+            let mut buf = Vec::new();
+            use std::io::Read;
+            let mut byte = [0u8; 1];
+            loop {
+                match reader.read(&mut byte) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if byte[0] == b'\n' {
+                            // 尝试 UTF-8，失败则 lossy 替换
+                            let line = String::from_utf8(buf.clone())
+                                .unwrap_or_else(|_| String::from_utf8_lossy(&buf).to_string());
+                            buf.clear();
+                            let clean = line.trim();
+                            if clean.is_empty() { continue; }
+                            // 去除 ANSI 转义序列
+                            let clean = clean.replace(|c: char| c == '\x1b', "")
+                                .replace("[0m", "").replace("[1m", "")
+                                .replace("[31m", "").replace("[33m", "");
+                            let clean = clean.trim();
+                            if clean.is_empty() { continue; }
+                            // 过滤 onnxruntime 内部日志
+                            if clean.contains("[W:onnxruntime:") || clean.contains("[I:onnxruntime:") {
+                                continue;
+                            }
+                            let _ = app_err.emit("upscale-progress", ProgressEvent {
+                                current: 0, total: 0, filename: String::new(),
+                                status: "warning".to_string(),
+                                message: format!("[Python] {}", clean),
+                            });
+                        } else if byte[0] != b'\r' {
+                            buf.push(byte[0]);
+                        }
+                    }
+                    Err(_) => break,
                 }
-                let _ = app_err.emit("upscale-progress", ProgressEvent {
-                    current: 0, total: 0, filename: String::new(),
-                    status: "warning".to_string(),
-                    message: format!("[Python] {}", clean),
-                });
             }
         });
 

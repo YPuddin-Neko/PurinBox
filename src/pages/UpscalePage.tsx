@@ -84,7 +84,7 @@ export default function UpscalePage() {
       if (d.status === 'done') {
         setProgress(100); setIsDone(true); setProcessing(false);
         setProgressCurrent(d.total); setProgressTotal(d.total);
-        if (d.message?.includes('失败') && !d.message?.includes('失败 0')) setHasError(true);
+        if (d.message) { const m = d.message.match(/(\d+)/g); if (m && m.length >= 2 && parseInt(m[1]) > 0) setHasError(true); }
         setLogs(p => [...p, { time: getTimeStr(), message: d.message, status: 'success' }]);
         updateTask('upscale', { status: 'done', message: d.message });
       } else if (d.status === 'processing') {

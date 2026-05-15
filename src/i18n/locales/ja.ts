@@ -197,6 +197,8 @@ const ja = {
     taskName: '画像リサイズ',
     startUp: 'アップスケール',
     startDown: 'ダウンスケール',
+    startBoth: 'アップ + ダウンスケール',
+    resizeHint: 'ターゲット解像度より高い/低い画像はスキップ; 両方有効時はアップスケール後にダウンスケールを実行',
   },
 
   filter: {
@@ -343,7 +345,7 @@ const ja = {
     ttaOff: 'オフ',
     ttaDesc: '8方向反転平均化、品質向上但し8倍遅い',
     tileSize: 'タイルサイズ',
-    tileSizeDesc: '大きな画像や低スペックデバイスでは256推奨（メモリ溢れ防止、-1でモデル自動決定）',
+    tileSizeDesc: '(-1でモデル自動決定), VRAM不足の場合は手動でタイルサイズを設定してください',
     notDownloaded: '未ダウンロード',
     downloaded: '✓ 準備完了',
     downloadFailed: 'ダウンロード失敗',

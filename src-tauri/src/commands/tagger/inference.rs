@@ -611,26 +611,38 @@ pub fn run_tagging(
     // 启动 stderr 读取线程（输出到日志，过滤 ANSI 颜色码）
     let app_err = app.clone();
     std::thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        let mut lines = reader.lines();
-        while let Some(Ok(line)) = lines.next() {
-            let clean = strip_ansi_codes(&line);
-            let clean = clean.trim();
-            if clean.is_empty() {
-                continue;
+        let mut reader = BufReader::new(stderr);
+        let mut buf = Vec::new();
+        use std::io::Read;
+        let mut byte = [0u8; 1];
+        loop {
+            match reader.read(&mut byte) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if byte[0] == b'\n' {
+                        let line = String::from_utf8(buf.clone())
+                            .unwrap_or_else(|_| String::from_utf8_lossy(&buf).to_string());
+                        buf.clear();
+                        let clean = strip_ansi_codes(&line);
+                        let clean = clean.trim();
+                        if clean.is_empty() { continue; }
+                        let lower = clean.to_lowercase();
+                        if lower.contains("context leak")
+                            || lower.contains("msgtracer")
+                            || lower.contains("number of partitions supported by coreml") {
+                            continue;
+                        }
+                        let _ = app_err.emit("tagger-progress", ProgressEvent {
+                            current: 0, total: 0, filename: String::new(),
+                            status: "warning".to_string(),
+                            message: format!("[Python] {}", clean),
+                        });
+                    } else if byte[0] != b'\r' {
+                        buf.push(byte[0]);
+                    }
+                }
+                Err(_) => break,
             }
-            // 过滤无害的系统警告（macOS CoreML 等）
-            let lower = clean.to_lowercase();
-            if lower.contains("context leak") 
-                || lower.contains("msgtracer")
-                || lower.contains("number of partitions supported by coreml") {
-                continue;
-            }
-            let _ = app_err.emit("tagger-progress", ProgressEvent {
-                current: 0, total: 0, filename: String::new(),
-                status: "warning".to_string(),
-                message: format!("[Python] {}", clean),
-            });
         }
     });
 

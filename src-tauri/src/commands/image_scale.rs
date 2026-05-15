@@ -13,10 +13,15 @@ static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 pub struct ScaleOptions {
     pub input_path: String,
     pub output_path: String,
-    /// "upscale" | "downscale"
+    /// "upscale" | "downscale" | "both"
     pub mode: String,
     pub target_width: u32,
     pub target_height: u32,
+    /// 下采样目标（mode="both" 时使用）
+    #[serde(default)]
+    pub down_target_width: u32,
+    #[serde(default)]
+    pub down_target_height: u32,
 }
 
 #[tauri::command]
@@ -105,6 +110,19 @@ fn scale_images_sync(app: &tauri::AppHandle, options: &ScaleOptions) -> Result<P
     Ok(ProcessResult { success_count, fail_count, total, errors })
 }
 
+/// Area-based proportional scaling (preserves aspect ratio, rounds to nearest multiple of 64)
+fn area_scale(img: &image::DynamicImage, target_w: u32, target_h: u32) -> image::DynamicImage {
+    let (orig_w, orig_h) = img.dimensions();
+    let target_area = target_w as f64 * target_h as f64;
+    let orig_area = orig_w as f64 * orig_h as f64;
+    let scale = (target_area / orig_area).sqrt();
+
+    let new_w = ((orig_w as f64 * scale / 64.0).round() * 64.0).max(64.0) as u32;
+    let new_h = ((orig_h as f64 * scale / 64.0).round() * 64.0).max(64.0) as u32;
+
+    img.resize_exact(new_w, new_h, FilterType::Lanczos3)
+}
+
 fn process_scale(
     file_path: &Path,
     output_dir: &Path,
@@ -114,38 +132,72 @@ fn process_scale(
         .map_err(|e| format!("无法打开图片: {}", e))?;
 
     let (orig_w, orig_h) = img.dimensions();
-    let target_w = options.target_width;
-    let target_h = options.target_height;
     let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-
-    let should_process = match options.mode.as_str() {
-        "upscale" => orig_w < target_w || orig_h < target_h,
-        "downscale" => orig_w > target_w || orig_h > target_h,
-        _ => return Err("无效的缩放模式".to_string()),
-    };
-
     let output_path = output_dir.join(&filename);
 
-    if should_process {
-        // Area-based proportional scaling (preserves aspect ratio)
-        // Target area = target_w * target_h, scale ratio = sqrt(target_area / orig_area)
-        let target_area = target_w as f64 * target_h as f64;
-        let orig_area = orig_w as f64 * orig_h as f64;
-        let scale = (target_area / orig_area).sqrt();
+    match options.mode.as_str() {
+        "upscale" => {
+            let target_w = options.target_width;
+            let target_h = options.target_height;
+            if orig_w < target_w || orig_h < target_h {
+                let resized = area_scale(&img, target_w, target_h);
+                let (nw, nh) = resized.dimensions();
+                resized.save(&output_path).map_err(|e| format!("无法保存图片: {}", e))?;
+                Ok(format!("[上采样] {} ({}x{} → {}x{})", filename, orig_w, orig_h, nw, nh))
+            } else {
+                std::fs::copy(file_path, &output_path).map_err(|e| format!("无法复制图片: {}", e))?;
+                Ok(format!("[跳过] {} ({}x{}, 无需上采样)", filename, orig_w, orig_h))
+            }
+        }
+        "downscale" => {
+            let target_w = options.target_width;
+            let target_h = options.target_height;
+            if orig_w > target_w || orig_h > target_h {
+                let resized = area_scale(&img, target_w, target_h);
+                let (nw, nh) = resized.dimensions();
+                resized.save(&output_path).map_err(|e| format!("无法保存图片: {}", e))?;
+                Ok(format!("[下采样] {} ({}x{} → {}x{})", filename, orig_w, orig_h, nw, nh))
+            } else {
+                std::fs::copy(file_path, &output_path).map_err(|e| format!("无法复制图片: {}", e))?;
+                Ok(format!("[跳过] {} ({}x{}, 无需下采样)", filename, orig_w, orig_h))
+            }
+        }
+        "both" => {
+            // 先上采样，再下采样
+            let up_w = options.target_width;
+            let up_h = options.target_height;
+            let down_w = if options.down_target_width > 0 { options.down_target_width } else { up_w };
+            let down_h = if options.down_target_height > 0 { options.down_target_height } else { up_h };
 
-        // Calculate new dimensions, round to nearest multiple of 64
-        let new_w = ((orig_w as f64 * scale / 64.0).round() * 64.0).max(64.0) as u32;
-        let new_h = ((orig_h as f64 * scale / 64.0).round() * 64.0).max(64.0) as u32;
+            let mut current = img;
+            let mut steps = Vec::new();
 
-        let filter = FilterType::Lanczos3;
-        let resized = img.resize_exact(new_w, new_h, filter);
-        resized.save(&output_path)
-            .map_err(|e| format!("无法保存图片: {}", e))?;
-        Ok(format!("[缩放] {} ({}x{} → {}x{})", filename, orig_w, orig_h, new_w, new_h))
-    } else {
-        std::fs::copy(file_path, &output_path)
-            .map_err(|e| format!("无法复制图片: {}", e))?;
-        Ok(format!("[跳过] {} ({}x{}, 无需{})", filename, orig_w, orig_h,
-            if options.mode == "upscale" { "上采样" } else { "下采样" }))
+            // Step 1: 上采样（小于上采样目标的图）
+            let (cw, ch) = current.dimensions();
+            if cw < up_w || ch < up_h {
+                current = area_scale(&current, up_w, up_h);
+                let (nw, nh) = current.dimensions();
+                steps.push(format!("上采样 {}x{} → {}x{}", cw, ch, nw, nh));
+            }
+
+            // Step 2: 下采样（大于下采样目标的图）
+            let (cw, ch) = current.dimensions();
+            if cw > down_w || ch > down_h {
+                current = area_scale(&current, down_w, down_h);
+                let (nw, nh) = current.dimensions();
+                steps.push(format!("下采样 {}x{} → {}x{}", cw, ch, nw, nh));
+            }
+
+            if steps.is_empty() {
+                std::fs::copy(file_path, &output_path).map_err(|e| format!("无法复制图片: {}", e))?;
+                Ok(format!("[跳过] {} ({}x{}, 已在目标范围内)", filename, orig_w, orig_h))
+            } else {
+                let (final_w, final_h) = current.dimensions();
+                current.save(&output_path).map_err(|e| format!("无法保存图片: {}", e))?;
+                Ok(format!("[缩放] {} ({}) → {}x{}", filename, steps.join(" → "), final_w, final_h))
+            }
+        }
+        _ => Err("无效的缩放模式".to_string()),
     }
 }
+
