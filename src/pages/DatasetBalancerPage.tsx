@@ -288,16 +288,12 @@ export default function DatasetBalancerPage() {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
             <div>
-              <label className="form-label" style={{ fontSize: 10, marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
-                <span>Batch Size</span><span style={{ fontWeight: 700, color: '#a78bfa', fontFamily: 'monospace' }}>{batchSize}</span>
-              </label>
-              <input type="range" min={1} max={256} value={batchSize} onChange={e => setBatchSize(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
+              <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>Batch Size</label>
+              <input className="form-input" type="number" min={1} value={batchSize} onChange={e => setBatchSize(Math.max(1, Number(e.target.value)))} style={{ width: '100%' }} />
             </div>
             <div>
-              <label className="form-label" style={{ fontSize: 10, marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
-                <span>Grad Accum</span><span style={{ fontWeight: 700, color: '#a78bfa', fontFamily: 'monospace' }}>{gradAccum}</span>
-              </label>
-              <input type="range" min={1} max={256} value={gradAccum} onChange={e => setGradAccum(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
+              <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>Grad Accum</label>
+              <input className="form-input" type="number" min={1} value={gradAccum} onChange={e => setGradAccum(Math.max(1, Number(e.target.value)))} style={{ width: '100%' }} />
             </div>
             {mode === 'by_epoch' ? (
               <div>

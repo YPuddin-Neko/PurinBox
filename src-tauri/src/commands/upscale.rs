@@ -819,6 +819,49 @@ async fn run_python_upscale(
         {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x08000000);
+
+            // GPU 模式下设置 CUDA/cuDNN DLL 路径
+            if device != "cpu" {
+                let mut path = std::env::var("PATH").unwrap_or_default();
+
+                let mut add_dir = |dir: &str| {
+                    if std::path::Path::new(dir).exists() && !path.contains(dir) {
+                        path = format!("{};{}", dir, path);
+                    }
+                };
+
+                for (_key, val) in super::tagger::inference::get_cuda_env_vars() {
+                    let bin = format!(r"{}\bin", val);
+                    let bin_x64 = format!(r"{}\bin\x64", val);
+                    let lib = format!(r"{}\lib\x64", val);
+                    add_dir(&bin);
+                    add_dir(&bin_x64);
+                    add_dir(&lib);
+                }
+
+                if let Ok(cudnn_path) = std::env::var("CUDNN_PATH") {
+                    let bin = format!(r"{}\bin", cudnn_path);
+                    add_dir(&bin);
+                    super::tagger::inference::add_subdirs_to_path(&bin, &mut path);
+                    let lib = format!(r"{}\lib", cudnn_path);
+                    super::tagger::inference::add_subdirs_to_path(&lib, &mut path);
+                }
+
+                let current_path = path.clone();
+                for dir in current_path.split(';') {
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        let has_cudnn = entries.into_iter().flatten().any(|e| {
+                            let name = e.file_name().to_string_lossy().to_lowercase();
+                            name.contains("cudnn") && name.ends_with(".dll")
+                        });
+                        if has_cudnn {
+                            super::tagger::inference::add_subdirs_to_path(dir, &mut path);
+                        }
+                    }
+                }
+
+                cmd.env("PATH", &path);
+            }
         }
 
         let mut child = cmd.spawn()

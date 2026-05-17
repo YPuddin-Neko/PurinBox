@@ -208,7 +208,8 @@ def main():
         fname = os.path.basename(fpath)
         emit_progress(i + 1, total, fname, "processing")
         try:
-            img = cv2.imread(fpath, cv2.IMREAD_UNCHANGED)
+            # cv2.imread 在 Windows 上不支持 Unicode 路径，用 numpy 中转
+            img = cv2.imdecode(np.fromfile(fpath, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
             if img is None:
                 raise ValueError("无法读取图片")
 
@@ -277,7 +278,13 @@ def main():
                 output = np.concatenate([output, alpha_up], axis=2)
 
             stem = os.path.splitext(fname)[0]
-            cv2.imwrite(os.path.join(args.output, f"{stem}.png"), output)
+            out_path = os.path.join(args.output, f"{stem}.png")
+            # cv2.imwrite 在 Windows 上不支持 Unicode 路径，用 imencode 中转
+            success_write, buf = cv2.imencode('.png', output)
+            if success_write:
+                buf.tofile(out_path)
+            else:
+                raise ValueError("编码图片失败")
             success += 1
             emit_progress(i + 1, total, fname, "success", f"[{i+1}/{total}] ✓ {fname}")
         except Exception as e:

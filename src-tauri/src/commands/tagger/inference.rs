@@ -52,7 +52,7 @@ fn read_env_from_registry(name: &str) -> Option<String> {
 
 /// 获取 CUDA 相关环境变量（进程环境 + 注册表补充）
 #[cfg(target_os = "windows")]
-fn get_cuda_env_vars() -> Vec<(String, String)> {
+pub fn get_cuda_env_vars() -> Vec<(String, String)> {
     let mut result: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     // 1. 从进程环境变量获取
@@ -83,7 +83,7 @@ fn get_cuda_env_vars() -> Vec<(String, String)> {
 
 /// 将目录下的所有子目录添加到 PATH 字符串中（用于 cuDNN 9.x 的 bin/12.x 结构）
 #[cfg(target_os = "windows")]
-fn add_subdirs_to_path(dir: &str, path: &mut String) {
+pub fn add_subdirs_to_path(dir: &str, path: &mut String) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
