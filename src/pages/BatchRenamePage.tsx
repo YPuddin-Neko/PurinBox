@@ -14,8 +14,10 @@ import {
   ArrowRight,
   Hash,
   Type,
+  Copy,
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
+import DedupRenameTab from '../components/DedupRenameTab';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -23,6 +25,7 @@ interface PreviewItem { original: string; renamed: string; }
 
 export default function BatchRenamePage() {
   const { t } = useTranslation();
+  const [activeTab, setActiveTab] = useState<'number' | 'dedup'>('number');
   const [inputPath, setInputPath] = useState('');
   const [prefix, setPrefix] = useState('img_');
   const [startNumber, setStartNumber] = useState(1);
@@ -123,6 +126,16 @@ export default function BatchRenamePage() {
   const exampleNum = String(startNumber).padStart(digitCount, '0');
   const exampleName = `${prefix}${exampleNum}.png`;
 
+  const tabStyle = (active: boolean): React.CSSProperties => ({
+    padding: '8px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+    borderRadius: '8px 8px 0 0', border: 'none',
+    background: active ? 'var(--color-bg-card)' : 'transparent',
+    color: active ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
+    borderBottom: active ? '2px solid #7c5cfc' : '2px solid transparent',
+    transition: 'all 0.15s',
+    display: 'flex', alignItems: 'center', gap: 6,
+  });
+
   return (
     <div className="page">
       <div className="page-header">
@@ -133,120 +146,136 @@ export default function BatchRenamePage() {
         <p className="page-subtitle">{t('batchRename.subtitle')}</p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 400px', gap: 'var(--space-6)' }}>
-        {/* 左侧 */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          {/* 路径 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">{t('batchRename.imageFolder')}</span></div>
-            <div className="form-group">
-              <label className="form-label">{t('batchRename.folderDesc')}</label>
-              <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                <input className="form-input" placeholder={t('batchRename.selectFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                <button className="btn btn-secondary" onClick={selectFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
-              </div>
-            </div>
-          </div>
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--color-border)', paddingBottom: 0 }}>
+        <button style={tabStyle(activeTab === 'number')} onClick={() => setActiveTab('number')}>
+          <Hash style={{ width: 14, height: 14 }} />
+          {t('dedupRename.tabNumber')}
+        </button>
+        <button style={tabStyle(activeTab === 'dedup')} onClick={() => setActiveTab('dedup')}>
+          <Copy style={{ width: 14, height: 14 }} />
+          {t('dedupRename.tabDedup')}
+        </button>
+      </div>
 
-          {/* 命名规则 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">{t('batchRename.namingRule')}</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+      {/* Tab: Number rename */}
+      <div style={{ display: activeTab === 'number' ? 'block' : 'none' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 400px', gap: 'var(--space-6)' }}>
+          {/* 左侧 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+            {/* 路径 */}
+            <div className="tool-panel">
+              <div className="tool-panel-header"><span className="tool-panel-title">{t('batchRename.imageFolder')}</span></div>
               <div className="form-group">
-                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Type style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
-                  {t('batchRename.prefix')}
-                </label>
-                <input className="form-input" value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder={t('batchRename.prefixPlaceholder')} />
-              </div>
-              <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Hash style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
-                    {t('batchRename.startNum')}
-                  </label>
-                  <input className="form-input" type="number" value={startNumber} onChange={(e) => setStartNumber(Number(e.target.value))} min={0} />
+                <label className="form-label">{t('batchRename.folderDesc')}</label>
+                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+                  <input className="form-input" placeholder={t('batchRename.selectFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <button className="btn btn-secondary" onClick={selectFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
                 </div>
-                <div className="form-group" style={{ flex: 1 }}>
-                  <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <Hash style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
-                    {t('batchRename.digitCount')}
-                  </label>
-                  <input className="form-input" type="number" value={digitCount} onChange={(e) => setDigitCount(Number(e.target.value))} min={1} max={10} />
-                </div>
-              </div>
-
-              {/* 命名示例 */}
-              <div style={{
-                padding: 'var(--space-3) var(--space-4)',
-                borderRadius: 'var(--radius-md)',
-                background: 'rgba(56, 189, 248, 0.06)',
-                border: '1px solid rgba(56, 189, 248, 0.12)',
-                display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
-              }}>
-                <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>{t('batchRename.namingExample')}</span>
-                <span style={{ fontSize: 'var(--font-size-md)', fontWeight: 700, color: '#38bdf8', fontFamily: 'monospace' }}>{exampleName}</span>
               </div>
             </div>
-          </div>
 
-          {/* 操作按钮 */}
-          <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
-            <button className="btn btn-secondary" style={{ flex: 1, height: 44 }} onClick={handlePreview} disabled={!inputPath || previewLoading}>
-              {previewLoading ? <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> : <Eye style={{ width: 16, height: 16 }} />}
-              {t('batchRename.generatePreview')}
-            </button>
-            <button className="btn btn-secondary" style={{ flex: 1, height: 44 }} onClick={handleShuffle} disabled={!inputPath || previewLoading}>
-              <Shuffle style={{ width: 16, height: 16 }} />
-              {t('batchRename.shufflePreview')}
-            </button>
-          </div>
+            {/* 命名规则 */}
+            <div className="tool-panel">
+              <div className="tool-panel-header"><span className="tool-panel-title">{t('batchRename.namingRule')}</span></div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+                <div className="form-group">
+                  <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Type style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
+                    {t('batchRename.prefix')}
+                  </label>
+                  <input className="form-input" value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder={t('batchRename.prefixPlaceholder')} />
+                </div>
+                <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Hash style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
+                      {t('batchRename.startNum')}
+                    </label>
+                    <input className="form-input" type="number" value={startNumber} onChange={(e) => setStartNumber(Number(e.target.value))} min={0} />
+                  </div>
+                  <div className="form-group" style={{ flex: 1 }}>
+                    <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Hash style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
+                      {t('batchRename.digitCount')}
+                    </label>
+                    <input className="form-input" type="number" value={digitCount} onChange={(e) => setDigitCount(Number(e.target.value))} min={1} max={10} />
+                  </div>
+                </div>
 
-          {/* 预览表格 */}
-          {previews.length > 0 && (
-            <div className="tool-panel" style={{ padding: 0, overflow: 'hidden' }}>
-              <div className="tool-panel-header" style={{ padding: 'var(--space-3) var(--space-4)' }}>
-                <span className="tool-panel-title">{t('batchRename.previewTitle')}</span>
-                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>{t('batchRename.fileCount', { count: previews.length })}</span>
+                {/* 命名示例 */}
+                <div style={{
+                  padding: 'var(--space-3) var(--space-4)',
+                  borderRadius: 'var(--radius-md)',
+                  background: 'rgba(56, 189, 248, 0.06)',
+                  border: '1px solid rgba(56, 189, 248, 0.12)',
+                  display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
+                }}>
+                  <span style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-tertiary)' }}>{t('batchRename.namingExample')}</span>
+                  <span style={{ fontSize: 'var(--font-size-md)', fontWeight: 700, color: '#38bdf8', fontFamily: 'monospace' }}>{exampleName}</span>
+                </div>
               </div>
-              <div style={{ maxHeight: 360, overflowY: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
-                      <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'left', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600 }}>#</th>
-                      <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'left', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600 }}>{t('batchRename.originalName')}</th>
-                      <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'center', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', width: 30 }}></th>
-                      <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'left', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600 }}>{t('batchRename.newName')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {previews.map((item, idx) => (
-                      <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-                        <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>{idx + 1}</td>
-                        <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{item.original}</td>
-                        <td style={{ padding: '6px 0', textAlign: 'center' }}><ArrowRight style={{ width: 12, height: 12, color: 'var(--color-text-tertiary)' }} /></td>
-                        <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-sm)', color: '#38bdf8', fontFamily: 'monospace', fontWeight: 600 }}>{item.renamed}</td>
+            </div>
+
+            {/* 操作按钮 */}
+            <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+              <button className="btn btn-secondary" style={{ flex: 1, height: 44 }} onClick={handlePreview} disabled={!inputPath || previewLoading}>
+                {previewLoading ? <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> : <Eye style={{ width: 16, height: 16 }} />}
+                {t('batchRename.generatePreview')}
+              </button>
+              <button className="btn btn-secondary" style={{ flex: 1, height: 44 }} onClick={handleShuffle} disabled={!inputPath || previewLoading}>
+                <Shuffle style={{ width: 16, height: 16 }} />
+                {t('batchRename.shufflePreview')}
+              </button>
+            </div>
+
+            {/* 预览表格 */}
+            {previews.length > 0 && (
+              <div className="tool-panel" style={{ padding: 0, overflow: 'hidden' }}>
+                <div className="tool-panel-header" style={{ padding: 'var(--space-3) var(--space-4)' }}>
+                  <span className="tool-panel-title">{t('batchRename.previewTitle')}</span>
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>{t('batchRename.fileCount', { count: previews.length })}</span>
+                </div>
+                <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
+                        <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'left', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600 }}>#</th>
+                        <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'left', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600 }}>{t('batchRename.originalName')}</th>
+                        <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'center', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', width: 30 }}></th>
+                        <th style={{ padding: 'var(--space-2) var(--space-4)', textAlign: 'left', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontWeight: 600 }}>{t('batchRename.newName')}</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {previews.map((item, idx) => (
+                        <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                          <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>{idx + 1}</td>
+                          <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{item.original}</td>
+                          <td style={{ padding: '6px 0', textAlign: 'center' }}><ArrowRight style={{ width: 12, height: 12, color: 'var(--color-text-tertiary)' }} /></td>
+                          <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-sm)', color: '#38bdf8', fontFamily: 'monospace', fontWeight: 600 }}>{item.renamed}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
 
-        {/* 右侧 */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-
-          <button className="btn btn-primary btn-lg" style={{ width: '100%', height: 48 }} onClick={handleExecute}
-            disabled={processing || !inputPath || previews.length === 0}>
-            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {t('batchRename.executing')}</> : <><Play style={{ width: 18, height: 18 }} /> {t('batchRename.executeRename')}</>}
-          </button>
-
-
-          
+          {/* 右侧 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+            <button className="btn btn-primary btn-lg" style={{ width: '100%', height: 48 }} onClick={handleExecute}
+              disabled={processing || !inputPath || previews.length === 0}>
+              {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {t('batchRename.executing')}</> : <><Play style={{ width: 18, height: 18 }} /> {t('batchRename.executeRename')}</>}
+            </button>
             <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
+          </div>
         </div>
+      </div>
+
+      {/* Tab: Dedup rename */}
+      <div style={{ display: activeTab === 'dedup' ? 'block' : 'none' }}>
+        <DedupRenameTab />
       </div>
     </div>
   );

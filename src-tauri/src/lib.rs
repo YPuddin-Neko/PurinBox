@@ -29,6 +29,7 @@ use commands::blur_noise::{blur_noise_images, cancel_blur_noise};
 use commands::upscale::{get_upscale_engines, download_upscale_engine, cancel_upscale_download, start_upscale, cancel_upscale, force_cancel_upscale};
 use commands::image_cluster::{start_image_cluster, cancel_image_cluster, force_cancel_image_cluster};
 use commands::image_dedup::{start_image_dedup, cancel_image_dedup, delete_dedup_files};
+use commands::dedup_rename::{scan_dedup_rename, cancel_dedup_rename, execute_dedup_rename};
 use commands::tag_db::{get_tag_db_stats, download_danbooru_tags, cancel_tag_db_download, clear_tag_db, search_tags, translate_tag_db, is_tag_db_busy, check_tag_db_update};
 use commands::{scan_images, get_system_stats, check_for_updates};
 
@@ -122,6 +123,9 @@ pub fn run() {
             start_image_dedup,
             cancel_image_dedup,
             delete_dedup_files,
+            scan_dedup_rename,
+            cancel_dedup_rename,
+            execute_dedup_rename,
             check_for_updates,
             get_tag_db_stats,
             download_danbooru_tags,
