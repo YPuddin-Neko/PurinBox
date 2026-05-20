@@ -30,6 +30,7 @@ const routeI18nMap: Record<string, string> = {
   '/image-cluster': 'sidebar.imageCluster',
   '/image-dedup': 'sidebar.imageDedup',
   '/dataset-balancer': 'sidebar.datasetBalancer',
+  '/sd-metadata': 'sidebar.sdMetadata',
   '/settings': 'sidebar.settings',
 };
 

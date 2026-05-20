@@ -1,21 +1,24 @@
 import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { FolderOpen, ArrowRight, Play, Loader2, Search, RotateCcw } from 'lucide-react';
+import { FolderOpen, ArrowRight, Play, Loader2, Search, RotateCcw, ChevronLeft, ChevronRight, Download } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
 import ProcessButton from './ProcessButton';
+import { useTaskQueue } from './TaskContext';
 import { useTranslation } from 'react-i18next';
 
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 interface DedupPair { path_a: string; name_a: string; path_b: string; name_b: string; similarity: number; method: string; }
-interface ScanResult { pairs: DedupPair[]; total_a: number; total_b: number; scan_time_ms: number; }
+interface ScanResult { pairs: DedupPair[]; total_a: number; total_b: number; unmatched_a: string[]; unmatched_b: string[]; scan_time_ms: number; }
 // direction: 'a' = B uses A's name, 'b' = A uses B's name
 type Direction = 'a' | 'b';
 
 export default function DedupRenameTab() {
   const { t } = useTranslation();
+  const { addTask } = useTaskQueue();
   const [folderA, setFolderA] = useState('');
   const [folderB, setFolderB] = useState('');
   const [dhash, setDhash] = useState(10);
@@ -32,7 +35,14 @@ export default function DedupRenameTab() {
   const [startTime, setStartTime] = useState(0);
   const [pairs, setPairs] = useState<DedupPair[]>([]);
   const [directions, setDirections] = useState<Direction[]>([]);
+  const [totalA, setTotalA] = useState(0);
+  const [totalB, setTotalB] = useState(0);
+  const [unmatchedA, setUnmatchedA] = useState<string[]>([]);
+  const [unmatchedB, setUnmatchedB] = useState<string[]>([]);
+  const [unmatchModal, setUnmatchModal] = useState<'a' | 'b' | null>(null);
   const [lightbox, setLightbox] = useState<{ idx: number; side: 'a' | 'b' } | null>(null);
+  const [pairPage, setPairPage] = useState(0);
+  const PAIRS_PER_PAGE = 15;
 
   useEffect(() => {
     let active = true;
@@ -61,12 +71,18 @@ export default function DedupRenameTab() {
     setIsDone(false); setHasError(false); setStartTime(Date.now());
     setPairs([]); setDirections([]);
     setLogs([{ time: getTimeStr(), message: t('dedupRename.scanStart'), status: 'info' }]);
+    addTask('dedup-rename', t('dedupRename.tabDedup'));
     try {
       const result = await invoke<ScanResult>('scan_dedup_rename', {
         options: { folder_a: folderA, folder_b: folderB, dhash_threshold: dhash, phash_threshold: phash, color_threshold: colorTh },
       });
       setPairs(result.pairs);
-      setDirections(result.pairs.map(() => 'a' as Direction)); // default: B uses A's name
+      setDirections(result.pairs.map(() => 'a' as Direction));
+      setPairPage(0);
+      setTotalA(result.total_a);
+      setTotalB(result.total_b);
+      setUnmatchedA(result.unmatched_a);
+      setUnmatchedB(result.unmatched_b); // default: B uses A's name
       setLogs(prev => [...prev, {
         time: getTimeStr(),
         message: t('dedupRename.scanDone', { a: result.total_a, b: result.total_b, pairs: result.pairs.length, time: (result.scan_time_ms / 1000).toFixed(1) }),
@@ -88,6 +104,7 @@ export default function DedupRenameTab() {
     setExecuting(true); setProgress(0); setPCur(0); setPTot(0);
     setIsDone(false); setHasError(false);
     setLogs(prev => [...prev, { time: getTimeStr(), message: t('dedupRename.execStart', { count: pairs.length }), status: 'info' }]);
+    addTask('dedup-rename', t('dedupRename.tabDedup'));
     try {
       const actions = pairs.map((p, i) => {
         const dir = directions[i];
@@ -209,18 +226,43 @@ export default function DedupRenameTab() {
         ) : (
           <>
             {/* Stats bar */}
-            <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
-              <div style={{ ...panel, flex: 1, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 18, fontWeight: 800, color: '#60a5fa', fontFamily: 'monospace' }}>{pairs.length}</span>
-                <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontWeight: 600 }}>{t('dedupRename.matchCount')}</span>
-              </div>
-              <button className="btn btn-secondary" style={{ height: 'auto', fontSize: 10, padding: '6px 12px' }}
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+              {[
+                { label: t('dedupRename.totalA'), value: totalA, color: '#60a5fa', click: null },
+                { label: t('dedupRename.totalB'), value: totalB, color: '#38bdf8', click: null },
+                { label: t('dedupRename.matchCount'), value: pairs.length, color: '#4ade80', click: null },
+                { label: t('dedupRename.unmatchA'), value: unmatchedA.length, color: '#f59e0b', click: unmatchedA.length > 0 ? () => setUnmatchModal('a') : null },
+                { label: t('dedupRename.unmatchB'), value: unmatchedB.length, color: '#ef4444', click: unmatchedB.length > 0 ? () => setUnmatchModal('b') : null },
+              ].map(s => (
+                <div key={s.label}
+                  onClick={s.click ?? undefined}
+                  style={{
+                    ...panel, flex: 1, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 6,
+                    cursor: s.click ? 'pointer' : 'default',
+                    transition: 'all 0.15s',
+                    ...(s.click ? { border: `1px solid ${s.color}33` } : {}),
+                  }}>
+                  <span style={{ fontSize: 16, fontWeight: 800, color: s.color, fontFamily: 'monospace' }}>{s.value}</span>
+                  <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', fontWeight: 600, lineHeight: 1.2 }}>{s.label}</span>
+                  {s.click && <span style={{ marginLeft: 'auto', fontSize: 9, color: s.color, opacity: 0.6 }}>↗</span>}
+                </div>
+              ))}
+            </div>
+
+            {/* Action bar */}
+            <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+              <button className="btn btn-secondary" style={{ fontSize: 10, padding: '6px 10px' }}
                 onClick={() => setAllDirection('a')}>
                 {t('dedupRename.allUseA')}
               </button>
-              <button className="btn btn-secondary" style={{ height: 'auto', fontSize: 10, padding: '6px 12px' }}
+              <button className="btn btn-secondary" style={{ fontSize: 10, padding: '6px 10px' }}
                 onClick={() => setAllDirection('b')}>
                 {t('dedupRename.allUseB')}
+              </button>
+              <div style={{ flex: 1 }} />
+              <button className="btn btn-primary" style={{ padding: '6px 20px', fontSize: 13 }}
+                onClick={handleExecute} disabled={executing || pairs.length === 0}>
+                {executing ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('dedupRename.executing')}</> : <><Play style={{ width: 14, height: 14 }} /> {t('dedupRename.execute')}</>}
               </button>
             </div>
 
@@ -241,7 +283,8 @@ export default function DedupRenameTab() {
                     </tr>
                   </thead>
                   <tbody>
-                    {pairs.map((pair, idx) => {
+                    {pairs.slice(pairPage * PAIRS_PER_PAGE, (pairPage + 1) * PAIRS_PER_PAGE).map((pair, localIdx) => {
+                      const idx = pairPage * PAIRS_PER_PAGE + localIdx;
                       const dir = directions[idx];
                       const isASource = dir === 'a';
                       return (
@@ -287,19 +330,29 @@ export default function DedupRenameTab() {
                   </tbody>
                 </table>
               </div>
+              {/* Pagination */}
+              {Math.ceil(pairs.length / PAIRS_PER_PAGE) > 1 && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '8px 0', borderTop: '1px solid var(--color-border)' }}>
+                  <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 28 }}
+                    disabled={pairPage === 0} onClick={() => setPairPage(p => p - 1)}>
+                    <ChevronLeft style={{ width: 14, height: 14 }} />
+                  </button>
+                  <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', fontWeight: 600, minWidth: 60, textAlign: 'center' }}>
+                    {pairPage + 1} / {Math.ceil(pairs.length / PAIRS_PER_PAGE)}
+                  </span>
+                  <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 28 }}
+                    disabled={pairPage >= Math.ceil(pairs.length / PAIRS_PER_PAGE) - 1} onClick={() => setPairPage(p => p + 1)}>
+                    <ChevronRight style={{ width: 14, height: 14 }} />
+                  </button>
+                </div>
+              )}
             </div>
-
-            {/* Execute button */}
-            <button className="btn btn-primary" style={{ height: 44, flexShrink: 0 }}
-              onClick={handleExecute} disabled={executing || pairs.length === 0}>
-              {executing ? <><Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> {t('dedupRename.executing')}</> : <><Play style={{ width: 16, height: 16 }} /> {t('dedupRename.execute')}</>}
-            </button>
           </>
         )}
       </div>
 
       {/* Lightbox */}
-      {lightbox && pairs[lightbox.idx] && (() => {
+      {lightbox && pairs[lightbox.idx] && createPortal((() => {
         const pair = pairs[lightbox.idx];
         const pathA = pair.path_a, pathB = pair.path_b;
         return (
@@ -324,7 +377,75 @@ export default function DedupRenameTab() {
             <div style={{ position: 'absolute', top: 20, right: 20, fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>{t('dedupRename.closeBg')}</div>
           </div>
         );
-      })()}
+      })(), document.body)}
+
+      {/* Unmatched modal */}
+      {unmatchModal && createPortal((() => {
+        const isA = unmatchModal === 'a';
+        const items = isA ? unmatchedA : unmatchedB;
+        const title = isA ? t('dedupRename.unmatchATitle') : t('dedupRename.unmatchBTitle');
+        const color = isA ? '#f59e0b' : '#ef4444';
+        return (
+          <div onClick={() => setUnmatchModal(null)} style={{
+            position: 'fixed', inset: 0, zIndex: 1000,
+            background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            animation: 'fadeIn 0.15s ease',
+          }}>
+            <div onClick={e => e.stopPropagation()} style={{
+              background: 'var(--color-bg-card)', border: '1px solid var(--color-border)',
+              borderRadius: 12, width: 420, maxHeight: '70vh', display: 'flex', flexDirection: 'column',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+            }}>
+              <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-border)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 16, fontWeight: 800, color, fontFamily: 'monospace' }}>{items.length}</span>
+                <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text-primary)' }}>{title}</span>
+                <div style={{ flex: 1 }} />
+                <button className="btn btn-secondary" style={{ padding: '4px 12px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}
+                  onClick={async () => {
+                    const dest = await open({ directory: true, title: t('dedupRename.exportSelectDest') });
+                    if (!dest) return;
+                    try {
+                      const sourceFolder = isA ? folderA : folderB;
+                      const result = await invoke<{ success_count: number; fail_count: number; errors: string[] }>('export_unmatched_files', {
+                        sourceFolder, filenames: items, destFolder: dest as string,
+                      });
+                      setLogs(prev => [...prev, {
+                        time: getTimeStr(),
+                        message: t('dedupRename.exportDone', { success: result.success_count, fail: result.fail_count }),
+                        status: result.fail_count > 0 ? 'warning' : 'success',
+                      }]);
+                      setUnmatchModal(null);
+                    } catch (e: any) {
+                      setLogs(prev => [...prev, { time: getTimeStr(), message: `${t('dedupRename.exportFail')}: ${String(e)}`, status: 'error' }]);
+                    }
+                  }}>
+                  <Download style={{ width: 12, height: 12 }} />
+                  {t('dedupRename.export')}
+                </button>
+                <button className="btn btn-ghost" onClick={() => setUnmatchModal(null)}
+                  style={{ padding: '2px 8px', fontSize: 11 }}>✕</button>
+              </div>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+                {items.map((name, i) => (
+                  <div key={i} style={{
+                    padding: '6px 20px', fontSize: 12, fontFamily: 'monospace',
+                    color: 'var(--color-text-secondary)',
+                    borderBottom: '1px solid rgba(255,255,255,0.03)',
+                    display: 'flex', alignItems: 'center', gap: 8,
+                  }}>
+                    <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontVariantNumeric: 'tabular-nums', minWidth: 24 }}>{i + 1}</span>
+                    <span style={{ wordBreak: 'break-all' }}>{name}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ padding: '10px 20px', borderTop: '1px solid var(--color-border)', fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                {t('dedupRename.unmatchHint')}
+              </div>
+            </div>
+          </div>
+        );
+      })(), document.body)}
     </div>
   );
 }

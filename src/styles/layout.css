@@ -178,7 +178,7 @@
   color: var(--color-text-primary);
   letter-spacing: -0.03em;
   line-height: 1.2;
-  margin-bottom: var(--space-2);
+  margin: 0;
 }
 
 .page-subtitle {

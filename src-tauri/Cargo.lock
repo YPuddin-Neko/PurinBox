@@ -3713,10 +3713,11 @@ dependencies = [
 
 [[package]]
 name = "purinbox"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "base64 0.22.1",
  "csv",
+ "flate2",
  "futures-util",
  "hex",
  "image",

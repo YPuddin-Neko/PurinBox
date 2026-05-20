@@ -52,6 +52,8 @@ const EVENT_TASK_MAP: Record<string, string> = {
   'blur-noise-progress': 'blur-noise',
   'upscale-progress': 'upscale',
   'cluster-progress': 'image-cluster',
+  'dedup-rename-progress': 'dedup-rename',
+  'sd-metadata-progress': 'sd-metadata',
 };
 
 export function TaskProvider({ children }: { children: ReactNode }) {

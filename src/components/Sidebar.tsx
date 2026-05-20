@@ -25,6 +25,7 @@ import {
   Network,
   Copy,
   Scale,
+  FileCode2,
 } from 'lucide-react';
 import '../styles/sidebar.css';
 import { getVersion } from '@tauri-apps/api/app';
@@ -67,6 +68,7 @@ const navSections: NavSection[] = [
       { id: 'image-cluster', labelKey: 'sidebar.imageCluster', icon: <Network />, path: '/image-cluster' },
       { id: 'image-dedup', labelKey: 'sidebar.imageDedup', icon: <Copy />, path: '/image-dedup' },
       { id: 'dataset-balancer', labelKey: 'sidebar.datasetBalancer', icon: <Scale />, path: '/dataset-balancer' },
+      { id: 'sd-metadata', labelKey: 'sidebar.sdMetadata', icon: <FileCode2 />, path: '/sd-metadata' },
     ],
   },
 ];
@@ -76,20 +78,24 @@ export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const [appVersion, setAppVersion] = useState('');
   // update status: 'checking' | 'latest' | 'update' | 'error'
-  const [updateStatus, setUpdateStatus] = useState<'checking' | 'latest' | 'update' | 'error'>('checking');
+  const [updateStatus, setUpdateStatus] = useState<'checking' | 'latest' | 'update' | 'error'>('latest');
   const [latestVersion, setLatestVersion] = useState('');
   const [releaseUrl, setReleaseUrl] = useState('');
 
   useEffect(() => { getVersion().then(v => setAppVersion(v)).catch(() => {}); }, []);
 
+  // Delay version check so startup isn't affected
   useEffect(() => {
-    invoke<{ has_update: boolean; latest_version: string; release_url: string }>('check_for_updates')
-      .then(r => {
-        setUpdateStatus(r.has_update ? 'update' : 'latest');
-        setLatestVersion(r.latest_version);
-        setReleaseUrl(r.release_url);
-      })
-      .catch(() => setUpdateStatus('error'));
+    const timer = setTimeout(() => {
+      invoke<{ has_update: boolean; latest_version: string; release_url: string }>('check_for_updates')
+        .then(r => {
+          setUpdateStatus(r.has_update ? 'update' : 'latest');
+          setLatestVersion(r.latest_version);
+          setReleaseUrl(r.release_url);
+        })
+        .catch(() => setUpdateStatus('latest'));
+    }, 2000);
+    return () => clearTimeout(timer);
   }, []);
 
   const dotColor = updateStatus === 'latest' ? '#4ade80' : updateStatus === 'update' ? '#ef4444' : updateStatus === 'error' ? '#fbbf24' : 'var(--color-text-tertiary)';

@@ -16,7 +16,13 @@ pub struct RenameOptions {
     pub digit_count: u32,
     /// 是否打乱顺序
     pub shuffle: bool,
+    /// 是否同步重命名标签文件（.txt, .json）
+    #[serde(default)]
+    pub rename_tags: bool,
 }
+
+/// 标签文件扩展名
+const TAG_EXTS: &[&str] = &["txt", "json"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenamePreviewItem {
@@ -52,7 +58,22 @@ fn preview_rename_sync(options: &RenameOptions) -> Result<Vec<RenamePreviewItem>
         let number = options.start_number + i as u32;
         let formatted_num = format!("{:0>width$}", number, width = options.digit_count as usize);
         let renamed = format!("{}{}.{}", options.prefix, formatted_num, ext);
-        previews.push(RenamePreviewItem { original, renamed });
+        previews.push(RenamePreviewItem { original: original.clone(), renamed: renamed.clone() });
+
+        // 同步预览标签文件
+        if options.rename_tags {
+            let stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
+            let new_stem = format!("{}{}", options.prefix, formatted_num);
+            for tag_ext in TAG_EXTS {
+                let tag_file = file_path.parent().unwrap_or(Path::new(".")).join(format!("{}.{}", stem, tag_ext));
+                if tag_file.exists() {
+                    previews.push(RenamePreviewItem {
+                        original: format!("{}.{}", stem, tag_ext),
+                        renamed: format!("{}.{}", new_stem, tag_ext),
+                    });
+                }
+            }
+        }
     }
 
     Ok(previews)
@@ -81,8 +102,10 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
     let mut success_count = 0u32;
     let mut fail_count = 0u32;
     let mut errors = Vec::new();
+    let image_count = files.len() as u32;
 
     // Step 1: Rename all files to temporary names to avoid conflicts
+    // Each entry: (original_path, temp_path, final_name)
     let mut temp_mappings: Vec<(std::path::PathBuf, std::path::PathBuf, String)> = Vec::new();
 
     for (i, file_path) in files.iter().enumerate() {
@@ -92,13 +115,26 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
         let number = options.start_number + i as u32;
         let formatted_num = format!("{:0>width$}", number, width = options.digit_count as usize);
         let final_name = format!("{}{}.{}", options.prefix, formatted_num, ext);
+        let parent = file_path.parent().unwrap_or(Path::new("."));
 
         // Temp name to avoid collisions
         let temp_name = format!("__rename_temp_{}_{}", i, uuid_simple());
-        let parent = file_path.parent().unwrap_or(Path::new("."));
         let temp_path = parent.join(&temp_name);
-
         temp_mappings.push((file_path.clone(), temp_path, final_name));
+
+        // 标签文件也加入临时映射
+        if options.rename_tags {
+            let stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
+            let new_stem = format!("{}{}", options.prefix, formatted_num);
+            for tag_ext in TAG_EXTS {
+                let tag_path = parent.join(format!("{}.{}", stem, tag_ext));
+                if tag_path.exists() {
+                    let tag_temp = parent.join(format!("__rename_temp_{}_tag_{}_{}", i, tag_ext, uuid_simple()));
+                    let tag_final = format!("{}.{}", new_stem, tag_ext);
+                    temp_mappings.push((tag_path, tag_temp, tag_final));
+                }
+            }
+        }
     }
 
     // Step 2: Rename to temp names
@@ -109,14 +145,15 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
     }
 
     // Step 3: Rename to final names
-    for (i, (_original, temp, final_name)) in temp_mappings.iter().enumerate() {
-        let original_name = files[i].file_name().unwrap_or_default().to_string_lossy().to_string();
+    let total_mappings = temp_mappings.len() as u32;
+    for (i, (original, temp, final_name)) in temp_mappings.iter().enumerate() {
+        let original_name = original.file_name().unwrap_or_default().to_string_lossy().to_string();
         let parent = temp.parent().unwrap_or(Path::new("."));
         let final_path = parent.join(final_name);
 
         let _ = app.emit("rename-progress", ProgressEvent {
             current: i as u32 + 1,
-            total,
+            total: total_mappings,
             filename: original_name.clone(),
             status: "processing".to_string(),
             message: format!("正在重命名: {} → {}", original_name, final_name),
@@ -127,7 +164,7 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
                 success_count += 1;
                 let _ = app.emit("rename-progress", ProgressEvent {
                     current: i as u32 + 1,
-                    total,
+                    total: total_mappings,
                     filename: original_name.clone(),
                     status: "success".to_string(),
                     message: format!("[重命名] {} → {}", original_name, final_name),
@@ -149,11 +186,11 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
     }
 
     let _ = app.emit("rename-progress", ProgressEvent {
-        current: total,
-        total,
+        current: total_mappings,
+        total: total_mappings,
         filename: String::new(),
         status: "done".to_string(),
-        message: format!("重命名完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
+        message: format!("重命名完成: 图片 {} 张, 共处理 {} 个文件, 失败 {}", image_count, total_mappings, fail_count),
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })

@@ -14,7 +14,8 @@ import {
   ArrowRight,
   Hash,
   Type,
-  Copy,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import DedupRenameTab from '../components/DedupRenameTab';
@@ -31,6 +32,9 @@ export default function BatchRenamePage() {
   const [startNumber, setStartNumber] = useState(1);
   const [digitCount, setDigitCount] = useState(4);
   const [shuffleOrder, setShuffleOrder] = useState(false);
+  const [renameTags, setRenameTags] = useState(true);
+  const [previewPage, setPreviewPage] = useState(0);
+  const PREVIEW_PER_PAGE = 15;
   const [previews, setPreviews] = useState<PreviewItem[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -71,7 +75,7 @@ export default function BatchRenamePage() {
     setPreviewLoading(true);
     try {
       const result = await invoke<PreviewItem[]>('preview_rename', {
-        options: { input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount, shuffle: shuffleOrder },
+        options: { input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount, shuffle: shuffleOrder, rename_tags: renameTags },
       });
       setPreviews(result);
     } catch (e: any) {
@@ -87,7 +91,7 @@ export default function BatchRenamePage() {
     setPreviewLoading(true);
     try {
       const result = await invoke<PreviewItem[]>('preview_rename', {
-        options: { input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount, shuffle: true },
+        options: { input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount, shuffle: true, rename_tags: renameTags },
       });
       setPreviews(result);
       setShuffleOrder(true);
@@ -109,7 +113,7 @@ export default function BatchRenamePage() {
     setLogs([{ time: getTimeStr(), message: t('batchRename.startMsg', { prefix, start: startNumber, digits: digitCount }), status: 'info' }]);
     try {
       await invoke<ProcessResult>('execute_rename', {
-        options: { input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount, shuffle: shuffleOrder },
+        options: { input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount, shuffle: shuffleOrder, rename_tags: renameTags },
       });
       setPreviews([]);
     } catch (e: any) {
@@ -126,16 +130,6 @@ export default function BatchRenamePage() {
   const exampleNum = String(startNumber).padStart(digitCount, '0');
   const exampleName = `${prefix}${exampleNum}.png`;
 
-  const tabStyle = (active: boolean): React.CSSProperties => ({
-    padding: '8px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-    borderRadius: '8px 8px 0 0', border: 'none',
-    background: active ? 'var(--color-bg-card)' : 'transparent',
-    color: active ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)',
-    borderBottom: active ? '2px solid #7c5cfc' : '2px solid transparent',
-    transition: 'all 0.15s',
-    display: 'flex', alignItems: 'center', gap: 6,
-  });
-
   return (
     <div className="page">
       <div className="page-header">
@@ -147,15 +141,24 @@ export default function BatchRenamePage() {
       </div>
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: '1px solid var(--color-border)', paddingBottom: 0 }}>
-        <button style={tabStyle(activeTab === 'number')} onClick={() => setActiveTab('number')}>
-          <Hash style={{ width: 14, height: 14 }} />
-          {t('dedupRename.tabNumber')}
-        </button>
-        <button style={tabStyle(activeTab === 'dedup')} onClick={() => setActiveTab('dedup')}>
-          <Copy style={{ width: 14, height: 14 }} />
-          {t('dedupRename.tabDedup')}
-        </button>
+      <div style={{
+        display: 'flex', gap: 2, marginBottom: 'var(--space-4)',
+        background: 'var(--color-bg-card)', borderRadius: 'var(--radius-lg)',
+        padding: 3, border: '1px solid var(--color-border)',
+        width: 'fit-content',
+      }}>
+        {[
+          { id: 'number' as const, label: t('dedupRename.tabNumber') },
+          { id: 'dedup' as const, label: t('dedupRename.tabDedup') },
+        ].map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
+            padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
+            cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
+            transition: 'all 0.2s', fontFamily: 'inherit',
+            background: activeTab === tab.id ? 'var(--color-accent-primary)' : 'transparent',
+            color: activeTab === tab.id ? '#fff' : 'var(--color-text-tertiary)',
+          }}>{tab.label}</button>
+        ))}
       </div>
 
       {/* Tab: Number rename */}
@@ -203,6 +206,14 @@ export default function BatchRenamePage() {
                   </div>
                 </div>
 
+                {/* 同步重命名标签文件 */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>
+                  <input type="checkbox" checked={renameTags} onChange={e => setRenameTags(e.target.checked)}
+                    style={{ accentColor: '#38bdf8', width: 16, height: 16 }} />
+                  {t('batchRename.renameTags')}
+                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>(.txt, .json)</span>
+                </label>
+
                 {/* 命名示例 */}
                 <div style={{
                   padding: 'var(--space-3) var(--space-4)',
@@ -230,13 +241,16 @@ export default function BatchRenamePage() {
             </div>
 
             {/* 预览表格 */}
-            {previews.length > 0 && (
-              <div className="tool-panel" style={{ padding: 0, overflow: 'hidden' }}>
-                <div className="tool-panel-header" style={{ padding: 'var(--space-3) var(--space-4)' }}>
-                  <span className="tool-panel-title">{t('batchRename.previewTitle')}</span>
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>{t('batchRename.fileCount', { count: previews.length })}</span>
-                </div>
-                <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+            {previews.length > 0 && (() => {
+              const totalPages = Math.ceil(previews.length / PREVIEW_PER_PAGE);
+              const pageItems = previews.slice(previewPage * PREVIEW_PER_PAGE, (previewPage + 1) * PREVIEW_PER_PAGE);
+              const startIdx = previewPage * PREVIEW_PER_PAGE;
+              return (
+                <div className="tool-panel" style={{ padding: 0, overflow: 'hidden' }}>
+                  <div className="tool-panel-header" style={{ padding: 'var(--space-3) var(--space-4)' }}>
+                    <span className="tool-panel-title">{t('batchRename.previewTitle')}</span>
+                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>{t('batchRename.fileCount', { count: previews.length })}</span>
+                  </div>
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
@@ -247,19 +261,37 @@ export default function BatchRenamePage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {previews.map((item, idx) => (
-                        <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-                          <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>{idx + 1}</td>
-                          <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{item.original}</td>
-                          <td style={{ padding: '6px 0', textAlign: 'center' }}><ArrowRight style={{ width: 12, height: 12, color: 'var(--color-text-tertiary)' }} /></td>
-                          <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-sm)', color: '#38bdf8', fontFamily: 'monospace', fontWeight: 600 }}>{item.renamed}</td>
-                        </tr>
-                      ))}
+                      {pageItems.map((item, localIdx) => {
+                        const idx = startIdx + localIdx;
+                        return (
+                          <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+                            <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>{idx + 1}</td>
+                            <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{item.original}</td>
+                            <td style={{ padding: '6px 0', textAlign: 'center' }}><ArrowRight style={{ width: 12, height: 12, color: 'var(--color-text-tertiary)' }} /></td>
+                            <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-sm)', color: '#38bdf8', fontFamily: 'monospace', fontWeight: 600 }}>{item.renamed}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
+                  {totalPages > 1 && (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '8px 0', borderTop: '1px solid var(--color-border)' }}>
+                      <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 28 }}
+                        disabled={previewPage === 0} onClick={() => setPreviewPage(p => p - 1)}>
+                        <ChevronLeft style={{ width: 14, height: 14 }} />
+                      </button>
+                      <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', fontWeight: 600, minWidth: 60, textAlign: 'center' }}>
+                        {previewPage + 1} / {totalPages}
+                      </span>
+                      <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 28 }}
+                        disabled={previewPage >= totalPages - 1} onClick={() => setPreviewPage(p => p + 1)}>
+                        <ChevronRight style={{ width: 14, height: 14 }} />
+                      </button>
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
 
           {/* 右侧 */}

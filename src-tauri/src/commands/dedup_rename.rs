@@ -31,6 +31,8 @@ pub struct DedupRenameScanResult {
     pub pairs: Vec<DedupPair>,
     pub total_a: u32,
     pub total_b: u32,
+    pub unmatched_a: Vec<String>,
+    pub unmatched_b: Vec<String>,
     pub scan_time_ms: u64,
 }
 
@@ -65,6 +67,39 @@ pub struct DedupRenameResult {
     pub success_count: u32,
     pub fail_count: u32,
     pub errors: Vec<String>,
+}
+
+/// 导出未匹配文件到目标文件夹
+#[tauri::command]
+pub async fn export_unmatched_files(
+    source_folder: String,
+    filenames: Vec<String>,
+    dest_folder: String,
+) -> Result<DedupRenameResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let src = Path::new(&source_folder);
+        let dst = Path::new(&dest_folder);
+        if !dst.exists() {
+            std::fs::create_dir_all(dst).map_err(|e| format!("创建目标文件夹失败: {}", e))?;
+        }
+        let mut success_count = 0u32;
+        let mut fail_count = 0u32;
+        let mut errors = Vec::new();
+        for name in &filenames {
+            let src_path = src.join(name);
+            let dst_path = dst.join(name);
+            match std::fs::copy(&src_path, &dst_path) {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    fail_count += 1;
+                    errors.push(format!("{}: {}", name, e));
+                }
+            }
+        }
+        Ok(DedupRenameResult { success_count, fail_count, errors })
+    })
+    .await
+    .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 #[tauri::command]
@@ -191,6 +226,8 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
             pairs: vec![],
             total_a,
             total_b,
+            unmatched_a: files_a.iter().map(|f| f.file_name().unwrap_or_default().to_string_lossy().to_string()).collect(),
+            unmatched_b: files_b.iter().map(|f| f.file_name().unwrap_or_default().to_string_lossy().to_string()).collect(),
             scan_time_ms: 0,
         });
     }
@@ -283,6 +320,17 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
         }
     }
 
+    // Collect unmatched
+    let matched_a_paths: std::collections::HashSet<String> = pairs.iter().map(|p| p.path_a.clone()).collect();
+    let unmatched_a: Vec<String> = fps_a.iter()
+        .filter(|fp| !matched_a_paths.contains(&fp.path.to_string_lossy().to_string()))
+        .map(|fp| fp.path.file_name().unwrap_or_default().to_string_lossy().to_string())
+        .collect();
+    let unmatched_b: Vec<String> = fps_b.iter().enumerate()
+        .filter(|(j, _)| !used_b[*j])
+        .map(|(_, fp)| fp.path.file_name().unwrap_or_default().to_string_lossy().to_string())
+        .collect();
+
     let elapsed = start.elapsed().as_millis() as u64;
 
     let _ = app.emit("dedup-rename-progress", ProgressEvent {
@@ -295,6 +343,8 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
         pairs,
         total_a,
         total_b,
+        unmatched_a,
+        unmatched_b,
         scan_time_ms: elapsed,
     })
 }

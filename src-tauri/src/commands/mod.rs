@@ -25,6 +25,7 @@ pub mod image_cluster;
 pub mod image_dedup;
 pub mod dedup_rename;
 pub mod tag_db;
+pub mod sd_metadata;
 
 /// 进度事件 payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,7 +358,8 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
 
     let client = reqwest::Client::builder()
         .user_agent("PurinBox")
-        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
 
