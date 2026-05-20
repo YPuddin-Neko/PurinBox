@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import {
-  FileCode2, FolderOpen, Play, Loader2, Eye, Download,
+  FileCode2, FolderOpen, Loader2, Eye, Download,
   ChevronLeft, ChevronRight, ImageUp, X, Clipboard, Check,
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
@@ -78,7 +78,7 @@ export default function SdMetadataPage() {
       if (!active) return;
       if (e.payload.type === 'over') {
         setDragging(true);
-      } else if (e.payload.type === 'leave' || e.payload.type === 'cancel') {
+      } else if (e.payload.type === 'leave') {
         setDragging(false);
       } else if (e.payload.type === 'drop') {
         setDragging(false);
