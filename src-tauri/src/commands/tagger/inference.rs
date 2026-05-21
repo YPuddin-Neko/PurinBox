@@ -202,7 +202,8 @@ fn get_nvidia_smi_path() -> String {
 /// 运行命令并隐藏 Windows 控制台窗口，返回 stdout 或错误信息
 fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new(program);
-    cmd.args(args);
+    cmd.args(args)
+        .env("PYTHONIOENCODING", "utf-8");
 
     #[cfg(target_os = "windows")]
     {

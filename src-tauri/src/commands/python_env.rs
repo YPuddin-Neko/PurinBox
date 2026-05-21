@@ -348,7 +348,8 @@ pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> 
                 .map_err(|e| format!("创建目录失败: {}", e))?;
 
             let mut cmd = std::process::Command::new(&sys_python);
-            cmd.args(["-m", "venv", &venv_dir.to_string_lossy()]);
+            cmd.args(["-m", "venv", &venv_dir.to_string_lossy()])
+                .env("PYTHONIOENCODING", "utf-8");
             #[cfg(target_os = "windows")]
             {
                 use std::os::windows::process::CommandExt;
@@ -577,7 +578,8 @@ fn create_venv(app: &tauri::AppHandle) -> Result<(), String> {
     let venv_dir = get_venv_dir();
 
     let mut cmd = std::process::Command::new(&python);
-    cmd.args(["-m", "venv", &venv_dir.to_string_lossy()]);
+    cmd.args(["-m", "venv", &venv_dir.to_string_lossy()])
+        .env("PYTHONIOENCODING", "utf-8");
 
     #[cfg(target_os = "windows")]
     {
@@ -616,7 +618,8 @@ pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
     emit_progress(app, "@pythonEnv.uninstallCpu", "info");
     {
         let mut cmd = std::process::Command::new(&python);
-        cmd.args(["-m", "pip", "uninstall", "-y", "onnxruntime"]);
+        cmd.args(["-m", "pip", "uninstall", "-y", "onnxruntime"])
+            .env("PYTHONIOENCODING", "utf-8");
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
@@ -678,7 +681,8 @@ pub fn pip_install_with_python(app: &tauri::AppHandle, python: &str, deps: &[&st
         });
 
         let mut cmd = std::process::Command::new(python);
-        cmd.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", dep]);
+        cmd.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", dep])
+            .env("PYTHONIOENCODING", "utf-8");
 
         #[cfg(target_os = "windows")]
         {

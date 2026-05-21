@@ -268,6 +268,15 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
                             if clean == "warn(" || clean.starts_with("warnings.warn(") { continue; }
                             if clean.contains("site-packages/") && clean.contains(".py:") { continue; }
                             if clean.starts_with("eigenvalues") || clean.starts_with("scipy.") { continue; }
+                            // 过滤 cuDNN/CUDA/onnxruntime 加载警告和编码乱码
+                            let lower = clean.to_lowercase();
+                            if lower.contains("cudnn") || lower.contains("cuda_path")
+                                || lower.contains("onnxruntime") || lower.contains("could not load")
+                                || lower.contains("loaded library") {
+                                continue;
+                            }
+                            let non_ascii = clean.chars().filter(|c| !c.is_ascii()).count();
+                            if clean.len() > 20 && non_ascii * 2 > clean.len() { continue; }
                             let _ = app_err.emit("cluster-progress", ProgressEvent {
                                 current: 0, total: 0, filename: String::new(),
                                 status: "warning".to_string(),

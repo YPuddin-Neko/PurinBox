@@ -904,6 +904,14 @@ async fn run_python_upscale(
                             if clean.contains("[W:onnxruntime:") || clean.contains("[I:onnxruntime:") {
                                 continue;
                             }
+                            // 过滤 cuDNN/CUDA 加载警告和编码乱码
+                            let lower = clean.to_lowercase();
+                            if lower.contains("cudnn") || lower.contains("cuda_path")
+                                || lower.contains("could not load") || lower.contains("loaded library") {
+                                continue;
+                            }
+                            let non_ascii = clean.chars().filter(|c| !c.is_ascii()).count();
+                            if clean.len() > 20 && non_ascii * 2 > clean.len() { continue; }
                             let _ = app_err.emit("upscale-progress", ProgressEvent {
                                 current: 0, total: 0, filename: String::new(),
                                 status: "warning".to_string(),

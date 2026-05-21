@@ -479,6 +479,16 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
             for line in reader.lines().map_while(Result::ok) {
                 let clean = line.trim().to_string();
                 if clean.is_empty() { continue; }
+                // 过滤 cuDNN/CUDA/onnxruntime 加载警告
+                let lower = clean.to_lowercase();
+                if lower.contains("cudnn") || lower.contains("cuda_path")
+                    || lower.contains("onnxruntime") || lower.contains("could not load")
+                    || lower.contains("loaded library") || lower.contains("context leak") {
+                    continue;
+                }
+                // 跳过编码乱码
+                let non_ascii = clean.chars().filter(|c| !c.is_ascii()).count();
+                if clean.len() > 20 && non_ascii * 2 > clean.len() { continue; }
                 let _ = app_err.emit("person-crop-progress", ProgressEvent {
                     current: 0, total: 0, filename: String::new(),
                     status: "warning".to_string(),
