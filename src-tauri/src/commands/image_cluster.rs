@@ -219,7 +219,8 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
             .arg("--map-theme").arg(&options.map_theme)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .env("PYTHONUNBUFFERED", "1");
+            .env("PYTHONUNBUFFERED", "1")
+            .env("PYTHONIOENCODING", "utf-8");
 
         #[cfg(target_os = "windows")]
         {

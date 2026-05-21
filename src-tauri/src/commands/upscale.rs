@@ -809,7 +809,8 @@ async fn run_python_upscale(
             .arg("--weights-dir").arg(&weights_dir)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .env("PYTHONUNBUFFERED", "1");
+            .env("PYTHONUNBUFFERED", "1")
+            .env("PYTHONIOENCODING", "utf-8");
 
         if tta {
             cmd.arg("--tta");

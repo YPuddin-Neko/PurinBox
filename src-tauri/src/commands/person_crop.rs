@@ -409,7 +409,8 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("NO_COLOR", "1")
-        .env("PYTHONUNBUFFERED", "1");
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONIOENCODING", "utf-8");
 
     #[cfg(target_os = "windows")]
     {

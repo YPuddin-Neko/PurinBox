@@ -536,7 +536,8 @@ pub fn run_tagging(
        .stdout(Stdio::piped())
        .stderr(Stdio::piped())
        .env("NO_COLOR", "1")
-       .env("PYTHONUNBUFFERED", "1");
+       .env("PYTHONUNBUFFERED", "1")
+       .env("PYTHONIOENCODING", "utf-8");
 
     // Windows: 确保 CUDA/cuDNN DLL 路径在 PATH 中
     #[cfg(target_os = "windows")]
@@ -626,10 +627,18 @@ pub fn run_tagging(
                         let clean = strip_ansi_codes(&line);
                         let clean = clean.trim();
                         if clean.is_empty() { continue; }
+                        // 检测乱码：如果非 ASCII 字符占比过高，说明编码错误，跳过
+                        let non_ascii = clean.chars().filter(|c| !c.is_ascii()).count();
+                        if clean.len() > 20 && non_ascii * 2 > clean.len() { continue; }
                         let lower = clean.to_lowercase();
                         if lower.contains("context leak")
                             || lower.contains("msgtracer")
-                            || lower.contains("number of partitions supported by coreml") {
+                            || lower.contains("number of partitions supported by coreml")
+                            || lower.contains("cudnn")
+                            || lower.contains("cuda_path")
+                            || lower.contains("onnxruntime")
+                            || lower.contains("could not load")
+                            || lower.contains("loaded library") {
                             continue;
                         }
                         let _ = app_err.emit("tagger-progress", ProgressEvent {
