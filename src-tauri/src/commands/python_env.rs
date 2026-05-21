@@ -218,7 +218,20 @@ fn emit_progress(app: &tauri::AppHandle, message: &str, status: &str) {
     });
 }
 
+/// 最低要求的 Python 次版本号（3.10+）
+const MIN_PYTHON_MINOR: u32 = 10;
+
+/// 从 "Python 3.x.y" 字符串中提取次版本号
+fn parse_python_minor(ver_str: &str) -> Option<u32> {
+    // "Python 3.12.13" → 12
+    let s = ver_str.trim();
+    let after = s.strip_prefix("Python 3.")?;
+    let minor_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    minor_str.parse().ok()
+}
+
 /// 检测系统安装的 Python 3（非 standalone）
+/// 要求 >= 3.10，低于此版本的跳过（依赖包不再支持旧版本）
 /// 返回 (命令/路径, 版本号)
 fn detect_system_python() -> Option<(String, String)> {
     let candidates = if cfg!(target_os = "windows") {
@@ -240,8 +253,13 @@ fn detect_system_python() -> Option<(String, String)> {
                 let ver_output = String::from_utf8_lossy(&output.stdout).to_string()
                     + String::from_utf8_lossy(&output.stderr).as_ref();
                 if ver_output.contains("Python 3") {
-                    // 提取版本号
                     let version = ver_output.trim().to_string();
+                    // 检查版本是否 >= 3.10
+                    if let Some(minor) = parse_python_minor(&version) {
+                        if minor < MIN_PYTHON_MINOR {
+                            continue; // 版本太旧，跳过
+                        }
+                    }
                     // 验证可以运行 -m venv
                     let mut test = std::process::Command::new(name);
                     test.args(["-c", "import venv"]);
@@ -251,7 +269,6 @@ fn detect_system_python() -> Option<(String, String)> {
                         test.creation_flags(0x08000000);
                     }
                     if test.output().map(|o| o.status.success()).unwrap_or(false) {
-                        // 获取实际路径
                         let real_path = resolve_python_path(name);
                         return Some((real_path, version));
                     }
@@ -260,7 +277,7 @@ fn detect_system_python() -> Option<(String, String)> {
         }
     }
 
-    // Windows: 尝试常见安装路径
+    // Windows: 尝试常见安装路径（仅 3.10+）
     #[cfg(target_os = "windows")]
     {
         let paths = [
@@ -270,7 +287,6 @@ fn detect_system_python() -> Option<(String, String)> {
         ];
         for p in &paths {
             if std::path::Path::new(p).exists() {
-                // 获取版本号
                 let mut cmd = std::process::Command::new(p);
                 cmd.args(["--version"]);
                 use std::os::windows::process::CommandExt;
@@ -278,6 +294,11 @@ fn detect_system_python() -> Option<(String, String)> {
                 let version = cmd.output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                     .unwrap_or_else(|_| "Python 3".to_string());
+                if let Some(minor) = parse_python_minor(&version) {
+                    if minor < MIN_PYTHON_MINOR {
+                        continue;
+                    }
+                }
                 return Some((p.to_string(), version));
             }
         }

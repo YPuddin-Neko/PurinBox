@@ -11,12 +11,9 @@ import traceback
 import numpy as np
 from pathlib import Path
 
-def load_model(model_path, use_gpu=False):
-    """加载 ONNX 模型"""
+def _resolve_providers(use_gpu):
+    """检测 GPU 环境并返回 providers 列表，同时输出诊断日志（只调用一次）"""
     import onnxruntime as ort
-    
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"模型文件不存在: {model_path}")
     
     def _log_i18n(key, params=None):
         d = {"type": "log", "i18n_key": key, "message": key}
@@ -48,10 +45,19 @@ def load_model(model_path, use_gpu=False):
             for item in diagnose_gpu():
                 _log_i18n(item["key"], item.get("params"))
     
+    return providers
+
+def load_model(model_path, providers):
+    """加载 ONNX 模型（使用预先解析好的 providers）"""
+    import onnxruntime as ort
+    
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"模型文件不存在: {model_path}")
+    
     try:
         sess = ort.InferenceSession(model_path, providers=providers)
     except Exception as e:
-        if use_gpu and providers[0] != 'CPUExecutionProvider':
+        if providers[0] != 'CPUExecutionProvider':
             sys.stderr.write(f"[person_crop] ⚠ GPU 加载失败 ({e})，回退到 CPU\n")
             sys.stderr.flush()
             sess = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
@@ -340,10 +346,11 @@ def main():
     
     models = {}
     try:
+        providers = _resolve_providers(use_gpu)
         for crop_type, path in model_paths.items():
             sys.stderr.write(f"[person_crop] 加载 {crop_type} 模型: {os.path.basename(path)}\n")
             sys.stderr.flush()
-            models[crop_type] = load_model(path, use_gpu)
+            models[crop_type] = load_model(path, providers)
     except Exception as e:
         _emit({"error": f"模型加载失败: {e}"})
         return

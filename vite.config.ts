@@ -29,4 +29,22 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id: string) {
+          if (id.includes('node_modules')) {
+            if (id.includes('lucide-react')) return 'vendor-icons';
+            if (id.includes('react-dom')) return 'vendor-react-dom';
+            if (id.includes('react-router')) return 'vendor-router';
+            if (id.includes('i18next') || id.includes('react-i18next')) return 'vendor-i18n';
+            if (id.includes('@tauri-apps')) return 'vendor-tauri';
+            return 'vendor';
+          }
+          // 按页面拆分 locale 文件
+          if (id.includes('/i18n/locales/')) return 'locales';
+        },
+      },
+    },
+  },
 }));

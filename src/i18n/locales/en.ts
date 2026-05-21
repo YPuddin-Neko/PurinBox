@@ -1133,7 +1133,7 @@ const en = {
     driverCuda: 'Driver CUDA: {{version}}',
     cudaToolkit: 'CUDA Toolkit: {{version}}',
     noCudaEnv: 'No CUDA environment detected',
-    noGpuFound: 'Reason: No NVIDIA GPU found or graphics driver error',
+    noGpuFound: 'No NVIDIA GPU found or graphics driver error',
     macPlatform: 'macOS platform, using CoreML / MPS acceleration',
     noBackend: 'No supported GPU inference backend found',
   },

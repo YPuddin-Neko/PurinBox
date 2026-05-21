@@ -1130,7 +1130,7 @@ const ja = {
     driverCuda: 'ドライバー CUDA: {{version}}',
     cudaToolkit: 'CUDA Toolkit: {{version}}',
     noCudaEnv: '利用可能なCUDA環境が検出されませんでした',
-    noGpuFound: '原因: NVIDIA GPUが見つからないか、グラフィックドライバーに異常があります',
+    noGpuFound: 'NVIDIA GPUが見つからないか、グラフィックドライバーに異常があります',
     macPlatform: 'macOSプラットフォーム、CoreML / MPSアクセラレーションを使用',
     noBackend: 'サポートされているGPU推論バックエンドが見つかりません',
   },
