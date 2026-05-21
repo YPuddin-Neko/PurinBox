@@ -947,9 +947,9 @@ const ja = {
   },
 
   jsonTag: {
-    appearance: '外観特徴',
-    tags: '表情/動作/構図',
-    environment: '環境/背景',
+    appearance: 'appearance — 外観特徴',
+    tags: 'tags — 表情/動作/構図',
+    environment: 'environment — 環境/背景',
     selectFolder: 'データセットフォルダを選択',
     noTagData: 'タグデータ未読込',
     clickToAdd: 'タグなし、クリックして追加',

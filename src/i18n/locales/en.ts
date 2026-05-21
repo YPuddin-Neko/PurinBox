@@ -947,9 +947,9 @@ const en = {
   },
 
   jsonTag: {
-    appearance: 'Appearance',
-    tags: 'Expression/Pose/Composition',
-    environment: 'Environment/Background',
+    appearance: 'appearance — Appearance',
+    tags: 'tags — Expression/Pose/Composition',
+    environment: 'environment — Environment/Background',
     selectFolder: 'Select dataset folder',
     noTagData: 'No tag data loaded',
     clickToAdd: 'No tags, click to add',

@@ -990,9 +990,9 @@ const zhCN = {
   },
 
   jsonTag: {
-    appearance: '外观特征',
-    tags: '表情/动作/构图',
-    environment: '环境/背景',
+    appearance: 'appearance — 外观特征',
+    tags: 'tags — 表情/动作/构图',
+    environment: 'environment — 环境/背景',
     selectFolder: '选择数据集文件夹',
     noTagData: '未读取到标签数据',
     clickToAdd: '暂无标签，点击添加',
