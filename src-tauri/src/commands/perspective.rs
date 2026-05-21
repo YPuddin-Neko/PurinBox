@@ -207,6 +207,7 @@ fn bilinear_sample(img: &image::RgbaImage, x: f64, y: f64, w: u32, h: u32) -> im
 }
 
 /// 计算 3x3 透视变换矩阵，将 src 四点映射到 dst 四点
+#[allow(clippy::needless_range_loop)]
 fn compute_perspective_matrix(
     src: &[(f64, f64); 4],
     dst: &[(f64, f64); 4],

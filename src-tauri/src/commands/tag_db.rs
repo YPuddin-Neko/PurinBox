@@ -307,7 +307,7 @@ fn parse_csv_line(line: &str) -> (String, i32, i64, String) {
     }
     fields.push(current);
 
-    let name = fields.get(0).cloned().unwrap_or_default();
+    let name = fields.first().cloned().unwrap_or_default();
     let category: i32 = fields.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
     let post_count: i64 = fields.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
     let aliases = fields.get(3).cloned().unwrap_or_default();
@@ -379,11 +379,9 @@ pub fn search_tags(query: String, limit: Option<u32>, target_lang: Option<String
         })
     }).map_err(|e| format!("查询失败: {}", e))?;
 
-    for row in rows {
-        if let Ok(tag) = row {
-            seen.insert(tag.name.clone());
-            results.push(tag);
-        }
+    for tag in rows.flatten() {
+        seen.insert(tag.name.clone());
+        results.push(tag);
     }
 
     // 2. 如果前缀匹配不够，用包含匹配补充

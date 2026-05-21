@@ -556,7 +556,7 @@ pub async fn translate_tags(
             // ═══ 自然语言模式：逐条独立翻译，不拆分结果 ═══
             for (idx, text) in prepared.iter().enumerate() {
                 let original = &uncached[idx];
-                let single = &[text.clone()];
+                let single = std::slice::from_ref(text);
 
                 let translated = match provider.as_str() {
                     "baidu" => {

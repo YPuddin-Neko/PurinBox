@@ -133,7 +133,7 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
             // JSON 格式 (CL Tagger)
             if let Ok(content) = std::fs::read_to_string(tags_path) {
                 if let Ok(map) = serde_json::from_str::<std::collections::BTreeMap<String, serde_json::Value>>(&content) {
-                    for (_, val) in &map {
+                    for val in map.values() {
                         if let Some(cat) = val.get("category").and_then(|v| v.as_str()) {
                             cats.insert(cat.to_lowercase());
                         }

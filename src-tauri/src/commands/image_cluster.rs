@@ -255,7 +255,7 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
                             let clean = line.trim();
                             if clean.is_empty() { continue; }
                             // 去除 ANSI 转义序列
-                            let clean = clean.replace(|c: char| c == '\x1b', "")
+                            let clean = clean.replace('\x1b', "")
                                 .replace("[0m", "").replace("[1m", "")
                                 .replace("[31m", "").replace("[33m", "");
                             let clean = clean.trim();
@@ -288,7 +288,7 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
         let mut total = 0u32;
         let mut errors = Vec::new();
 
-        for line in reader.lines().flatten() {
+        for line in reader.lines().map_while(Result::ok) {
             if CANCEL_FLAG.load(Ordering::SeqCst) {
                 let _ = child.kill();
                 break;

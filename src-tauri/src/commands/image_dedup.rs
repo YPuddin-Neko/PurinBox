@@ -242,6 +242,7 @@ fn compute_dhash(gray: &image::GrayImage) -> u64 {
 
 // ── pHash: perceptual hash using separable DCT (32x32 → 64-bit) ──
 
+#[allow(clippy::needless_range_loop)]
 fn compute_phash(gray: &image::GrayImage) -> u64 {
     let size = 32usize;
     let resized = image::imageops::resize(gray, size as u32, size as u32, image::imageops::FilterType::Lanczos3);

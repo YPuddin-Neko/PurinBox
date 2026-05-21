@@ -86,7 +86,7 @@ export default function LlmTaggerTab() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchMsg, setFetchMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [temperature, setTemperature] = useState('0.2');
-  const [maxTokens, setMaxTokens] = useState('');
+  const [maxTokens, setMaxTokens] = useState('-1');
   const [sysPrompt, setSysPrompt] = useState(() => getDefaultPrompts('txt', false).sys);
   const [userPrompt, setUserPrompt] = useState(() => getDefaultPrompts('txt', false).user);
   const [processing, setProcessing] = useState(false);

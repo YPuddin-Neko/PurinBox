@@ -443,18 +443,15 @@ fn parse_comfyui(prompt_json: &str, _all_chunks: &[(String, String)]) -> Option<
         let class_type = node.get("class_type")?.as_str().unwrap_or("");
         let inputs = node.get("inputs")?;
 
-        match class_type {
-            // CLIPTextEncode is the standard prompt node
-            "CLIPTextEncode" => {
-                if let Some(text) = inputs.get("text").and_then(|t| t.as_str()) {
-                    if !text.trim().is_empty() {
-                        // Try to determine if positive or negative by checking connections
-                        // Simple heuristic: check if node connects to a "negative" conditioning
-                        positive_parts.push(text.to_string());
-                    }
+        // CLIPTextEncode is the standard prompt node
+        if class_type == "CLIPTextEncode" {
+            if let Some(text) = inputs.get("text").and_then(|t| t.as_str()) {
+                if !text.trim().is_empty() {
+                    // Try to determine if positive or negative by checking connections
+                    // Simple heuristic: check if node connects to a "negative" conditioning
+                    positive_parts.push(text.to_string());
                 }
             }
-            _ => {}
         }
     }
 

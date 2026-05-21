@@ -305,7 +305,7 @@ fn find_python() -> Result<String, String> {
         if let Ok(output) = Command::new(name).args(["--version"]).output() {
             if output.status.success() {
                 let ver = String::from_utf8_lossy(&output.stdout).to_string()
-                    + &String::from_utf8_lossy(&output.stderr).to_string();
+                    + String::from_utf8_lossy(&output.stderr).as_ref();
                 if ver.contains("Python 3") {
                     return Ok(name.to_string());
                 }
@@ -475,7 +475,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
         let app_err = app.clone();
         std::thread::spawn(move || {
             let reader = BufReader::new(stderr);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 let clean = line.trim().to_string();
                 if clean.is_empty() { continue; }
                 let _ = app_err.emit("person-crop-progress", ProgressEvent {

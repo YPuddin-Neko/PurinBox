@@ -237,7 +237,7 @@ fn detect_system_python() -> Option<(String, String)> {
         if let Ok(output) = cmd.output() {
             if output.status.success() {
                 let ver_output = String::from_utf8_lossy(&output.stdout).to_string()
-                    + &String::from_utf8_lossy(&output.stderr).to_string();
+                    + String::from_utf8_lossy(&output.stderr).as_ref();
                 if ver_output.contains("Python 3") {
                     // 提取版本号
                     let version = ver_output.trim().to_string();

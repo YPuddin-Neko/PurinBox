@@ -235,13 +235,11 @@ pub async fn start_llm_tagging(
                         };
                         if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(cleaned) {
                             serde_json::to_string_pretty(&json_val).unwrap_or_default()
-                        } else {
-                            if opts.json_simplified {
+                        } else if opts.json_simplified {
                                 serde_json::to_string_pretty(&serde_json::json!({ "nl": tag_text })).unwrap_or_default()
                             } else {
                                 serde_json::to_string_pretty(&serde_json::json!({ "ai_output": { "nl": tag_text } })).unwrap_or_default()
                             }
-                        }
                     } else {
                         tag_text
                     };
