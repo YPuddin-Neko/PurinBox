@@ -670,6 +670,10 @@ const en = {
     logCount: '{{n}} entries',
     noLogs: 'No logs yet',
     failedFiles: '❌ Failed files',
+    interval: 'Request Interval (sec)',
+    intervalTip: '-1 means no interval',
+    concurrency: 'Concurrency',
+    concurrencyTip: 'Files processed simultaneously',
   },
 
   tagManager: {

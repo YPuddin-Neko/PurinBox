@@ -670,6 +670,10 @@ const ja = {
     logCount: '{{n}}件',
     noLogs: 'ログなし',
     failedFiles: '❌ 失敗ファイル',
+    interval: 'リクエスト間隔（秒）',
+    intervalTip: '-1は間隔なし',
+    concurrency: '並行数',
+    concurrencyTip: '同時処理ファイル数',
   },
 
   tagManager: {

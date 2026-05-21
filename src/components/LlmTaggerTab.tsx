@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   FolderOpen, Play, Loader2, Globe, Key, MessageSquare, Bot,
-  RefreshCw, Thermometer, Hash, StopCircle, Save, ImageIcon,
+  RefreshCw, Thermometer, Hash, StopCircle, Save, ImageIcon, Timer, Layers,
   CheckCircle2, XCircle, Info, ScrollText, Trash2, Eye, EyeOff
 } from 'lucide-react';
 import { LogEntry, getTimeStr } from './ProgressLog';
@@ -108,6 +108,8 @@ export default function LlmTaggerTab() {
   const [startTime, setStartTime] = useState<number>(0);
   const [elapsed, setElapsed] = useState('');
   const [errorFiles, setErrorFiles] = useState<string[]>([]);
+  const [intervalSec, setIntervalSec] = useState('-1');
+  const [concurrency, setConcurrency] = useState('1');
 
   const PRESETS: Record<string, { label: string; url: string }> = {
     openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
@@ -181,6 +183,9 @@ export default function LlmTaggerTab() {
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
     setSuccessCnt(0); setFailCnt(0); setErrorFiles([]); setStartTime(Date.now()); setElapsed('');
     addTask('llm-tagger', t('llmTagger.taskName'));
+    const sec = parseFloat(intervalSec);
+    const intervalMs = sec < 0 ? -1 : Math.round(sec * 1000);
+    const threads = Math.max(1, parseInt(concurrency) || 1);
     setLogs([{ time: getTimeStr(), message: t('llmTagger.startMsg', { model: modelName, api: endpoint }), status: 'info' }]);
     try {
       await invoke<ProcessResult>('start_llm_tagging', {
@@ -193,6 +198,8 @@ export default function LlmTaggerTab() {
           skip_existing: skipExisting,
           output_format: outputFormat,
           json_simplified: jsonSimplified,
+          request_interval_ms: intervalMs,
+          concurrency: threads,
         },
       });
     } catch (e: any) {
@@ -362,6 +369,18 @@ export default function LlmTaggerTab() {
               <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Hash style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('llmTagger.maxTokens')}</label>
                 <input className="form-input" type="number" min="-1" max="8192" step="1" value={maxTokens} onChange={e => setMaxTokens(e.target.value)} placeholder={t('llmTagger.maxTokensPlaceholder')} />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+              <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Timer style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('llmTagger.interval')}</label>
+                <input className="form-input" type="number" min="-1" max="120" step="1" value={intervalSec} onChange={e => setIntervalSec(e.target.value)}
+                  title={t('llmTagger.intervalTip')} />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Layers style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('llmTagger.concurrency')}</label>
+                <input className="form-input" type="number" min="1" max="32" step="1" value={concurrency} onChange={e => setConcurrency(e.target.value)}
+                  title={t('llmTagger.concurrencyTip')} />
               </div>
             </div>
             {/* 跳过已有描述 + 输出格式 */}

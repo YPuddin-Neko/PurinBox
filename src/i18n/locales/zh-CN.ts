@@ -694,6 +694,10 @@ const zhCN = {
     logCount: '{{n}} 条',
     noLogs: '暂无日志',
     failedFiles: '❌ 失败文件',
+    interval: '请求间隔 (秒)',
+    intervalTip: '-1 表示无间隔',
+    concurrency: '并发数',
+    concurrencyTip: '同时处理的文件数',
   },
 
   // ═══════════════ 标签管理 ═══════════════
