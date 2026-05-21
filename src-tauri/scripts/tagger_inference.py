@@ -421,7 +421,10 @@ def main():
                         gpu_provider = "CoreMLExecutionProvider"
                         log("使用 Apple Neural Engine / GPU (CoreML) 加速")
                     else:
-                        log("GPU 加速不可用，使用 CPU 推理")
+                        log("⚠ GPU 加速不可用，使用 CPU 推理")
+                        from gpu_diagnostics import diagnose_gpu
+                        for msg in diagnose_gpu():
+                            log(msg)
 
                 if gpu_provider:
                     providers = [gpu_provider, "CPUExecutionProvider"]

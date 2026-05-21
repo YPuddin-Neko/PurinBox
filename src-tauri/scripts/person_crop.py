@@ -23,10 +23,35 @@ def load_model(model_path, use_gpu=False):
         available = ort.get_available_providers()
         if 'CUDAExecutionProvider' in available:
             providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+            try:
+                import subprocess
+                r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                                   capture_output=True, text=True, timeout=5)
+                gpu_name = r.stdout.strip().split("\n")[0] if r.returncode == 0 else "NVIDIA GPU"
+            except Exception:
+                gpu_name = "NVIDIA GPU"
+            sys.stderr.write(f"[person_crop] 使用 GPU: {gpu_name} (CUDA)\n")
+            sys.stderr.flush()
         elif 'CoreMLExecutionProvider' in available:
             providers = ['CoreMLExecutionProvider', 'CPUExecutionProvider']
+            sys.stderr.write("[person_crop] 使用 GPU: Apple Silicon (CoreML)\n")
+            sys.stderr.flush()
+        else:
+            sys.stderr.write("[person_crop] ⚠ GPU 加速不可用，回退到 CPU\n")
+            from gpu_diagnostics import diagnose_gpu
+            for msg in diagnose_gpu():
+                sys.stderr.write(f"[person_crop] {msg}\n")
+            sys.stderr.flush()
     
-    sess = ort.InferenceSession(model_path, providers=providers)
+    try:
+        sess = ort.InferenceSession(model_path, providers=providers)
+    except Exception as e:
+        if use_gpu and providers[0] != 'CPUExecutionProvider':
+            sys.stderr.write(f"[person_crop] ⚠ GPU 加载失败 ({e})，回退到 CPU\n")
+            sys.stderr.flush()
+            sess = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+        else:
+            raise
     return sess
 
 def preprocess_image(image_path, input_size=640):
@@ -284,6 +309,7 @@ def _emit(data):
 
 def main():
     """主循环: stdin 读取 JSON, stdout 输出结果"""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import io
     stdin_reader = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
 

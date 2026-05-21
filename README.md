@@ -84,7 +84,7 @@ PurinBox 是一个基于 **Tauri 2 + React** 的桌面应用，专注于二次�
 ### 系统要求
 
 - **Windows** 10/11 或 **macOS** 12+
-- GPU 加速：Windows 需要 CUDA，macOS 使用 CoreML
+- GPU 加速：Windows 需要 CUDA 12.x 和 cuDNN 9.x，macOS 使用 CoreML
 
 ### 从源码构建
 

@@ -91,6 +91,7 @@ def softmax(x):
     return e_x / e_x.sum()
 
 def main():
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     session = None
     labels = []
     input_size = 448
@@ -145,14 +146,26 @@ def main():
                 providers = []
                 if use_gpu:
                     available = ort.get_available_providers()
+                    log(f"可用推理后端: {available}")
                     if "CUDAExecutionProvider" in available:
                         providers.append("CUDAExecutionProvider")
-                        log("使用 CUDA GPU 加速")
+                        # 尝试获取 GPU 名称
+                        try:
+                            import subprocess
+                            r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                                               capture_output=True, text=True, timeout=5)
+                            gpu_name = r.stdout.strip().split("\n")[0] if r.returncode == 0 else "NVIDIA GPU"
+                        except Exception:
+                            gpu_name = "NVIDIA GPU"
+                        log(f"使用 GPU: {gpu_name} (CUDA)")
                     elif "CoreMLExecutionProvider" in available:
                         providers.append("CoreMLExecutionProvider")
-                        log("使用 CoreML 加速")
+                        log("使用 GPU: Apple Silicon (CoreML)")
                     else:
-                        log("GPU 加速不可用，回退到 CPU")
+                        log("⚠ GPU 加速不可用，回退到 CPU")
+                        from gpu_diagnostics import diagnose_gpu
+                        for msg in diagnose_gpu():
+                            log(msg)
                 providers.append("CPUExecutionProvider")
 
                 sess_options = ort.SessionOptions()

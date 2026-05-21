@@ -137,7 +137,14 @@ def create_session(onnx_path, device):
     elif "CoreML" in active_ep:
         emit_log("使用 GPU: Apple Silicon (CoreML)")
     else:
-        emit_log("使用 CPU 推理")
+        if device != "cpu":
+            # 用户请求了 GPU 但实际回退到了 CPU
+            emit_log("⚠ GPU 加速不可用，使用 CPU 推理")
+            from gpu_diagnostics import diagnose_gpu
+            for msg in diagnose_gpu():
+                emit_log(msg)
+        else:
+            emit_log("使用 CPU 推理")
 
     return session, actual_device
 

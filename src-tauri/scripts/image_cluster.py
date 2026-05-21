@@ -51,7 +51,11 @@ def detect_device():
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         emit_log("使用 GPU: Apple Silicon (MPS)")
         return "mps"
-    emit_log("使用 CPU 推理（速度较慢）")
+    # GPU 不可用，输出诊断信息
+    emit_log("⚠ GPU 加速不可用，使用 CPU 推理（速度较慢）")
+    from gpu_diagnostics import diagnose_gpu
+    for msg in diagnose_gpu():
+        emit_log(msg)
     return "cpu"
 
 # ── 颜色直方图特征 ──────────────────────────────────────
@@ -286,6 +290,7 @@ def cluster_hdbscan(features, min_cluster_size=5):
 # ── 主流程 ──────────────────────────────────────
 
 def main():
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)

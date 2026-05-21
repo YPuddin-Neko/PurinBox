@@ -39,7 +39,9 @@
       "scripts/person_crop.py",
       "scripts/realesrgan_upscale.py",
       "scripts/image_cluster.py",
-      "scripts/cuda_dll_helper.py"
+      "scripts/aesthetic_inference.py",
+      "scripts/cuda_dll_helper.py",
+      "scripts/gpu_diagnostics.py"
     ],
     "icon": [
       "icons/32x32.png",
