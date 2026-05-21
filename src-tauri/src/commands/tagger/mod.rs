@@ -60,6 +60,8 @@ pub struct TaggerOptions {
     pub output_format: String,
     #[serde(default)]
     pub json_simplified: bool,
+    #[serde(default)]
+    pub escape_parentheses: bool,
 }
 
 fn default_append_position() -> String { "append".into() }

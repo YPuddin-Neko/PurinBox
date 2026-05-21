@@ -786,6 +786,7 @@ pub fn run_tagging(
             "replace_underscore": options.replace_underscore,
             "output_format": options.output_format,
             "json_simplified": options.json_simplified,
+            "escape_parentheses": options.escape_parentheses,
         });
 
         if let Err(e) = writeln!(stdin, "{}", tag_cmd) {

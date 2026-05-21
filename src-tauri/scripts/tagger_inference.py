@@ -501,6 +501,7 @@ def main():
                 exclude_tags_str = cmd.get("exclude_tags", "")
                 append_tags_str = cmd.get("append_tags", "")
                 append_position = cmd.get("append_position", "append")
+                escape_parentheses = cmd.get("escape_parentheses", False)
 
                 # 解析排除标签集合
                 exclude_set = set()
@@ -563,6 +564,8 @@ def main():
                     tag_name = tags[best_idx]["name"]
                     if replace_underscore:
                         tag_name = tag_name.replace("_", " ")
+                    if escape_parentheses:
+                        tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
                     if tag_name in exclude_set or tags[best_idx]["name"] in exclude_set:
                         continue
                     selected_tags.append((tag_name, argmax_cat, best_prob))
@@ -589,6 +592,8 @@ def main():
                         tag_name = tags[idx]["name"]
                         if replace_underscore:
                             tag_name = tag_name.replace("_", " ")
+                        if escape_parentheses:
+                            tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
                         if tag_name in exclude_set or tags[idx]["name"] in exclude_set:
                             continue
                         selected_tags.append((tag_name, cat, prob))

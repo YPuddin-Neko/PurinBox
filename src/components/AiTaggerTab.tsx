@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { FolderOpen, Loader2, Cpu, Gpu, Download, Plus, Check, RefreshCw, Trash2, Search, FileUp } from 'lucide-react';
+import { FolderOpen, Loader2, Cpu, Gpu, Download, Plus, Check, Trash2, Search, FileUp, Save, ChevronDown, X } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
 import ProcessButton from './ProcessButton';
 import { useTaskQueue } from './TaskContext';
@@ -16,6 +16,22 @@ interface ProcessResult { success_count: number; fail_count: number; total: numb
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 interface OnnxModelInfo { input_size: number; input_format: string; input_shape: number[]; channels: number; }
 interface DownloadPayload { filename: string; downloaded: number; total: number; percent: number; speed_mbps: number; status: string; message: string; }
+
+interface TaggerPreset {
+  name: string;
+  modelId: string;
+  genTh: number;
+  charTh: number;
+  enabled: string[];
+  useGpu: boolean;
+  excludeTags: string;
+  appendTags: string;
+  appendPosition: 'prepend' | 'append';
+  replaceUnderscore: boolean;
+  escapeParentheses: boolean;
+  outputFormat: 'txt' | 'json';
+  jsonSimplified: boolean;
+}
 
 export default function AiTaggerTab() {
   const { t } = useTranslation();
@@ -36,10 +52,6 @@ export default function AiTaggerTab() {
   const [charTh, setCharTh] = useState(0.85);
   const [enabled, setEnabled] = useState<Set<string>>(new Set(cats.filter(c => c.default).map(c => c.key)));
   const [useGpu, setUseGpu] = useState(false);
-  const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
-  const gpuSupported = true; // Windows: CUDA, macOS: CoreML (Neural Engine)
-  const [cudaOk, setCudaOk] = useState<boolean | null>(null);
-  const [cudaChecking, setCudaChecking] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [pCur, setPCur] = useState(0);
@@ -61,9 +73,80 @@ export default function AiTaggerTab() {
   const [appendTags, setAppendTags] = useState('');
   const [appendPosition, setAppendPosition] = useState<'prepend' | 'append'>('append');
   const [replaceUnderscore, setReplaceUnderscore] = useState(true);
+  const [escapeParentheses, setEscapeParentheses] = useState(false);
   const [outputFormat, setOutputFormat] = useState<'txt' | 'json'>('txt');
   const [jsonSimplified, setJsonSimplified] = useState(()=>localStorage.getItem('tagger_json_simplified')==='true');
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
+
+  // 配置预设
+  const [presets, setPresets] = useState<TaggerPreset[]>(() => {
+    try { return JSON.parse(localStorage.getItem('tagger_presets') || '[]'); } catch { return []; }
+  });
+  const [showPresets, setShowPresets] = useState(false);
+  const [presetInput, setPresetInput] = useState('');
+  const [showPresetSave, setShowPresetSave] = useState(false);
+  const presetRef = useRef<HTMLDivElement>(null);
+
+  // 点击外部关闭预设下拉
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (presetRef.current && !presetRef.current.contains(e.target as Node)) {
+        setShowPresets(false);
+        setShowPresetSave(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const savePresetsToStorage = (list: TaggerPreset[]) => {
+    setPresets(list);
+    localStorage.setItem('tagger_presets', JSON.stringify(list));
+  };
+
+  const handleSavePreset = () => {
+    const name = presetInput.trim();
+    if (!name) return;
+    const preset: TaggerPreset = {
+      name,
+      modelId: selectedModel,
+      genTh, charTh,
+      enabled: Array.from(enabled),
+      useGpu,
+      excludeTags, appendTags, appendPosition,
+      replaceUnderscore, escapeParentheses,
+      outputFormat, jsonSimplified,
+    };
+    // 同名覆盖
+    const next = presets.filter(p => p.name !== name);
+    next.unshift(preset);
+    savePresetsToStorage(next);
+    setPresetInput('');
+    setShowPresetSave(false);
+    setLogs(p => [...p, { time: getTimeStr(), message: t('aiTagger.presetSaved', { name }), status: 'success' }]);
+  };
+
+  const handleLoadPreset = (preset: TaggerPreset) => {
+    setSelectedModel(preset.modelId);
+    setGenTh(preset.genTh);
+    setCharTh(preset.charTh);
+    setEnabled(new Set(preset.enabled));
+    setUseGpu(preset.useGpu);
+    setExcludeTags(preset.excludeTags);
+    setAppendTags(preset.appendTags);
+    setAppendPosition(preset.appendPosition);
+    setReplaceUnderscore(preset.replaceUnderscore);
+    setEscapeParentheses(preset.escapeParentheses ?? false);
+    setOutputFormat(preset.outputFormat);
+    setJsonSimplified(preset.jsonSimplified);
+    localStorage.setItem('tagger_json_simplified', String(preset.jsonSimplified));
+    setShowPresets(false);
+    setLogs(p => [...p, { time: getTimeStr(), message: t('aiTagger.presetLoaded', { name: preset.name }), status: 'info' }]);
+  };
+
+  const handleDeletePreset = (name: string) => {
+    savePresetsToStorage(presets.filter(p => p.name !== name));
+  };
 
   const load = useCallback(async () => {
     try { const l = await invoke<ModelInfo[]>('get_tagger_models'); setModels(l); if (l.length > 0 && !selectedModel) setSelectedModel(l[0].id); } catch {}
@@ -150,7 +233,7 @@ export default function AiTaggerTab() {
     setLogs([{ time: getTimeStr(), message: t('aiTagger.startMsg', { model: cur?.name, hw: useGpu ? 'GPU' : 'CPU' }), status: 'info' }]);
     addTask('tagger', `${t('aiTagger.taskName')} - ${cur?.name || '?'}`);
     try {
-      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, output_format: outputFormat, json_simplified: jsonSimplified } });
+      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, output_format: outputFormat, json_simplified: jsonSimplified } });
       updateTask('tagger', { status: 'done' });
       await load();
     } catch (e: any) {
@@ -229,9 +312,48 @@ export default function AiTaggerTab() {
         <div className="tool-panel">
           <div className="tool-panel-header">
             <span className="tool-panel-title">{t('aiTagger.taggerModel')}</span>
-            <button className="btn btn-ghost btn-sm" onClick={() => setShowAdd(!showAdd)}>
-              {showAdd ? t('aiTagger.close') : <><Plus style={{ width: 14, height: 14 }} /> {t('aiTagger.importModel')}</>}
-            </button>
+            <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+              {/* 配置预设按钮 */}
+              <div style={{ position: 'relative' }} ref={presetRef}>
+                <button className="btn btn-ghost btn-sm" onClick={() => { setShowPresets(!showPresets); setShowPresetSave(false); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Save style={{ width: 13, height: 13 }} /> {t('aiTagger.presets')} <ChevronDown style={{ width: 12, height: 12 }} />
+                </button>
+                {showPresets && (
+                  <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, minWidth: 220, background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', boxShadow: '0 8px 24px rgba(0,0,0,0.2)', zIndex: 100, overflow: 'hidden' }}>
+                    {/* 保存当前配置 */}
+                    {!showPresetSave ? (
+                      <button onClick={() => setShowPresetSave(true)} style={{ width: '100%', padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 6, border: 'none', background: 'transparent', color: 'var(--color-accent-primary)', cursor: 'pointer', fontSize: 12, fontWeight: 600, borderBottom: '1px solid var(--color-border)' }}>
+                        <Plus style={{ width: 12, height: 12 }} /> {t('aiTagger.savePreset')}
+                      </button>
+                    ) : (
+                      <div style={{ padding: '8px 10px', display: 'flex', gap: 4, borderBottom: '1px solid var(--color-border)', alignItems: 'center' }}>
+                        <input className="form-input" placeholder={t('aiTagger.presetName')} value={presetInput} onChange={e => setPresetInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleSavePreset(); }} style={{ flex: 1, fontSize: 11, padding: '4px 8px' }} autoFocus />
+                        <button className="btn btn-primary btn-sm" onClick={handleSavePreset} disabled={!presetInput.trim()} style={{ padding: '4px 8px', fontSize: 11 }}><Check style={{ width: 11, height: 11 }} /></button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setShowPresetSave(false)} style={{ padding: '4px 6px' }}><X style={{ width: 11, height: 11 }} /></button>
+                      </div>
+                    )}
+                    {/* 预设列表 */}
+                    <div style={{ maxHeight: 200, overflowY: 'auto' }}>
+                      {presets.length === 0 ? (
+                        <div style={{ padding: '12px', fontSize: 11, color: 'var(--color-text-tertiary)', textAlign: 'center' }}>{t('aiTagger.noPresets')}</div>
+                      ) : presets.map(p => (
+                        <div key={p.name} style={{ display: 'flex', alignItems: 'center', padding: '6px 12px', cursor: 'pointer', fontSize: 12, gap: 6, borderBottom: '1px solid rgba(127,127,127,0.08)' }}
+                          onClick={() => handleLoadPreset(p)}
+                          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(124,92,252,0.06)')}
+                          onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                          <span style={{ flex: 1, fontWeight: 500 }}>{p.name}</span>
+                          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{models.find(m => m.id === p.modelId)?.name || '?'}</span>
+                          <button onClick={e => { e.stopPropagation(); handleDeletePreset(p.name); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: '#f87171', display: 'flex' }}><Trash2 style={{ width: 11, height: 11 }} /></button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowAdd(!showAdd)}>
+                {showAdd ? t('aiTagger.close') : <><Plus style={{ width: 14, height: 14 }} /> {t('aiTagger.importModel')}</>}
+              </button>
+            </div>
           </div>
           {showAdd && (
             <div style={{ padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', background: 'rgba(124,92,252,0.04)', border: '1px solid rgba(124,92,252,0.15)', marginBottom: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
@@ -275,26 +397,42 @@ export default function AiTaggerTab() {
           </div>
         </div>
 
-        {/* 硬件设置 */}
+        {/* 其他设置（含 GPU/CPU 开关） */}
         <div className="tool-panel">
           <div className="tool-panel-header">
-            <span className="tool-panel-title">{t('aiTagger.hwSettings')}</span>
-            {gpuSupported && (<button className="btn btn-secondary btn-sm" onClick={async () => { setCudaChecking(true); try { const [ok] = await invoke<[boolean, string]>('check_cuda_available'); setCudaOk(ok); } catch(e: any) { setCudaOk(false); setLogs(p => [...p, { time: getTimeStr(), message: `${t('aiTagger.gpuDetectError')}: ${String(e)}`, status: 'error' }]); } setCudaChecking(false); }} disabled={cudaChecking} style={{ whiteSpace: 'nowrap' }}>{cudaChecking ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 14, height: 14 }} />} {isMac ? t('aiTagger.detectCoreML') : t('aiTagger.detectCUDA')}</button>)}
+            <span className="tool-panel-title">{t('aiTagger.otherSettings')}</span>
+            {/* GPU/CPU 切换 */}
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+              {(['cpu', 'gpu'] as const).map(hw => {
+                const isGpu = hw === 'gpu';
+                const active = isGpu === useGpu;
+                const Icon = isGpu ? Gpu : Cpu;
+                const color = isGpu ? '#4ade80' : '#fbbf24';
+                return (
+                  <button key={hw} onClick={() => setUseGpu(isGpu)} style={{
+                    display: 'flex', alignItems: 'center', gap: 4, padding: '3px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: `1.5px solid ${active ? color : 'var(--color-border)'}`,
+                    background: active ? (isGpu ? 'rgba(74,222,128,0.07)' : 'rgba(251,191,36,0.07)') : 'transparent',
+                    cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                    color: active ? color : 'var(--color-text-tertiary)',
+                  }}>
+                    <Icon style={{ width: 13, height: 13 }} /> {hw.toUpperCase()}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          {cudaOk !== null && <div style={{ fontSize: 11, color: cudaOk ? '#4ade80' : '#f87171', padding: '6px 10px', borderRadius: 'var(--radius-sm)', background: cudaOk ? 'rgba(74,222,128,0.06)' : 'rgba(248,113,113,0.06)', lineHeight: 1.6, marginBottom: 'var(--space-3)' }}>{cudaOk ? (isMac ? t('aiTagger.coreMLOk') : t('aiTagger.cudaOk')) : (isMac ? t('aiTagger.coreMLFail') : t('aiTagger.cudaFail'))}</div>}
-          <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
-            <div onClick={() => setUseGpu(false)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1.5px solid ${!useGpu ? '#fbbf24' : 'var(--color-border)'}`, background: !useGpu ? 'rgba(251,191,36,0.07)' : 'var(--color-bg-input)', cursor: 'pointer' }}><Cpu style={{ width: 16, height: 16, color: !useGpu ? '#fbbf24' : 'var(--color-text-tertiary)' }} /><span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: !useGpu ? '#fbbf24' : 'var(--color-text-tertiary)' }}>CPU</span></div>
-            <div onClick={() => setUseGpu(true)} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '8px', borderRadius: 'var(--radius-md)', border: `1.5px solid ${useGpu ? '#4ade80' : 'var(--color-border)'}`, background: useGpu ? 'rgba(74,222,128,0.07)' : 'var(--color-bg-input)', cursor: gpuSupported ? 'pointer' : 'not-allowed', opacity: gpuSupported ? 1 : 0.4 }}><Gpu style={{ width: 16, height: 16, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }} /><span style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600, color: useGpu ? '#4ade80' : 'var(--color-text-tertiary)' }}>GPU</span>{!gpuSupported && <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>({t('aiTagger.gpuUnavailable')})</span>}</div>
-          </div>
-        </div>
-
-        {/* 其他设置 */}
-        <div className="tool-panel">
-          <div className="tool-panel-header"><span className="tool-panel-title">{t('aiTagger.otherSettings')}</span></div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)', flexWrap: 'wrap' }}>
+            {/* 替换下划线 */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => setReplaceUnderscore(!replaceUnderscore)}>
               <div style={{ width: 16, height: 16, borderRadius: 4, minWidth: 16, border: `2px solid ${replaceUnderscore ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: replaceUnderscore ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{replaceUnderscore && <Check style={{ width: 10, height: 10, color: '#fff' }} />}</div>
               <span style={{ fontSize: 12, fontWeight: 600 }}>{t('aiTagger.replaceUnderscore')}</span>
+            </div>
+            {/* 括号转义 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginLeft: 'var(--space-3)' }} onClick={() => setEscapeParentheses(!escapeParentheses)}>
+              <div style={{ width: 16, height: 16, borderRadius: 4, minWidth: 16, border: `2px solid ${escapeParentheses ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: escapeParentheses ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{escapeParentheses && <Check style={{ width: 10, height: 10, color: '#fff' }} />}</div>
+              <span style={{ fontSize: 12, fontWeight: 600 }}>{t('aiTagger.escapeParentheses')}</span>
             </div>
             <div style={{ flex: 1 }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
@@ -361,4 +499,3 @@ export default function AiTaggerTab() {
     </div>
   );
 }
-
