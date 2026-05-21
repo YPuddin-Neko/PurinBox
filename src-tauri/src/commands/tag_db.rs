@@ -35,7 +35,7 @@ fn default_db_dir() -> PathBuf {
 }
 
 fn get_tag_db_path() -> PathBuf {
-    let guard = TAG_DB_PATH.lock().unwrap();
+    let guard = TAG_DB_PATH.lock().unwrap_or_else(|e| e.into_inner());
     guard.clone().unwrap_or_else(|| default_db_dir().join("danbooru_tags.db"))
 }
 
@@ -168,9 +168,7 @@ pub async fn check_tag_db_update() -> Result<String, String> {
 /// 从 GitHub API 获取最新的 danbooru pt20 CSV 文件名
 async fn fetch_latest_tag_filename() -> Result<String, String> {
     let api_url = "https://api.github.com/repos/DraconicDragon/dbr-e621-lists-archive/contents/tag-lists/danbooru";
-    let client = reqwest::Client::builder()
-        .user_agent("PurinBox")
-        .timeout(std::time::Duration::from_secs(15))
+    let client = crate::commands::proxy_config::build_http_client()
         .build()
         .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
 
@@ -213,9 +211,7 @@ async fn download_danbooru_tags_inner(app: tauri::AppHandle) -> Result<u32, Stri
         "status": "downloading", "message": "正在下载标签数据...", "current": 0, "total": 0
     }));
 
-    let client = reqwest::Client::builder()
-        .user_agent("PurinBox")
-        .timeout(std::time::Duration::from_secs(120))
+    let client = crate::commands::proxy_config::build_http_client()
         .build()
         .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
 
@@ -532,9 +528,7 @@ async fn translate_tag_db_inner(
         "current": 0, "total": total
     }));
 
-    let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0")
-        .timeout(std::time::Duration::from_secs(30))
+    let client = crate::commands::proxy_config::build_http_client()
         .build()
         .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
 

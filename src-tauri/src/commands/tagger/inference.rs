@@ -787,6 +787,8 @@ pub fn run_tagging(
             "output_format": options.output_format,
             "json_simplified": options.json_simplified,
             "escape_parentheses": options.escape_parentheses,
+            "sort_by": options.sort_by,
+            "existing_tags_action": options.existing_tags_action,
         });
 
         if let Err(e) = writeln!(stdin, "{}", tag_cmd) {
@@ -796,57 +798,61 @@ pub fn run_tagging(
             break;
         }
 
-        // 读取结果
-        match lines_iter.next() {
-            Some(Ok(line)) => {
-                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                    let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    match msg_type {
-                        "result" => {
-                            let tag_count = msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                            success_count += 1;
-                            let _ = app.emit("tagger-progress", ProgressEvent {
-                                current: i as u32 + 1, total,
-                                filename: filename.clone(),
-                                status: "success".to_string(),
-                                message: format!("[完成] {} → {} 个标签", filename, tag_count),
-                            });
+        // 读取结果（可能先收到 log 消息，需要循环读取直到 result/error）
+        loop {
+            match lines_iter.next() {
+                Some(Ok(line)) => {
+                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        match msg_type {
+                            "result" => {
+                                let tag_count = msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                                success_count += 1;
+                                let _ = app.emit("tagger-progress", ProgressEvent {
+                                    current: i as u32 + 1, total,
+                                    filename: filename.clone(),
+                                    status: "success".to_string(),
+                                    message: format!("[完成] {} → {} 个标签", filename, tag_count),
+                                });
+                                break;
+                            }
+                            "error" => {
+                                let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                fail_count += 1;
+                                let err_msg = format!("{}: {}", filename, text);
+                                errors.push(err_msg.clone());
+                                let _ = app.emit("tagger-progress", ProgressEvent {
+                                    current: i as u32 + 1, total,
+                                    filename: filename.clone(),
+                                    status: "error".to_string(),
+                                    message: format!("[错误] {}", err_msg),
+                                });
+                                break;
+                            }
+                            "log" => {
+                                let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                                let _ = app.emit("tagger-progress", ProgressEvent {
+                                    current: i as u32 + 1, total,
+                                    filename: filename.clone(),
+                                    status: "info".to_string(),
+                                    message: text.to_string(),
+                                });
+                                // log 类消息不算结果，继续读下一行
+                            }
+                            _ => { break; }
                         }
-                        "error" => {
-                            let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            fail_count += 1;
-                            let err_msg = format!("{}: {}", filename, text);
-                            errors.push(err_msg.clone());
-                            let _ = app.emit("tagger-progress", ProgressEvent {
-                                current: i as u32 + 1, total,
-                                filename: filename.clone(),
-                                status: "error".to_string(),
-                                message: format!("[错误] {}", err_msg),
-                            });
-                        }
-                        "log" => {
-                            // 日志消息，可能需要继续读取 result
-                            let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                            let _ = app.emit("tagger-progress", ProgressEvent {
-                                current: i as u32 + 1, total,
-                                filename: filename.clone(),
-                                status: "info".to_string(),
-                                message: text.to_string(),
-                            });
-                        }
-                        _ => {}
                     }
                 }
-            }
-            Some(Err(e)) => {
-                fail_count += 1;
-                errors.push(format!("{}: 读取结果失败: {}", filename, e));
-                break;
-            }
-            None => {
-                fail_count += 1;
-                errors.push(format!("{}: Python 进程意外退出", filename));
-                break;
+                Some(Err(e)) => {
+                    fail_count += 1;
+                    errors.push(format!("{}: 读取结果失败: {}", filename, e));
+                    break;
+                }
+                None => {
+                    fail_count += 1;
+                    errors.push(format!("{}: Python 进程意外退出", filename));
+                    break;
+                }
             }
         }
     }

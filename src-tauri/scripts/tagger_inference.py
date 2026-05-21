@@ -104,12 +104,14 @@ def load_tags_csv(csv_path):
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
         header = next(reader)
+        has_count = len(header) >= 4 and header[3].strip().lower() == "count"
         for row in reader:
             if len(row) >= 3:
                 name = row[1]
                 cat_id = int(row[2])
                 category = category_map.get(cat_id, "general")
-                tags.append({"name": name, "category": category})
+                count = int(row[3]) if has_count and len(row) >= 4 and row[3].strip().isdigit() else 0
+                tags.append({"name": name, "category": category, "count": count})
     return tags
 
 def load_tags_json(json_path):
@@ -122,7 +124,8 @@ def load_tags_json(json_path):
         info = data[idx_str]
         tag_name = info.get("tag", "")
         category = info.get("category", "General").lower()
-        tags.append({"name": tag_name, "category": category})
+        count = info.get("count", 0)
+        tags.append({"name": tag_name, "category": category, "count": count})
     return tags
 
 def detect_model_format(session):
@@ -502,6 +505,7 @@ def main():
                 append_tags_str = cmd.get("append_tags", "")
                 append_position = cmd.get("append_position", "append")
                 escape_parentheses = cmd.get("escape_parentheses", False)
+                sort_by = cmd.get("sort_by", "confidence")  # "confidence" or "frequency"
 
                 # 解析排除标签集合
                 exclude_set = set()
@@ -537,7 +541,7 @@ def main():
                 #   - general/meta: gen_threshold 阈值过滤
                 #   - character/copyright/artist: char_threshold 阈值过滤
                 #   - model: gen_threshold 阈值过滤
-                selected_tags = []      # (tag_name, category, prob) 用于分类
+                selected_tags = []      # (tag_name, category, prob, count) 用于分类
                 selected_flat = []      # 纯名称列表，用于 txt 输出
 
                 # 按类别收集所有标签的 (index, prob)
@@ -562,13 +566,14 @@ def main():
                         continue
                     best_idx, best_prob = max(pairs, key=lambda x: x[1])
                     tag_name = tags[best_idx]["name"]
+                    tag_count = tags[best_idx].get("count", 0)
                     if replace_underscore:
                         tag_name = tag_name.replace("_", " ")
                     if escape_parentheses:
                         tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
                     if tag_name in exclude_set or tags[best_idx]["name"] in exclude_set:
                         continue
-                    selected_tags.append((tag_name, argmax_cat, best_prob))
+                    selected_tags.append((tag_name, argmax_cat, best_prob, tag_count))
                     selected_flat.append(tag_name)
 
                 # 阈值类别
@@ -590,40 +595,156 @@ def main():
                         if prob < thresh:
                             continue
                         tag_name = tags[idx]["name"]
+                        tag_count = tags[idx].get("count", 0)
                         if replace_underscore:
                             tag_name = tag_name.replace("_", " ")
                         if escape_parentheses:
                             tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
                         if tag_name in exclude_set or tags[idx]["name"] in exclude_set:
                             continue
-                        selected_tags.append((tag_name, cat, prob))
+                        selected_tags.append((tag_name, cat, prob, tag_count))
                         selected_flat.append(tag_name)
 
-                # 追加标签
+                # 按频率排序（如果启用）
+                if sort_by == "frequency":
+                    # 将 selected_tags 和 selected_flat 按 count 降序重新排序
+                    # 保持 (tag_name, cat, prob, count) 的对应关系
+                    indexed = list(enumerate(selected_tags))
+                    indexed.sort(key=lambda x: x[1][3], reverse=True)
+                    selected_tags = [item[1] for item in indexed]
+                    selected_flat = [item[1][0] for item in indexed]
+
+                # 追加标签（最后处理，最前面模式优先级最高，适用于触发词等）
                 if append_list:
+                    # 先从已有结果中去掉追加标签（避免重复）
+                    append_set = set(append_list)
+                    selected_tags = [(n, c, p, cnt) for n, c, p, cnt in selected_tags if n not in append_set]
+                    selected_flat = [n for n in selected_flat if n not in append_set]
                     if append_position == "prepend":
                         selected_flat = append_list + selected_flat
-                        selected_tags = [(t, "general", 1.0) for t in append_list] + selected_tags
+                        selected_tags = [(t, "general", 1.0, 0) for t in append_list] + selected_tags
                     else:
                         selected_flat = selected_flat + append_list
-                        selected_tags = selected_tags + [(t, "general", 1.0) for t in append_list]
+                        selected_tags = selected_tags + [(t, "general", 1.0, 0) for t in append_list]
 
                 # 输出格式
                 output_format = cmd.get("output_format", "txt")
+                existing_tags_action = cmd.get("existing_tags_action", "overwrite")
                 stem = Path(image_path).stem
                 parent = Path(image_path).parent
 
                 if output_format == "json":
                     json_simplified = cmd.get("json_simplified", False)
                     json_path = parent / f"{stem}.json"
-                    if json_simplified:
-                        data = _build_simplified_json(selected_tags)
+
+                    # 已标识文件操作
+                    if existing_tags_action == "skip" and json_path.exists():
+                        result({
+                            "type": "result",
+                            "image_path": image_path,
+                            "tags": [],
+                            "tag_count": 0,
+                            "skipped": True,
+                        })
+                        continue
+
+                    if existing_tags_action in ("prepend", "append") and json_path.exists():
+                        # JSON 格式合并：读取已有文件，与新标签合并
+                        try:
+                            with open(json_path, "r", encoding="utf-8") as f:
+                                existing_data = json.load(f)
+                            # 简化处理：JSON 模式下直接覆盖（JSON 结构合并太复杂）
+                            # 保留已有数据并用新数据更新
+                            if existing_tags_action == "append":
+                                # 已有数据优先，新数据补充
+                                merged = existing_data.copy()
+                                if json_simplified:
+                                    new_data = _build_simplified_json(selected_tags)
+                                else:
+                                    new_data = _build_structured_json(selected_tags)
+                                for k, v in new_data.items():
+                                    if k not in merged:
+                                        merged[k] = v
+                                    elif isinstance(v, dict) and isinstance(merged[k], dict):
+                                        for kk, vv in v.items():
+                                            if kk not in merged[k]:
+                                                merged[k][kk] = vv
+                                            elif isinstance(vv, list) and isinstance(merged[k][kk], list):
+                                                existing_set = set(merged[k][kk])
+                                                merged[k][kk] = merged[k][kk] + [t for t in vv if t not in existing_set]
+                                    elif isinstance(v, list) and isinstance(merged[k], list):
+                                        existing_set = set(merged[k])
+                                        merged[k] = merged[k] + [t for t in v if t not in existing_set]
+                            else:
+                                # prepend: 已有数据保持不变，新数据中不重复的部分补充进去
+                                merged = existing_data.copy()
+                                if json_simplified:
+                                    new_data = _build_simplified_json(selected_tags)
+                                else:
+                                    new_data = _build_structured_json(selected_tags)
+                                for k, v in new_data.items():
+                                    if k not in merged:
+                                        merged[k] = v
+                                    elif isinstance(v, dict) and isinstance(merged[k], dict):
+                                        for kk, vv in v.items():
+                                            if kk not in merged[k]:
+                                                merged[k][kk] = vv
+                                            elif isinstance(vv, list) and isinstance(merged[k][kk], list):
+                                                existing_set = set(merged[k][kk])
+                                                merged[k][kk] = merged[k][kk] + [t for t in vv if t not in existing_set]
+                                    elif isinstance(v, list) and isinstance(merged[k], list):
+                                        existing_set = set(merged[k])
+                                        merged[k] = merged[k] + [t for t in v if t not in existing_set]
+                            with open(json_path, "w", encoding="utf-8") as f:
+                                json.dump(merged, f, ensure_ascii=False, indent=2)
+                        except Exception:
+                            # 合并失败时回退到覆盖
+                            if json_simplified:
+                                data = _build_simplified_json(selected_tags)
+                            else:
+                                data = _build_structured_json(selected_tags)
+                            with open(json_path, "w", encoding="utf-8") as f:
+                                json.dump(data, f, ensure_ascii=False, indent=2)
                     else:
-                        data = _build_structured_json(selected_tags)
-                    with open(json_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
+                        # overwrite 或文件不存在
+                        if json_simplified:
+                            data = _build_simplified_json(selected_tags)
+                        else:
+                            data = _build_structured_json(selected_tags)
+                        with open(json_path, "w", encoding="utf-8") as f:
+                            json.dump(data, f, ensure_ascii=False, indent=2)
                 else:
                     txt_path = parent / f"{stem}.txt"
+
+                    # 已标识文件操作
+                    if existing_tags_action == "skip" and txt_path.exists():
+                        result({
+                            "type": "result",
+                            "image_path": image_path,
+                            "tags": [],
+                            "tag_count": 0,
+                            "skipped": True,
+                        })
+                        continue
+
+                    if existing_tags_action in ("prepend", "append") and txt_path.exists():
+                        try:
+                            with open(txt_path, "r", encoding="utf-8") as f:
+                                existing_text = f.read().strip()
+                            existing_list = [t.strip() for t in existing_text.split(",") if t.strip()]
+                            # 去重合并
+                            if existing_tags_action == "append":
+                                # 已有标签在前，新标签补充到后面（去掉模型输出中的重复）
+                                existing_set = set(existing_list)
+                                merged = existing_list + [t for t in selected_flat if t not in existing_set]
+                            else:
+                                # 新标签在前，已有标签保持原位（去掉模型输出中的重复）
+                                existing_set = set(existing_list)
+                                merged = [t for t in selected_flat if t not in existing_set] + existing_list
+                            selected_flat = merged
+                        except Exception:
+                            pass  # 读取失败，使用新标签覆盖
+
                     with open(txt_path, "w", encoding="utf-8") as f:
                         f.write(", ".join(selected_flat))
 

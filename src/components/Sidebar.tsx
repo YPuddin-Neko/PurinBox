@@ -26,6 +26,7 @@ import {
   Copy,
   Scale,
   FileCode2,
+  Star,
 } from 'lucide-react';
 import '../styles/sidebar.css';
 import { getVersion } from '@tauri-apps/api/app';
@@ -39,6 +40,7 @@ const navSections: NavSection[] = [
   {
     titleKey: 'sidebar.sectionPreprocess',
     items: [
+      { id: 'aesthetic', labelKey: 'sidebar.aesthetic', icon: <Star />, path: '/aesthetic' },
       { id: 'crop', labelKey: 'sidebar.crop', icon: <Crop />, path: '/crop' },
       { id: 'person-crop', labelKey: 'sidebar.personCrop', icon: <ScanFace />, path: '/person-crop' },
       { id: 'scale', labelKey: 'sidebar.scale', icon: <Scaling />, path: '/scale' },

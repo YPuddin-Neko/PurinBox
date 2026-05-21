@@ -63,6 +63,34 @@ jobs:
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
 
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $exePath = "src-tauri/target/release/PurinBox.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Error "PurinBox.exe not found at $exePath"
+            exit 1
+          }
+          $zipDir = "portable-build"
+          New-Item -ItemType Directory -Force -Path $zipDir | Out-Null
+          Copy-Item $exePath "$zipDir/PurinBox.exe"
+          # 复制 resources（Python 脚本等）
+          $resDir = "src-tauri/target/release/scripts"
+          if (Test-Path $resDir) {
+            Copy-Item -Recurse $resDir "$zipDir/scripts"
+          }
+          $zipName = "PurinBox_${version}_x64_portable.zip"
+          Compress-Archive -Path "$zipDir/*" -DestinationPath $zipName -Force
+          Write-Output "PORTABLE_ZIP=$zipName" >> $env:GITHUB_ENV
+          Write-Output "Portable ZIP created: $zipName"
+
+      - name: Upload portable ZIP to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: ${{ env.PORTABLE_ZIP }}
+
   # 3. 构建 macOS (Apple Silicon + Intel)
   build-macos:
     needs: create-release

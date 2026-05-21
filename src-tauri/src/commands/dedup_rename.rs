@@ -188,7 +188,9 @@ fn rename_associated_files(old_path: &Path, new_path: &Path) {
         let old_assoc = old_dir.join(format!("{}.{}", old_stem.to_string_lossy(), ext));
         if old_assoc.exists() {
             let new_assoc = new_dir.join(format!("{}.{}", new_stem.to_string_lossy(), ext));
-            let _ = std::fs::rename(&old_assoc, &new_assoc);
+            if let Err(e) = std::fs::rename(&old_assoc, &new_assoc) {
+                eprintln!("[dedup_rename] 关联文件重命名失败 {}: {}", old_assoc.display(), e);
+            }
         }
     }
 }

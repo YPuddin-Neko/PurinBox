@@ -32,6 +32,7 @@ use commands::image_dedup::{start_image_dedup, cancel_image_dedup, delete_dedup_
 use commands::dedup_rename::{scan_dedup_rename, cancel_dedup_rename, execute_dedup_rename, export_unmatched_files};
 use commands::sd_metadata::{scan_sd_metadata, export_sd_tags, read_single_sd_metadata};
 use commands::tag_db::{get_tag_db_stats, download_danbooru_tags, cancel_tag_db_download, clear_tag_db, search_tags, translate_tag_db, is_tag_db_busy, check_tag_db_update};
+use commands::aesthetic::{start_aesthetic_scoring, cancel_aesthetic_scoring};
 use commands::{scan_images, get_system_stats, check_for_updates};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -140,6 +141,8 @@ pub fn run() {
             translate_tag_db,
             is_tag_db_busy,
             check_tag_db_update,
+            start_aesthetic_scoring,
+            cancel_aesthetic_scoring,
         ])
         .setup(|app| {
             // 初始化翻译缓存数据库路径（默认使用 exe 根目录/tagcache/）

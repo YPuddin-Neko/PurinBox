@@ -31,6 +31,7 @@ const routeI18nMap: Record<string, string> = {
   '/image-dedup': 'sidebar.imageDedup',
   '/dataset-balancer': 'sidebar.datasetBalancer',
   '/sd-metadata': 'sidebar.sdMetadata',
+  '/aesthetic': 'sidebar.aesthetic',
   '/settings': 'sidebar.settings',
 };
 
@@ -51,6 +52,7 @@ const TASK_ROUTE_MAP: Record<string, string> = {
   'llm-tagger': '/tagger',
   'tag-sort': '/tag-sort',
   upscale: '/upscale',
+  aesthetic: '/aesthetic',
 };
 
 interface SystemStats {

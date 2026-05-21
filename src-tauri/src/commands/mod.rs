@@ -26,6 +26,7 @@ pub mod image_dedup;
 pub mod dedup_rename;
 pub mod tag_db;
 pub mod sd_metadata;
+pub mod aesthetic;
 
 /// 进度事件 payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -244,43 +245,52 @@ fn detect_nvidia_gpu() -> Option<(String, f32, u64, u64, f32)> {
     Some((name, usage, vram_used, vram_total, vram_percent))
 }
 
+/// macOS: 缓存 GPU 名称（system_profiler 调用耗时 1-3 秒，只检测一次）
+#[cfg(target_os = "macos")]
+static CACHED_GPU_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// macOS: 检测 Apple Silicon GPU
 #[cfg(target_os = "macos")]
 fn detect_apple_gpu() -> Option<(String, f32, u64, u64, f32)> {
-    // 获取 GPU 芯片名称
-    let chip_output = std::process::Command::new("sysctl")
-        .args(["-n", "machdep.cpu.brand_string"])
-        .output()
-        .ok()?;
+    let gpu_name = CACHED_GPU_NAME.get_or_init(|| {
+        // 获取 GPU 芯片名称
+        let chip = std::process::Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
 
-    let chip = String::from_utf8_lossy(&chip_output.stdout).trim().to_string();
+        // 从 system_profiler 获取 GPU 名称
+        let sp_output = std::process::Command::new("system_profiler")
+            .args(["SPDisplaysDataType", "-json"])
+            .output()
+            .ok();
 
-    // 从 system_profiler 获取 GPU 名称
-    let sp_output = std::process::Command::new("system_profiler")
-        .args(["SPDisplaysDataType", "-json"])
-        .output()
-        .ok()?;
+        if let Some(output) = sp_output {
+            let sp_str = String::from_utf8_lossy(&output.stdout);
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&sp_str) {
+                if let Some(name) = json["SPDisplaysDataType"]
+                    .as_array()
+                    .and_then(|arr| arr.first())
+                    .and_then(|gpu| gpu["sppci_model"].as_str())
+                {
+                    return name.to_string();
+                }
+            }
+        }
 
-    let sp_str = String::from_utf8_lossy(&sp_output.stdout);
-    let gpu_name = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&sp_str) {
-        json["SPDisplaysDataType"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|gpu| gpu["sppci_model"].as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                if chip.contains("Apple") { format!("{} GPU", chip.split_whitespace().take(3).collect::<Vec<_>>().join(" ")) }
-                else { "Apple GPU".into() }
-            })
-    } else {
-        "Apple GPU".into()
-    };
+        if chip.contains("Apple") {
+            format!("{} GPU", chip.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
+        } else {
+            "Apple GPU".into()
+        }
+    }).clone();
 
-    // 通过 ioreg 获取 GPU 使用率和显存
+    // 通过 ioreg 获取 GPU 使用率和显存（这些是动态数值，每次都要读取）
     let gpu_usage = get_apple_gpu_utilization().unwrap_or(-1.0);
 
     // Apple Silicon 统一内存 — GPU 共享系统 RAM
-    // 从 sysinfo 获取总内存，从 ioreg 获取 GPU 已用显存
     let (vram_used, vram_total) = get_apple_gpu_memory();
 
     let vram_percent = if vram_total > 0 {
@@ -356,10 +366,7 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
     let current = env!("CARGO_PKG_VERSION");
     let url = "https://api.github.com/repos/YPuddin-Neko/PurinBox/releases/latest";
 
-    let client = reqwest::Client::builder()
-        .user_agent("PurinBox")
-        .connect_timeout(std::time::Duration::from_secs(3))
-        .timeout(std::time::Duration::from_secs(5))
+    let client = proxy_config::build_http_client()
         .build()
         .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
 

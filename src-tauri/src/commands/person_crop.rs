@@ -466,7 +466,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
 
     let mut child = cmd.spawn().map_err(|e| format!("无法启动 Python: {}", e))?;
     let pid = child.id();
-    *CHILD_PROCESS.lock().unwrap() = Some(pid);
+    *CHILD_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = Some(pid);
 
     let mut stdin = child.stdin.take().ok_or("无法获取 stdin")?;
     let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
@@ -503,7 +503,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
         "model_paths": model_paths,
         "use_gpu": options.use_gpu,
     });
-    writeln!(stdin, "{}", serde_json::to_string(&init_config).unwrap())
+    writeln!(stdin, "{}", serde_json::to_string(&init_config).map_err(|e| format!("序列化配置失败: {}", e))?)
         .map_err(|e| format!("写入 stdin 失败: {}", e))?;
     stdin.flush().map_err(|e| format!("flush 失败: {}", e))?;
 
@@ -574,7 +574,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
             }
         });
 
-        if let Err(e) = writeln!(stdin, "{}", serde_json::to_string(&cmd_json).unwrap()) {
+        if let Err(e) = writeln!(stdin, "{}", serde_json::to_string(&cmd_json).unwrap_or_default()) {
             errors.push(format!("{}: 写入失败: {}", filename, e));
             fail_count += 1;
             continue;
@@ -642,7 +642,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
     let _ = writeln!(stdin, "EXIT");
     let _ = stdin.flush();
     let _ = child.wait();
-    *CHILD_PROCESS.lock().unwrap() = None;
+    *CHILD_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
     let _ = app.emit("person-crop-progress", ProgressEvent {
         current: total, total, filename: String::new(),

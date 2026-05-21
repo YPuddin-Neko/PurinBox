@@ -79,7 +79,9 @@ export default function UpscalePage() {
 
   // Listen to progress events
   useEffect(() => {
+    let active = true;
     const unlisten = listen<any>('upscale-progress', (e) => {
+      if (!active) return;
       const d = e.payload;
       if (d.status === 'done') {
         setProgress(100); setIsDone(true); setProcessing(false);
@@ -103,12 +105,14 @@ export default function UpscalePage() {
         updateTask('upscale', { status: 'running', message: `${d.current}/${d.total}` });
       }
     });
-    return () => { unlisten.then(fn => fn()); };
+    return () => { active = false; unlisten.then(fn => fn()); };
   }, []);
 
   // Listen to download events — inline progress in ProgressLog (same as tagger)
   useEffect(() => {
+    let active = true;
     const unlisten = listen<DownloadProgress>('upscale-download', (e) => {
+      if (!active) return;
       const d = e.payload;
       if (d.status === 'done' || d.status === 'cancelled') {
         setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: d.message, status: 'success' }]);
@@ -125,7 +129,7 @@ export default function UpscalePage() {
         });
       }
     });
-    return () => { unlisten.then(fn => fn()); };
+    return () => { active = false; unlisten.then(fn => fn()); };
   }, []);
 
   // Python 环境事件（统一 hook）

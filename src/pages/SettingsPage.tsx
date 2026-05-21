@@ -177,7 +177,9 @@ export default function SettingsPage() {
       setTagDbDownloading(downloading);
       setTagDbTranslating(translating);
     }).catch(() => {});
+    let active = true;
     const unlisten = listen<{ status: string; message: string; current: number; total: number }>('tag-db-progress', (e) => {
+      if (!active) return;
       setTagDbProgress(e.payload.message);
       if (e.payload.status === 'translating') {
         loadTagDbStats();
@@ -190,7 +192,7 @@ export default function SettingsPage() {
         loadCacheStats();
       }
     });
-    return () => { unlisten.then(fn => fn()); };
+    return () => { active = false; unlisten.then(fn => fn()); };
   }, []);
 
   const loadProxySettings = async () => {

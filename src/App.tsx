@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { useRef } from 'react';
 import { ThemeProvider } from './components/ThemeProvider';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -23,6 +24,7 @@ import ImageClusterPage from './pages/ImageClusterPage';
 import ImageDedupPage from './pages/ImageDedupPage';
 import DatasetBalancerPage from './pages/DatasetBalancerPage';
 import SdMetadataPage from './pages/SdMetadataPage';
+import AestheticPage from './pages/AestheticPage';
 import SettingsPage from './pages/SettingsPage';
 import './styles/global.css';
 import './styles/sidebar.css';
@@ -52,6 +54,7 @@ const persistentPages = [
   { path: '/image-dedup', component: ImageDedupPage },
   { path: '/dataset-balancer', component: DatasetBalancerPage },
   { path: '/sd-metadata', component: SdMetadataPage },
+  { path: '/aesthetic', component: AestheticPage },
 ];
 
 // 无状态页面走 Routes
@@ -60,20 +63,29 @@ const routePages = [
   { path: '/settings', component: SettingsPage },
 ];
 
+
 function AppContent() {
   const location = useLocation();
   const currentPath = location.pathname;
+  // 懒加载：仅在首次访问时挂载页面，之后保持 mounted
+  const visitedRef = useRef<Set<string>>(new Set());
+  if (persistentPages.some(p => p.path === currentPath)) {
+    visitedRef.current.add(currentPath);
+  }
 
   return (
     <div className="main-layout">
       <Header />
       <main className="main-content">
-        {/* 持久化页面 - 始终挂载，通过 display 控制显示 */}
-        {persistentPages.map(({ path, component: Component }) => (
-          <div key={path} style={{ display: currentPath === path ? 'block' : 'none', height: '100%' }}>
-            <Component />
-          </div>
-        ))}
+        {/* 持久化页面 - 首次访问时挂载，之后通过 display 控制显示 */}
+        {persistentPages.map(({ path, component: Component }) => {
+          if (!visitedRef.current.has(path)) return null;
+          return (
+            <div key={path} style={{ display: currentPath === path ? 'block' : 'none', height: '100%' }}>
+              <Component />
+            </div>
+          );
+        })}
 
         {/* 非持久化页面 - 正常路由 */}
         {!persistentPages.some(p => p.path === currentPath) && (

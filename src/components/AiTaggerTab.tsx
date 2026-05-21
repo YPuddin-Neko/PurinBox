@@ -29,6 +29,8 @@ interface TaggerPreset {
   appendPosition: 'prepend' | 'append';
   replaceUnderscore: boolean;
   escapeParentheses: boolean;
+  sortBy: 'confidence' | 'frequency';
+  existingTagsAction: 'overwrite' | 'skip' | 'prepend' | 'append';
   outputFormat: 'txt' | 'json';
   jsonSimplified: boolean;
 }
@@ -74,6 +76,8 @@ export default function AiTaggerTab() {
   const [appendPosition, setAppendPosition] = useState<'prepend' | 'append'>('append');
   const [replaceUnderscore, setReplaceUnderscore] = useState(true);
   const [escapeParentheses, setEscapeParentheses] = useState(false);
+  const [sortBy, setSortBy] = useState<'confidence' | 'frequency'>('confidence');
+  const [existingTagsAction, setExistingTagsAction] = useState<'overwrite' | 'skip' | 'prepend' | 'append'>('overwrite');
   const [outputFormat, setOutputFormat] = useState<'txt' | 'json'>('txt');
   const [jsonSimplified, setJsonSimplified] = useState(()=>localStorage.getItem('tagger_json_simplified')==='true');
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
@@ -115,6 +119,7 @@ export default function AiTaggerTab() {
       useGpu,
       excludeTags, appendTags, appendPosition,
       replaceUnderscore, escapeParentheses,
+      sortBy, existingTagsAction,
       outputFormat, jsonSimplified,
     };
     // 同名覆盖
@@ -137,6 +142,8 @@ export default function AiTaggerTab() {
     setAppendPosition(preset.appendPosition);
     setReplaceUnderscore(preset.replaceUnderscore);
     setEscapeParentheses(preset.escapeParentheses ?? false);
+    setSortBy(preset.sortBy ?? 'confidence');
+    setExistingTagsAction(preset.existingTagsAction ?? 'overwrite');
     setOutputFormat(preset.outputFormat);
     setJsonSimplified(preset.jsonSimplified);
     localStorage.setItem('tagger_json_simplified', String(preset.jsonSimplified));
@@ -233,7 +240,7 @@ export default function AiTaggerTab() {
     setLogs([{ time: getTimeStr(), message: t('aiTagger.startMsg', { model: cur?.name, hw: useGpu ? 'GPU' : 'CPU' }), status: 'info' }]);
     addTask('tagger', `${t('aiTagger.taskName')} - ${cur?.name || '?'}`);
     try {
-      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, output_format: outputFormat, json_simplified: jsonSimplified } });
+      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, sort_by: sortBy, existing_tags_action: existingTagsAction, output_format: outputFormat, json_simplified: jsonSimplified } });
       updateTask('tagger', { status: 'done' });
       await load();
     } catch (e: any) {
@@ -423,43 +430,61 @@ export default function AiTaggerTab() {
               })}
             </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)', flexWrap: 'wrap' }}>
-            {/* 替换下划线 */}
+          {/* 复选框行 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-4)', padding: '8px 10px', marginBottom: 'var(--space-3)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => setReplaceUnderscore(!replaceUnderscore)}>
               <div style={{ width: 16, height: 16, borderRadius: 4, minWidth: 16, border: `2px solid ${replaceUnderscore ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: replaceUnderscore ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{replaceUnderscore && <Check style={{ width: 10, height: 10, color: '#fff' }} />}</div>
               <span style={{ fontSize: 12, fontWeight: 600 }}>{t('aiTagger.replaceUnderscore')}</span>
             </div>
-            {/* 括号转义 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginLeft: 'var(--space-3)' }} onClick={() => setEscapeParentheses(!escapeParentheses)}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => setEscapeParentheses(!escapeParentheses)}>
               <div style={{ width: 16, height: 16, borderRadius: 4, minWidth: 16, border: `2px solid ${escapeParentheses ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: escapeParentheses ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{escapeParentheses && <Check style={{ width: 10, height: 10, color: '#fff' }} />}</div>
               <span style={{ fontSize: 12, fontWeight: 600 }}>{t('aiTagger.escapeParentheses')}</span>
             </div>
-            <div style={{ flex: 1 }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
-              <span style={{ color: 'var(--color-text-tertiary)', fontWeight: 500 }}>{t('aiTagger.outputFormat')}</span>
-              {(['txt', 'json'] as const).map(fmt => (
-                <button key={fmt} onClick={() => setOutputFormat(fmt)} style={{ padding: '2px 10px', borderRadius: 'var(--radius-sm)', border: `1px solid ${outputFormat === fmt ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: outputFormat === fmt ? 'rgba(124,92,252,0.08)' : 'transparent', color: outputFormat === fmt ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>.{fmt}</button>
-              ))}
-              {outputFormat==='json'&&(
-                <>
-                  {(['full', 'simplified'] as const).map(mode => (
-                    <button key={mode} onClick={() => { const v = mode === 'simplified'; setJsonSimplified(v); localStorage.setItem('tagger_json_simplified', String(v)); }} style={{
-                      padding: '2px 10px', borderRadius: 'var(--radius-sm)',
-                      border: `1px solid ${(mode === 'simplified') === jsonSimplified ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                      background: (mode === 'simplified') === jsonSimplified ? 'rgba(124,92,252,0.08)' : 'transparent',
-                      color: (mode === 'simplified') === jsonSimplified ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
-                      fontSize: 11, fontWeight: 600, cursor: 'pointer',
-                    }}>{mode === 'full' ? t('aiTagger.fullFormat') : t('aiTagger.simplified')}</button>
-                  ))}
-                </>
-              )}
+          </div>
+          {/* 输出格式 + 已标识文件操作 + 标签顺序 - 三列同行 */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
+            <div>
+              <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.outputFormat')}</label>
+              <CustomSelect value={outputFormat === 'json' ? (jsonSimplified ? 'json_simplified' : 'json_full') : 'txt'}
+                onChange={v => {
+                  if (v === 'txt') { setOutputFormat('txt'); }
+                  else if (v === 'json_full') { setOutputFormat('json'); setJsonSimplified(false); localStorage.setItem('tagger_json_simplified', 'false'); }
+                  else { setOutputFormat('json'); setJsonSimplified(true); localStorage.setItem('tagger_json_simplified', 'true'); }
+                }}
+                options={[
+                  { value: 'txt', label: '.txt' },
+                  { value: 'json_full', label: `.json (${t('aiTagger.fullFormat')})` },
+                  { value: 'json_simplified', label: `.json (${t('aiTagger.simplified')})` },
+                ]} compact />
+            </div>
+            <div>
+              <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.existingTagsAction')}</label>
+              <CustomSelect value={existingTagsAction}
+                onChange={v => setExistingTagsAction(v as 'overwrite' | 'skip' | 'prepend' | 'append')}
+                options={[
+                  { value: 'overwrite', label: t('aiTagger.existingAction_overwrite') },
+                  { value: 'skip', label: t('aiTagger.existingAction_skip') },
+                  { value: 'prepend', label: t('aiTagger.existingAction_prepend') },
+                  { value: 'append', label: t('aiTagger.existingAction_append') },
+                ]} compact />
+            </div>
+            <div>
+              <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.sortBy')}</label>
+              <CustomSelect value={sortBy}
+                onChange={v => setSortBy(v as 'confidence' | 'frequency')}
+                options={[
+                  { value: 'confidence', label: t('aiTagger.sortBy_confidence') },
+                  { value: 'frequency', label: t('aiTagger.sortBy_frequency') },
+                ]} compact />
             </div>
           </div>
+          {/* 排除标签 */}
           <div style={{ marginBottom: 'var(--space-3)' }}>
             <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.excludeTags')}</label>
             <input className="form-input" placeholder="tag1, tag2, tag3 ..." value={excludeTags} onChange={e => setExcludeTags(e.target.value)} style={{ width: '100%' }} />
             <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{t('aiTagger.excludeTagsTip')}</div>
           </div>
+          {/* 额外追加标签 */}
           <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
               <label className="form-label" style={{ fontSize: 11, margin: 0 }}>{t('aiTagger.appendTags')}</label>

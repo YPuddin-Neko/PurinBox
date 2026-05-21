@@ -62,11 +62,17 @@ pub struct TaggerOptions {
     pub json_simplified: bool,
     #[serde(default)]
     pub escape_parentheses: bool,
+    #[serde(default = "default_sort_by")]
+    pub sort_by: String,
+    #[serde(default = "default_existing_tags_action")]
+    pub existing_tags_action: String,
 }
 
 fn default_append_position() -> String { "append".into() }
 fn default_true() -> bool { true }
 fn default_output_format() -> String { "txt".into() }
+fn default_sort_by() -> String { "confidence".into() }
+fn default_existing_tags_action() -> String { "overwrite".into() }
 
 /// 模型信息（给前端用）
 #[derive(Debug, Clone, Serialize, Deserialize)]

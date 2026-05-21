@@ -32,7 +32,7 @@ fn default_cache_dir() -> PathBuf {
 }
 
 fn get_db_path() -> PathBuf {
-    let guard = DB_PATH.lock().unwrap();
+    let guard = DB_PATH.lock().unwrap_or_else(|e| e.into_inner());
     guard.clone().unwrap_or_else(|| default_cache_dir().join("tag_translations.db"))
 }
 
@@ -103,7 +103,7 @@ pub fn init_db_path(custom_dir: Option<String>) {
     if let Some(parent) = db_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let mut guard = DB_PATH.lock().unwrap();
+    let mut guard = DB_PATH.lock().unwrap_or_else(|e| e.into_inner());
     *guard = Some(db_path);
 }
 
@@ -125,7 +125,7 @@ pub fn set_cache_path(path: String) -> Result<String, String> {
     std::fs::create_dir_all(&cache_dir)
         .map_err(|e| format!("创建缓存目录失败: {}", e))?;
     let db_path = cache_dir.join("tag_translations.db");
-    let mut guard = DB_PATH.lock().unwrap();
+    let mut guard = DB_PATH.lock().unwrap_or_else(|e| e.into_inner());
     *guard = Some(db_path);
     Ok(cache_dir.to_string_lossy().to_string())
 }
