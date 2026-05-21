@@ -1165,6 +1165,23 @@ const zhCN = {
     modelSource: '模型来源:',
     modelSourceDesc: '动漫图片美学质量评分模型，使用 SwinV2 架构，支持 7 级质量分类',
   },
+
+  // ═══════════════ GPU 诊断日志 ═══════════════
+  gpu: {
+    usingCuda: '使用 GPU: {{name}} (CUDA)',
+    usingCoreML: '使用 GPU: Apple Silicon (CoreML)',
+    usingMPS: '使用 GPU: Apple Silicon (MPS)',
+    usingCpu: '使用 CPU 推理',
+    unavailable: '⚠ GPU 加速不可用，回退到 CPU',
+    detected: 'GPU: {{name}}',
+    driverVersion: '驱动版本: {{version}}',
+    driverCuda: '驱动支持 CUDA: {{version}}',
+    cudaToolkit: 'CUDA Toolkit: {{version}}',
+    noCudaEnv: '没有检测到可用的 CUDA 环境',
+    noGpuFound: '没有找到可用的 NVIDIA GPU 或显卡驱动异常',
+    macPlatform: '当前为 macOS 平台，使用 CoreML / MPS 加速',
+    noBackend: '当前平台未找到支持的 GPU 推理后端',
+  },
 };
 
 export default zhCN;

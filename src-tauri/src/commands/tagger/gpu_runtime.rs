@@ -149,6 +149,7 @@ pub async fn download_ort_runtime(app: &tauri::AppHandle) -> Result<(), String> 
         current: 0, total: 0, filename: String::new(),
         status: "info".to_string(),
         message: format!("开始下载 ONNX Runtime v{}...", ORT_VERSION),
+    ..Default::default()
     });
 
     download_with_progress(app, &url, &archive_path, &archive_name).await?;
@@ -162,6 +163,7 @@ pub async fn download_ort_runtime(app: &tauri::AppHandle) -> Result<(), String> 
         current: 0, total: 0, filename: String::new(),
         status: "info".to_string(),
         message: "正在解压 ONNX Runtime...".to_string(),
+    ..Default::default()
     });
 
     extract_runtime(&archive_path, &dir)?;
@@ -174,6 +176,7 @@ pub async fn download_ort_runtime(app: &tauri::AppHandle) -> Result<(), String> 
             current: 0, total: 0, filename: String::new(),
             status: "success".to_string(),
             message: format!("ONNX Runtime v{} 安装成功！重启应用后生效", ORT_VERSION),
+        ..Default::default()
         });
         Ok(())
     } else {

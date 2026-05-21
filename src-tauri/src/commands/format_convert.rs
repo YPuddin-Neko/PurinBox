@@ -112,6 +112,7 @@ fn convert_format_sync(app: &tauri::AppHandle, options: &FormatConvertOptions) -
                 current: i as u32, total, filename: String::new(),
                 status: "done".to_string(),
                 message: format!("已取消: 已处理 {}, 共 {}", i, total),
+            ..Default::default()
             });
             break;
         }
@@ -130,6 +131,7 @@ fn convert_format_sync(app: &tauri::AppHandle, options: &FormatConvertOptions) -
                 filename: filename.clone(),
                 status: "skipped".to_string(),
                 message: format!("[跳过] {} (已是 .{} 格式)", filename, target_ext),
+            ..Default::default()
             });
             continue;
         }
@@ -140,6 +142,7 @@ fn convert_format_sync(app: &tauri::AppHandle, options: &FormatConvertOptions) -
             filename: filename.clone(),
             status: "processing".to_string(),
             message: format!("正在转换: {}", filename),
+        ..Default::default()
         });
 
         match process_convert(file_path, output_dir, &target_ext) {
@@ -151,6 +154,7 @@ fn convert_format_sync(app: &tauri::AppHandle, options: &FormatConvertOptions) -
                     filename: filename.clone(),
                     status: "success".to_string(),
                     message: format!("[转换] {} (.{} → .{})", filename, src_ext, target_ext),
+                ..Default::default()
                 });
             }
             Err(e) => {
@@ -163,6 +167,7 @@ fn convert_format_sync(app: &tauri::AppHandle, options: &FormatConvertOptions) -
                     filename: filename.clone(),
                     status: "error".to_string(),
                     message: format!("[错误] {}", err_msg),
+                ..Default::default()
                 });
             }
         }
@@ -174,6 +179,7 @@ fn convert_format_sync(app: &tauri::AppHandle, options: &FormatConvertOptions) -
         filename: String::new(),
         status: "done".to_string(),
         message: format!("转换完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })

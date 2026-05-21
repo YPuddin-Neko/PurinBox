@@ -60,6 +60,7 @@ fn blur_noise_sync(app: &tauri::AppHandle, options: &BlurNoiseOptions) -> Result
                 current: i as u32, total, filename: String::new(),
                 status: "done".to_string(),
                 message: format!("已取消: 已处理 {}, 共 {}", i, total),
+            ..Default::default()
             });
             break;
         }
@@ -72,6 +73,7 @@ fn blur_noise_sync(app: &tauri::AppHandle, options: &BlurNoiseOptions) -> Result
             filename: filename.clone(),
             status: "processing".to_string(),
             message: format!("正在处理: {}", filename),
+        ..Default::default()
         });
 
         match process_blur_noise(file_path, output_dir, options.blur_radius, options.noise_strength) {
@@ -83,6 +85,7 @@ fn blur_noise_sync(app: &tauri::AppHandle, options: &BlurNoiseOptions) -> Result
                     filename: filename.clone(),
                     status: "success".to_string(),
                     message: format!("[{}] {} ✓", label, filename),
+                ..Default::default()
                 });
             }
             Err(e) => {
@@ -95,6 +98,7 @@ fn blur_noise_sync(app: &tauri::AppHandle, options: &BlurNoiseOptions) -> Result
                     filename: filename.clone(),
                     status: "error".to_string(),
                     message: format!("[失败] {}", err_msg),
+                ..Default::default()
                 });
             }
         }
@@ -106,6 +110,7 @@ fn blur_noise_sync(app: &tauri::AppHandle, options: &BlurNoiseOptions) -> Result
         filename: String::new(),
         status: "done".to_string(),
         message: format!("处理完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })

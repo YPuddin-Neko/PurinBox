@@ -83,6 +83,7 @@ export default function UpscalePage() {
     const unlisten = listen<any>('upscale-progress', (e) => {
       if (!active) return;
       const d = e.payload;
+      const resolveMsg = (p: any) => p.i18n_key ? (t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
       if (d.status === 'done') {
         setProgress(100); setIsDone(true); setProcessing(false);
         setProgressCurrent(d.total); setProgressTotal(d.total);
@@ -101,7 +102,7 @@ export default function UpscalePage() {
         const pct = d.total > 0 ? Math.round(((d.current) / d.total) * 100) : 0;
         setProgress(pct); setProgressCurrent(d.current); setProgressTotal(d.total);
         if (d.status === 'error') setHasError(true);
-        setLogs(p => [...p, { time: getTimeStr(), message: d.message, status: d.status }]);
+        setLogs(p => [...p, { time: getTimeStr(), message: resolveMsg(d), status: d.status }]);
         updateTask('upscale', { status: 'running', message: `${d.current}/${d.total}` });
       }
     });

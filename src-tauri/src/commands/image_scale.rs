@@ -60,6 +60,7 @@ fn scale_images_sync(app: &tauri::AppHandle, options: &ScaleOptions) -> Result<P
                 current: i as u32, total, filename: String::new(),
                 status: "done".to_string(),
                 message: format!("已取消: 已处理 {}, 共 {}", i, total),
+            ..Default::default()
             });
             break;
         }
@@ -71,6 +72,7 @@ fn scale_images_sync(app: &tauri::AppHandle, options: &ScaleOptions) -> Result<P
             filename: filename.clone(),
             status: "processing".to_string(),
             message: format!("正在处理: {}", filename),
+        ..Default::default()
         });
 
         match process_scale(file_path, output_dir, options) {
@@ -82,6 +84,7 @@ fn scale_images_sync(app: &tauri::AppHandle, options: &ScaleOptions) -> Result<P
                     filename: filename.clone(),
                     status: "success".to_string(),
                     message: msg,
+                ..Default::default()
                 });
             }
             Err(e) => {
@@ -94,6 +97,7 @@ fn scale_images_sync(app: &tauri::AppHandle, options: &ScaleOptions) -> Result<P
                     filename: filename.clone(),
                     status: "error".to_string(),
                     message: err_msg,
+                ..Default::default()
                 });
             }
         }
@@ -105,6 +109,7 @@ fn scale_images_sync(app: &tauri::AppHandle, options: &ScaleOptions) -> Result<P
         filename: String::new(),
         status: "done".to_string(),
         message: format!("处理完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })

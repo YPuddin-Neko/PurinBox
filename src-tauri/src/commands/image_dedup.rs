@@ -103,6 +103,7 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
         current: 0, total, filename: String::new(),
         status: "processing".into(),
         message: "正在计算图片指纹...".into(),
+    ..Default::default()
     });
 
     let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(16);
@@ -126,6 +127,7 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
                 filename: String::new(),
                 status: "processing".into(),
                 message: format!("计算指纹 {}/{}", cnt, total),
+            ..Default::default()
             });
 
             if let Ok(Ok(fp)) = handle.join() {
@@ -140,6 +142,7 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
         filename: String::new(),
         status: "processing".into(),
         message: "正在比对图片...".into(),
+    ..Default::default()
     });
 
     let mut duplicate_groups: Vec<DupGroup> = Vec::new();
@@ -197,6 +200,7 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
         filename: String::new(),
         status: "done".into(),
         message: format!("完成，发现 {} 组重复", duplicate_groups.len()),
+    ..Default::default()
     });
 
     Ok(DedupResult {

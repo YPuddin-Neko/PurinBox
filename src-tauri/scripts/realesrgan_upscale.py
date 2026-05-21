@@ -20,6 +20,12 @@ def emit(data):
 def emit_log(msg):
     emit({"type": "log", "message": msg})
 
+def emit_i18n(key, params=None):
+    d = {"type": "log", "i18n_key": key, "message": key}
+    if params:
+        d["i18n_params"] = params
+    emit(d)
+
 def emit_error(msg):
     emit({"type": "error", "message": msg})
 
@@ -133,18 +139,17 @@ def create_session(onnx_path, device):
             gpu_name = r.stdout.strip().split("\n")[0] if r.returncode == 0 else "NVIDIA GPU"
         except Exception:
             gpu_name = "NVIDIA GPU"
-        emit_log(f"使用 GPU: {gpu_name} (CUDA)")
+        emit_i18n("gpu.usingCuda", {"name": gpu_name})
     elif "CoreML" in active_ep:
-        emit_log("使用 GPU: Apple Silicon (CoreML)")
+        emit_i18n("gpu.usingCoreML")
     else:
         if device != "cpu":
-            # 用户请求了 GPU 但实际回退到了 CPU
-            emit_log("⚠ GPU 加速不可用，使用 CPU 推理")
+            emit_i18n("gpu.unavailable")
             from gpu_diagnostics import diagnose_gpu
-            for msg in diagnose_gpu():
-                emit_log(msg)
+            for item in diagnose_gpu():
+                emit_i18n(item["key"], item.get("params"))
         else:
-            emit_log("使用 CPU 推理")
+            emit_i18n("gpu.usingCpu")
 
     return session, actual_device
 

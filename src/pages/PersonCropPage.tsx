@@ -14,7 +14,7 @@ import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
+interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
 interface CropModelInfo { id: string; name: string; crop_type: string; size_mb: number; downloaded: boolean; path: string; }
 interface DlProgress { downloaded: number; total: number; percent: number; speed_mbps: number; status: string; message: string; }
 
@@ -98,7 +98,8 @@ export default function PersonCropPage() {
       if (d.status === 'done') setIsDone(true);
       if (d.status === 'error') setHasError(true);
       if (d.status !== 'processing') {
-        setLogs((prev) => [...prev, { time: getTimeStr(), message: d.message, status: d.status === 'done' ? 'info' : d.status as LogEntry['status'] }]);
+        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
+        setLogs((prev) => [...prev, { time: getTimeStr(), message: resolveMsg(d), status: d.status === 'done' ? 'info' : d.status as LogEntry['status'] }]);
       }
     });
     return () => { active = false; p.then(fn => fn()); };

@@ -167,6 +167,7 @@ async fn download_model(app: &tauri::AppHandle) -> Result<(), String> {
         current: 0, total: 0, filename: String::new(),
         status: "info".to_string(),
         message: "开始下载美学评分模型...".to_string(),
+    ..Default::default()
     });
 
     let base_url = "https://huggingface.co/deepghs/anime_aesthetic/resolve/main/swinv2pv3_v0_448_ls0.2_x";
@@ -190,6 +191,7 @@ async fn download_model(app: &tauri::AppHandle) -> Result<(), String> {
         current: 0, total: 0, filename: String::new(),
         status: "success".to_string(),
         message: "美学评分模型下载完成".to_string(),
+    ..Default::default()
     });
 
     Ok(())
@@ -349,6 +351,7 @@ fn run_aesthetic_scoring(
                             current: 0, total: 0, filename: String::new(),
                             status: "warning".to_string(),
                             message: format!("[Python] {}", clean),
+                        ..Default::default()
                         });
                     } else if byte[0] != b'\r' {
                         buf.push(byte[0]);
@@ -384,11 +387,15 @@ fn run_aesthetic_scoring(
             let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
             match msg_type {
                 "log" => {
-                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let i18n_params = msg.get("i18n_params").cloned();
                     let _ = app.emit("aesthetic-progress", ProgressEvent {
                         current: 0, total: 0, filename: String::new(),
                         status: "info".to_string(),
-                        message: text.to_string(),
+                        message: text,
+                        i18n_key,
+                        i18n_params,
                     });
                 }
                 "error" => {
@@ -428,6 +435,7 @@ fn run_aesthetic_scoring(
         filename: String::new(),
         status: "info".to_string(),
         message: format!("读取到 {} 张图片", total),
+    ..Default::default()
     });
 
     for (i, file_path) in files.iter().enumerate() {
@@ -437,6 +445,7 @@ fn run_aesthetic_scoring(
                 filename: String::new(),
                 status: "done".to_string(),
                 message: format!("已取消: 成功 {}, 失败 {}", success_count, fail_count),
+            ..Default::default()
             });
             break;
         }
@@ -447,6 +456,7 @@ fn run_aesthetic_scoring(
             filename: filename.clone(),
             status: "processing".to_string(),
             message: format!("正在评分: {} ({}/{})", filename, i + 1, total),
+        ..Default::default()
         });
 
         let score_cmd = serde_json::json!({
@@ -479,6 +489,7 @@ fn run_aesthetic_scoring(
                                     filename: filename.clone(),
                                     status: "success".to_string(),
                                     message: format!("[完成] {} → {} (分数: {:.2}, 置信度: {:.1}%)", filename, label, score, confidence * 100.0),
+                                ..Default::default()
                                 });
                                 break;
                             }
@@ -491,16 +502,21 @@ fn run_aesthetic_scoring(
                                     filename: filename.clone(),
                                     status: "error".to_string(),
                                     message: format!("[错误] {}: {}", filename, text),
+                                ..Default::default()
                                 });
                                 break;
                             }
                             "log" => {
-                                let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                                let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                let i18n_params = msg.get("i18n_params").cloned();
                                 let _ = app.emit("aesthetic-progress", ProgressEvent {
                                     current: i as u32 + 1, total,
                                     filename: filename.clone(),
                                     status: "info".to_string(),
-                                    message: text.to_string(),
+                                    message: text,
+                                    i18n_key,
+                                    i18n_params,
                                 });
                                 // log 类消息不算结果，继续读下一行
                             }
@@ -524,6 +540,7 @@ fn run_aesthetic_scoring(
         current: total, total, filename: String::new(),
         status: "done".to_string(),
         message: format!("美学评分完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })
@@ -550,6 +567,7 @@ pub async fn start_aesthetic_scoring(
             current: 0, total: 0, filename: String::new(),
             status: "info".to_string(),
             message: "Python 环境未就绪，正在自动配置...".to_string(),
+        ..Default::default()
         });
         super::python_env::setup_python_env(&app).await?;
     }

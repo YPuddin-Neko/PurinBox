@@ -47,6 +47,7 @@ pub async fn download_model(
         filename: String::new(),
         status: "info".to_string(),
         message: format!("开始下载模型: {}", model.name),
+    ..Default::default()
     });
 
     // 下载 model file
@@ -90,6 +91,7 @@ pub async fn download_model(
         filename: String::new(),
         status: "success".to_string(),
         message: format!("模型 {} 下载完成", model.name),
+    ..Default::default()
     });
 
     Ok(())

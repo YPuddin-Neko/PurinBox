@@ -214,6 +214,7 @@ fn emit_progress(app: &tauri::AppHandle, message: &str, status: &str) {
         filename: String::new(),
         status: status.to_string(),
         message: message.to_string(),
+    ..Default::default()
     });
 }
 

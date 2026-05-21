@@ -18,7 +18,7 @@ import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
+interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
 
 type Algorithm = 'kmeans' | 'hdbscan';
 type FeatureType = 'style' | 'semantic' | 'fusion';
@@ -62,9 +62,10 @@ export default function ImageClusterPage() {
       if (d.status === 'error') setHasError(true);
       // Show log for all non-processing statuses + processing messages that have content
       if (d.status !== 'processing' || d.message) {
+        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
         setLogs((prev) => [...prev, {
           time: getTimeStr(),
-          message: d.message || `${d.current}/${d.total}`,
+          message: resolveMsg(d) || `${d.current}/${d.total}`,
           status: d.status === 'done' ? 'info' : d.status === 'processing' ? 'info' : d.status as LogEntry['status'],
         }]);
       }

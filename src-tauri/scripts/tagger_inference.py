@@ -31,6 +31,12 @@ def log(msg):
     """输出日志到 stdout (JSON line)"""
     _emit({"type": "log", "message": msg})
 
+def log_i18n(key, params=None):
+    d = {"type": "log", "i18n_key": key, "message": key}
+    if params:
+        d["i18n_params"] = params
+    _emit(d)
+
 def error(msg):
     """输出错误到 stdout (JSON line)"""
     _emit({"type": "error", "message": msg})
@@ -416,22 +422,22 @@ def main():
                 if use_gpu:
                     if "CUDAExecutionProvider" in available:
                         gpu_provider = "CUDAExecutionProvider"
-                        log("使用 GPU (CUDA) 加速")
+                        log_i18n("gpu.usingCuda", {"name": "NVIDIA GPU"})
                     elif "CoreMLExecutionProvider" in available:
                         gpu_provider = "CoreMLExecutionProvider"
-                        log("使用 Apple Neural Engine / GPU (CoreML) 加速")
+                        log_i18n("gpu.usingCoreML")
                     else:
-                        log("⚠ GPU 加速不可用，使用 CPU 推理")
+                        log_i18n("gpu.unavailable")
                         from gpu_diagnostics import diagnose_gpu
-                        for msg in diagnose_gpu():
-                            log(msg)
+                        for item in diagnose_gpu():
+                            log_i18n(item["key"], item.get("params"))
 
                 if gpu_provider:
                     providers = [gpu_provider, "CPUExecutionProvider"]
                 else:
                     providers = ["CPUExecutionProvider"]
                     if not use_gpu:
-                        log("使用 CPU 推理")
+                        log_i18n("gpu.usingCpu")
 
                 # GPU 模式下打印诊断信息（仅 Windows CUDA）
                 if use_gpu and sys.platform == "win32" and gpu_provider == "CUDAExecutionProvider":

@@ -273,6 +273,7 @@ pub async fn start_person_crop(
     let _ = app.emit("person-crop-progress", ProgressEvent {
         current: 0, total: 0, filename: String::new(),
         status: "info".to_string(), message: "开始裁切...".to_string(),
+    ..Default::default()
     });
 
     tokio::task::spawn_blocking(move || {
@@ -400,6 +401,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
         current: 0, total, filename: String::new(),
         status: "processing".to_string(),
         message: format!("正在启动 Python 环境... (共 {} 张图片)", total),
+    ..Default::default()
     });
 
     // 启动 Python 子进程
@@ -493,6 +495,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
                     current: 0, total: 0, filename: String::new(),
                     status: "warning".to_string(),
                     message: format!("[Python] {}", clean),
+                ..Default::default()
                 });
             }
         });
@@ -507,25 +510,53 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
         .map_err(|e| format!("写入 stdin 失败: {}", e))?;
     stdin.flush().map_err(|e| format!("flush 失败: {}", e))?;
 
-    // 等待 ready
+    // 等待 ready — 可能先收到 GPU 诊断 log 消息
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
 
-    let ready_line = lines.next()
-        .ok_or("Python 进程无响应")?
-        .map_err(|e| format!("读取响应失败: {}", e))?;
+    loop {
+        let line = lines.next()
+            .ok_or("Python 进程无响应")?
+            .map_err(|e| format!("读取响应失败: {}", e))?;
 
-    let ready_json: serde_json::Value = serde_json::from_str(&ready_line)
-        .map_err(|e| format!("解析响应失败: {} (原始: {})", e, ready_line))?;
+        let json: serde_json::Value = serde_json::from_str(&line)
+            .map_err(|e| format!("解析响应失败: {} (原始: {})", e, line))?;
 
-    if let Some(err) = ready_json.get("error") {
-        return Err(format!("模型加载失败: {}", err));
+        // 处理 log 类型消息（GPU 诊断等）
+        if let Some(msg_type) = json.get("type").and_then(|v| v.as_str()) {
+            if msg_type == "log" {
+                let text = json.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let i18n_key = json.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let i18n_params = json.get("i18n_params").cloned();
+                let _ = app.emit("person-crop-progress", ProgressEvent {
+                    current: 0, total, filename: String::new(),
+                    status: "info".to_string(),
+                    message: text,
+                    i18n_key,
+                    i18n_params,
+                });
+                continue;
+            }
+        }
+
+        // 检查 error
+        if let Some(err) = json.get("error") {
+            return Err(format!("模型加载失败: {}", err));
+        }
+
+        // 检查 ready
+        if json.get("status").and_then(|v| v.as_str()) == Some("ready") {
+            break;
+        }
+
+        // 未知消息类型，继续读取
     }
 
     let _ = app.emit("person-crop-progress", ProgressEvent {
         current: 0, total, filename: String::new(),
         status: "processing".to_string(),
         message: "模型已加载，开始处理...".to_string(),
+    ..Default::default()
     });
 
     let mut success_count = 0u32;
@@ -538,6 +569,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
                 current: i as u32, total, filename: String::new(),
                 status: "done".to_string(),
                 message: "已取消".to_string(),
+            ..Default::default()
             });
             break;
         }
@@ -549,6 +581,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
             filename: filename.clone(),
             status: "processing".to_string(),
             message: format!("正在处理: {}", filename),
+        ..Default::default()
         });
 
         // 发送处理命令
@@ -597,6 +630,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
                                     filename: filename.clone(),
                                     status: "success".to_string(),
                                     message: format!("[成功] {} — {}", filename, message),
+                                ..Default::default()
                                 });
                             }
                             "skip" => {
@@ -606,6 +640,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
                                     filename: filename.clone(),
                                     status: "success".to_string(),
                                     message: format!("[跳过] {} — {}", filename, message),
+                                ..Default::default()
                                 });
                             }
                             _ => {
@@ -616,6 +651,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
                                     filename: filename.clone(),
                                     status: "error".to_string(),
                                     message: format!("[失败] {} — {}", filename, message),
+                                ..Default::default()
                                 });
                             }
                         }
@@ -648,6 +684,7 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
         current: total, total, filename: String::new(),
         status: "done".to_string(),
         message: format!("处理完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })

@@ -72,6 +72,7 @@ async fn ensure_cluster_deps(app: &tauri::AppHandle) -> Result<(), String> {
         let _ = app.emit("cluster-progress", ProgressEvent {
             current: 0, total: 0, filename: String::new(),
             status: "info".to_string(), message: msg.to_string(),
+        ..Default::default()
         });
     };
 
@@ -281,6 +282,7 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
                                 current: 0, total: 0, filename: String::new(),
                                 status: "warning".to_string(),
                                 message: format!("[Python] {}", clean),
+                            ..Default::default()
                             });
                         } else if byte[0] != b'\r' {
                             buf.push(byte[0]);
@@ -308,11 +310,15 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
                 let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match msg_type {
                     "log" => {
-                        let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                        let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let i18n_params = msg.get("i18n_params").cloned();
                         let _ = app_clone.emit("cluster-progress", ProgressEvent {
                             current: 0, total: 0, filename: String::new(),
                             status: "info".to_string(),
-                            message: text.to_string(),
+                            message: text,
+                            i18n_key,
+                            i18n_params,
                         });
                     }
                     "error" => {
@@ -339,6 +345,7 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
                             filename: fname.to_string(),
                             status: status.to_string(),
                             message: message.to_string(),
+                        ..Default::default()
                         });
                     }
                     "done" => {
@@ -348,6 +355,7 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
                             filename: String::new(),
                             status: "done".to_string(),
                             message: text.to_string(),
+                        ..Default::default()
                         });
                     }
                     "result" => {

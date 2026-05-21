@@ -1117,6 +1117,23 @@ const ja = {
     modelSource: 'モデルソース:',
     modelSourceDesc: 'アニメ美学品質スコアリングモデル、SwinV2アーキテクチャ使用、7段階品質分類に対応',
   },
+
+  // ═══════════════ GPU 診断ログ ═══════════════
+  gpu: {
+    usingCuda: 'GPU使用中: {{name}} (CUDA)',
+    usingCoreML: 'GPU使用中: Apple Silicon (CoreML)',
+    usingMPS: 'GPU使用中: Apple Silicon (MPS)',
+    usingCpu: 'CPU推論を使用',
+    unavailable: '⚠ GPUアクセラレーション利用不可、CPUにフォールバック',
+    detected: 'GPU: {{name}}',
+    driverVersion: 'ドライバー: {{version}}',
+    driverCuda: 'ドライバー CUDA: {{version}}',
+    cudaToolkit: 'CUDA Toolkit: {{version}}',
+    noCudaEnv: '利用可能なCUDA環境が検出されませんでした',
+    noGpuFound: '原因: NVIDIA GPUが見つからないか、グラフィックドライバーに異常があります',
+    macPlatform: 'macOSプラットフォーム、CoreML / MPSアクセラレーションを使用',
+    noBackend: 'サポートされているGPU推論バックエンドが見つかりません',
+  },
 };
 
 export default ja;

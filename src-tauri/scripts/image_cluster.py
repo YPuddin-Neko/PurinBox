@@ -16,6 +16,12 @@ def emit(data):
 def emit_log(msg):
     emit({"type": "log", "message": msg})
 
+def emit_i18n(key, params=None):
+    d = {"type": "log", "i18n_key": key, "message": key}
+    if params:
+        d["i18n_params"] = params
+    emit(d)
+
 def emit_error(msg):
     emit({"type": "error", "message": msg})
 
@@ -46,16 +52,15 @@ def detect_device():
     import torch
     if torch.cuda.is_available():
         name = torch.cuda.get_device_name(0)
-        emit_log(f"使用 GPU: {name} (CUDA)")
+        emit_i18n("gpu.usingCuda", {"name": name})
         return "cuda"
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        emit_log("使用 GPU: Apple Silicon (MPS)")
+        emit_i18n("gpu.usingMPS")
         return "mps"
-    # GPU 不可用，输出诊断信息
-    emit_log("⚠ GPU 加速不可用，使用 CPU 推理（速度较慢）")
+    emit_i18n("gpu.unavailable")
     from gpu_diagnostics import diagnose_gpu
-    for msg in diagnose_gpu():
-        emit_log(msg)
+    for item in diagnose_gpu():
+        emit_i18n(item["key"], item.get("params"))
     return "cpu"
 
 # ── 颜色直方图特征 ──────────────────────────────────────

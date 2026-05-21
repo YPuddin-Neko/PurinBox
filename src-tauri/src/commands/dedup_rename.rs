@@ -163,6 +163,7 @@ pub async fn execute_dedup_rename(
             filename: action.target_name.clone(),
             status: "processing".to_string(),
             message: format!("[{}/{}] {}", i + 1, total, action.target_name),
+        ..Default::default()
         });
     }
 
@@ -172,6 +173,7 @@ pub async fn execute_dedup_rename(
         filename: String::new(),
         status: "done".to_string(),
         message: format!("完成: 成功 {}, 失败 {}", success_count, fail_count),
+    ..Default::default()
     });
 
     Ok(DedupRenameResult { success_count, fail_count, errors })
@@ -239,6 +241,7 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
         current: 0, total: total_all, filename: String::new(),
         status: "processing".into(),
         message: "正在计算图片指纹...".into(),
+    ..Default::default()
     });
 
     let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(16);
@@ -259,6 +262,7 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
                     filename: String::new(),
                     status: "processing".into(),
                     message: format!("计算指纹 {}/{}", cnt, total),
+                ..Default::default()
                 });
                 if let Ok(Ok(fp)) = handle.join() {
                     fps.push(fp);
@@ -278,6 +282,7 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
         current: total_all, total: total_all, filename: String::new(),
         status: "processing".into(),
         message: "正在比对图片...".into(),
+    ..Default::default()
     });
 
     let mut pairs: Vec<DedupPair> = Vec::new();
@@ -339,6 +344,7 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
         current: total_all, total: total_all, filename: String::new(),
         status: "done".into(),
         message: format!("完成，找到 {} 对匹配", pairs.len()),
+    ..Default::default()
     });
 
     Ok(DedupRenameScanResult {

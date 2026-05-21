@@ -69,6 +69,7 @@ fn filter_sync(app: &tauri::AppHandle, options: &FilterOptions) -> Result<Proces
         filename: String::new(),
         status: "processing".to_string(),
         message: format!("开始筛选: 条件={}, 操作={}, 共 {} 张图片", condition_label, action_label, total),
+    ..Default::default()
     });
 
     for (i, file_path) in files.iter().enumerate() {
@@ -77,6 +78,7 @@ fn filter_sync(app: &tauri::AppHandle, options: &FilterOptions) -> Result<Proces
                 current: i as u32, total, filename: String::new(),
                 status: "done".to_string(),
                 message: format!("已取消: 已处理 {}, 共 {}", i, total),
+            ..Default::default()
             });
             break;
         }
@@ -88,6 +90,7 @@ fn filter_sync(app: &tauri::AppHandle, options: &FilterOptions) -> Result<Proces
             filename: filename.clone(),
             status: "processing".to_string(),
             message: format!("正在检查: {}", filename),
+        ..Default::default()
         });
 
         match process_filter(file_path, output_dir, options) {
@@ -100,6 +103,7 @@ fn filter_sync(app: &tauri::AppHandle, options: &FilterOptions) -> Result<Proces
                         filename: filename.clone(),
                         status: "success".to_string(),
                         message: format!("[匹配] {} ({}x{}) → {}", filename, w, h, action_label),
+                    ..Default::default()
                     });
                 } else {
                     let _ = app.emit("filter-progress", ProgressEvent {
@@ -108,6 +112,7 @@ fn filter_sync(app: &tauri::AppHandle, options: &FilterOptions) -> Result<Proces
                         filename: filename.clone(),
                         status: "success".to_string(),
                         message: format!("[跳过] {} ({}x{}, 不匹配条件)", filename, w, h),
+                    ..Default::default()
                     });
                 }
             }
@@ -121,6 +126,7 @@ fn filter_sync(app: &tauri::AppHandle, options: &FilterOptions) -> Result<Proces
                     filename: filename.clone(),
                     status: "error".to_string(),
                     message: format!("[错误] {}", err_msg),
+                ..Default::default()
                 });
             }
         }
@@ -132,6 +138,7 @@ fn filter_sync(app: &tauri::AppHandle, options: &FilterOptions) -> Result<Proces
         filename: String::new(),
         status: "done".to_string(),
         message: format!("筛选完成: 匹配并{} {} 张, 失败 {} 张, 共扫描 {} 张", action_label, success_count, fail_count, total),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })

@@ -592,6 +592,7 @@ pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Re
         filename: String::new(),
         status: "processing".to_string(),
         message: format!("开始超分: 共 {} 张, 引擎: {}, 倍率: {}x", total, engine.name, options.scale),
+    ..Default::default()
     });
 
     let engine_dir = engine_dir(engine.id);
@@ -607,6 +608,7 @@ pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Re
                 current: i as u32, total, filename: String::new(),
                 status: "done".to_string(),
                 message: format!("已取消: 已处理 {}, 共 {}", i, total),
+            ..Default::default()
             });
             break;
         }
@@ -618,6 +620,7 @@ pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Re
             filename: filename.clone(),
             status: "processing".to_string(),
             message: format!("[{}/{}] 正在处理: {}", i + 1, total, filename),
+        ..Default::default()
         });
 
         // Build output filename — keep name, force png output
@@ -676,6 +679,7 @@ pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Re
                 filename: filename.clone(),
                 status: "error".to_string(),
                 message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
+            ..Default::default()
             });
             err_msg
         });
@@ -706,6 +710,7 @@ pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Re
                         filename: filename.clone(),
                         status: "success".to_string(),
                         message: format!("[{}/{}] ✓ {}", i + 1, total, filename),
+                    ..Default::default()
                     });
                 } else {
                     fail_count += 1;
@@ -717,6 +722,7 @@ pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Re
                         filename: filename.clone(),
                         status: "error".to_string(),
                         message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
+                    ..Default::default()
                     });
                 }
             }
@@ -729,6 +735,7 @@ pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Re
                     filename: filename.clone(),
                     status: "error".to_string(),
                     message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
+                ..Default::default()
                 });
             }
         }
@@ -739,6 +746,7 @@ pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Re
         filename: String::new(),
         status: "done".to_string(),
         message: format!("完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })
@@ -916,6 +924,7 @@ async fn run_python_upscale(
                                 current: 0, total: 0, filename: String::new(),
                                 status: "warning".to_string(),
                                 message: format!("[Python] {}", clean),
+                            ..Default::default()
                             });
                         } else if byte[0] != b'\r' {
                             buf.push(byte[0]);
@@ -943,11 +952,15 @@ async fn run_python_upscale(
                 let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match msg_type {
                     "log" => {
-                        let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                        let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let i18n_params = msg.get("i18n_params").cloned();
                         let _ = app_clone.emit("upscale-progress", ProgressEvent {
                             current: 0, total: 0, filename: String::new(),
                             status: "info".to_string(),
-                            message: text.to_string(),
+                            message: text,
+                            i18n_key,
+                            i18n_params,
                         });
                     }
                     "error" => {
@@ -974,6 +987,7 @@ async fn run_python_upscale(
                             filename: fname.to_string(),
                             status: status.to_string(),
                             message: message.to_string(),
+                        ..Default::default()
                         });
                     }
                     "done" => {
@@ -997,6 +1011,7 @@ async fn run_python_upscale(
             filename: String::new(),
             status: "done".to_string(),
             message: format!("完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
+        ..Default::default()
         });
 
         Ok(ProcessResult { success_count, fail_count, total, errors })

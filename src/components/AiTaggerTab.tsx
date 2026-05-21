@@ -13,7 +13,7 @@ import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 
 interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; supported_categories: string[]; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
+interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
 interface OnnxModelInfo { input_size: number; input_format: string; input_shape: number[]; channels: number; }
 interface DownloadPayload { filename: string; downloaded: number; total: number; percent: number; speed_mbps: number; status: string; message: string; }
 
@@ -185,7 +185,10 @@ export default function AiTaggerTab() {
       if (p.total > 0) setProgress((p.current / p.total) * 100);
       if (p.status === 'done') setIsDone(true);
       if (p.status === 'error') setHasErr(true);
-      setLogs(prev => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }]);
+      setLogs(prev => {
+        const msg = p.i18n_key ? (t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
+        return [...prev, { time: getTimeStr(), message: msg, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }];
+      });
     };
     const u1 = listen<ProgressPayload>('tagger-progress', handler);
     return () => { active = false; u1.then(fn => fn()); };

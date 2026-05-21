@@ -1120,6 +1120,23 @@ const en = {
     modelSource: 'Model source:',
     modelSourceDesc: 'Anime aesthetic quality scoring model using SwinV2 architecture, supports 7-level quality classification',
   },
+
+  // ═══════════════ GPU Diagnostic Logs ═══════════════
+  gpu: {
+    usingCuda: 'Using GPU: {{name}} (CUDA)',
+    usingCoreML: 'Using GPU: Apple Silicon (CoreML)',
+    usingMPS: 'Using GPU: Apple Silicon (MPS)',
+    usingCpu: 'Using CPU inference',
+    unavailable: '⚠ GPU acceleration unavailable, falling back to CPU',
+    detected: 'GPU: {{name}}',
+    driverVersion: 'Driver: {{version}}',
+    driverCuda: 'Driver CUDA: {{version}}',
+    cudaToolkit: 'CUDA Toolkit: {{version}}',
+    noCudaEnv: 'No CUDA environment detected',
+    noGpuFound: 'Reason: No NVIDIA GPU found or graphics driver error',
+    macPlatform: 'macOS platform, using CoreML / MPS acceleration',
+    noBackend: 'No supported GPU inference backend found',
+  },
 };
 
 export default en;

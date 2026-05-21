@@ -646,6 +646,7 @@ pub fn run_tagging(
                             current: 0, total: 0, filename: String::new(),
                             status: "warning".to_string(),
                             message: format!("[Python] {}", clean),
+                        ..Default::default()
                         });
                     } else if byte[0] != b'\r' {
                         buf.push(byte[0]);
@@ -695,11 +696,15 @@ pub fn run_tagging(
             let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
             match msg_type {
                 "log" => {
-                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let i18n_params = msg.get("i18n_params").cloned();
                     let _ = app.emit("tagger-progress", ProgressEvent {
                         current: 0, total: 0, filename: String::new(),
                         status: "info".to_string(),
-                        message: text.to_string(),
+                        message: text,
+                        i18n_key,
+                        i18n_params,
                     });
                 }
                 "error" => {
@@ -708,6 +713,7 @@ pub fn run_tagging(
                         current: 0, total: 0, filename: String::new(),
                         status: "error".to_string(),
                         message: text.to_string(),
+                    ..Default::default()
                     });
                     let _ = child.kill();
                     return Err(format!("Python 推理错误: {}", text));
@@ -747,6 +753,7 @@ pub fn run_tagging(
         filename: String::new(),
         status: "info".to_string(),
         message: format!("读取到 {} 张图片", total),
+    ..Default::default()
     });
 
     for (i, file_path) in files.iter().enumerate() {
@@ -756,12 +763,14 @@ pub fn run_tagging(
                 filename: String::new(),
                 status: "error".to_string(),
                 message: format!("打标已取消（已完成 {}/{}）", i, total),
+            ..Default::default()
             });
             let _ = app.emit("tagger-progress", ProgressEvent {
                 current: i as u32, total,
                 filename: String::new(),
                 status: "done".to_string(),
                 message: format!("打标已取消: 成功 {}, 失败 {}", success_count, fail_count),
+            ..Default::default()
             });
             break;
         }
@@ -772,6 +781,7 @@ pub fn run_tagging(
             filename: filename.clone(),
             status: "processing".to_string(),
             message: format!("正在处理: {} ({}/{})", filename, i + 1, total),
+        ..Default::default()
         });
 
         let tag_cmd = serde_json::json!({
@@ -813,6 +823,7 @@ pub fn run_tagging(
                                     filename: filename.clone(),
                                     status: "success".to_string(),
                                     message: format!("[完成] {} → {} 个标签", filename, tag_count),
+                                ..Default::default()
                                 });
                                 break;
                             }
@@ -826,16 +837,21 @@ pub fn run_tagging(
                                     filename: filename.clone(),
                                     status: "error".to_string(),
                                     message: format!("[错误] {}", err_msg),
+                                ..Default::default()
                                 });
                                 break;
                             }
                             "log" => {
-                                let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                                let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                let i18n_params = msg.get("i18n_params").cloned();
                                 let _ = app.emit("tagger-progress", ProgressEvent {
                                     current: i as u32 + 1, total,
                                     filename: filename.clone(),
                                     status: "info".to_string(),
-                                    message: text.to_string(),
+                                    message: text,
+                                    i18n_key,
+                                    i18n_params,
                                 });
                                 // log 类消息不算结果，继续读下一行
                             }
@@ -865,6 +881,7 @@ pub fn run_tagging(
         current: total, total, filename: String::new(),
         status: "done".to_string(),
         message: format!("打标完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })

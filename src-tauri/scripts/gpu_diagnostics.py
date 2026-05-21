@@ -8,16 +8,17 @@ import subprocess
 def diagnose_gpu():
     """
     检测 GPU 环境，返回诊断信息列表。
-    每条信息是一个字符串，调用方自行选择输出方式（log/emit_log/stderr）。
+    每条信息是一个 dict: {"key": "i18n_key", "params": {...}}
+    调用方将其作为 i18n 消息发送给前端翻译。
     
-    返回: list[str]
+    返回: list[dict]
     """
     if sys.platform != "win32":
         if sys.platform == "darwin":
-            return ["当前为 macOS 平台，使用 CoreML / MPS 加速"]
-        return ["当前平台未找到支持的 GPU 推理后端"]
+            return [{"key": "gpu.macPlatform"}]
+        return [{"key": "gpu.noBackend"}]
 
-    lines = []
+    results = []
     gpu_name = None
     driver_version = None
     driver_cuda_version = None
@@ -58,16 +59,16 @@ def diagnose_gpu():
 
     # 输出诊断信息
     if gpu_name:
-        lines.append(f"GPU: {gpu_name}")
+        results.append({"key": "gpu.detected", "params": {"name": gpu_name}})
         if driver_version:
-            lines.append(f"驱动版本: {driver_version}")
+            results.append({"key": "gpu.driverVersion", "params": {"version": driver_version}})
         if driver_cuda_version:
-            lines.append(f"驱动支持 CUDA: {driver_cuda_version}")
+            results.append({"key": "gpu.driverCuda", "params": {"version": driver_cuda_version}})
         if nvcc_version:
-            lines.append(f"CUDA Toolkit: {nvcc_version}")
+            results.append({"key": "gpu.cudaToolkit", "params": {"version": nvcc_version}})
         else:
-            lines.append("没有检测到可用的 CUDA 环境")
+            results.append({"key": "gpu.noCudaEnv"})
     else:
-        lines.append("原因: 没有找到可用的 NVIDIA GPU 或显卡驱动异常")
+        results.append({"key": "gpu.noGpuFound"})
 
-    return lines
+    return results

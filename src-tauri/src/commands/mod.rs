@@ -29,14 +29,23 @@ pub mod sd_metadata;
 pub mod aesthetic;
 
 /// 进度事件 payload
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProgressEvent {
     pub current: u32,
     pub total: u32,
+    #[serde(default)]
     pub filename: String,
     /// "processing" | "success" | "error" | "done"
+    #[serde(default)]
     pub status: String,
+    #[serde(default)]
     pub message: String,
+    /// i18n key（Python 脚本发送的国际化 key，前端优先使用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub i18n_key: Option<String>,
+    /// i18n 参数
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub i18n_params: Option<serde_json::Value>,
 }
 
 /// 扫描指定目录下的所有图片文件，返回文件路径列表

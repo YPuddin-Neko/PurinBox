@@ -10,7 +10,7 @@ import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
+interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
 interface DownloadPayload { filename: string; downloaded: number; total: number; percent: number; speed_mbps: number; status: string; message: string; }
 
 export default function AestheticPage() {
@@ -50,7 +50,8 @@ export default function AestheticPage() {
         const pct = d.total > 0 ? Math.round((d.current / d.total) * 100) : 0;
         setProgress(pct); setProgressCurrent(d.current); setProgressTotal(d.total);
         if (d.status === 'error') setHasError(true);
-        setLogs(p => [...p, { time: getTimeStr(), message: d.message, status: d.status as any }]);
+        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
+        setLogs(p => [...p, { time: getTimeStr(), message: resolveMsg(d), status: d.status as any }]);
         updateTask('aesthetic', { status: 'running', message: `${d.current}/${d.total}`, progress: pct, current: d.current, total: d.total });
       }
     });

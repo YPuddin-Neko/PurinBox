@@ -18,6 +18,14 @@ def load_model(model_path, use_gpu=False):
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"模型文件不存在: {model_path}")
     
+    def _log_i18n(key, params=None):
+        d = {"type": "log", "i18n_key": key, "message": key}
+        if params:
+            d["i18n_params"] = params
+        line = json.dumps(d) + "\n"
+        sys.stdout.buffer.write(line.encode("utf-8"))
+        sys.stdout.buffer.flush()
+    
     providers = ['CPUExecutionProvider']
     if use_gpu:
         available = ort.get_available_providers()
@@ -30,18 +38,15 @@ def load_model(model_path, use_gpu=False):
                 gpu_name = r.stdout.strip().split("\n")[0] if r.returncode == 0 else "NVIDIA GPU"
             except Exception:
                 gpu_name = "NVIDIA GPU"
-            sys.stderr.write(f"[person_crop] 使用 GPU: {gpu_name} (CUDA)\n")
-            sys.stderr.flush()
+            _log_i18n("gpu.usingCuda", {"name": gpu_name})
         elif 'CoreMLExecutionProvider' in available:
             providers = ['CoreMLExecutionProvider', 'CPUExecutionProvider']
-            sys.stderr.write("[person_crop] 使用 GPU: Apple Silicon (CoreML)\n")
-            sys.stderr.flush()
+            _log_i18n("gpu.usingCoreML")
         else:
-            sys.stderr.write("[person_crop] ⚠ GPU 加速不可用，回退到 CPU\n")
+            _log_i18n("gpu.unavailable")
             from gpu_diagnostics import diagnose_gpu
-            for msg in diagnose_gpu():
-                sys.stderr.write(f"[person_crop] {msg}\n")
-            sys.stderr.flush()
+            for item in diagnose_gpu():
+                _log_i18n(item["key"], item.get("params"))
     
     try:
         sess = ort.InferenceSession(model_path, providers=providers)

@@ -138,6 +138,7 @@ pub async fn start_tag_sorting(
         filename: String::new(),
         status: "info".to_string(),
         message: format!("找到 {} 个标签文件，{} 线程开始排序...", total, concurrency),
+    ..Default::default()
     });
 
     let success_count = Arc::new(AtomicU32::new(0));
@@ -265,6 +266,7 @@ pub async fn start_tag_sorting(
                         message: format!("[完成] {} | 原TAG数 {} → 排序后TAG数 {} | {}{}{}",
                             filename, original_count, sorted_count, elapsed_str, warn_str,
                             if !changed && !has_warn { " (顺序未变)" } else { "" }),
+                    ..Default::default()
                     });
                 }
                 FileResult::Skipped { filename } => {
@@ -274,6 +276,7 @@ pub async fn start_tag_sorting(
                         filename: filename.clone(),
                         status: "success".to_string(),
                         message: format!("[跳过] {} (空文件)", filename),
+                    ..Default::default()
                     });
                 }
                 FileResult::Error { filename, message } => {
@@ -285,6 +288,7 @@ pub async fn start_tag_sorting(
                         filename: filename.clone(),
                         status: "error".to_string(),
                         message: format!("[错误] {}: {}", filename, message),
+                    ..Default::default()
                     });
                 }
             }
@@ -342,6 +346,7 @@ pub async fn start_tag_sorting(
         } else {
             format!("标签排序完成: 成功 {}, 失败 {}, 共 {}{}", sc, fc, total, copy_msg)
         },
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count: sc, fail_count: fc, total, errors: errs })

@@ -283,6 +283,7 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
             filename: String::new(),
             status: status.to_string(),
             message: msg.to_string(),
+        ..Default::default()
         });
     };
 
@@ -495,6 +496,7 @@ pub async fn start_tagging(
                 current: 0, total: 0, filename: String::new(),
                 status: "info".to_string(),
                 message: "Python 环境未就绪，正在自动配置...".to_string(),
+            ..Default::default()
             });
             python_env::setup_python_env(&app).await?;
         }
@@ -520,6 +522,7 @@ pub async fn start_tagging(
             filename: String::new(),
             status: "info".to_string(),
             message: format!("模型 {} 未下载，开始下载...", model_def.name),
+        ..Default::default()
         });
 
         download::download_model(&app, &model_def).await?;

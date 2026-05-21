@@ -110,6 +110,7 @@ pub async fn start_llm_tagging(
         filename: String::new(),
         status: "info".to_string(),
         message: format!("读取到 {} 张图片", total),
+    ..Default::default()
     });
 
     let concurrency = options.concurrency.max(1) as usize;
@@ -139,6 +140,7 @@ pub async fn start_llm_tagging(
                         filename: filename.clone(),
                         status: "success".to_string(),
                         message: format!("[跳过] {} (已有描述)", filename),
+                    ..Default::default()
                     });
                     continue;
                 }
@@ -186,6 +188,7 @@ pub async fn start_llm_tagging(
                 filename: filename.clone(),
                 status: "processing".to_string(),
                 message: format!("正在处理: {} ({}/{})", filename, i + 1, total),
+            ..Default::default()
             });
 
             let file_start = std::time::Instant::now();
@@ -251,6 +254,7 @@ pub async fn start_llm_tagging(
                                 filename: filename.clone(),
                                 status: "success".to_string(),
                                 message: format!("[完成] {} ({})", filename, elapsed_str),
+                            ..Default::default()
                             });
                         }
                         Err(e) => {
@@ -263,6 +267,7 @@ pub async fn start_llm_tagging(
                                 filename: filename.clone(),
                                 status: "error".to_string(),
                                 message: format!("[错误] {} ({})", err_msg, elapsed_str),
+                            ..Default::default()
                             });
                         }
                     }
@@ -277,6 +282,7 @@ pub async fn start_llm_tagging(
                         filename: filename.clone(),
                         status: "error".to_string(),
                         message: format!("[错误] {} ({})", err_msg, elapsed_str),
+                    ..Default::default()
                     });
                 }
             }
@@ -303,6 +309,7 @@ pub async fn start_llm_tagging(
                 filename: String::new(),
                 status: "error".to_string(),
                 message: format!("创建 Fail 文件夹失败: {}", e),
+            ..Default::default()
             });
         } else {
             let mut copy_count = 0u32;
@@ -318,6 +325,7 @@ pub async fn start_llm_tagging(
                 filename: String::new(),
                 status: "info".to_string(),
                 message: format!("已将 {} 张失败图片复制到 Fail 文件夹", copy_count),
+            ..Default::default()
             });
         }
     }
@@ -327,6 +335,7 @@ pub async fn start_llm_tagging(
         filename: String::new(),
         status: "done".to_string(),
         message: format!("LLM 打标完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })

@@ -157,6 +157,7 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
             filename: original_name.clone(),
             status: "processing".to_string(),
             message: format!("正在重命名: {} → {}", original_name, final_name),
+        ..Default::default()
         });
 
         match std::fs::rename(temp, &final_path) {
@@ -168,6 +169,7 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
                     filename: original_name.clone(),
                     status: "success".to_string(),
                     message: format!("[重命名] {} → {}", original_name, final_name),
+                ..Default::default()
                 });
             }
             Err(e) => {
@@ -180,6 +182,7 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
                     filename: original_name.clone(),
                     status: "error".to_string(),
                     message: format!("[错误] {}", err_msg),
+                ..Default::default()
                 });
             }
         }
@@ -191,6 +194,7 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
         filename: String::new(),
         status: "done".to_string(),
         message: format!("重命名完成: 图片 {} 张, 共处理 {} 个文件, 失败 {}", image_count, total_mappings, fail_count),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })

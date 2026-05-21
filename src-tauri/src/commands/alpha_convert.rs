@@ -80,6 +80,7 @@ fn convert_alpha_sync(app: &tauri::AppHandle, options: &AlphaConvertOptions) -> 
                 current: i as u32, total, filename: String::new(),
                 status: "done".to_string(),
                 message: format!("已取消: 已处理 {}, 共 {}", i, total),
+            ..Default::default()
             });
             break;
         }
@@ -91,6 +92,7 @@ fn convert_alpha_sync(app: &tauri::AppHandle, options: &AlphaConvertOptions) -> 
             filename: filename.clone(),
             status: "processing".to_string(),
             message: format!("正在检测: {}", filename),
+        ..Default::default()
         });
 
         match process_alpha(file_path, output_dir, &bg_color) {
@@ -103,6 +105,7 @@ fn convert_alpha_sync(app: &tauri::AppHandle, options: &AlphaConvertOptions) -> 
                         filename: filename.clone(),
                         status: "success".to_string(),
                         message: format!("[转换] {} (检测到透明通道, 已转换)", filename),
+                    ..Default::default()
                     });
                 } else {
                     skipped += 1;
@@ -112,6 +115,7 @@ fn convert_alpha_sync(app: &tauri::AppHandle, options: &AlphaConvertOptions) -> 
                         filename: filename.clone(),
                         status: "success".to_string(),
                         message: format!("[跳过] {} (无透明通道)", filename),
+                    ..Default::default()
                     });
                 }
             }
@@ -125,6 +129,7 @@ fn convert_alpha_sync(app: &tauri::AppHandle, options: &AlphaConvertOptions) -> 
                     filename: filename.clone(),
                     status: "error".to_string(),
                     message: format!("[错误] {}", err_msg),
+                ..Default::default()
                 });
             }
         }
@@ -136,6 +141,7 @@ fn convert_alpha_sync(app: &tauri::AppHandle, options: &AlphaConvertOptions) -> 
         filename: String::new(),
         status: "done".to_string(),
         message: format!("完成: 转换 {}, 跳过 {}, 失败 {}, 共 {}", success_count, skipped, fail_count, total),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })

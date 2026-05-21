@@ -62,6 +62,7 @@ fn keep_files_sync(app: &tauri::AppHandle, options: &FileKeeperOptions) -> Resul
         filename: String::new(),
         status: "processing".to_string(),
         message: format!("开始处理: 共 {} 个文件, 保留后缀: {}", total, keep_exts.join(", ")),
+    ..Default::default()
     });
 
     for (i, file_path) in all_files.iter().enumerate() {
@@ -70,6 +71,7 @@ fn keep_files_sync(app: &tauri::AppHandle, options: &FileKeeperOptions) -> Resul
                 current: i as u32, total, filename: String::new(),
                 status: "done".to_string(),
                 message: format!("已取消: 已处理 {}, 共 {}", i, total),
+            ..Default::default()
             });
             break;
         }
@@ -88,6 +90,7 @@ fn keep_files_sync(app: &tauri::AppHandle, options: &FileKeeperOptions) -> Resul
                 filename: filename.clone(),
                 status: "success".to_string(),
                 message: format!("[保留] {} (.{})", filename, ext),
+            ..Default::default()
             });
         } else {
             match std::fs::remove_file(file_path) {
@@ -99,6 +102,7 @@ fn keep_files_sync(app: &tauri::AppHandle, options: &FileKeeperOptions) -> Resul
                         filename: filename.clone(),
                         status: "success".to_string(),
                         message: format!("[删除] {} (.{})", filename, ext),
+                    ..Default::default()
                     });
                 }
                 Err(e) => {
@@ -111,6 +115,7 @@ fn keep_files_sync(app: &tauri::AppHandle, options: &FileKeeperOptions) -> Resul
                         filename: filename.clone(),
                         status: "error".to_string(),
                         message: format!("[错误] {}", err_msg),
+                    ..Default::default()
                     });
                 }
             }
@@ -123,6 +128,7 @@ fn keep_files_sync(app: &tauri::AppHandle, options: &FileKeeperOptions) -> Resul
         filename: String::new(),
         status: "done".to_string(),
         message: format!("完成: 保留 {} 个, 删除 {} 个, 失败 {} 个, 共 {} 个文件", kept_count, success_count, fail_count, total),
+    ..Default::default()
     });
 
     Ok(ProcessResult { success_count, fail_count, total, errors })

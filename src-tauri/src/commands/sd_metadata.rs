@@ -124,6 +124,7 @@ fn scan_sync(app: &tauri::AppHandle, input_path: &str) -> Result<SdScanResult, S
             filename: filename.clone(),
             status: "processing".to_string(),
             message: format!("[{}/{}] {}", i + 1, total, filename),
+        ..Default::default()
         });
 
         // Only parse PNG files for tEXt metadata
@@ -166,6 +167,7 @@ fn scan_sync(app: &tauri::AppHandle, input_path: &str) -> Result<SdScanResult, S
         filename: String::new(),
         status: "done".to_string(),
         message: format!("扫描完成: {} 张图片, {} 有元数据", total, has_meta),
+    ..Default::default()
     });
 
     Ok(SdScanResult {
@@ -219,6 +221,7 @@ fn export_sync(app: &tauri::AppHandle, options: &ExportTagsOptions) -> Result<Ex
             filename: format!("{}.txt", stem),
             status: "processing".to_string(),
             message: format!("[{}/{}] {}.txt", i + 1, total, stem),
+        ..Default::default()
         });
 
         match std::fs::write(&txt_path, &item.positive) {
@@ -236,6 +239,7 @@ fn export_sync(app: &tauri::AppHandle, options: &ExportTagsOptions) -> Result<Ex
         filename: String::new(),
         status: "done".to_string(),
         message: format!("导出完成: 成功 {}, 失败 {}, 跳过 {}", success, fail, skip),
+    ..Default::default()
     });
 
     Ok(ExportResult { success_count: success, fail_count: fail, skip_count: skip, errors })
