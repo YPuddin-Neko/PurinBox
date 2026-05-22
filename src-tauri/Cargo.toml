@@ -46,6 +46,7 @@ md5 = "0.7"
 sha2 = "0.10"
 hex = "0.4"
 tauri-plugin-clipboard-manager = "2.3.2"
+encoding_rs = "0.8"
 
 # Dev 模式下优化图像处理库，避免逐像素操作极慢
 [profile.dev.package.image]
@@ -57,4 +58,3 @@ opt-level = 3
 # Windows: 禁用 WebView2 默认右键菜单需要此依赖
 [target.'cfg(target_os = "windows")'.dependencies]
 webview2-com = "0.38"
-encoding_rs = "0.8"

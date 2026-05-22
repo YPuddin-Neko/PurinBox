@@ -252,10 +252,7 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
                     Ok(_) => {
                         if byte[0] == b'\n' {
                             let line = String::from_utf8(buf.clone()).unwrap_or_else(|_| {
-                                #[cfg(target_os = "windows")]
-                                { let (s, _, _) = encoding_rs::GBK.decode(&buf); s.to_string() }
-                                #[cfg(not(target_os = "windows"))]
-                                { String::from_utf8_lossy(&buf).to_string() }
+                                let (s, _, _) = encoding_rs::GBK.decode(&buf); s.to_string()
                             });
                             buf.clear();
                             let clean = line.trim();
