@@ -312,6 +312,29 @@ fn run_aesthetic_scoring(
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
+
+        if options.use_gpu {
+            let mut path = std::env::var("PATH").unwrap_or_default();
+            let mut add_dir = |dir: &str| {
+                if std::path::Path::new(dir).exists() && !path.contains(dir) {
+                    path = format!("{};{}", dir, path);
+                }
+            };
+
+            // CUDA 路径
+            for (_key, val) in super::tagger::inference::get_cuda_env_vars() {
+                add_dir(&format!(r"{}\bin", val));
+                add_dir(&format!(r"{}\bin\x64", val));
+                add_dir(&format!(r"{}\lib\x64", val));
+            }
+
+            // cuDNN 路径
+            if let Ok(cudnn_path) = std::env::var("CUDNN_PATH") {
+                add_dir(&format!(r"{}\bin", cudnn_path));
+            }
+
+            cmd.env("PATH", &path);
+        }
     }
 
     let mut child = cmd.spawn()
@@ -333,8 +356,12 @@ fn run_aesthetic_scoring(
                 Ok(0) => break,
                 Ok(_) => {
                     if byte[0] == b'\n' {
-                        let line = String::from_utf8(buf.clone())
-                            .unwrap_or_else(|_| String::from_utf8_lossy(&buf).to_string());
+                        let line = String::from_utf8(buf.clone()).unwrap_or_else(|_| {
+                            #[cfg(target_os = "windows")]
+                            { let (s, _, _) = encoding_rs::GBK.decode(&buf); s.to_string() }
+                            #[cfg(not(target_os = "windows"))]
+                            { String::from_utf8_lossy(&buf).to_string() }
+                        });
                         buf.clear();
                         let clean = strip_ansi_codes(&line);
                         let clean = clean.trim();
@@ -344,7 +371,9 @@ fn run_aesthetic_scoring(
                             || lower.contains("msgtracer")
                             || lower.contains("onnxruntime")
                             || lower.contains("could not load")
-                            || lower.contains("loaded library") {
+                            || lower.contains("loaded library")
+                            || lower.contains("ep error")
+                            || lower.contains("provider") {
                             continue;
                         }
                         let _ = app_err.emit("aesthetic-progress", ProgressEvent {

@@ -896,9 +896,12 @@ async fn run_python_upscale(
                     Ok(0) => break,
                     Ok(_) => {
                         if byte[0] == b'\n' {
-                            // 尝试 UTF-8，失败则 lossy 替换
-                            let line = String::from_utf8(buf.clone())
-                                .unwrap_or_else(|_| String::from_utf8_lossy(&buf).to_string());
+                            let line = String::from_utf8(buf.clone()).unwrap_or_else(|_| {
+                                #[cfg(target_os = "windows")]
+                                { let (s, _, _) = encoding_rs::GBK.decode(&buf); s.to_string() }
+                                #[cfg(not(target_os = "windows"))]
+                                { String::from_utf8_lossy(&buf).to_string() }
+                            });
                             buf.clear();
                             let clean = line.trim();
                             if clean.is_empty() { continue; }
@@ -918,8 +921,7 @@ async fn run_python_upscale(
                                 || lower.contains("could not load") || lower.contains("loaded library") {
                                 continue;
                             }
-                            let non_ascii = clean.chars().filter(|c| !c.is_ascii()).count();
-                            if clean.len() > 20 && non_ascii * 2 > clean.len() { continue; }
+
                             let _ = app_err.emit("upscale-progress", ProgressEvent {
                                 current: 0, total: 0, filename: String::new(),
                                 status: "warning".to_string(),

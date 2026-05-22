@@ -3717,6 +3717,7 @@ version = "0.3.13"
 dependencies = [
  "base64 0.22.1",
  "csv",
+ "encoding_rs",
  "flate2",
  "futures-util",
  "hex",

@@ -623,19 +623,6 @@ def main():
                     selected_tags = [item[1] for item in indexed]
                     selected_flat = [item[1][0] for item in indexed]
 
-                # 追加标签（最后处理，最前面模式优先级最高，适用于触发词等）
-                if append_list:
-                    # 先从已有结果中去掉追加标签（避免重复）
-                    append_set = set(append_list)
-                    selected_tags = [(n, c, p, cnt) for n, c, p, cnt in selected_tags if n not in append_set]
-                    selected_flat = [n for n in selected_flat if n not in append_set]
-                    if append_position == "prepend":
-                        selected_flat = append_list + selected_flat
-                        selected_tags = [(t, "general", 1.0, 0) for t in append_list] + selected_tags
-                    else:
-                        selected_flat = selected_flat + append_list
-                        selected_tags = selected_tags + [(t, "general", 1.0, 0) for t in append_list]
-
                 # 输出格式
                 output_format = cmd.get("output_format", "txt")
                 existing_tags_action = cmd.get("existing_tags_action", "overwrite")
@@ -753,6 +740,15 @@ def main():
                             selected_flat = merged
                         except Exception:
                             pass  # 读取失败，使用新标签覆盖
+
+                    # 追加标签最后处理（优先级最高，确保触发词始终在指定位置）
+                    if append_list:
+                        append_set = set(append_list)
+                        selected_flat = [n for n in selected_flat if n not in append_set]
+                        if append_position == "prepend":
+                            selected_flat = append_list + selected_flat
+                        else:
+                            selected_flat = selected_flat + append_list
 
                     with open(txt_path, "w", encoding="utf-8") as f:
                         f.write(", ".join(selected_flat))

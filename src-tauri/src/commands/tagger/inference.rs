@@ -622,15 +622,16 @@ pub fn run_tagging(
                 Ok(0) => break,
                 Ok(_) => {
                     if byte[0] == b'\n' {
-                        let line = String::from_utf8(buf.clone())
-                            .unwrap_or_else(|_| String::from_utf8_lossy(&buf).to_string());
+                        let line = String::from_utf8(buf.clone()).unwrap_or_else(|_| {
+                            #[cfg(target_os = "windows")]
+                            { let (s, _, _) = encoding_rs::GBK.decode(&buf); s.to_string() }
+                            #[cfg(not(target_os = "windows"))]
+                            { String::from_utf8_lossy(&buf).to_string() }
+                        });
                         buf.clear();
                         let clean = strip_ansi_codes(&line);
                         let clean = clean.trim();
                         if clean.is_empty() { continue; }
-                        // 检测乱码：如果非 ASCII 字符占比过高，说明编码错误，跳过
-                        let non_ascii = clean.chars().filter(|c| !c.is_ascii()).count();
-                        if clean.len() > 20 && non_ascii * 2 > clean.len() { continue; }
                         let lower = clean.to_lowercase();
                         if lower.contains("context leak")
                             || lower.contains("msgtracer")
