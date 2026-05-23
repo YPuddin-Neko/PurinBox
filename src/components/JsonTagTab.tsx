@@ -51,6 +51,8 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
   const [savingSingle,setSavingSingle]=useState(false);
   const [searchText,setSearchText]=useState('');
   const [filterMode,setFilterMode]=useState<'all'|'tagged'|'untagged'>('all');
+  const [imgPage,setImgPage]=useState(0);
+  const IMG_PER_PAGE = 30;
 
   const [simplified,setSimplified]=useState(()=>localStorage.getItem('json_tag_simplified')==='true');
   const [translations,setTranslations]=useState<Record<string,string>>({});
@@ -101,7 +103,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
     if(!sel)return; setLoading(true);
     try{const r=await invoke<JsonDataset>('load_json_dataset',{folder:sel as string});
       setImages(r.images.map(img=>({...img,data:safeData(img.data),dirty:false})));setSelectedIdx(r.images.length>0?0:-1);
-      setFolderPath(sel as string);setSearchText('');setFilterMode('all');
+      setFolderPath(sel as string);setSearchText('');setFilterMode('all');setImgPage(0);
       if(r.detected_format==='simplified'){setSimplified(true);localStorage.setItem('json_tag_simplified','true');}
       else if(r.detected_format==='full'){setSimplified(false);localStorage.setItem('json_tag_simplified','false');}
     }catch(e){console.error(e);}finally{setLoading(false);}
@@ -146,6 +148,11 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
     if(filterMode==='untagged')list=list.filter(img=>!img.has_json);
     return list;
   },[images,searchText,filterMode]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / IMG_PER_PAGE));
+  const pagedFiltered = filtered.slice(imgPage * IMG_PER_PAGE, (imgPage + 1) * IMG_PER_PAGE);
+  const prevFilteredLen = useRef(filtered.length);
+  if (filtered.length !== prevFilteredLen.current) { prevFilteredLen.current = filtered.length; if (imgPage >= Math.ceil(filtered.length / IMG_PER_PAGE)) { setImgPage(0); } }
 
   const updateData=useCallback((fn:(d:JsonTagData)=>JsonTagData)=>{
     setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,data:fn(JSON.parse(JSON.stringify(img.data))),dirty:true}:img));
@@ -339,7 +346,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
         <div style={{flex:1,overflowY:'auto',padding:6}}>
           {images.length===0?(<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)'}}><FolderOpen style={{width:32,height:32,opacity:0.2}} /><span style={{fontSize:11,opacity:0.6}}>{t('jsonTag.loadHint')}</span></div>):(
             <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4}}>
-              {filtered.map(img=>{const sel=img._i===selectedIdx;const src=convertFileSrc(img.path);const total=img.data.ai_output.appearance.length+img.data.ai_output.tags.length+img.data.ai_output.environment.length+img.data.from_path.appearance.length;return(
+              {pagedFiltered.map(img=>{const sel=img._i===selectedIdx;const src=convertFileSrc(img.path);const total=img.data.ai_output.appearance.length+img.data.ai_output.tags.length+img.data.ai_output.environment.length+img.data.from_path.appearance.length;return(
                 <div key={img._i} onClick={()=>setSelectedIdx(img._i)} style={{position:'relative',aspectRatio:'1',borderRadius:8,overflow:'hidden',cursor:'pointer',border:`2px solid ${sel?'#7c5cfc':'transparent'}`,boxShadow:sel?'0 0 0 1px rgba(124,92,252,0.3)':'none',transition:'all 0.15s',background:'var(--color-bg-input)'}}>
                   <img src={src} alt={img.filename} style={{width:'100%',height:'100%',objectFit:'cover'}} loading="lazy" />
                   {img.has_json&&<div style={{position:'absolute',bottom:2,right:2,minWidth:14,height:14,borderRadius:7,padding:'0 3px',background:img.dirty?'rgba(239,68,68,0.9)':'rgba(124,92,252,0.85)',fontSize:8,color:'#fff',fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center'}}>{total}</div>}
@@ -348,7 +355,14 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
             </div>
           )}
         </div>
-        {images.length>0&&<div style={{padding:'6px 10px',borderTop:'1px solid var(--color-border)',fontSize:10,color:'var(--color-text-tertiary)',textAlign:'center'}}>{filtered.length===images.length?t('jsonTag.nImages',{n:images.length}):t('jsonTag.nOfTotal',{n:filtered.length,total:images.length})}</div>}
+          {images.length>0&&<div style={{padding:'4px 10px',borderTop:'1px solid var(--color-border)',fontSize:10,color:'var(--color-text-tertiary)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <span>{filtered.length===images.length?t('jsonTag.nImages',{n:images.length}):t('jsonTag.nOfTotal',{n:filtered.length,total:images.length})}</span>
+            {totalPages>1&&<div style={{display:'flex',alignItems:'center',gap:4}}>
+              <button onClick={()=>setImgPage(p=>Math.max(0,p-1))} disabled={imgPage<=0} style={{width:20,height:20,borderRadius:4,border:'1px solid var(--color-border)',background:imgPage<=0?'transparent':'rgba(124,92,252,0.08)',color:imgPage<=0?'var(--color-text-tertiary)':'#a78bfa',cursor:imgPage<=0?'default':'pointer',display:'flex',alignItems:'center',justifyContent:'center',padding:0}}><ChevronLeft style={{width:11,height:11}} /></button>
+              <span style={{fontSize:10,minWidth:40,textAlign:'center'}}>{imgPage+1}/{totalPages}</span>
+              <button onClick={()=>setImgPage(p=>Math.min(totalPages-1,p+1))} disabled={imgPage>=totalPages-1} style={{width:20,height:20,borderRadius:4,border:'1px solid var(--color-border)',background:imgPage>=totalPages-1?'transparent':'rgba(124,92,252,0.08)',color:imgPage>=totalPages-1?'var(--color-text-tertiary)':'#a78bfa',cursor:imgPage>=totalPages-1?'default':'pointer',display:'flex',alignItems:'center',justifyContent:'center',padding:0}}><ChevronRight style={{width:11,height:11}} /></button>
+            </div>}
+          </div>}
       </div>
 
       {/* resize handle 1 */}

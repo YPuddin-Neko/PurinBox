@@ -26,6 +26,8 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [searchText, setSearchText] = useState('');
   const [filterMode, setFilterMode] = useState<'all' | 'tagged' | 'untagged'>('all');
+  const [imgPage, setImgPage] = useState(0);
+  const IMG_PER_PAGE = 30;
   const [savingSingle, setSavingSingle] = useState(false);
 
   // 列宽拖拽
@@ -69,6 +71,11 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
     if (searchText && !img.filename.toLowerCase().includes(searchText.toLowerCase())) return false;
     return true;
   });
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / IMG_PER_PAGE));
+  const pagedFiltered = filtered.slice(imgPage * IMG_PER_PAGE, (imgPage + 1) * IMG_PER_PAGE);
+  const prevFilteredLen = useRef(filtered.length);
+  if (filtered.length !== prevFilteredLen.current) { prevFilteredLen.current = filtered.length; if (imgPage >= Math.ceil(filtered.length / IMG_PER_PAGE)) { setImgPage(0); } }
 
   const goPrev = useCallback(() => setSelectedIdx(i => Math.max(0, i - 1)), []);
   const goNext = useCallback(() => setSelectedIdx(i => Math.min(images.length - 1, i + 1)), [images.length]);
@@ -152,7 +159,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 4 }}>
-              {filtered.map(img => { const sel = img._i === selectedIdx; const src = convertFileSrc(img.path); return (
+              {pagedFiltered.map(img => { const sel = img._i === selectedIdx; const src = convertFileSrc(img.path); return (
                 <div key={img._i} onClick={() => setSelectedIdx(img._i)} style={{ position: 'relative', aspectRatio: '1', borderRadius: 8, overflow: 'hidden', cursor: 'pointer', border: `2px solid ${sel ? '#7c5cfc' : 'transparent'}`, boxShadow: sel ? '0 0 0 1px rgba(124,92,252,0.3)' : 'none', transition: 'all 0.15s', background: 'var(--color-bg-input)' }}>
                   <img src={src} alt={img.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
                   {img.caption.trim().length > 0 && <div style={{ position: 'absolute', bottom: 2, right: 2, minWidth: 14, height: 14, borderRadius: 7, padding: '0 3px', background: img.dirty ? 'rgba(239,68,68,0.9)' : 'rgba(124,92,252,0.85)', fontSize: 8, color: '#fff', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✓</div>}
@@ -161,7 +168,14 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
             </div>
           )}
         </div>
-        {images.length > 0 && <div style={{ padding: '6px 10px', borderTop: '1px solid var(--color-border)', fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center' }}>{filtered.length === images.length ? `${images.length} ${t('naturalLang.images')}` : `${filtered.length} / ${images.length}`}</div>}
+        {images.length > 0 && <div style={{ padding: '4px 10px', borderTop: '1px solid var(--color-border)', fontSize: 10, color: 'var(--color-text-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span>{filtered.length === images.length ? `${images.length} ${t('naturalLang.images')}` : `${filtered.length} / ${images.length}`}</span>
+          {totalPages > 1 && <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <button onClick={() => setImgPage(p => Math.max(0, p - 1))} disabled={imgPage <= 0} style={{ width: 20, height: 20, borderRadius: 4, border: '1px solid var(--color-border)', background: imgPage <= 0 ? 'transparent' : 'rgba(124,92,252,0.08)', color: imgPage <= 0 ? 'var(--color-text-tertiary)' : '#a78bfa', cursor: imgPage <= 0 ? 'default' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}><ChevronLeft style={{ width: 11, height: 11 }} /></button>
+            <span style={{ fontSize: 10, minWidth: 40, textAlign: 'center' }}>{imgPage + 1}/{totalPages}</span>
+            <button onClick={() => setImgPage(p => Math.min(totalPages - 1, p + 1))} disabled={imgPage >= totalPages - 1} style={{ width: 20, height: 20, borderRadius: 4, border: '1px solid var(--color-border)', background: imgPage >= totalPages - 1 ? 'transparent' : 'rgba(124,92,252,0.08)', color: imgPage >= totalPages - 1 ? 'var(--color-text-tertiary)' : '#a78bfa', cursor: imgPage >= totalPages - 1 ? 'default' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}><ChevronRight style={{ width: 11, height: 11 }} /></button>
+          </div>}
+        </div>}
       </div>
 
       {/* resize handle 1 */}
