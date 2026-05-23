@@ -167,33 +167,37 @@ pub async fn check_tag_db_update() -> Result<String, String> {
 
 /// 从 GitHub API 获取最新的 danbooru pt20 CSV 文件名
 async fn fetch_latest_tag_filename() -> Result<String, String> {
-    let api_url = "https://api.github.com/repos/DraconicDragon/dbr-e621-lists-archive/contents/tag-lists/danbooru";
     let client = crate::commands::proxy_config::build_http_client()
         .build()
         .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
 
-    let resp = client.get(api_url).send().await
-        .map_err(|e| format!("请求 GitHub API 失败: {}", e))?;
+    // 优先尝试 GitHub API
+    let api_url = "https://api.github.com/repos/DraconicDragon/dbr-e621-lists-archive/contents/tag-lists/danbooru";
+    let resp = client.get(api_url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send().await;
 
-    if !resp.status().is_success() {
-        return Err(format!("GitHub API 返回 {}", resp.status()));
+    if let Ok(resp) = resp {
+        if resp.status().is_success() {
+            if let Ok(body) = resp.text().await {
+                if let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
+                    let mut candidates: Vec<String> = items.iter()
+                        .filter_map(|item| item["name"].as_str())
+                        .filter(|name| name.starts_with("danbooru_") && name.contains("_pt20") && name.ends_with(".csv"))
+                        .map(|s| s.to_string())
+                        .collect();
+                    candidates.sort();
+                    if let Some(latest) = candidates.last().cloned() {
+                        return Ok(latest);
+                    }
+                }
+            }
+        }
     }
 
-    let body = resp.text().await
-        .map_err(|e| format!("读取响应失败: {}", e))?;
-
-    let items: Vec<serde_json::Value> = serde_json::from_str(&body)
-        .map_err(|e| format!("解析 JSON 失败: {}", e))?;
-
-    // 查找最新的 pt20 文件（按文件名排序，日期越新越靠后）
-    let mut candidates: Vec<String> = items.iter()
-        .filter_map(|item| item["name"].as_str())
-        .filter(|name| name.starts_with("danbooru_") && name.contains("_pt20") && name.ends_with(".csv"))
-        .map(|s| s.to_string())
-        .collect();
-
-    candidates.sort();
-    candidates.last().cloned().ok_or_else(|| "未找到 pt20 标签文件".to_string())
+    // API 失败，返回明确的错误信息
+    Err("GitHub API 请求失败（可能是限流或网络问题），请检查网络连接或代理设置后重试".to_string())
 }
 
 async fn download_danbooru_tags_inner(app: tauri::AppHandle) -> Result<u32, String> {
