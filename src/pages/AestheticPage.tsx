@@ -20,6 +20,7 @@ export default function AestheticPage() {
   const [outputPath, setOutputPath] = useState('');
   const isMac = /Mac|darwin/i.test(navigator.userAgent);
   const [useGpu, setUseGpu] = useState(!isMac);
+  const [batchSize, setBatchSize] = useState(1);
   const [processing, setProcessing] = useState(false);
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -104,6 +105,7 @@ export default function AestheticPage() {
           input_path: inputPath,
           output_path: outputPath || '',
           use_gpu: useGpu,
+          batch_size: useGpu ? batchSize : 1,
           move_files: true,
         }
       });
@@ -134,6 +136,9 @@ export default function AestheticPage() {
               <span className="tool-panel-title">{t('pages.pathSettings')}</span>
               {!isMac && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: useGpu ? 'var(--color-text-secondary)' : 'var(--color-text-tertiary)', whiteSpace: 'nowrap' }}>{t('aesthetic.batchSize')}</span>
+                  <input type="number" className="form-input" min={1} max={64} value={batchSize} onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))} disabled={!useGpu} style={{ width: 58, padding: '3px 6px', fontSize: 11, textAlign: 'center', opacity: useGpu ? 1 : 0.4 }} />
+                  <div style={{ width: 1, height: 16, background: 'var(--color-border)', margin: '0 4px' }} />
                   {([{ val: false, label: 'CPU', icon: <Cpu style={{ width: 13, height: 13 }} />, color: '#fbbf24' },
                     { val: true, label: 'GPU', icon: <Gpu style={{ width: 13, height: 13 }} />, color: '#4ade80' }] as const).map(d => (
                     <button key={d.label} onClick={() => setUseGpu(d.val)} style={{

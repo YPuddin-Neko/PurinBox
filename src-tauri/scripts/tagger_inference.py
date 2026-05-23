@@ -760,6 +760,241 @@ def main():
                     "tag_count": len(selected_flat),
                 })
 
+            elif cmd["cmd"] == "tag_batch":
+                if session is None:
+                    error("模型未初始化，请先发送 init 命令")
+                    continue
+
+                images = cmd.get("images", [])
+                if not images:
+                    error("tag_batch: images 为空")
+                    continue
+
+                # 批量预处理
+                batch_data = []
+                valid_indices = []  # 预处理成功的索引
+                for idx, img_cmd in enumerate(images):
+                    img_path = img_cmd.get("image_path", "")
+                    try:
+                        img_data = preprocess_image(img_path, input_size, input_format)
+                        batch_data.append(img_data)
+                        valid_indices.append(idx)
+                    except Exception as e:
+                        result({
+                            "type": "error",
+                            "image_path": img_path,
+                            "message": f"预处理失败: {e}",
+                        })
+
+                if not batch_data:
+                    continue
+
+                # 拼接 batch tensor: [N, C, H, W] or [N, H, W, C]
+                batch_tensor = np.concatenate(batch_data, axis=0)
+
+                # 批量推理
+                try:
+                    outputs = session.run(None, {input_name: batch_tensor})
+                    all_probs = outputs[0]  # shape: [N, num_tags]
+                except Exception as e:
+                    # 批量推理失败, 对每个图片返回 error
+                    for vi in valid_indices:
+                        img_path = images[vi].get("image_path", "")
+                        result({
+                            "type": "error",
+                            "image_path": img_path,
+                            "message": f"批量推理失败: {e}",
+                        })
+                    continue
+
+                # 逐张处理结果
+                for batch_idx, orig_idx in enumerate(valid_indices):
+                    img_cmd = images[orig_idx]
+                    image_path = img_cmd.get("image_path", "")
+                    try:
+                        probs = all_probs[batch_idx]
+
+                        general_threshold = img_cmd.get("general_threshold", 0.35)
+                        character_threshold = img_cmd.get("character_threshold", 0.85)
+                        enabled_categories = set(img_cmd.get("enabled_categories", ["general", "character"]))
+                        replace_underscore = img_cmd.get("replace_underscore", True)
+                        exclude_tags_str = img_cmd.get("exclude_tags", "")
+                        append_tags_str = img_cmd.get("append_tags", "")
+                        append_position = img_cmd.get("append_position", "append")
+                        escape_parentheses = img_cmd.get("escape_parentheses", False)
+                        sort_by = img_cmd.get("sort_by", "confidence")
+
+                        exclude_set = set()
+                        if exclude_tags_str.strip():
+                            for t_str in exclude_tags_str.split(","):
+                                t_str = t_str.strip()
+                                if t_str:
+                                    exclude_set.add(t_str)
+
+                        append_list = []
+                        if append_tags_str.strip():
+                            for t_str in append_tags_str.split(","):
+                                t_str = t_str.strip()
+                                if t_str:
+                                    append_list.append(t_str)
+
+                        if input_format == "NCHW":
+                            probs = 1 / (1 + np.exp(-np.clip(probs, -30, 30)))
+
+                        selected_tags = []
+                        selected_flat = []
+
+                        category_indices = {}
+                        for idx, prob in enumerate(probs):
+                            if idx >= len(tags):
+                                break
+                            tag = tags[idx]
+                            cat = tag["category"]
+                            if cat not in enabled_categories:
+                                continue
+                            if cat not in category_indices:
+                                category_indices[cat] = []
+                            category_indices[cat].append((idx, float(prob)))
+
+                        for argmax_cat in ["rating", "quality"]:
+                            if argmax_cat not in category_indices:
+                                continue
+                            pairs = category_indices[argmax_cat]
+                            if not pairs:
+                                continue
+                            best_idx, best_prob = max(pairs, key=lambda x: x[1])
+                            tag_name = tags[best_idx]["name"]
+                            tag_count = tags[best_idx].get("count", 0)
+                            if replace_underscore:
+                                tag_name = tag_name.replace("_", " ")
+                            if escape_parentheses:
+                                tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
+                            if tag_name in exclude_set or tags[best_idx]["name"] in exclude_set:
+                                continue
+                            selected_tags.append((tag_name, argmax_cat, best_prob, tag_count))
+                            selected_flat.append(tag_name)
+
+                        threshold_cats = {
+                            "general": general_threshold,
+                            "character": character_threshold,
+                            "copyright": character_threshold,
+                            "artist": character_threshold,
+                            "meta": general_threshold,
+                            "model": general_threshold,
+                        }
+                        for cat, thresh in threshold_cats.items():
+                            if cat not in category_indices:
+                                continue
+                            pairs = category_indices[cat]
+                            pairs_sorted = sorted(pairs, key=lambda x: x[1], reverse=True)
+                            for idx, prob in pairs_sorted:
+                                if prob < thresh:
+                                    continue
+                                tag_name = tags[idx]["name"]
+                                tag_count = tags[idx].get("count", 0)
+                                if replace_underscore:
+                                    tag_name = tag_name.replace("_", " ")
+                                if escape_parentheses:
+                                    tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
+                                if tag_name in exclude_set or tags[idx]["name"] in exclude_set:
+                                    continue
+                                selected_tags.append((tag_name, cat, prob, tag_count))
+                                selected_flat.append(tag_name)
+
+                        if sort_by == "frequency":
+                            indexed = list(enumerate(selected_tags))
+                            indexed.sort(key=lambda x: x[1][3], reverse=True)
+                            selected_tags = [item[1] for item in indexed]
+                            selected_flat = [item[1][0] for item in indexed]
+
+                        output_format = img_cmd.get("output_format", "txt")
+                        existing_tags_action = img_cmd.get("existing_tags_action", "overwrite")
+                        stem = Path(image_path).stem
+                        parent = Path(image_path).parent
+
+                        if output_format == "json":
+                            json_simplified = img_cmd.get("json_simplified", False)
+                            json_path = parent / f"{stem}.json"
+
+                            if existing_tags_action == "skip" and json_path.exists():
+                                result({"type": "result", "image_path": image_path, "tags": [], "tag_count": 0, "skipped": True})
+                                continue
+
+                            if existing_tags_action in ("prepend", "append") and json_path.exists():
+                                try:
+                                    with open(json_path, "r", encoding="utf-8") as f:
+                                        existing_data = json.load(f)
+                                    new_data = _build_simplified_json(selected_tags) if json_simplified else _build_structured_json(selected_tags)
+                                    merged = existing_data.copy()
+                                    for k, v in new_data.items():
+                                        if k not in merged:
+                                            merged[k] = v
+                                        elif isinstance(v, dict) and isinstance(merged[k], dict):
+                                            for kk, vv in v.items():
+                                                if kk not in merged[k]:
+                                                    merged[k][kk] = vv
+                                                elif isinstance(vv, list) and isinstance(merged[k][kk], list):
+                                                    existing_set = set(merged[k][kk])
+                                                    merged[k][kk] = merged[k][kk] + [t_val for t_val in vv if t_val not in existing_set]
+                                        elif isinstance(v, list) and isinstance(merged[k], list):
+                                            existing_set = set(merged[k])
+                                            merged[k] = merged[k] + [t_val for t_val in v if t_val not in existing_set]
+                                    with open(json_path, "w", encoding="utf-8") as f:
+                                        json.dump(merged, f, ensure_ascii=False, indent=2)
+                                except Exception:
+                                    data = _build_simplified_json(selected_tags) if json_simplified else _build_structured_json(selected_tags)
+                                    with open(json_path, "w", encoding="utf-8") as f:
+                                        json.dump(data, f, ensure_ascii=False, indent=2)
+                            else:
+                                data = _build_simplified_json(selected_tags) if json_simplified else _build_structured_json(selected_tags)
+                                with open(json_path, "w", encoding="utf-8") as f:
+                                    json.dump(data, f, ensure_ascii=False, indent=2)
+                        else:
+                            txt_path = parent / f"{stem}.txt"
+
+                            if existing_tags_action == "skip" and txt_path.exists():
+                                result({"type": "result", "image_path": image_path, "tags": [], "tag_count": 0, "skipped": True})
+                                continue
+
+                            if existing_tags_action in ("prepend", "append") and txt_path.exists():
+                                try:
+                                    with open(txt_path, "r", encoding="utf-8") as f:
+                                        existing_text = f.read().strip()
+                                    existing_list = [t_str.strip() for t_str in existing_text.split(",") if t_str.strip()]
+                                    if existing_tags_action == "append":
+                                        existing_set = set(existing_list)
+                                        merged = existing_list + [t_str for t_str in selected_flat if t_str not in existing_set]
+                                    else:
+                                        existing_set = set(existing_list)
+                                        merged = [t_str for t_str in selected_flat if t_str not in existing_set] + existing_list
+                                    selected_flat = merged
+                                except Exception:
+                                    pass
+
+                            if append_list:
+                                append_set = set(append_list)
+                                selected_flat = [n for n in selected_flat if n not in append_set]
+                                if append_position == "prepend":
+                                    selected_flat = append_list + selected_flat
+                                else:
+                                    selected_flat = selected_flat + append_list
+
+                            with open(txt_path, "w", encoding="utf-8") as f:
+                                f.write(", ".join(selected_flat))
+
+                        result({
+                            "type": "result",
+                            "image_path": image_path,
+                            "tags": selected_flat,
+                            "tag_count": len(selected_flat),
+                        })
+                    except Exception as e:
+                        result({
+                            "type": "error",
+                            "image_path": image_path,
+                            "message": f"{traceback.format_exc()}",
+                        })
+
             elif cmd["cmd"] == "quit":
                 log("推理进程退出")
                 break

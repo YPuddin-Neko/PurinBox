@@ -66,7 +66,11 @@ pub struct TaggerOptions {
     pub sort_by: String,
     #[serde(default = "default_existing_tags_action")]
     pub existing_tags_action: String,
+    #[serde(default = "default_batch_size")]
+    pub batch_size: u32,
 }
+
+fn default_batch_size() -> u32 { 1 }
 
 fn default_append_position() -> String { "append".into() }
 fn default_true() -> bool { true }

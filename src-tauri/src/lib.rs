@@ -21,6 +21,7 @@ use commands::tagger::llm_tagger::{start_llm_tagging, fetch_llm_models, cancel_l
 use commands::tag_manager::{load_tag_dataset, save_single_tag_file, save_all_tag_files, save_caption_file, save_all_caption_files, load_caption_dataset, load_json_dataset, save_single_json_file, save_all_json_files};
 use commands::translator::{translate_tags, get_translation_cache_stats, clear_translation_cache, test_translation, get_cache_path, set_cache_path, export_translation_csv, import_translation_csv};
 use commands::tag_sort::{start_tag_sorting, cancel_tag_sorting};
+use commands::tag_refine::{start_tag_refining, cancel_tag_refining};
 use commands::api_config::{save_api_config, load_api_config};
 use commands::proxy_config::{save_proxy_config, load_proxy_config};
 use commands::bucket_preview::{analyze_buckets, export_buckets};
@@ -103,6 +104,8 @@ pub fn run() {
             import_translation_csv,
             start_tag_sorting,
             cancel_tag_sorting,
+            start_tag_refining,
+            cancel_tag_refining,
             save_api_config,
             load_api_config,
             save_proxy_config,

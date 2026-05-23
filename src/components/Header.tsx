@@ -24,7 +24,7 @@ const routeI18nMap: Record<string, string> = {
   '/blur-noise': 'sidebar.blurNoise',
   '/tagger': 'sidebar.tagger',
   '/tag-manager': 'sidebar.tagManager',
-  '/tag-sort': 'sidebar.tagSort',
+  '/tag-sort': 'sidebar.tagOptimize',
   '/bucket-preview': 'sidebar.bucketPreview',
   '/upscale': 'sidebar.upscale',
   '/image-cluster': 'sidebar.imageCluster',
@@ -51,6 +51,7 @@ const TASK_ROUTE_MAP: Record<string, string> = {
   tagger: '/tagger',
   'llm-tagger': '/tagger',
   'tag-sort': '/tag-sort',
+  'tag-refine': '/tag-sort',
   upscale: '/upscale',
   aesthetic: '/aesthetic',
 };

@@ -14,6 +14,7 @@ pub mod tagger;
 pub mod tag_manager;
 pub mod translator;
 pub mod tag_sort;
+pub mod tag_refine;
 pub mod api_config;
 pub mod proxy_config;
 pub mod bucket_preview;

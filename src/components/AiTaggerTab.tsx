@@ -24,6 +24,7 @@ interface TaggerPreset {
   charTh: number;
   enabled: string[];
   useGpu: boolean;
+  batchSize: number;
   excludeTags: string;
   appendTags: string;
   appendPosition: 'prepend' | 'append';
@@ -54,6 +55,7 @@ export default function AiTaggerTab() {
   const [charTh, setCharTh] = useState(0.85);
   const [enabled, setEnabled] = useState<Set<string>>(new Set(cats.filter(c => c.default).map(c => c.key)));
   const [useGpu, setUseGpu] = useState(false);
+  const [batchSize, setBatchSize] = useState(1);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [pCur, setPCur] = useState(0);
@@ -117,6 +119,7 @@ export default function AiTaggerTab() {
       genTh, charTh,
       enabled: Array.from(enabled),
       useGpu,
+      batchSize,
       excludeTags, appendTags, appendPosition,
       replaceUnderscore, escapeParentheses,
       sortBy, existingTagsAction,
@@ -137,6 +140,7 @@ export default function AiTaggerTab() {
     setCharTh(preset.charTh);
     setEnabled(new Set(preset.enabled));
     setUseGpu(preset.useGpu);
+    setBatchSize(preset.batchSize ?? 1);
     setExcludeTags(preset.excludeTags);
     setAppendTags(preset.appendTags);
     setAppendPosition(preset.appendPosition);
@@ -243,7 +247,7 @@ export default function AiTaggerTab() {
     setLogs([{ time: getTimeStr(), message: t('aiTagger.startMsg', { model: cur?.name, hw: useGpu ? 'GPU' : 'CPU' }), status: 'info' }]);
     addTask('tagger', `${t('aiTagger.taskName')} - ${cur?.name || '?'}`);
     try {
-      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, sort_by: sortBy, existing_tags_action: existingTagsAction, output_format: outputFormat, json_simplified: jsonSimplified } });
+      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, batch_size: useGpu ? batchSize : 1, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, sort_by: sortBy, existing_tags_action: existingTagsAction, output_format: outputFormat, json_simplified: jsonSimplified } });
       updateTask('tagger', { status: 'done' });
       await load();
     } catch (e: any) {
@@ -413,6 +417,9 @@ export default function AiTaggerTab() {
             <span className="tool-panel-title">{t('aiTagger.otherSettings')}</span>
             {/* GPU/CPU 切换 */}
             <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: useGpu ? 'var(--color-text-secondary)' : 'var(--color-text-tertiary)', whiteSpace: 'nowrap' }}>{t('aiTagger.batchSize')}</span>
+              <input type="number" className="form-input" min={1} max={64} value={batchSize} onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))} disabled={!useGpu} style={{ width: 58, padding: '3px 6px', fontSize: 11, textAlign: 'center', opacity: useGpu ? 1 : 0.4 }} />
+              <div style={{ width: 1, height: 16, background: 'var(--color-border)', margin: '0 4px' }} />
               {(['cpu', 'gpu'] as const).map(hw => {
                 const isGpu = hw === 'gpu';
                 const active = isGpu === useGpu;

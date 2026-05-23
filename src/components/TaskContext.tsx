@@ -48,6 +48,7 @@ const EVENT_TASK_MAP: Record<string, string> = {
   'python-env-progress': 'tagger',
   'llm-tagger-progress': 'llm-tagger',
   'tag-sort-progress': 'tag-sort',
+  'tag-refine-progress': 'tag-refine',
   'perspective-progress': 'perspective',
   'blur-noise-progress': 'blur-noise',
   'upscale-progress': 'upscale',

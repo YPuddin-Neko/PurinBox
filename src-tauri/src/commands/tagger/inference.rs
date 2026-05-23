@@ -754,7 +754,10 @@ pub fn run_tagging(
     ..Default::default()
     });
 
-    for (i, file_path) in files.iter().enumerate() {
+    let batch_size = options.batch_size.max(1) as usize;
+
+    let mut i = 0usize;
+    while i < files.len() {
         if is_tagging_cancelled() {
             let _ = app.emit("tagger-progress", ProgressEvent {
                 current: i as u32, total,
@@ -773,103 +776,185 @@ pub fn run_tagging(
             break;
         }
 
-        let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let end = (i + batch_size).min(files.len());
+        let batch_files = &files[i..end];
+        let batch_len = batch_files.len();
+
+        let first_name = batch_files[0].file_name().unwrap_or_default().to_string_lossy().to_string();
         let _ = app.emit("tagger-progress", ProgressEvent {
             current: i as u32 + 1, total,
-            filename: filename.clone(),
+            filename: first_name.clone(),
             status: "processing".to_string(),
-            message: format!("正在处理: {} ({}/{})", filename, i + 1, total),
+            message: if batch_len > 1 {
+                format!("正在处理: {} 等 {} 张 ({}/{})", first_name, batch_len, i + 1, total)
+            } else {
+                format!("正在处理: {} ({}/{})", first_name, i + 1, total)
+            },
         ..Default::default()
         });
 
-        let tag_cmd = serde_json::json!({
-            "cmd": "tag",
-            "image_path": file_path.to_string_lossy(),
-            "general_threshold": options.general_threshold,
-            "character_threshold": options.character_threshold,
-            "enabled_categories": enabled_cats,
-            "exclude_tags": options.exclude_tags,
-            "append_tags": options.append_tags,
-            "append_position": options.append_position,
-            "replace_underscore": options.replace_underscore,
-            "output_format": options.output_format,
-            "json_simplified": options.json_simplified,
-            "escape_parentheses": options.escape_parentheses,
-            "sort_by": options.sort_by,
-            "existing_tags_action": options.existing_tags_action,
-        });
-
-        if let Err(e) = writeln!(stdin, "{}", tag_cmd) {
-            fail_count += 1;
-            let err_msg = format!("{}: 发送命令失败: {}", filename, e);
-            errors.push(err_msg.clone());
-            break;
-        }
-
-        // 读取结果（可能先收到 log 消息，需要循环读取直到 result/error）
-        loop {
-            match lines_iter.next() {
-                Some(Ok(line)) => {
-                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                        match msg_type {
-                            "result" => {
-                                let tag_count = msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                                success_count += 1;
-                                let _ = app.emit("tagger-progress", ProgressEvent {
-                                    current: i as u32 + 1, total,
-                                    filename: filename.clone(),
-                                    status: "success".to_string(),
-                                    message: format!("[完成] {} → {} 个标签", filename, tag_count),
-                                ..Default::default()
-                                });
-                                break;
+        if batch_len == 1 {
+            // 单张模式
+            let file_path = &batch_files[0];
+            let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let tag_cmd = serde_json::json!({
+                "cmd": "tag",
+                "image_path": file_path.to_string_lossy(),
+                "general_threshold": options.general_threshold,
+                "character_threshold": options.character_threshold,
+                "enabled_categories": enabled_cats,
+                "exclude_tags": options.exclude_tags,
+                "append_tags": options.append_tags,
+                "append_position": options.append_position,
+                "replace_underscore": options.replace_underscore,
+                "output_format": options.output_format,
+                "json_simplified": options.json_simplified,
+                "escape_parentheses": options.escape_parentheses,
+                "sort_by": options.sort_by,
+                "existing_tags_action": options.existing_tags_action,
+            });
+            if let Err(e) = writeln!(stdin, "{}", tag_cmd) {
+                fail_count += 1;
+                errors.push(format!("{}: 发送命令失败: {}", filename, e));
+                break;
+            }
+            loop {
+                match lines_iter.next() {
+                    Some(Ok(line)) => {
+                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                            let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            match msg_type {
+                                "result" => {
+                                    let tag_count = msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    success_count += 1;
+                                    let _ = app.emit("tagger-progress", ProgressEvent {
+                                        current: i as u32 + 1, total,
+                                        filename: filename.clone(),
+                                        status: "success".to_string(),
+                                        message: format!("[完成] {} → {} 个标签", filename, tag_count),
+                                    ..Default::default()
+                                    });
+                                    break;
+                                }
+                                "error" => {
+                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                    fail_count += 1;
+                                    errors.push(format!("{}: {}", filename, text));
+                                    let _ = app.emit("tagger-progress", ProgressEvent {
+                                        current: i as u32 + 1, total,
+                                        filename: filename.clone(),
+                                        status: "error".to_string(),
+                                        message: format!("[错误] {}: {}", filename, text),
+                                    ..Default::default()
+                                    });
+                                    break;
+                                }
+                                "log" => {
+                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                    let i18n_params = msg.get("i18n_params").cloned();
+                                    let _ = app.emit("tagger-progress", ProgressEvent {
+                                        current: i as u32 + 1, total,
+                                        filename: filename.clone(),
+                                        status: "info".to_string(),
+                                        message: text,
+                                        i18n_key,
+                                        i18n_params,
+                                    });
+                                }
+                                _ => { break; }
                             }
-                            "error" => {
-                                let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
-                                fail_count += 1;
-                                let err_msg = format!("{}: {}", filename, text);
-                                errors.push(err_msg.clone());
-                                let _ = app.emit("tagger-progress", ProgressEvent {
-                                    current: i as u32 + 1, total,
-                                    filename: filename.clone(),
-                                    status: "error".to_string(),
-                                    message: format!("[错误] {}", err_msg),
-                                ..Default::default()
-                                });
-                                break;
-                            }
-                            "log" => {
-                                let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                let i18n_params = msg.get("i18n_params").cloned();
-                                let _ = app.emit("tagger-progress", ProgressEvent {
-                                    current: i as u32 + 1, total,
-                                    filename: filename.clone(),
-                                    status: "info".to_string(),
-                                    message: text,
-                                    i18n_key,
-                                    i18n_params,
-                                });
-                                // log 类消息不算结果，继续读下一行
-                            }
-                            _ => { break; }
                         }
                     }
+                    Some(Err(e)) => { fail_count += 1; errors.push(format!("{}: 读取失败: {}", filename, e)); break; }
+                    None => { fail_count += 1; errors.push(format!("{}: Python 进程退出", filename)); break; }
                 }
-                Some(Err(e)) => {
-                    fail_count += 1;
-                    errors.push(format!("{}: 读取结果失败: {}", filename, e));
-                    break;
-                }
-                None => {
-                    fail_count += 1;
-                    errors.push(format!("{}: Python 进程意外退出", filename));
-                    break;
+            }
+        } else {
+            // 批量模式
+            let images: Vec<serde_json::Value> = batch_files.iter().map(|fp| {
+                serde_json::json!({
+                    "image_path": fp.to_string_lossy(),
+                    "general_threshold": options.general_threshold,
+                    "character_threshold": options.character_threshold,
+                    "enabled_categories": enabled_cats,
+                    "exclude_tags": options.exclude_tags,
+                    "append_tags": options.append_tags,
+                    "append_position": options.append_position,
+                    "replace_underscore": options.replace_underscore,
+                    "output_format": options.output_format,
+                    "json_simplified": options.json_simplified,
+                    "escape_parentheses": options.escape_parentheses,
+                    "sort_by": options.sort_by,
+                    "existing_tags_action": options.existing_tags_action,
+                })
+            }).collect();
+            let batch_cmd = serde_json::json!({ "cmd": "tag_batch", "images": images });
+            if let Err(e) = writeln!(stdin, "{}", batch_cmd) {
+                fail_count += batch_len as u32;
+                errors.push(format!("批量发送失败: {}", e));
+                break;
+            }
+            let mut results_read = 0usize;
+            while results_read < batch_len {
+                match lines_iter.next() {
+                    Some(Ok(line)) => {
+                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                            let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            match msg_type {
+                                "result" => {
+                                    let img_path = msg.get("image_path").and_then(|v| v.as_str()).unwrap_or("");
+                                    let fname = std::path::Path::new(img_path).file_name().unwrap_or_default().to_string_lossy().to_string();
+                                    let tag_count = msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    success_count += 1;
+                                    results_read += 1;
+                                    let _ = app.emit("tagger-progress", ProgressEvent {
+                                        current: (i + results_read) as u32, total,
+                                        filename: fname.clone(),
+                                        status: "success".to_string(),
+                                        message: format!("[完成] {} → {} 个标签", fname, tag_count),
+                                    ..Default::default()
+                                    });
+                                }
+                                "error" => {
+                                    let img_path = msg.get("image_path").and_then(|v| v.as_str()).unwrap_or("");
+                                    let fname = std::path::Path::new(img_path).file_name().unwrap_or_default().to_string_lossy().to_string();
+                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                    fail_count += 1;
+                                    results_read += 1;
+                                    errors.push(format!("{}: {}", fname, text));
+                                    let _ = app.emit("tagger-progress", ProgressEvent {
+                                        current: (i + results_read) as u32, total,
+                                        filename: fname.clone(),
+                                        status: "error".to_string(),
+                                        message: format!("[错误] {}: {}", fname, text),
+                                    ..Default::default()
+                                    });
+                                }
+                                "log" => {
+                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                    let i18n_params = msg.get("i18n_params").cloned();
+                                    let _ = app.emit("tagger-progress", ProgressEvent {
+                                        current: (i + results_read) as u32 + 1, total,
+                                        filename: String::new(),
+                                        status: "info".to_string(),
+                                        message: text, i18n_key, i18n_params,
+                                    });
+                                }
+                                _ => { results_read += 1; }
+                            }
+                        }
+                    }
+                    Some(Err(e)) => { fail_count += (batch_len - results_read) as u32; errors.push(format!("批量读取失败: {}", e)); break; }
+                    None => { fail_count += (batch_len - results_read) as u32; errors.push("Python 进程退出".to_string()); break; }
                 }
             }
         }
+        i = end;
     }
+
+
 
     // 发送 quit 命令
     let _ = writeln!(stdin, r#"{{"cmd":"quit"}}"#);

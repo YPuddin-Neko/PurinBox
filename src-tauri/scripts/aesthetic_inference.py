@@ -314,6 +314,138 @@ def main():
             except Exception as e:
                 error(f"评分失败 [{Path(image_path).name}]: {traceback.format_exc()}")
 
+        elif command == "score_batch":
+            if session is None:
+                error("模型未初始化")
+                continue
+
+            images = cmd.get("images", [])
+            if not images:
+                error("score_batch: images 为空")
+                continue
+
+            # 批量预处理
+            batch_data = []
+            valid_indices = []
+            for idx, img_cmd in enumerate(images):
+                img_path = img_cmd.get("image_path", "")
+                try:
+                    img_data = preprocess_image(img_path, input_size, input_format)
+                    batch_data.append(img_data)
+                    valid_indices.append(idx)
+                except Exception as e:
+                    result({
+                        "type": "error",
+                        "image_path": img_path,
+                        "message": f"预处理失败: {e}",
+                    })
+
+            if not batch_data:
+                continue
+
+            batch_tensor = np.concatenate(batch_data, axis=0)
+
+            # 批量推理
+            try:
+                outputs = session.run(None, {input_name: batch_tensor})
+                all_logits = outputs[0]  # shape: [N, num_labels]
+            except Exception as e:
+                # GPU 推理失败，回退 CPU 重试
+                try:
+                    import onnxruntime as ort
+                    log(f"GPU 批量推理失败，自动回退到 CPU: {type(e).__name__}")
+                    sess_options = ort.SessionOptions()
+                    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    session = ort.InferenceSession(
+                        _model_path_saved, sess_options,
+                        providers=["CPUExecutionProvider"]
+                    )
+                    input_info = session.get_inputs()[0]
+                    input_name = input_info.name
+                    log("已切换到 CPU 模式，重试批量推理")
+                    outputs = session.run(None, {input_name: batch_tensor})
+                    all_logits = outputs[0]
+                except Exception as e2:
+                    for vi in valid_indices:
+                        img_path = images[vi].get("image_path", "")
+                        result({
+                            "type": "error",
+                            "image_path": img_path,
+                            "message": f"批量推理失败: {e2}",
+                        })
+                    continue
+
+            # 逐张处理结果
+            for batch_idx, orig_idx in enumerate(valid_indices):
+                img_cmd = images[orig_idx]
+                image_path = img_cmd.get("image_path", "")
+                move_files = img_cmd.get("move_files", True)
+                output_path = img_cmd.get("output_path", "")
+
+                try:
+                    logits = all_logits[batch_idx]
+                    probs = softmax(logits)
+
+                    top_idx = int(np.argmax(probs))
+                    top_label = labels[top_idx] if top_idx < len(labels) else "unknown"
+                    top_prob = float(probs[top_idx])
+
+                    weighted_score = sum(
+                        float(probs[i]) * LABEL_SCORES.get(labels[i], 0)
+                        for i in range(min(len(probs), len(labels)))
+                    )
+
+                    probs_dict = {}
+                    for i, label in enumerate(labels):
+                        if i < len(probs):
+                            probs_dict[label] = round(float(probs[i]), 4)
+
+                    moved_to = ""
+                    if move_files:
+                        src = Path(image_path)
+                        if output_path:
+                            base_dir = Path(output_path)
+                        else:
+                            base_dir = src.parent
+                        dest_dir = base_dir / top_label
+                        dest_dir.mkdir(parents=True, exist_ok=True)
+                        dest_path = dest_dir / src.name
+
+                        if dest_path.exists():
+                            stem = src.stem
+                            ext = src.suffix
+                            counter = 1
+                            while dest_path.exists():
+                                dest_path = dest_dir / f"{stem}_{counter}{ext}"
+                                counter += 1
+
+                        shutil.move(str(src), str(dest_path))
+                        moved_to = str(dest_path)
+
+                        actual_stem = dest_path.stem
+                        for tag_ext in [".txt", ".json", ".caption"]:
+                            tag_src = src.parent / (src.stem + tag_ext)
+                            if tag_src.exists():
+                                tag_dest = dest_dir / f"{actual_stem}{tag_ext}"
+                                if tag_dest.exists():
+                                    tc = 1
+                                    while tag_dest.exists():
+                                        tag_dest = dest_dir / f"{actual_stem}_{tc}{tag_ext}"
+                                        tc += 1
+                                shutil.move(str(tag_src), str(tag_dest))
+
+                    result({
+                        "type": "result",
+                        "image_path": image_path,
+                        "label": top_label,
+                        "score": round(weighted_score, 2),
+                        "confidence": round(top_prob, 4),
+                        "probs": probs_dict,
+                        "moved_to": moved_to,
+                    })
+                except Exception as e:
+                    error(f"评分失败 [{Path(image_path).name}]: {traceback.format_exc()}")
+
         else:
             error(f"未知命令: {command}")
 

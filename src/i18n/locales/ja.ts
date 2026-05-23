@@ -91,7 +91,7 @@ const ja = {
     tagger: '画像タグ付け',
     tagManager: 'タグ管理',
     sectionAdvanced: '高度なツール',
-    tagSort: 'タグソート',
+    tagOptimize: 'タグ最適化',
     bucketPreview: 'バケットプレビュー',
     upscale: '超解像',
     imageCluster: '画像クラスタ',
@@ -523,6 +523,27 @@ const ja = {
     taskName: 'タグソート',
   },
 
+  tagOptimize: {
+    title: 'タグ最適化',
+    subtitle: 'LLMでタグファイルをソート、または画像と照合してタグを細化調整',
+    sortTab: 'タグソート',
+    refineTab: 'タグ細化',
+  },
+
+  tagRefine: {
+    inputDir: '画像フォルダ（画像と .txt タグファイル含む）',
+    inputPlaceholder: '画像とタグのフォルダを選択...',
+    outputDir: '出力ディレクトリ（細化後のタグ出力先）',
+    outputPlaceholder: '出力フォルダを選択...',
+    imageSize: '画像送信サイズ',
+    promptTitle: '細化プロンプト',
+    promptHint: '{tags} で既存タグのプレースホルダー',
+    startRefine: '細化開始',
+    refining: '細化中...',
+    startMsg: 'タグ細化開始 | モデル: {{model}} | スレッド: {{threads}} | 間隔: {{interval}}',
+    taskName: 'タグ細化',
+  },
+
   bucketPreview: {
     title: 'バケットプレビュー',
     subtitle: 'トレーニングデータセットのバケット分割結果をプレビュー',
@@ -648,6 +669,7 @@ const ja = {
     fillAllFields: '名前を入力しモデルとタグファイルを選択してください',
     downloadFail: 'ダウンロード失敗',
     tagFileLabel: 'タグファイル',
+    batchSize: 'バッチ',
   },
 
   llmTagger: {
@@ -1116,6 +1138,7 @@ const ja = {
     taskName: '美学スコア',
     modelSource: 'モデルソース:',
     modelSourceDesc: 'アニメ美学品質スコアリングモデル、SwinV2アーキテクチャ使用、7段階品質分類に対応',
+    batchSize: 'バッチ',
   },
 
   // ═══════════════ GPU 診断ログ ═══════════════

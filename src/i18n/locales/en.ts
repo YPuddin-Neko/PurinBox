@@ -91,7 +91,7 @@ const en = {
     tagger: 'Image Tagger',
     tagManager: 'Tag Manager',
     sectionAdvanced: 'Advanced',
-    tagSort: 'Tag Sort',
+    tagOptimize: 'Tag Optimize',
     bucketPreview: 'Bucket Preview',
     upscale: 'Upscale',
     imageCluster: 'Image Cluster',
@@ -523,6 +523,27 @@ const en = {
     taskName: 'Tag Sort',
   },
 
+  tagOptimize: {
+    title: 'Tag Optimize',
+    subtitle: 'Sort tag files with LLM or refine tags by comparing images with existing tags',
+    sortTab: 'Tag Sort',
+    refineTab: 'Tag Refine',
+  },
+
+  tagRefine: {
+    inputDir: 'Image folder (with images and .txt tag files)',
+    inputPlaceholder: 'Select folder containing images and tags...',
+    outputDir: 'Output directory (refined tags output here)',
+    outputPlaceholder: 'Select output folder...',
+    imageSize: 'Image send size',
+    promptTitle: 'Refine prompt',
+    promptHint: 'Use {tags} as placeholder for existing tags',
+    startRefine: 'Start Refine',
+    refining: 'Refining...',
+    startMsg: 'Start tag refine | Model: {{model}} | Threads: {{threads}} | Interval: {{interval}}',
+    taskName: 'Tag Refine',
+  },
+
   bucketPreview: {
     title: 'Bucket Preview',
     subtitle: 'Preview training dataset bucket allocation results',
@@ -648,6 +669,7 @@ const en = {
     fillAllFields: 'Please fill name and select model + tag files',
     downloadFail: 'Download failed',
     tagFileLabel: 'Tag File',
+    batchSize: 'Batch',
   },
 
   llmTagger: {
@@ -1119,6 +1141,7 @@ const en = {
     taskName: 'Aesthetic Score',
     modelSource: 'Model source:',
     modelSourceDesc: 'Anime aesthetic quality scoring model using SwinV2 architecture, supports 7-level quality classification',
+    batchSize: 'Batch',
   },
 
   // ═══════════════ GPU Diagnostic Logs ═══════════════

@@ -19,9 +19,12 @@ pub struct AestheticOptions {
     pub use_gpu: bool,
     #[serde(default = "default_true")]
     pub move_files: bool,
+    #[serde(default = "default_batch_size")]
+    pub batch_size: u32,
 }
 
 fn default_true() -> bool { true }
+fn default_batch_size() -> u32 { 1 }
 
 /// 全局取消标志
 static AESTHETIC_CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -464,7 +467,10 @@ fn run_aesthetic_scoring(
     ..Default::default()
     });
 
-    for (i, file_path) in files.iter().enumerate() {
+    let batch_size = options.batch_size.max(1) as usize;
+
+    let mut i = 0usize;
+    while i < files.len() {
         if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
             let _ = app.emit("aesthetic-progress", ProgressEvent {
                 current: i as u32, total,
@@ -476,87 +482,162 @@ fn run_aesthetic_scoring(
             break;
         }
 
-        let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let end = (i + batch_size).min(files.len());
+        let batch_files = &files[i..end];
+        let batch_len = batch_files.len();
+
+        let first_name = batch_files[0].file_name().unwrap_or_default().to_string_lossy().to_string();
         let _ = app.emit("aesthetic-progress", ProgressEvent {
             current: i as u32 + 1, total,
-            filename: filename.clone(),
+            filename: first_name.clone(),
             status: "processing".to_string(),
-            message: format!("正在评分: {} ({}/{})", filename, i + 1, total),
+            message: if batch_len > 1 {
+                format!("正在评分: {} 等 {} 张 ({}/{})", first_name, batch_len, i + 1, total)
+            } else {
+                format!("正在评分: {} ({}/{})", first_name, i + 1, total)
+            },
         ..Default::default()
         });
 
-        let score_cmd = serde_json::json!({
-            "cmd": "score",
-            "image_path": file_path.to_string_lossy(),
-            "move_files": options.move_files,
-            "output_path": if options.output_path.is_empty() { "" } else { &options.output_path },
-        });
-
-        if let Err(e) = writeln!(stdin, "{}", score_cmd) {
-            fail_count += 1;
-            errors.push(format!("{}: 发送命令失败: {}", filename, e));
-            break;
-        }
-
-        // 读取结果（可能先收到 log 消息，需要循环读取直到 result/error）
-        loop {
-            match read_utf8_line(&mut reader) {
-                Some(line) => {
-                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                        match msg_type {
-                            "result" => {
-                                let label = msg.get("label").and_then(|v| v.as_str()).unwrap_or("?");
-                                let score = msg.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                let confidence = msg.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                success_count += 1;
-                                let _ = app.emit("aesthetic-progress", ProgressEvent {
-                                    current: i as u32 + 1, total,
-                                    filename: filename.clone(),
-                                    status: "success".to_string(),
-                                    message: format!("[完成] {} → {} (分数: {:.2}, 置信度: {:.1}%)", filename, label, score, confidence * 100.0),
-                                ..Default::default()
-                                });
-                                break;
+        if batch_len == 1 {
+            // 单张模式
+            let file_path = &batch_files[0];
+            let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let score_cmd = serde_json::json!({
+                "cmd": "score",
+                "image_path": file_path.to_string_lossy(),
+                "move_files": options.move_files,
+                "output_path": if options.output_path.is_empty() { "" } else { &options.output_path },
+            });
+            if let Err(e) = writeln!(stdin, "{}", score_cmd) {
+                fail_count += 1;
+                errors.push(format!("{}: 发送命令失败: {}", filename, e));
+                break;
+            }
+            loop {
+                match read_utf8_line(&mut reader) {
+                    Some(line) => {
+                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                            let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            match msg_type {
+                                "result" => {
+                                    let label = msg.get("label").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let score = msg.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                    let confidence = msg.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                    success_count += 1;
+                                    let _ = app.emit("aesthetic-progress", ProgressEvent {
+                                        current: i as u32 + 1, total,
+                                        filename: filename.clone(),
+                                        status: "success".to_string(),
+                                        message: format!("[完成] {} → {} (分数: {:.2}, 置信度: {:.1}%)", filename, label, score, confidence * 100.0),
+                                    ..Default::default()
+                                    });
+                                    break;
+                                }
+                                "error" => {
+                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                    fail_count += 1;
+                                    errors.push(format!("{}: {}", filename, text));
+                                    let _ = app.emit("aesthetic-progress", ProgressEvent {
+                                        current: i as u32 + 1, total,
+                                        filename: filename.clone(),
+                                        status: "error".to_string(),
+                                        message: format!("[错误] {}: {}", filename, text),
+                                    ..Default::default()
+                                    });
+                                    break;
+                                }
+                                "log" => {
+                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                    let i18n_params = msg.get("i18n_params").cloned();
+                                    let _ = app.emit("aesthetic-progress", ProgressEvent {
+                                        current: i as u32 + 1, total,
+                                        filename: filename.clone(),
+                                        status: "info".to_string(),
+                                        message: text, i18n_key, i18n_params,
+                                    });
+                                }
+                                _ => { break; }
                             }
-                            "error" => {
-                                let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
-                                fail_count += 1;
-                                errors.push(format!("{}: {}", filename, text));
-                                let _ = app.emit("aesthetic-progress", ProgressEvent {
-                                    current: i as u32 + 1, total,
-                                    filename: filename.clone(),
-                                    status: "error".to_string(),
-                                    message: format!("[错误] {}: {}", filename, text),
-                                ..Default::default()
-                                });
-                                break;
-                            }
-                            "log" => {
-                                let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                let i18n_params = msg.get("i18n_params").cloned();
-                                let _ = app.emit("aesthetic-progress", ProgressEvent {
-                                    current: i as u32 + 1, total,
-                                    filename: filename.clone(),
-                                    status: "info".to_string(),
-                                    message: text,
-                                    i18n_key,
-                                    i18n_params,
-                                });
-                                // log 类消息不算结果，继续读下一行
-                            }
-                            _ => { break; }
                         }
                     }
+                    None => { fail_count += 1; errors.push(format!("{}: Python 进程退出", filename)); break; }
                 }
-                None => {
-                    fail_count += 1;
-                    errors.push(format!("{}: Python 进程意外退出", filename));
-                    break;
+            }
+        } else {
+            // 批量模式
+            let images: Vec<serde_json::Value> = batch_files.iter().map(|fp| {
+                serde_json::json!({
+                    "image_path": fp.to_string_lossy(),
+                    "move_files": options.move_files,
+                    "output_path": if options.output_path.is_empty() { "" } else { &options.output_path },
+                })
+            }).collect();
+            let batch_cmd = serde_json::json!({ "cmd": "score_batch", "images": images });
+            if let Err(e) = writeln!(stdin, "{}", batch_cmd) {
+                fail_count += batch_len as u32;
+                errors.push(format!("批量发送失败: {}", e));
+                break;
+            }
+            let mut results_read = 0usize;
+            while results_read < batch_len {
+                match read_utf8_line(&mut reader) {
+                    Some(line) => {
+                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
+                            let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            match msg_type {
+                                "result" => {
+                                    let img_path = msg.get("image_path").and_then(|v| v.as_str()).unwrap_or("");
+                                    let fname = std::path::Path::new(img_path).file_name().unwrap_or_default().to_string_lossy().to_string();
+                                    let label = msg.get("label").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let score = msg.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                    let confidence = msg.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                    success_count += 1;
+                                    results_read += 1;
+                                    let _ = app.emit("aesthetic-progress", ProgressEvent {
+                                        current: (i + results_read) as u32, total,
+                                        filename: fname.clone(),
+                                        status: "success".to_string(),
+                                        message: format!("[完成] {} → {} (分数: {:.2}, 置信度: {:.1}%)", fname, label, score, confidence * 100.0),
+                                    ..Default::default()
+                                    });
+                                }
+                                "error" => {
+                                    let img_path = msg.get("image_path").and_then(|v| v.as_str()).unwrap_or("");
+                                    let fname = std::path::Path::new(img_path).file_name().unwrap_or_default().to_string_lossy().to_string();
+                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                    fail_count += 1;
+                                    results_read += 1;
+                                    errors.push(format!("{}: {}", fname, text));
+                                    let _ = app.emit("aesthetic-progress", ProgressEvent {
+                                        current: (i + results_read) as u32, total,
+                                        filename: fname.clone(),
+                                        status: "error".to_string(),
+                                        message: format!("[错误] {}: {}", fname, text),
+                                    ..Default::default()
+                                    });
+                                }
+                                "log" => {
+                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                    let i18n_params = msg.get("i18n_params").cloned();
+                                    let _ = app.emit("aesthetic-progress", ProgressEvent {
+                                        current: (i + results_read) as u32 + 1, total,
+                                        filename: String::new(),
+                                        status: "info".to_string(),
+                                        message: text, i18n_key, i18n_params,
+                                    });
+                                }
+                                _ => { results_read += 1; }
+                            }
+                        }
+                    }
+                    None => { fail_count += (batch_len - results_read) as u32; errors.push("Python 进程退出".to_string()); break; }
                 }
             }
         }
+        i = end;
     }
 
     let _ = writeln!(stdin, r#"{{"cmd":"quit"}}"#);

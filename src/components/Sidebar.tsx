@@ -15,7 +15,7 @@ import {
   TextCursorInput,
   Tags,
   List,
-  ArrowUpDown,
+  
   Grid3X3,
   Settings,
   PanelLeftClose,
@@ -27,6 +27,7 @@ import {
   Scale,
   FileCode2,
   Star,
+  Wand2,
 } from 'lucide-react';
 import '../styles/sidebar.css';
 import { getVersion } from '@tauri-apps/api/app';
@@ -64,7 +65,7 @@ const navSections: NavSection[] = [
   {
     titleKey: 'sidebar.sectionAdvanced',
     items: [
-      { id: 'tag-sort', labelKey: 'sidebar.tagSort', icon: <ArrowUpDown />, path: '/tag-sort' },
+      { id: 'tag-sort', labelKey: 'sidebar.tagOptimize', icon: <Wand2 />, path: '/tag-sort' },
       { id: 'bucket-preview', labelKey: 'sidebar.bucketPreview', icon: <Grid3X3 />, path: '/bucket-preview' },
       { id: 'upscale', labelKey: 'sidebar.upscale', icon: <ZoomIn />, path: '/upscale' },
       { id: 'image-cluster', labelKey: 'sidebar.imageCluster', icon: <Network />, path: '/image-cluster' },

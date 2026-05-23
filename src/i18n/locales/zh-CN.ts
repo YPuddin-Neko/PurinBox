@@ -94,7 +94,7 @@ const zhCN = {
     tagManager: '标签管理',
     // 高级工具
     sectionAdvanced: '高级工具',
-    tagSort: '标签排序',
+    tagOptimize: '标签优化',
     bucketPreview: '分桶预览',
     upscale: '图片超分',
     imageCluster: '图片聚类',
@@ -544,6 +544,29 @@ const zhCN = {
     taskName: '标签排序',
   },
 
+  // ═══════════════ 标签优化 ═══════════════
+  tagOptimize: {
+    title: '标签优化',
+    subtitle: '使用大语言模型对标签文件进行排序或结合图片进行细化调优',
+    sortTab: '标签排序',
+    refineTab: '标签细化',
+  },
+
+  // ═══════════════ 标签细化 ═══════════════
+  tagRefine: {
+    inputDir: '图片文件夹（含图片和 .txt 标签文件）',
+    inputPlaceholder: '选择图片和标签所在的文件夹...',
+    outputDir: '输出目录（细化后的标签输出到此处）',
+    outputPlaceholder: '选择输出文件夹...',
+    imageSize: '图片发送尺寸',
+    promptTitle: '细化提示词',
+    promptHint: '使用 {tags} 表示已有标签占位符',
+    startRefine: '开始细化',
+    refining: '细化中...',
+    startMsg: '开始标签细化 | 模型: {{model}} | 并发: {{threads}} | 间隔: {{interval}}',
+    taskName: '标签细化',
+  },
+
   // ═══════════════ 分桶预览 ═══════════════
   bucketPreview: {
     title: '分桶预览',
@@ -671,6 +694,7 @@ const zhCN = {
     fillAllFields: '请填写名称并选择模型文件和标签文件',
     downloadFail: '下载失败',
     tagFileLabel: '标签文件',
+    batchSize: '批次',
   },
 
   // ═══════════════ LLM 打标 ═══════════════
@@ -1164,6 +1188,7 @@ const zhCN = {
     taskName: '美学评分',
     modelSource: '模型来源:',
     modelSourceDesc: '动漫图片美学质量评分模型，使用 SwinV2 架构，支持 7 级质量分类',
+    batchSize: '批次',
   },
 
   // ═══════════════ GPU 诊断日志 ═══════════════
