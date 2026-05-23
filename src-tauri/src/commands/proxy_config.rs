@@ -156,15 +156,15 @@ fn apply_proxy(builder: reqwest::ClientBuilder, cfg: &ProxyConfig) -> reqwest::C
 /// 构建带代理的 reqwest Client（通用：翻译、模型下载等）
 pub fn build_http_client() -> reqwest::ClientBuilder {
     let cfg = load_proxy_config_internal();
-    apply_proxy(reqwest::Client::builder(), &cfg)
+    apply_proxy(reqwest::Client::builder().user_agent("PurinBox"), &cfg)
 }
 
 /// 构建带代理的 reqwest Client（LLM 专用：仅当 llm_proxy 开启时使用代理）
 pub fn build_http_client_for_llm() -> reqwest::ClientBuilder {
     let cfg = load_proxy_config_internal();
     if cfg.llm_proxy {
-        apply_proxy(reqwest::Client::builder(), &cfg)
+        apply_proxy(reqwest::Client::builder().user_agent("PurinBox"), &cfg)
     } else {
-        reqwest::Client::builder()
+        reqwest::Client::builder().user_agent("PurinBox")
     }
 }

@@ -8,6 +8,7 @@ import CustomSelect from '../components/CustomSelect';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { getVersion } from '@tauri-apps/api/app';
+
 import SystemMonitor from '../components/SystemMonitor';
 
 export default function SettingsPage() {
@@ -633,7 +634,7 @@ export default function SettingsPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
-                {t('settings.tagDatabaseDesc')}{t('settings.tagDbSource')}: <a href="#" onClick={(e) => { e.preventDefault(); window.open('https://github.com/DraconicDragon/dbr-e621-lists-archive', '_blank'); }} style={{ color: 'var(--color-accent-primary)', textDecoration: 'none', cursor: 'pointer' }}>DraconicDragon/dbr-e621-lists-archive</a>
+                {t('settings.tagDatabaseDesc')}{t('settings.tagDbSource')}: <a href="https://github.com/DraconicDragon/dbr-e621-lists-archive" target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent-primary)', textDecoration: 'none' }}>DraconicDragon/dbr-e621-lists-archive</a>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
