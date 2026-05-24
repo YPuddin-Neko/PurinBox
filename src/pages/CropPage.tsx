@@ -202,11 +202,11 @@ export default function CropPage() {
                       <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
                         <div className="form-group" style={{ flex: 1 }}>
                           <label className="form-label">{t('crop.targetWidth')}</label>
-                          <input className="form-input" type="number" value={centerW} onChange={(e) => setCenterW(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
+                          <input className="form-input" type="number" value={centerW} onChange={e => setCenterW(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCenterW(1); }} onClick={(e) => e.stopPropagation()} min={1} />
                         </div>
                         <div className="form-group" style={{ flex: 1 }}>
                           <label className="form-label">{t('crop.targetHeight')}</label>
-                          <input className="form-input" type="number" value={centerH} onChange={(e) => setCenterH(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
+                          <input className="form-input" type="number" value={centerH} onChange={e => setCenterH(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCenterH(1); }} onClick={(e) => e.stopPropagation()} min={1} />
                         </div>
                       </div>
                     </div>
@@ -217,12 +217,12 @@ export default function CropPage() {
                       <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', alignItems: 'flex-end' }}>
                         <div className="form-group" style={{ flex: 1 }}>
                           <label className="form-label">{t('crop.widthRatio')}</label>
-                          <input className="form-input" type="number" value={ratioW} onChange={(e) => setRatioW(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
+                          <input className="form-input" type="number" value={ratioW} onChange={e => setRatioW(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setRatioW(1); }} onClick={(e) => e.stopPropagation()} min={1} />
                         </div>
                         <span style={{ paddingBottom: 10, fontWeight: 700, color: 'var(--color-text-tertiary)', fontSize: 18 }}>:</span>
                         <div className="form-group" style={{ flex: 1 }}>
                           <label className="form-label">{t('crop.heightRatio')}</label>
-                          <input className="form-input" type="number" value={ratioH} onChange={(e) => setRatioH(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
+                          <input className="form-input" type="number" value={ratioH} onChange={e => setRatioH(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setRatioH(1); }} onClick={(e) => e.stopPropagation()} min={1} />
                         </div>
                       </div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -246,19 +246,19 @@ export default function CropPage() {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
                         <div className="form-group">
                           <label className="form-label">{t('crop.cropTop')}</label>
-                          <input className="form-input" type="number" value={cropTop} onChange={(e) => setCropTop(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={0} />
+                          <input className="form-input" type="number" value={cropTop} onChange={e => setCropTop(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCropTop(0); }} onClick={(e) => e.stopPropagation()} min={0} />
                         </div>
                         <div className="form-group">
                           <label className="form-label">{t('crop.cropBottom')}</label>
-                          <input className="form-input" type="number" value={cropBottom} onChange={(e) => setCropBottom(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={0} />
+                          <input className="form-input" type="number" value={cropBottom} onChange={e => setCropBottom(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCropBottom(0); }} onClick={(e) => e.stopPropagation()} min={0} />
                         </div>
                         <div className="form-group">
                           <label className="form-label">{t('crop.cropLeft')}</label>
-                          <input className="form-input" type="number" value={cropLeft} onChange={(e) => setCropLeft(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={0} />
+                          <input className="form-input" type="number" value={cropLeft} onChange={e => setCropLeft(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCropLeft(0); }} onClick={(e) => e.stopPropagation()} min={0} />
                         </div>
                         <div className="form-group">
                           <label className="form-label">{t('crop.cropRight')}</label>
-                          <input className="form-input" type="number" value={cropRight} onChange={(e) => setCropRight(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={0} />
+                          <input className="form-input" type="number" value={cropRight} onChange={e => setCropRight(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCropRight(0); }} onClick={(e) => e.stopPropagation()} min={0} />
                         </div>
                       </div>
                     </div>

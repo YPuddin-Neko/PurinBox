@@ -219,13 +219,13 @@ export default function FilterPage() {
               {needsWidth && (
                 <div className="form-group" style={{ flex: 1 }}>
                   <label className="form-label">{condition === 'min_width' ? t('filter.minWidthPx') : t('filter.widthPx')}</label>
-                  <input className="form-input" type="number" value={width} onChange={(e) => setWidth(Number(e.target.value))} min={1} />
+                  <input className="form-input" type="number" value={width} onChange={e => setWidth(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setWidth(1); }} min={1} />
                 </div>
               )}
               {needsHeight && (
                 <div className="form-group" style={{ flex: 1 }}>
                   <label className="form-label">{condition === 'min_height' ? t('filter.minHeightPx') : t('filter.heightPx')}</label>
-                  <input className="form-input" type="number" value={height} onChange={(e) => setHeight(Number(e.target.value))} min={1} />
+                  <input className="form-input" type="number" value={height} onChange={e => setHeight(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setHeight(1); }} min={1} />
                 </div>
               )}
             </div>

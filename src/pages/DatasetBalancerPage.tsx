@@ -14,10 +14,10 @@ export default function DatasetBalancerPage() {
   const { t } = useTranslation();
   const [folders, setFolders] = useState<ConceptFolder[]>([mkFolder('character'), mkFolder('outfit')]);
   const [mode, setMode] = useState<'by_epoch' | 'by_steps'>('by_epoch');
-  const [batchSize, setBatchSize] = useState(1);
-  const [gradAccum, setGradAccum] = useState(1);
-  const [epochs, setEpochs] = useState(10);
-  const [maxSteps, setMaxSteps] = useState(2000);
+  const [batchSize, setBatchSize] = useState<number|string>(1);
+  const [gradAccum, setGradAccum] = useState<number|string>(1);
+  const [epochs, setEpochs] = useState<number|string>(10);
+  const [maxSteps, setMaxSteps] = useState<number|string>(2000);
   const [vizMode, setVizMode] = useState<VizMode>('treemap');
   const [hovered, setHovered] = useState<number | null>(null);
 
@@ -27,7 +27,7 @@ export default function DatasetBalancerPage() {
   const resetAll = () => { nextId = 1; setFolders([mkFolder('character'), mkFolder('outfit')]); setBatchSize(1); setGradAccum(1); setEpochs(10); setMaxSteps(2000); setMode('by_epoch'); };
 
   const calc = useMemo(() => {
-    const eb = batchSize * gradAccum;
+    const eb = (Number(batchSize) || 1) * (Number(gradAccum) || 1);
     const details = folders.map((f, i) => {
       const samples = f.imageCount * f.repeats;
       return { ...f, samples, color: COLORS[i % COLORS.length] };
@@ -37,14 +37,17 @@ export default function DatasetBalancerPage() {
     const withPct = details.map(d => ({ ...d, percent: totalSamples > 0 ? d.samples / totalSamples * 100 : 0 }));
 
     if (mode === 'by_epoch') {
-      return { stepsPerEpoch, totalSteps: stepsPerEpoch * epochs, totalSamples, folders: withPct, eb, epochs, fullEpochs: epochs, remaining: 0, suggestedSteps: 0 };
+      return { stepsPerEpoch, totalSteps: stepsPerEpoch * (Number(epochs) || 1), totalSamples, folders: withPct, eb, epochs: Number(epochs) || 1, fullEpochs: Number(epochs) || 1, remaining: 0, suggestedSteps: 0 };
     }
-    const fullEpochs = stepsPerEpoch > 0 ? Math.floor(maxSteps / stepsPerEpoch) : 0;
-    const remaining = stepsPerEpoch > 0 ? maxSteps - fullEpochs * stepsPerEpoch : 0;
-    const computedEpochs = stepsPerEpoch > 0 ? Math.ceil(maxSteps / stepsPerEpoch) : 0;
+    const _maxSteps = Number(maxSteps) || 0;
+    const fullEpochs = stepsPerEpoch > 0 ? Math.floor(_maxSteps / stepsPerEpoch) : 0;
+    const remaining = stepsPerEpoch > 0 ? _maxSteps - fullEpochs * stepsPerEpoch : 0;
+    const computedEpochs = stepsPerEpoch > 0 ? Math.ceil(_maxSteps / stepsPerEpoch) : 0;
     const suggestedSteps = computedEpochs * stepsPerEpoch;
-    return { stepsPerEpoch, totalSteps: maxSteps, totalSamples, folders: withPct, eb, epochs: computedEpochs, fullEpochs, remaining, suggestedSteps };
+    return { stepsPerEpoch, totalSteps: _maxSteps, totalSamples, folders: withPct, eb, epochs: computedEpochs, fullEpochs, remaining, suggestedSteps };
   }, [folders, batchSize, gradAccum, epochs, maxSteps, mode]);
+
+  const _maxStepsNum = Number(maxSteps) || 0;
 
   const isCut = mode === 'by_steps' && calc.remaining > 0;
 
@@ -141,7 +144,7 @@ export default function DatasetBalancerPage() {
     const totalEpochs = calc.epochs;
     const spe = calc.stepsPerEpoch;
     const totalUsed = totalEpochs * spe;
-    const cutPos = spe > 0 ? (maxSteps / totalUsed) * 100 : 100;
+    const cutPos = spe > 0 ? (_maxStepsNum / totalUsed) * 100 : 100;
     const stepsNeeded = spe - calc.remaining;
     return (
       <div style={{ height: 220, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 'var(--space-3)' }}>
@@ -172,7 +175,7 @@ export default function DatasetBalancerPage() {
                 <div style={{
                   position: 'absolute', top: -2, left: 6, fontSize: 10, color: '#f87171',
                   whiteSpace: 'nowrap', fontWeight: 600, fontFamily: 'monospace',
-                }}>MAX_TRAIN_STEPS={maxSteps}</div>
+                }}>MAX_TRAIN_STEPS={_maxStepsNum}</div>
               </div>
             )}
           </div>
@@ -255,13 +258,13 @@ export default function DatasetBalancerPage() {
                 <div>
                   <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginBottom: 2 }}>{t('datasetBalancer.imageCount')}</div>
                   <input className="form-input" type="number" min={1} value={f.imageCount}
-                    onChange={e => updFolder(f.id, 'imageCount', Math.max(1, Number(e.target.value)))}
+                    onChange={e => updFolder(f.id, 'imageCount', e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') updFolder(f.id, 'imageCount', 1); }}
                     style={{ width: '100%', fontSize: 11, padding: '3px 4px', height: 26, textAlign: 'center' }} />
                 </div>
                 <div>
                   <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginBottom: 2 }}>{t('datasetBalancer.repeats')}</div>
                   <input className="form-input" type="number" min={1} value={f.repeats}
-                    onChange={e => updFolder(f.id, 'repeats', Math.max(1, Number(e.target.value)))}
+                    onChange={e => updFolder(f.id, 'repeats', e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') updFolder(f.id, 'repeats', 1); }}
                     style={{ width: '100%', fontSize: 11, padding: '3px 4px', height: 26, textAlign: 'center' }} />
                 </div>
                 <button className="btn btn-ghost btn-sm" onClick={() => rmFolder(f.id)} disabled={folders.length <= 1}
@@ -289,21 +292,21 @@ export default function DatasetBalancerPage() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
             <div>
               <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>Batch Size</label>
-              <input className="form-input" type="number" min={1} value={batchSize} onChange={e => setBatchSize(Math.max(1, Number(e.target.value)))} style={{ width: '100%' }} />
+              <input className="form-input" type="number" min={1} value={batchSize} onChange={e => setBatchSize(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setBatchSize(1); }} style={{ width: '100%' }} />
             </div>
             <div>
               <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>Grad Accum</label>
-              <input className="form-input" type="number" min={1} value={gradAccum} onChange={e => setGradAccum(Math.max(1, Number(e.target.value)))} style={{ width: '100%' }} />
+              <input className="form-input" type="number" min={1} value={gradAccum} onChange={e => setGradAccum(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setGradAccum(1); }} style={{ width: '100%' }} />
             </div>
             {mode === 'by_epoch' ? (
               <div>
                 <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>Epochs</label>
-                <input className="form-input" type="number" min={1} value={epochs} onChange={e => setEpochs(Math.max(1, Number(e.target.value)))} style={{ width: '100%' }} />
+                <input className="form-input" type="number" min={1} value={epochs} onChange={e => setEpochs(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setEpochs(10); }} style={{ width: '100%' }} />
               </div>
             ) : (
               <div>
                 <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>Max Steps</label>
-                <input className="form-input" type="number" min={1} value={maxSteps} onChange={e => setMaxSteps(Math.max(1, Number(e.target.value)))} style={{ width: '100%' }} />
+                <input className="form-input" type="number" min={1} value={maxSteps} onChange={e => setMaxSteps(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setMaxSteps(2000); }} style={{ width: '100%' }} />
               </div>
             )}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 6,

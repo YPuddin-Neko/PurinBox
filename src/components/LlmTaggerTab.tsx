@@ -299,8 +299,15 @@ export default function LlmTaggerTab() {
                 </div>
               )}
               {preset === 'custom' && (
-                <input className="form-input" placeholder={t('llmTagger.customPlaceholder')} value={customEndpoint}
-                  onChange={e => setCustomEndpoint(e.target.value)} style={{ marginTop: 4 }} />
+                <>
+                  <input className="form-input" placeholder="https://api.example.com/v1/" value={customEndpoint}
+                    onChange={e => setCustomEndpoint(e.target.value)} style={{ marginTop: 4 }} />
+                  {customEndpoint && (
+                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                      → {customEndpoint}{customEndpoint.endsWith('/') ? '' : '/'}chat/completions
+                    </div>
+                  )}
+                </>
               )}
               {preset !== 'custom' && (
                 <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{endpoint}</div>

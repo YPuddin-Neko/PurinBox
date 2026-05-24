@@ -396,7 +396,7 @@ export default function SettingsPage() {
                 </div>
                 <div style={{ width: 90 }}>
                   <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('settings.proxyPort')}</label>
-                  <input className="form-input" type="number" placeholder="7890" value={proxyPort} onChange={e => setProxyPort(Number(e.target.value))} style={{ height: 32 }} />
+                  <input className="form-input" type="number" placeholder="7890" value={proxyPort} onChange={e => setProxyPort(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setProxyPort(0); }} style={{ height: 32 }} />
                 </div>
               </div>
 

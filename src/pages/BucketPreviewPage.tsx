@@ -58,7 +58,7 @@ export default function BucketPreviewPage() {
   const [inputPath, setInputPath] = useState('');
   const [resolution, setResolution] = useState('1024,1024');
   const [bucketRange, setBucketRange] = useState('256,2048');
-  const [steps, setSteps] = useState(128);
+  const [steps, setSteps] = useState(32);
   const [noUpscale, setNoUpscale] = useState(true);
   const [repeats, setRepeats] = useState(1);
   const [bucketMode, setBucketMode] = useState('legacy');
@@ -233,7 +233,7 @@ export default function BucketPreviewPage() {
             {/* 桶分辨率划分单位 */}
             <div style={{ position: 'relative', width: 90 }}>
               <label className="form-label" style={{ fontSize: 10, color: stepsError ? '#ef4444' : undefined }}>{t('bucketPreview.stepsLabel')}</label>
-              <input className="form-input" type="number" value={steps} onChange={e => setSteps(Number(e.target.value))} min={32} step={32} style={{
+              <input className="form-input" type="number" value={steps} onChange={e => setSteps(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setSteps(32); }} min={32} step={32} style={{
                 height: 32,
                 borderColor: stepsError ? '#ef4444' : undefined,
                 boxShadow: stepsError ? '0 0 0 1px #ef4444' : undefined,
@@ -247,7 +247,7 @@ export default function BucketPreviewPage() {
             {/* Repeats */}
             <div style={{ width: 60 }}>
               <label className="form-label" style={{ fontSize: 10 }}>Repeats</label>
-              <input className="form-input" type="number" value={repeats} onChange={e => setRepeats(Number(e.target.value))} min={1} style={{ height: 32 }} />
+              <input className="form-input" type="number" value={repeats} onChange={e => setRepeats(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setRepeats(1); }} min={1} style={{ height: 32 }} />
             </div>
 
             {/* 分桶策略 pill buttons */}

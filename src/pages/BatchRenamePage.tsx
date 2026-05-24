@@ -195,14 +195,14 @@ export default function BatchRenamePage() {
                       <Hash style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
                       {t('batchRename.startNum')}
                     </label>
-                    <input className="form-input" type="number" value={startNumber} onChange={(e) => setStartNumber(Number(e.target.value))} min={0} />
+                    <input className="form-input" type="number" value={startNumber} onChange={e => setStartNumber(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setStartNumber(0); }} min={0} />
                   </div>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <Hash style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
                       {t('batchRename.digitCount')}
                     </label>
-                    <input className="form-input" type="number" value={digitCount} onChange={(e) => setDigitCount(Number(e.target.value))} min={1} max={10} />
+                    <input className="form-input" type="number" value={digitCount} onChange={e => setDigitCount(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setDigitCount(1); }} min={1} max={10} />
                   </div>
                 </div>
 

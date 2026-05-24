@@ -207,11 +207,11 @@ export default function ScalePage() {
                 <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', opacity: enableUpscale ? 1 : 0.4, pointerEvents: enableUpscale ? 'auto' : 'none' }}>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label">{t('scale.width')}</label>
-                    <input className="form-input" type="number" value={upWidth} onChange={(e) => setUpWidth(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
+                    <input className="form-input" type="number" value={upWidth} onChange={(e) => setUpWidth(e.target.value === '' ? '' as any : Number(e.target.value))} onBlur={(e) => { if (e.target.value === '') setUpWidth(1); }} onClick={(e) => e.stopPropagation()} min={1} />
                   </div>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label">{t('scale.height')}</label>
-                    <input className="form-input" type="number" value={upHeight} onChange={(e) => setUpHeight(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
+                    <input className="form-input" type="number" value={upHeight} onChange={(e) => setUpHeight(e.target.value === '' ? '' as any : Number(e.target.value))} onBlur={(e) => { if (e.target.value === '') setUpHeight(1); }} onClick={(e) => e.stopPropagation()} min={1} />
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(74, 222, 128, 0.06)', border: '1px solid rgba(74, 222, 128, 0.1)' }}>
@@ -245,11 +245,11 @@ export default function ScalePage() {
                 <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', opacity: enableDownscale ? 1 : 0.4, pointerEvents: enableDownscale ? 'auto' : 'none' }}>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label">{t('scale.width')}</label>
-                    <input className="form-input" type="number" value={downWidth} onChange={(e) => setDownWidth(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
+                    <input className="form-input" type="number" value={downWidth} onChange={(e) => setDownWidth(e.target.value === '' ? '' as any : Number(e.target.value))} onBlur={(e) => { if (e.target.value === '') setDownWidth(1); }} onClick={(e) => e.stopPropagation()} min={1} />
                   </div>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label">{t('scale.height')}</label>
-                    <input className="form-input" type="number" value={downHeight} onChange={(e) => setDownHeight(Number(e.target.value))} onClick={(e) => e.stopPropagation()} min={1} />
+                    <input className="form-input" type="number" value={downHeight} onChange={(e) => setDownHeight(e.target.value === '' ? '' as any : Number(e.target.value))} onBlur={(e) => { if (e.target.value === '') setDownHeight(1); }} onClick={(e) => e.stopPropagation()} min={1} />
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(96, 165, 250, 0.06)', border: '1px solid rgba(96, 165, 250, 0.1)' }}>

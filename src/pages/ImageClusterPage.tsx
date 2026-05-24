@@ -244,7 +244,7 @@ export default function ImageClusterPage() {
                   <label className="form-label">{t('imageCluster.groupCount')}</label>
                   <input className="form-input" type="number" min={2} value={nClusters}
                     disabled={algorithm !== 'kmeans'}
-                    onChange={(e) => { const v = parseInt(e.target.value); if (v >= 2) setNClusters(v); }}
+                    onChange={(e) => { if (e.target.value === "") { setNClusters("" as any); return; } const v = parseInt(e.target.value); if (v >= 2) setNClusters(v); }} onBlur={(e) => { if (e.target.value === "") setNClusters(5); }}
                     style={{ height: 36 }} />
                   <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{t('imageCluster.groupCountTip')}</span>
                 </div>
@@ -252,7 +252,7 @@ export default function ImageClusterPage() {
                   <label className="form-label">{t('imageCluster.minClusterSize')}</label>
                   <input className="form-input" type="number" min={2} value={minClusterSize}
                     disabled={algorithm !== 'hdbscan'}
-                    onChange={(e) => { const v = parseInt(e.target.value); if (v >= 2) setMinClusterSize(v); }}
+                    onChange={(e) => { if (e.target.value === "") { setMinClusterSize("" as any); return; } const v = parseInt(e.target.value); if (v >= 2) setMinClusterSize(v); }} onBlur={(e) => { if (e.target.value === "") setMinClusterSize(3); }}
                     style={{ height: 36 }} />
                   <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{t('imageCluster.minClusterSizeTip')}</span>
                 </div>

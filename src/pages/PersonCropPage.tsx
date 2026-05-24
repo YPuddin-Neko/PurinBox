@@ -163,8 +163,8 @@ export default function PersonCropPage() {
     <div className="form-group">
       <label className="form-label">{t('personCrop.confThreshold')}</label>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-        <input type="range" min={0.1} max={0.9} step={0.05} value={value} onChange={(e) => onChange(Number(e.target.value))} style={{ flex: 1, accentColor: color }} />
-        <input className="form-input" type="number" value={value} onChange={(e) => onChange(Number(e.target.value))} step={0.05} min={0.1} max={0.9} style={{ width: 70, textAlign: 'center' }} />
+        <input type="range" min={0.1} max={0.9} step={0.05} value={value} onChange={e => onChange(e.target.value === "" ? "" as any : Number(e.target.value))} style={{ flex: 1, accentColor: color }} />
+        <input className="form-input" type="number" value={value} onChange={e => onChange(e.target.value === "" ? "" as any : Number(e.target.value))} step={0.05} min={0.1} max={0.9} style={{ width: 70, textAlign: 'center' }} />
       </div>
     </div>
   );
@@ -288,7 +288,7 @@ export default function PersonCropPage() {
                     <span>{t('personCrop.scaleFactor')}</span>
                     <span style={{ fontFamily: 'monospace', color: '#f59e0b', fontSize: 'var(--font-size-sm)' }}>{headScale.toFixed(1)}x</span>
                   </label>
-                  <input type="range" min="1.0" max="3.0" step="0.1" value={headScale} onChange={(e) => setHeadScale(Number(e.target.value))}
+                  <input type="range" min="1.0" max="3.0" step="0.1" value={headScale} onChange={e => setHeadScale(e.target.value === "" ? "" as any : Number(e.target.value))}
                     style={{ width: '100%', accentColor: '#f59e0b' }} />
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}><span>1.0x {t('personCrop.headOnly')}</span><span>3.0x {t('personCrop.moreAround')}</span></div>
                 </div>
@@ -306,7 +306,7 @@ export default function PersonCropPage() {
                     <span>{t('personCrop.scaleFactor')}</span>
                     <span style={{ fontFamily: 'monospace', color: '#f472b6', fontSize: 'var(--font-size-sm)' }}>{eyesScale.toFixed(1)}x</span>
                   </label>
-                  <input type="range" min="1.0" max="4.0" step="0.1" value={eyesScale} onChange={(e) => setEyesScale(Number(e.target.value))}
+                  <input type="range" min="1.0" max="4.0" step="0.1" value={eyesScale} onChange={e => setEyesScale(e.target.value === "" ? "" as any : Number(e.target.value))}
                     style={{ width: '100%', accentColor: '#f472b6' }} />
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}><span>1.0x {t('personCrop.eyesOnly')}</span><span>4.0x {t('personCrop.moreAround')}</span></div>
                 </div>
