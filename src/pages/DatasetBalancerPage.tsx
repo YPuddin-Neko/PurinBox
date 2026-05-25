@@ -1,14 +1,16 @@
 import { useState, useMemo } from 'react';
-import { Scale, Plus, Trash2, RotateCcw, LayoutGrid, PieChart as PieIcon, AlignLeft, AlertTriangle } from 'lucide-react';
+import { Scale, Plus, Trash2, RotateCcw, LayoutGrid, PieChart as PieIcon, AlignLeft, AlertTriangle, FolderOpen, RefreshCw, Wand2, Check } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import CustomSelect from '../components/CustomSelect';
 
-interface ConceptFolder { id: number; name: string; imageCount: number; repeats: number; }
+interface ConceptFolder { id: number; name: string; imageCount: number; repeats: number; folderName?: string; }
 const COLORS = ['#7c5cfc', '#f59e0b', '#4ade80', '#38bdf8', '#f87171', '#a78bfa', '#fb923c', '#2dd4bf', '#e879f9', '#facc15'];
 let nextId = 1;
-const mkFolder = (n?: string): ConceptFolder => ({ id: nextId++, name: n || `concept_${nextId - 1}`, imageCount: 20, repeats: 1 });
+const mkFolder = (n?: string, ic?: number, r?: number, fn?: string): ConceptFolder => ({ id: nextId++, name: n || `concept_${nextId - 1}`, imageCount: ic ?? 20, repeats: r ?? 1, folderName: fn });
 
-type VizMode = 'treemap' | 'pie' | 'timeline';
+type InputMode = 'manual' | 'local';
 
 export default function DatasetBalancerPage() {
   const { t } = useTranslation();
@@ -18,13 +20,72 @@ export default function DatasetBalancerPage() {
   const [gradAccum, setGradAccum] = useState<number|string>(1);
   const [epochs, setEpochs] = useState<number|string>(10);
   const [maxSteps, setMaxSteps] = useState<number|string>(2000);
+  type VizMode = 'treemap' | 'pie' | 'timeline';
   const [vizMode, setVizMode] = useState<VizMode>('treemap');
   const [hovered, setHovered] = useState<number | null>(null);
+  const [inputMode, setInputMode] = useState<InputMode>('manual');
+  const [localPath, setLocalPath] = useState('');
+  const [scanning, setScanning] = useState(false);
 
   const addFolder = () => setFolders(p => [...p, mkFolder()]);
   const rmFolder = (id: number) => setFolders(p => p.filter(f => f.id !== id));
   const updFolder = (id: number, k: keyof ConceptFolder, v: any) => setFolders(p => p.map(f => f.id === id ? { ...f, [k]: v } : f));
-  const resetAll = () => { nextId = 1; setFolders([mkFolder('character'), mkFolder('outfit')]); setBatchSize(1); setGradAccum(1); setEpochs(10); setMaxSteps(2000); setMode('by_epoch'); };
+  const resetAll = () => { nextId = 1; setFolders([mkFolder('character'), mkFolder('outfit')]); setBatchSize(1); setGradAccum(1); setEpochs(10); setMaxSteps(2000); setMode('by_epoch'); setLocalPath(''); };
+
+  const scanLocalFolder = async (path?: string) => {
+    const dir = path || localPath;
+    if (!dir) return;
+    setScanning(true);
+    try {
+      const result = await invoke<{ name: string; image_count: number; repeats: number; folder_name: string }[]>('scan_concept_folders', { dir });
+      if (result.length > 0) {
+        nextId = 1;
+        setFolders(result.map(r => mkFolder(r.name, r.image_count, r.repeats, r.folder_name)));
+      }
+    } catch (e) {
+      console.error('scan error', e);
+    }
+    setScanning(false);
+  };
+
+  // 一键配平: 将所有文件夹的 repeats 调整为使 samples 尽量相等
+  const autoBalance = () => {
+    if (folders.length < 2) return;
+    const maxImg = Math.max(...folders.map(f => f.imageCount));
+    if (maxImg <= 0) return;
+    setFolders(prev => prev.map(f => {
+      if (f.imageCount <= 0) return f;
+      const targetRepeats = Math.max(1, Math.round(maxImg / f.imageCount));
+      return { ...f, repeats: targetRepeats };
+    }));
+  };
+
+  // 应用到数据集: 重命名文件夹
+  const [applying, setApplying] = useState(false);
+  const [applyMsg, setApplyMsg] = useState('');
+  const applyToDataset = async () => {
+    if (!localPath || applying) return;
+    const hasChanges = folders.some(f => f.folderName);
+    if (!hasChanges) return;
+    if (!window.confirm(t('datasetBalancer.applyConfirm'))) return;
+    setApplying(true);
+    setApplyMsg('');
+    try {
+      const items = folders.filter(f => f.folderName).map(f => ({
+        folder_name: f.folderName!,
+        new_repeats: f.repeats,
+        concept_name: f.name,
+      }));
+      const result = await invoke<string[]>('apply_concept_repeats', { dir: localPath, items });
+      setApplyMsg(t('datasetBalancer.applySuccess', { count: result.length }));
+      // 重新扫描以刷新状态
+      await scanLocalFolder();
+    } catch (e: any) {
+      setApplyMsg(t('datasetBalancer.applyFailed') + ': ' + (e?.message || e));
+    }
+    setApplying(false);
+    setTimeout(() => setApplyMsg(''), 4000);
+  };
 
   const calc = useMemo(() => {
     const eb = (Number(batchSize) || 1) * (Number(gradAccum) || 1);
@@ -239,8 +300,42 @@ export default function DatasetBalancerPage() {
         <div className="tool-panel">
           <div className="tool-panel-header">
             <span className="tool-panel-title">{t('datasetBalancer.conceptFolders')}</span>
-            <button className="btn btn-ghost btn-sm" onClick={addFolder}><Plus style={{ width: 14, height: 14 }} /> {t('datasetBalancer.addFolder')}</button>
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+              {/* Mode toggle */}
+              {(['manual', 'local'] as const).map(m => (
+                <button key={m} onClick={() => setInputMode(m)} style={{
+                  padding: '3px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${inputMode === m ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                  background: inputMode === m ? 'rgba(124,92,252,0.08)' : 'transparent', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+                  color: inputMode === m ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
+                }}>{t(m === 'manual' ? 'datasetBalancer.manualMode' : 'datasetBalancer.localMode')}</button>
+              ))}
+            </div>
           </div>
+
+          {/* Local scan: folder picker */}
+          {inputMode === 'local' && (
+            <div style={{ display: 'flex', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
+              <input className="form-input" placeholder={t('datasetBalancer.localPathPlaceholder')} value={localPath}
+                onChange={e => setLocalPath(e.target.value)} style={{ flex: 1, fontSize: 11 }} />
+              <button className="btn btn-secondary" style={{ padding: '4px 8px' }} onClick={async () => {
+                const s = await open({ directory: true, multiple: false });
+                if (s) { setLocalPath(s as string); scanLocalFolder(s as string); }
+              }}><FolderOpen style={{ width: 14, height: 14 }} /></button>
+              <button className="btn btn-secondary" style={{ padding: '4px 8px' }} disabled={!localPath || scanning}
+                onClick={() => scanLocalFolder()} title={t('datasetBalancer.rescan')}>
+                <RefreshCw style={{ width: 14, height: 14, animation: scanning ? 'spin 1s linear infinite' : 'none' }} />
+              </button>
+            </div>
+          )}
+
+          {/* Manual mode: add folder */}
+          {inputMode === 'manual' && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 'var(--space-2)' }}>
+              <button className="btn btn-ghost btn-sm" onClick={addFolder}><Plus style={{ width: 14, height: 14 }} /> {t('datasetBalancer.addFolder')}</button>
+            </div>
+          )}
+
+          {/* Folder cards */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', maxHeight: 300, overflow: 'auto' }}>
             {folders.map((f, idx) => (
               <div key={f.id} style={{
@@ -274,6 +369,27 @@ export default function DatasetBalancerPage() {
               </div>
             ))}
           </div>
+
+          {/* Auto balance + Apply buttons */}
+          {folders.length >= 2 && (
+            <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-2)' }}>
+              <button className="btn btn-secondary" onClick={autoBalance}
+                style={{ flex: 1, fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                <Wand2 style={{ width: 13, height: 13 }} /> {t('datasetBalancer.autoBalance')}
+              </button>
+              {inputMode === 'local' && localPath && folders.some(f => f.folderName) && (
+                <button className="btn btn-primary" onClick={applyToDataset} disabled={applying}
+                  style={{ flex: 1, fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+                  <Check style={{ width: 13, height: 13 }} /> {applying ? t('datasetBalancer.applying') : t('datasetBalancer.applyToDataset')}
+                </button>
+              )}
+            </div>
+          )}
+          {applyMsg && (
+            <div style={{ marginTop: 'var(--space-1)', fontSize: 10, color: applyMsg.includes('失败') || applyMsg.includes('Failed') ? '#f87171' : '#4ade80' }}>
+              {applyMsg}
+            </div>
+          )}
         </div>
 
         {/* Col 2: Training Params */}

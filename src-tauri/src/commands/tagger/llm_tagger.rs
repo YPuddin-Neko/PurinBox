@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use super::{ProcessResult, ProgressEvent};
-use crate::commands::collect_image_files;
+use crate::commands::{collect_image_files, collect_image_files_recursive};
 
 static LLM_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -39,6 +39,9 @@ pub struct LlmTaggerOptions {
     /// 并发线程数
     #[serde(default = "default_concurrency")]
     pub concurrency: u32,
+    /// 是否递归扫描子文件夹
+    #[serde(default)]
+    pub recursive: bool,
 }
 
 fn default_image_size() -> u32 { 1024 }
@@ -94,7 +97,11 @@ pub async fn start_llm_tagging(
     LLM_CANCELLED.store(false, Ordering::SeqCst);
     let input_path_owned = options.input_path.clone();
     let input_dir = Path::new(&input_path_owned);
-    let files = collect_image_files(input_dir)?;
+    let files = if options.recursive {
+        collect_image_files_recursive(input_dir)?
+    } else {
+        collect_image_files(input_dir)?
+    };
     let total = files.len() as u32;
     let mut success_count = 0u32;
     let fail_count = 0u32;
@@ -159,15 +166,12 @@ pub async fn start_llm_tagging(
     let errors_arc = std::sync::Arc::new(tokio::sync::Mutex::new(errors));
     let failed_arc = std::sync::Arc::new(tokio::sync::Mutex::new(failed_files));
 
+    let last_req_time = std::sync::Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
+
     let mut handles = Vec::new();
 
-    for (idx, (i, file_path)) in work_items.into_iter().enumerate() {
+    for (_idx, (i, file_path)) in work_items.into_iter().enumerate() {
         if LLM_CANCELLED.load(Ordering::SeqCst) { break; }
-
-        // 请求间隔（仅在非首个请求时）
-        if idx > 0 && interval_ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(interval_ms as u64)).await;
-        }
 
         let permit = sem.clone().acquire_owned().await.unwrap();
         let app_c = app_arc.clone();
@@ -177,9 +181,22 @@ pub async fn start_llm_tagging(
         let f_cnt = fail_cnt.clone();
         let errs = errors_arc.clone();
         let fails = failed_arc.clone();
+        let last_req = last_req_time.clone();
 
         let handle = tokio::spawn(async move {
             let _permit = permit;
+            if LLM_CANCELLED.load(Ordering::SeqCst) { return; }
+
+            // 全局请求间隔控制
+            if interval_ms > 0 {
+                let mut last = last_req.lock().await;
+                let elapsed = last.elapsed().as_millis() as i64;
+                if elapsed < interval_ms {
+                    tokio::time::sleep(std::time::Duration::from_millis((interval_ms - elapsed) as u64)).await;
+                }
+                *last = std::time::Instant::now();
+            }
+
             if LLM_CANCELLED.load(Ordering::SeqCst) { return; }
 
             let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -300,31 +317,34 @@ pub async fn start_llm_tagging(
     let errors = errors_arc.lock().await.clone();
     let failed_files = failed_arc.lock().await.clone();
 
-    // 将失败的图片复制到 Fail 文件夹
+    // 将失败的图片复制到 Fail 文件夹（每个文件在自身所在目录下创建 Fail 子文件夹）
     if !failed_files.is_empty() {
-        let fail_dir = input_dir.join("Fail");
-        if let Err(e) = std::fs::create_dir_all(&fail_dir) {
-            let _ = app_arc.emit("llm-tagger-progress", ProgressEvent {
-                current: total, total,
-                filename: String::new(),
-                status: "error".to_string(),
-                message: format!("创建 Fail 文件夹失败: {}", e),
-            ..Default::default()
-            });
-        } else {
-            let mut copy_count = 0u32;
-            for f in &failed_files {
-                let fname = f.file_name().unwrap_or_default();
-                let dest = fail_dir.join(fname);
-                if std::fs::copy(f, &dest).is_ok() {
-                    copy_count += 1;
-                }
+        let mut copy_count = 0u32;
+        for f in &failed_files {
+            let parent = f.parent().unwrap_or(input_dir);
+            let fail_dir = parent.join("Fail");
+            if let Err(e) = std::fs::create_dir_all(&fail_dir) {
+                let _ = app_arc.emit("llm-tagger-progress", ProgressEvent {
+                    current: total, total,
+                    filename: String::new(),
+                    status: "error".to_string(),
+                    message: format!("创建 Fail 文件夹失败: {}", e),
+                ..Default::default()
+                });
+                continue;
             }
+            let fname = f.file_name().unwrap_or_default();
+            let dest = fail_dir.join(fname);
+            if std::fs::copy(f, &dest).is_ok() {
+                copy_count += 1;
+            }
+        }
+        if copy_count > 0 {
             let _ = app_arc.emit("llm-tagger-progress", ProgressEvent {
                 current: total, total,
                 filename: String::new(),
                 status: "info".to_string(),
-                message: format!("已将 {} 张失败图片复制到 Fail 文件夹", copy_count),
+                message: format!("已将 {} 张失败图片复制到对应 Fail 文件夹", copy_count),
             ..Default::default()
             });
         }

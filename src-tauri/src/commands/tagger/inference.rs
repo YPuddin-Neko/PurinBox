@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use tauri::Emitter;
 
 use super::{TagCategory, TagDefinition, TaggerOptions, ProcessResult, ProgressEvent, OnnxModelInfo};
-use crate::commands::collect_image_files;
+use crate::commands::{collect_image_files, collect_image_files_recursive};
 
 /// 从 Windows 注册表读取系统环境变量（GUI 进程可能没有最新环境变量）
 #[cfg(target_os = "windows")]
@@ -737,7 +737,11 @@ pub fn run_tagging(
 
     // 收集图片文件
     let input_dir = Path::new(&options.input_path);
-    let files = collect_image_files(input_dir)?;
+    let files = if options.recursive {
+        collect_image_files_recursive(input_dir)?
+    } else {
+        collect_image_files(input_dir)?
+    };
     let total = files.len() as u32;
     let mut success_count = 0u32;
     let mut fail_count = 0u32;

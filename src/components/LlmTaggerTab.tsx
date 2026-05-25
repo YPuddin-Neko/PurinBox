@@ -24,44 +24,44 @@ const defaultUserPrompt_txt = `Please describe this image in detail.`;
 // JSON 完整格式 (Full) — 嵌套 ai_output 结构
 const defaultSystemPrompt_json_full = `You are an anime image tagging expert. Output ONLY valid JSON.
 
-Output a JSON object with an "ai_output" wrapper containing these fields:
-- count: string — character count tag ("1girl", "2boys", "1girl, 1boy", "no humans")
-- appearance: string[] — visual features (hair color/style, eye color, clothing, accessories, body features)
-- tags: string[] — actions, expressions, poses, composition, held objects
-- environment: string[] — background, location, lighting, weather, atmosphere
-- nl: string — one fluent sentence describing the overall scene
-
-Example output:
-{"ai_output": {"count": "1girl", "appearance": ["long hair", "black hair", "red eyes", "kimono", "hair ornament"], "tags": ["standing", "smile", "looking at viewer", "upper body"], "environment": ["indoors", "traditional room", "soft lighting"], "nl": "A graceful girl in traditional attire smiles warmly in a serene room."}}
+Output a JSON object with an "ai_output" wrapper. Fields (tag fields are arrays of lowercase strings):
+1. count: string - Character count ("1girl", "2boys", "1girl, 1boy", "no humans")
+2. appearance: string[] - Visual features (hair color, eye color, hairstyle, clothing, accessories)
+3. tags: string[] - Actions, expressions, poses, composition, objects
+4. environment: string[] - Background, location, lighting, atmosphere
+5. nl: string - One sentence natural language description
 
 Rules:
-- Use lowercase booru-style tags with spaces, not underscores
+- Use lowercase English booru-style tags
 - Each tag is a separate array element
 - Only describe what is clearly visible
-- Do NOT include quality, character name, series, or artist tags (those are managed separately)
-- Output ONLY the JSON object, no markdown fences or explanation`;
+- Be detailed but don't repeat tags
+- Output ONLY the JSON object, no markdown or explanation
+
+Example:
+{"ai_output": {"count": "1girl", "appearance": ["long hair", "blue eyes", "school uniform"], "tags": ["smile", "standing", "looking at viewer"], "environment": ["classroom", "window", "sunlight"], "nl": "A cheerful girl stands by the window in a sunny classroom."}}`;
 
 const defaultUserPrompt_json_full = `Analyze this image and output structured tags as JSON with the "ai_output" wrapper.`;
 
-// JSON 简化格式 (Simplified) — 扁平结构，官方推荐格式
+// JSON 简化格式 (Simplified) — 扁平结构
 const defaultSystemPrompt_json_simplified = `You are an anime image tagging expert. Output ONLY valid JSON.
 
-JSON fields (all tag arrays use lowercase strings):
-1. count: string — character count ("1girl", "2boys", "1girl, 1boy", "no humans")
-2. appearance: string[] — visual features (hair color, eye color, hairstyle, clothing, accessories)
-3. tags: string[] — actions, expressions, poses, composition, objects
-4. environment: string[] — background, location, lighting, atmosphere
-5. nl: string — one sentence natural language description
-
-Example:
-{"count": "1girl", "appearance": ["long hair", "blue hair", "twintails", "blue eyes", "school uniform"], "tags": ["singing", "microphone", "dynamic pose"], "environment": ["stage", "spotlight", "crowd", "night"], "nl": "Miku performs energetically on stage under bright spotlights."}
+JSON fields (tag fields are arrays of lowercase strings):
+1. count: string - Character count ("1girl", "2boys", "1girl, 1boy", "no humans")
+2. appearance: string[] - Visual features (hair color, eye color, hairstyle, clothing, accessories)
+3. tags: string[] - Actions, expressions, poses, composition, objects
+4. environment: string[] - Background, location, lighting, atmosphere
+5. nl: string - One sentence natural language description
 
 Rules:
-- Use lowercase booru-style tags with spaces, not underscores
+- Use lowercase English booru-style tags
 - Each tag is a separate array element
 - Only describe what is clearly visible
-- Do NOT include quality, character name, series, or artist tags (those are managed separately)
-- Output ONLY the JSON object, no markdown fences or explanation`;
+- Be detailed but don't repeat tags
+- Output ONLY the JSON object, no markdown or explanation
+
+Example:
+{"count": "1girl", "appearance": ["long hair", "blue eyes", "school uniform"], "tags": ["smile", "standing", "looking at viewer"], "environment": ["classroom", "window", "sunlight"], "nl": "A cheerful girl stands by the window in a sunny classroom."}`;
 
 const defaultUserPrompt_json_simplified = `Analyze this image and output structured tags as a flat JSON object.`;
 
@@ -110,6 +110,7 @@ export default function LlmTaggerTab() {
   const [errorFiles, setErrorFiles] = useState<string[]>([]);
   const [intervalSec, setIntervalSec] = useState('-1');
   const [concurrency, setConcurrency] = useState('1');
+  const [recursive, setRecursive] = useState(false);
 
   const PRESETS: Record<string, { label: string; url: string }> = {
     openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
@@ -200,6 +201,7 @@ export default function LlmTaggerTab() {
           json_simplified: jsonSimplified,
           request_interval_ms: intervalMs,
           concurrency: threads,
+          recursive,
         },
       });
     } catch (e: any) {
@@ -265,7 +267,13 @@ export default function LlmTaggerTab() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
         {/* 路径 */}
         <div className="tool-panel">
-          <div className="tool-panel-header"><span className="tool-panel-title">{t('llmTagger.datasetPath')}</span></div>
+          <div className="tool-panel-header">
+            <span className="tool-panel-title">{t('llmTagger.datasetPath')}</span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: 'var(--color-text-secondary)' }}>
+              <input type="checkbox" checked={recursive} onChange={e => setRecursive(e.target.checked)} style={{ accentColor: 'var(--color-accent-primary)' }} />
+              {t('llmTagger.recursiveScan')}
+            </label>
+          </div>
           <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
             <input className="form-input" placeholder={t('llmTagger.selectFolder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
             <button className="btn btn-secondary" onClick={async () => { const s = await open({ directory: true, multiple: false }); if (s) setInputPath(s as string); }}><FolderOpen style={{ width: 16, height: 16 }} /></button>
@@ -418,29 +426,30 @@ export default function LlmTaggerTab() {
                     }
                   }} style={{ padding: '2px 10px', borderRadius: 'var(--radius-sm)', border: `1px solid ${outputFormat === fmt ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: outputFormat === fmt ? 'rgba(124,92,252,0.08)' : 'transparent', color: outputFormat === fmt ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>.{fmt}</button>
                 ))}
-                {outputFormat==='json'&&(
-                  <>
-                    {(['full', 'simplified'] as const).map(mode => (
-                      <button key={mode} onClick={() => {
-                        const v = mode === 'simplified';
-                        setJsonSimplified(v);
-                        localStorage.setItem('tagger_json_simplified', String(v));
-                        // 自动切换提示词
-                        const allDefaults = [defaultSystemPrompt_txt, defaultSystemPrompt_json_full, defaultSystemPrompt_json_simplified];
-                        if (allDefaults.some(d => sysPrompt === d)) {
-                          const p = getDefaultPrompts('json', v);
-                          setSysPrompt(p.sys); setUserPrompt(p.user);
-                        }
-                      }} style={{
-                        padding: '2px 10px', borderRadius: 'var(--radius-sm)',
-                        border: `1px solid ${(mode === 'simplified') === jsonSimplified ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                        background: (mode === 'simplified') === jsonSimplified ? 'rgba(124,92,252,0.08)' : 'transparent',
-                        color: (mode === 'simplified') === jsonSimplified ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
-                        fontSize: 11, fontWeight: 600, cursor: 'pointer',
-                      }}>{mode === 'full' ? t('llmTagger.fullFormat') : t('llmTagger.simplified')}</button>
-                    ))}
-                  </>
-                )}
+                {(['full', 'simplified'] as const).map(mode => {
+                  const isJson = outputFormat === 'json';
+                  const isActive = isJson && (mode === 'simplified') === jsonSimplified;
+                  return (
+                    <button key={mode} disabled={!isJson} onClick={() => {
+                      const v = mode === 'simplified';
+                      setJsonSimplified(v);
+                      localStorage.setItem('tagger_json_simplified', String(v));
+                      // 自动切换提示词
+                      const allDefaults = [defaultSystemPrompt_txt, defaultSystemPrompt_json_full, defaultSystemPrompt_json_simplified];
+                      if (allDefaults.some(d => sysPrompt === d)) {
+                        const p = getDefaultPrompts('json', v);
+                        setSysPrompt(p.sys); setUserPrompt(p.user);
+                      }
+                    }} style={{
+                      padding: '2px 10px', borderRadius: 'var(--radius-sm)',
+                      border: `1px solid ${isActive ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                      background: isActive ? 'rgba(124,92,252,0.08)' : 'transparent',
+                      color: isActive ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
+                      fontSize: 11, fontWeight: 600, cursor: isJson ? 'pointer' : 'not-allowed',
+                      opacity: isJson ? 1 : 0.4,
+                    }}>{mode === 'full' ? t('llmTagger.fullFormat') : t('llmTagger.simplified')}</button>
+                  );
+                })}
               </div>
             </div>
             {/* System Prompt */}

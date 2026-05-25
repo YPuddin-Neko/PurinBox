@@ -121,6 +121,146 @@ pub fn collect_image_files(input: &Path) -> Result<Vec<std::path::PathBuf>, Stri
     Ok(files)
 }
 
+/// 递归收集目录中的图片文件路径（包括子目录）
+pub fn collect_image_files_recursive(input: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let supported_exts = ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"];
+    let mut files = Vec::new();
+
+    if input.is_file() {
+        files.push(input.to_path_buf());
+    } else if input.is_dir() {
+        for entry in walkdir::WalkDir::new(input)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let p = entry.path();
+            if p.is_file() {
+                if let Some(ext) = p.extension() {
+                    let ext_lower = ext.to_string_lossy().to_lowercase();
+                    if supported_exts.contains(&ext_lower.as_str()) {
+                        files.push(p.to_path_buf());
+                    }
+                }
+            }
+        }
+    } else {
+        return Err(format!("输入路径无效: {}", input.display()));
+    }
+
+    files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    Ok(files)
+}
+
+/// 概念文件夹扫描结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConceptFolderInfo {
+    pub name: String,
+    pub image_count: u32,
+    pub repeats: u32,
+    pub folder_name: String,
+}
+
+/// 扫描训练集目录下的概念文件夹
+/// 支持 LoRA 常见命名格式: `{repeats}_{concept_name}` (如 `10_character`)
+#[tauri::command]
+pub fn scan_concept_folders(dir: String) -> Result<Vec<ConceptFolderInfo>, String> {
+    let path = Path::new(&dir);
+    if !path.exists() || !path.is_dir() {
+        return Err(format!("目录不存在: {}", dir));
+    }
+
+    let supported_exts = ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"];
+    let mut results = Vec::new();
+
+    let mut entries: Vec<_> = std::fs::read_dir(path)
+        .map_err(|e| format!("读取目录失败: {}", e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
+        let folder_name = entry.file_name().to_string_lossy().to_string();
+        // 跳过隐藏文件夹和特殊文件夹
+        if folder_name.starts_with('.') || folder_name.starts_with('_') {
+            continue;
+        }
+
+        // 解析 repeats_name 格式
+        let (repeats, concept_name) = if let Some(pos) = folder_name.find('_') {
+            let prefix = &folder_name[..pos];
+            if let Ok(r) = prefix.parse::<u32>() {
+                (r, folder_name[pos + 1..].to_string())
+            } else {
+                (1, folder_name.clone())
+            }
+        } else {
+            (1, folder_name.clone())
+        };
+
+        // 计算图片数量
+        let image_count = std::fs::read_dir(entry.path())
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.path().is_file()
+                            && e.path()
+                                .extension()
+                                .map(|ext| supported_exts.contains(&ext.to_string_lossy().to_lowercase().as_str()))
+                                .unwrap_or(false)
+                    })
+                    .count() as u32
+            })
+            .unwrap_or(0);
+
+        results.push(ConceptFolderInfo {
+            name: concept_name,
+            image_count,
+            repeats,
+            folder_name,
+        });
+    }
+
+    Ok(results)
+}
+
+/// 应用配平结果：将概念文件夹重命名为新的 repeats_name 格式
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplyRepeatsItem {
+    pub folder_name: String,
+    pub new_repeats: u32,
+    pub concept_name: String,
+}
+
+#[tauri::command]
+pub fn apply_concept_repeats(dir: String, items: Vec<ApplyRepeatsItem>) -> Result<Vec<String>, String> {
+    let base = Path::new(&dir);
+    if !base.exists() || !base.is_dir() {
+        return Err(format!("目录不存在: {}", dir));
+    }
+
+    let mut renamed = Vec::new();
+    for item in &items {
+        let old_path = base.join(&item.folder_name);
+        if !old_path.exists() {
+            continue;
+        }
+        let new_name = format!("{}_{}", item.new_repeats, item.concept_name);
+        if new_name == item.folder_name {
+            continue; // 没有变化
+        }
+        let new_path = base.join(&new_name);
+        if new_path.exists() {
+            return Err(format!("目标文件夹已存在: {}", new_name));
+        }
+        std::fs::rename(&old_path, &new_path)
+            .map_err(|e| format!("重命名失败 {} → {}: {}", item.folder_name, new_name, e))?;
+        renamed.push(format!("{} → {}", item.folder_name, new_name));
+    }
+
+    Ok(renamed)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageInfo {
     pub path: String,

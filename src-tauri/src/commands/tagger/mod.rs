@@ -68,6 +68,9 @@ pub struct TaggerOptions {
     pub existing_tags_action: String,
     #[serde(default = "default_batch_size")]
     pub batch_size: u32,
+    /// 是否递归扫描子文件夹
+    #[serde(default)]
+    pub recursive: bool,
 }
 
 fn default_batch_size() -> u32 { 1 }

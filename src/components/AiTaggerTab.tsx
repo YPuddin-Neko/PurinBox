@@ -82,6 +82,7 @@ export default function AiTaggerTab() {
   const [existingTagsAction, setExistingTagsAction] = useState<'overwrite' | 'skip' | 'prepend' | 'append'>('overwrite');
   const [outputFormat, setOutputFormat] = useState<'txt' | 'json'>('txt');
   const [jsonSimplified, setJsonSimplified] = useState(()=>localStorage.getItem('tagger_json_simplified')==='true');
+  const [recursive, setRecursive] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
 
   // 配置预设
@@ -247,7 +248,7 @@ export default function AiTaggerTab() {
     setLogs([{ time: getTimeStr(), message: t('aiTagger.startMsg', { model: cur?.name, hw: useGpu ? 'GPU' : 'CPU' }), status: 'info' }]);
     addTask('tagger', `${t('aiTagger.taskName')} - ${cur?.name || '?'}`);
     try {
-      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, batch_size: useGpu ? batchSize : 1, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, sort_by: sortBy, existing_tags_action: existingTagsAction, output_format: outputFormat, json_simplified: jsonSimplified } });
+      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, batch_size: useGpu ? batchSize : 1, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, sort_by: sortBy, existing_tags_action: existingTagsAction, output_format: outputFormat, json_simplified: jsonSimplified, recursive } });
       updateTask('tagger', { status: 'done' });
       await load();
     } catch (e: any) {
@@ -315,7 +316,13 @@ export default function AiTaggerTab() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
         {/* 数据集路径 */}
         <div className="tool-panel">
-          <div className="tool-panel-header"><span className="tool-panel-title">{t('aiTagger.datasetPath')}</span></div>
+          <div className="tool-panel-header">
+            <span className="tool-panel-title">{t('aiTagger.datasetPath')}</span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: 'var(--color-text-secondary)' }}>
+              <input type="checkbox" checked={recursive} onChange={e => setRecursive(e.target.checked)} style={{ accentColor: 'var(--color-accent-primary)' }} />
+              {t('llmTagger.recursiveScan')}
+            </label>
+          </div>
           <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
             <input className="form-input" placeholder={t('aiTagger.selectFolder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
             <button className="btn btn-secondary" onClick={async () => { const s = await open({ directory: true, multiple: false }); if (s) setInputPath(s as string); }}><FolderOpen style={{ width: 16, height: 16 }} /></button>

@@ -34,7 +34,7 @@ use commands::dedup_rename::{scan_dedup_rename, cancel_dedup_rename, execute_ded
 use commands::sd_metadata::{scan_sd_metadata, export_sd_tags, read_single_sd_metadata};
 use commands::tag_db::{get_tag_db_stats, download_danbooru_tags, cancel_tag_db_download, clear_tag_db, search_tags, translate_tag_db, is_tag_db_busy, check_tag_db_update};
 use commands::aesthetic::{start_aesthetic_scoring, cancel_aesthetic_scoring};
-use commands::{scan_images, get_system_stats, check_for_updates};
+use commands::{scan_images, scan_concept_folders, apply_concept_repeats, get_system_stats, check_for_updates};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -46,6 +46,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             scan_images,
+            scan_concept_folders,
+            apply_concept_repeats,
             scale_images,
             cancel_scale,
             crop_images,

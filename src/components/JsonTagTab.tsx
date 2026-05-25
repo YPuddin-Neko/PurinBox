@@ -5,7 +5,8 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import {
   FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,
-  Image as ImageIcon, Loader2, RefreshCw, Tags, Sparkles, Eye, Shirt, TreePine, Lock, User, Layers, Languages
+  Image as ImageIcon, Loader2, RefreshCw, Tags, Sparkles, Eye, Shirt, TreePine, Lock, User, Layers, Languages,
+  ListPlus, ListX, BarChart3, ArrowUpDown, Hash, BarChart, CheckCircle2, Filter, Code, Trash2
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -68,6 +69,36 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
   const [col1W,setCol1W]=useState(()=>parseInt(localStorage.getItem('json_col1w')||'220'));
   const [col3W,setCol3W]=useState(()=>parseInt(localStorage.getItem('json_col3w')||'220'));
   const [previewH,setPreviewH]=useState(()=>parseInt(localStorage.getItem('json_previewh')||'220'));
+
+  // Batch operations state (modal-based)
+  const [showBatchAddModal,setShowBatchAddModal]=useState(false);
+  const [showBatchDeleteModal,setShowBatchDeleteModal]=useState(false);
+  const [batchField,setBatchField]=useState('ai_output.tags');
+  const [batchTags,setBatchTags]=useState('');
+  const [batchPosition,setBatchPosition]=useState<'prepend'|'append'>('append');
+
+  const BATCH_FIELD_OPTIONS = [
+    { value: 'fixed.quality', label: 'quality — ' + t('jsonTag.fieldQuality') },
+    { value: 'fixed.series', label: 'series — ' + t('jsonTag.fieldSeries') },
+    { value: 'fixed.artist', label: 'artist — ' + t('jsonTag.fieldArtist') },
+    { value: 'character.name', label: 'character — ' + t('jsonTag.fieldCharacter') },
+    { value: 'character.variant', label: 'variant — ' + t('jsonTag.fieldVariant') },
+    { value: 'from_path.appearance', label: 'from_path — ' + t('jsonTag.fieldFromPath') },
+    { value: 'ai_output.count', label: 'count — ' + t('jsonTag.fieldCount') },
+    { value: 'ai_output.appearance', label: 'appearance — ' + t('jsonTag.fieldAppearance') },
+    { value: 'ai_output.tags', label: 'tags — ' + t('jsonTag.fieldTags') },
+    { value: 'ai_output.environment', label: 'environment — ' + t('jsonTag.fieldEnvironment') },
+  ];
+
+  // Col3 sidebar state
+  const [col3Mode,setCol3Mode]=useState<'json'|'stats'>('stats');
+  const [globalSearch,setGlobalSearch]=useState('');
+  const [tagSortBy,setTagSortBy]=useState<'freq'|'name'>('freq');
+  const [tagSortDir,setTagSortDir]=useState<'asc'|'desc'>('desc');
+  const [tagListMode,setTagListMode]=useState<'all'|'common'>('all');
+  const [selectedTags,setSelectedTags]=useState<Set<string>>(new Set());
+  const [tagFilterActive,setTagFilterActive]=useState(false);
+  const lastClickedTag=useRef<string>('');
 
   const handleColResize=useCallback((col:'col1'|'col3',e:React.MouseEvent)=>{
     e.preventDefault();const startX=e.clientX;const startW=col==='col1'?col1W:col3W;
@@ -143,11 +174,142 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
 
   const filtered=useMemo(()=>{
     let list=images.map((img,i)=>({...img,_i:i}));
-    if(searchText){const q=searchText.toLowerCase();list=list.filter(img=>img.filename.toLowerCase().includes(q));}
+    if(searchText){
+      const q=searchText.toLowerCase();
+      list=list.filter(img=>{
+        if(img.filename.toLowerCase().includes(q)) return true;
+        const d=img.data;
+        const all=[...(d.fixed.quality?.split(',').map(s=>s.trim())||[]),...(d.fixed.series?.split(',').map(s=>s.trim())||[]),...(d.fixed.artist?.split(',').map(s=>s.trim())||[]),d.character.name,d.character.variant,d.ai_output.count||'',...d.ai_output.appearance,...d.ai_output.tags,...d.ai_output.environment,...d.from_path.appearance,d.ai_output.nl||''];
+        return all.some(t=>t.toLowerCase().includes(q));
+      });
+    }
     if(filterMode==='tagged')list=list.filter(img=>img.has_json);
     if(filterMode==='untagged')list=list.filter(img=>!img.has_json);
+    if(tagFilterActive&&selectedTags.size>0){
+      list=list.filter(img=>{
+        const d=img.data;
+        const allTags=[...(d.fixed.quality?.split(',').map(s=>s.trim())||[]),...(d.fixed.series?.split(',').map(s=>s.trim())||[]),...(d.fixed.artist?.split(',').map(s=>s.trim())||[]),d.character.name,d.character.variant,...d.ai_output.appearance,...d.ai_output.tags,...d.ai_output.environment,...d.from_path.appearance].filter(Boolean);
+        return [...selectedTags].every(t=>allTags.includes(t));
+      });
+    }
     return list;
-  },[images,searchText,filterMode]);
+  },[images,searchText,filterMode,tagFilterActive,selectedTags]);
+
+  // Tag statistics for Col3 sidebar
+  const tagStats=useMemo(()=>{
+    const m:Record<string,number>={};
+    images.forEach(img=>{
+      const d=img.data;
+      const collect=(arr:string[])=>arr.forEach(t=>{if(t)m[t]=(m[t]||0)+1;});
+      const collectStr=(s:string|undefined)=>{if(s)s.split(',').map(x=>x.trim()).filter(Boolean).forEach(t=>{m[t]=(m[t]||0)+1;});};
+      collectStr(d.fixed.quality);collectStr(d.fixed.series);collectStr(d.fixed.artist);
+      collectStr(d.character.name);collectStr(d.character.variant);collectStr(d.ai_output.count);
+      collect(d.ai_output.appearance);collect(d.ai_output.tags);collect(d.ai_output.environment);
+      collect(d.from_path.appearance);
+    });
+    return Object.entries(m).sort((a,b)=>b[1]-a[1]);
+  },[images]);
+
+  const taggedCount=useMemo(()=>images.filter(i=>i.has_json).length,[images]);
+  const filteredStats=useMemo(()=>{
+    const base=tagListMode==='common'?tagStats.filter(([,c])=>taggedCount>0&&c===taggedCount):tagStats;
+    let sorted=[...base];
+    if(tagSortBy==='freq')sorted.sort((a,b)=>tagSortDir==='desc'?b[1]-a[1]:a[1]-b[1]);
+    else sorted.sort((a,b)=>tagSortDir==='desc'?b[0].localeCompare(a[0]):a[0].localeCompare(b[0]));
+    if(!globalSearch)return sorted;
+    const q=globalSearch.toLowerCase();
+    return sorted.filter(([t])=>t.includes(q)||(translations[t]||'').includes(q));
+  },[tagStats,globalSearch,tagListMode,taggedCount,translations,tagSortBy,tagSortDir]);
+
+  // Tag selection
+  const toggleTagSelect=(tag:string,e:React.MouseEvent)=>{
+    const isCtrl=e.metaKey||e.ctrlKey;const isShift=e.shiftKey;
+    setSelectedTags(prev=>{
+      if(isShift&&lastClickedTag.current&&filteredStats.length>0){
+        const tags=filteredStats.map(([t])=>t);const lastIdx=tags.indexOf(lastClickedTag.current);const curIdx=tags.indexOf(tag);
+        if(lastIdx>=0&&curIdx>=0){const from=Math.min(lastIdx,curIdx);const to=Math.max(lastIdx,curIdx);const next=new Set(isCtrl?prev:[]);for(let i=from;i<=to;i++)next.add(tags[i]);return next;}
+      }
+      if(isCtrl){const next=new Set(prev);if(next.has(tag))next.delete(tag);else next.add(tag);lastClickedTag.current=tag;return next;}
+      lastClickedTag.current=tag;
+      if(prev.has(tag)&&prev.size===1)return new Set();
+      return new Set([tag]);
+    });
+    if(!e.shiftKey)lastClickedTag.current=tag;
+  };
+
+
+  // Delete selected tags from all images
+  const handleSidebarBatchDelete=useCallback(()=>{
+    if(selectedTags.size===0)return;
+    setImages(prev=>prev.map(img=>{
+      const d=JSON.parse(JSON.stringify(img.data)) as JsonTagData;
+      let changed=false;
+      const filterArr=(arr:string[])=>{const n=arr.filter(t=>!selectedTags.has(t));if(n.length!==arr.length)changed=true;return n;};
+      const filterStr=(val:string|undefined)=>{if(!val)return val;const parts=val.split(',').map(s=>s.trim()).filter(Boolean);const n=parts.filter(t=>!selectedTags.has(t));if(n.length!==parts.length){changed=true;return n.length?n.join(', '):undefined;}return val;};
+      d.ai_output.appearance=filterArr(d.ai_output.appearance);d.ai_output.tags=filterArr(d.ai_output.tags);d.ai_output.environment=filterArr(d.ai_output.environment);d.from_path.appearance=filterArr(d.from_path.appearance);
+      d.fixed.quality=filterStr(d.fixed.quality);d.fixed.series=filterStr(d.fixed.series);d.fixed.artist=filterStr(d.fixed.artist);d.character.name=filterStr(d.character.name)||'';d.character.variant=filterStr(d.character.variant)||'';d.ai_output.count=filterStr(d.ai_output.count);
+      return changed?{...img,data:d,dirty:true}:img;
+    }));
+    setSelectedTags(new Set());
+  },[selectedTags]);
+
+  // Tag chip color helper
+  const statChipColors=[{bg:'rgba(124,92,252,0.10)',bd:'rgba(124,92,252,0.25)',tx:'#a78bfa'},{bg:'rgba(96,165,250,0.10)',bd:'rgba(96,165,250,0.25)',tx:'#60a5fa'},{bg:'rgba(74,222,128,0.10)',bd:'rgba(74,222,128,0.25)',tx:'#4ade80'},{bg:'rgba(251,191,36,0.10)',bd:'rgba(251,191,36,0.25)',tx:'#fbbf24'},{bg:'rgba(248,113,113,0.10)',bd:'rgba(248,113,113,0.25)',tx:'#f87171'},{bg:'rgba(192,132,252,0.10)',bd:'rgba(192,132,252,0.25)',tx:'#c084fc'},{bg:'rgba(45,212,191,0.10)',bd:'rgba(45,212,191,0.25)',tx:'#2dd4bf'},{bg:'rgba(251,146,60,0.10)',bd:'rgba(251,146,60,0.25)',tx:'#fb923c'},{bg:'rgba(236,72,153,0.10)',bd:'rgba(236,72,153,0.25)',tx:'#ec4899'},{bg:'rgba(132,204,22,0.10)',bd:'rgba(132,204,22,0.25)',tx:'#84cc16'}];
+  const getStatColor=(tag:string)=>{let h=0;for(let i=0;i<tag.length;i++)h=((h<<5)-h+tag.charCodeAt(i))|0;return statChipColors[Math.abs(h)%statChipColors.length];};
+
+  // Batch add tags to all images
+  const handleBatchAdd=useCallback(()=>{
+    const tags=batchTags.split(',').map(s=>s.trim()).filter(Boolean);
+    if(!tags.length)return;
+    const isArray=['ai_output.appearance','ai_output.tags','ai_output.environment','from_path.appearance'].includes(batchField);
+    setImages(prev=>prev.map(img=>{
+      const d=JSON.parse(JSON.stringify(img.data)) as JsonTagData;
+      if(isArray){
+        const [section,field]=batchField.split('.') as [keyof JsonTagData, string];
+        const arr=(d as any)[section][field] as string[];
+        const newTags=tags.filter(t=>!arr.includes(t));
+        if(newTags.length===0)return img;
+        if(batchPosition==='prepend')(d as any)[section][field]=[...newTags,...arr];
+        else (d as any)[section][field]=[...arr,...newTags];
+      }else{
+        const [section,field]=batchField.split('.') as [keyof JsonTagData, string];
+        const cur=((d as any)[section][field]||'') as string;
+        const parts=cur?cur.split(',').map(s=>s.trim()).filter(Boolean):[];
+        const newTags=tags.filter(t=>!parts.includes(t));
+        if(newTags.length===0)return img;
+        if(batchPosition==='prepend')(d as any)[section][field]=[...newTags,...parts].join(', ');
+        else (d as any)[section][field]=[...parts,...newTags].join(', ');
+      }
+      return {...img,data:d,dirty:true};
+    }));
+    setBatchTags('');setShowBatchAddModal(false);
+  },[batchField,batchTags,batchPosition]);
+
+  // Batch delete tags from all images
+  const handleBatchDelete=useCallback(()=>{
+    const tags=batchTags.split(',').map(s=>s.trim()).filter(Boolean);
+    if(!tags.length)return;
+    const tagsSet=new Set(tags);
+    const isAll=batchField==='all';
+    setImages(prev=>prev.map(img=>{
+      const d=JSON.parse(JSON.stringify(img.data)) as JsonTagData;
+      let changed=false;
+      const filterArr=(arr:string[])=>{const n=arr.filter(t=>!tagsSet.has(t));if(n.length!==arr.length){changed=true;}return n;};
+      const filterStr=(val:string|undefined)=>{if(!val)return val;const parts=val.split(',').map(s=>s.trim()).filter(Boolean);const n=parts.filter(t=>!tagsSet.has(t));if(n.length!==parts.length){changed=true;return n.length?n.join(', '):undefined;}return val;};
+      if(isAll||batchField==='ai_output.appearance')d.ai_output.appearance=filterArr(d.ai_output.appearance);
+      if(isAll||batchField==='ai_output.tags')d.ai_output.tags=filterArr(d.ai_output.tags);
+      if(isAll||batchField==='ai_output.environment')d.ai_output.environment=filterArr(d.ai_output.environment);
+      if(isAll||batchField==='from_path.appearance')d.from_path.appearance=filterArr(d.from_path.appearance);
+      if(isAll||batchField==='fixed.quality')d.fixed.quality=filterStr(d.fixed.quality);
+      if(isAll||batchField==='fixed.series')d.fixed.series=filterStr(d.fixed.series);
+      if(isAll||batchField==='fixed.artist')d.fixed.artist=filterStr(d.fixed.artist);
+      if(isAll||batchField==='character.name')d.character.name=filterStr(d.character.name)||'';
+      if(isAll||batchField==='character.variant')d.character.variant=filterStr(d.character.variant)||'';
+      if(isAll||batchField==='ai_output.count')d.ai_output.count=filterStr(d.ai_output.count);
+      return changed?{...img,data:d,dirty:true}:img;
+    }));
+    setBatchTags('');setShowBatchDeleteModal(false);
+  },[batchField,batchTags]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / IMG_PER_PAGE));
   const pagedFiltered = filtered.slice(imgPage * IMG_PER_PAGE, (imgPage + 1) * IMG_PER_PAGE);
@@ -414,6 +576,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
               </button>
             </div>
           </div>
+
           <div style={{flex:1,overflowY:'auto',padding:'12px 14px',display:'flex',flexDirection:'column',gap:14}}>
             {!cur?<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('jsonTag.selectToEdit')}</span>:(<>
               {/* 单值/多值chip辅助 — 逗号分隔自动拆分为多个chip */}
@@ -566,60 +729,234 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
         <div style={{width:2,height:32,borderRadius:1,background:'var(--color-border)',transition:'background 0.15s'}} />
       </div>
 
-      {/* Col3: Tag Viewer + Translation */}
-      <div style={{width:col3W,minWidth:160,maxWidth:500,flexShrink:0,display:'flex',flexDirection:'column',background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',overflow:'hidden'}}>
-        <div style={phdr}>
-          <div style={{display:'flex',alignItems:'center',gap:8}}>
-            <Eye style={{width:14,height:14,color:'#60a5fa'}} />
-            <span style={ptitle}>{t('jsonTag.tagContent')}</span>
+      {/* Col3: Tag Viewer (switchable JSON/Stats) */}
+      <div style={{width:col3W,minWidth:160,maxWidth:500,flexShrink:0,display:'flex',background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',overflow:'hidden'}}>
+        <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+          <div style={phdr}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              {col3Mode==='stats'?<BarChart3 style={{width:14,height:14,color:'#60a5fa'}} />:<Code style={{width:14,height:14,color:'#60a5fa'}} />}
+              <span style={ptitle}>{col3Mode==='stats'?(tagListMode==='common'?t('jsonTag.commonTags'):t('jsonTag.allTags')):t('jsonTag.tagContent')}</span>
+              {col3Mode==='stats'&&<span style={{fontSize:10,padding:'1px 8px',borderRadius:10,background:'rgba(96,165,250,0.1)',color:'#60a5fa',fontWeight:600}}>{filteredStats.length}</span>}
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:4}}>
+              {col3Mode==='stats'&&<button className="btn btn-ghost btn-sm" style={{fontSize:9,height:22,padding:'0 6px'}} onClick={()=>setTagListMode(m=>m==='all'?'common':'all')} disabled={images.length===0}>
+                {tagListMode==='all'?t('jsonTag.commonLabel'):t('jsonTag.allLabel')}
+              </button>}
+              <button className="btn btn-ghost btn-sm" onClick={()=>setCol3Mode(m=>m==='json'?'stats':'json')} title={col3Mode==='json'?t('jsonTag.allTags'):t('jsonTag.tagContent')} style={{width:22,height:22,padding:0,display:'flex',alignItems:'center',justifyContent:'center',color:col3Mode==='stats'?'#60a5fa':undefined}}>
+                {col3Mode==='json'?<BarChart3 style={{width:12,height:12}} />:<Code style={{width:12,height:12}} />}
+              </button>
+            </div>
+          </div>
+
+          {col3Mode==='stats'?(<>
+            {/* Search + Sort */}
+            <div style={{padding:'8px 10px',borderBottom:'1px solid var(--color-border)'}}>
+              <div style={{display:'flex',gap:4}}>
+                <div style={{position:'relative',flex:1}}>
+                  <Search style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:12,height:12,color:'var(--color-text-tertiary)'}} />
+                  <input className="form-input" placeholder={t('jsonTag.searchTags')} value={globalSearch} onChange={e=>setGlobalSearch(e.target.value)} style={{paddingLeft:26,fontSize:11,height:28}} />
+                </div>
+                <button className="btn btn-ghost btn-sm" onClick={()=>setTagSortBy(b=>b==='freq'?'name':'freq')}
+                  title={tagSortBy==='freq'?t('jsonTag.sortByFreq'):t('jsonTag.sortByName')}
+                  style={{width:28,height:28,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:tagSortBy==='freq'?'#60a5fa':'#a78bfa'}}>
+                  {tagSortBy==='freq'?<BarChart style={{width:13,height:13}} />:<Hash style={{width:13,height:13}} />}
+                </button>
+                <button className="btn btn-ghost btn-sm" onClick={()=>setTagSortDir(d=>d==='desc'?'asc':'desc')}
+                  title={tagSortDir==='desc'?t('jsonTag.descOrder'):t('jsonTag.ascOrder')}
+                  style={{width:28,height:28,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:'var(--color-text-tertiary)'}}>
+                  <ArrowUpDown style={{width:13,height:13,transform:tagSortDir==='asc'?'scaleY(-1)':undefined,transition:'transform 0.2s'}} />
+                </button>
+              </div>
+            </div>
+            {/* Filter indicator */}
+            {tagFilterActive&&<div style={{padding:'4px 10px',background:'linear-gradient(90deg,rgba(124,92,252,0.08),rgba(124,92,252,0.02))',borderBottom:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:6}}>
+              <Filter style={{width:10,height:10,color:'#7c5cfc',flexShrink:0}} />
+              <span style={{fontSize:10,color:'#a78bfa',flex:1}}>{t('jsonTag.filtering')} <b>{filtered.length}</b>/{images.length}</span>
+              <button onClick={()=>setTagFilterActive(false)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:16,height:16,borderRadius:'50%',background:'rgba(248,113,113,0.1)',border:'none',cursor:'pointer',color:'#f87171',padding:0,flexShrink:0}}><X style={{width:8,height:8}} /></button>
+            </div>}
+            {/* Tag list */}
+            <div style={{flex:1,overflowY:'auto',userSelect:'none'}}>
+              {filteredStats.map(([tag,count])=>{
+                const c=getStatColor(tag);const pct=images.length>0?(count/images.length)*100:0;
+                const inCur=cur?[...cur.data.ai_output.appearance,...cur.data.ai_output.tags,...cur.data.ai_output.environment,...cur.data.from_path.appearance,...(cur.data.fixed.quality?.split(',').map(s=>s.trim())||[])].includes(tag):false;
+                const tr=translations[tag];
+                const isSel=selectedTags.has(tag);
+                return(
+                  <div key={tag} onMouseDown={e=>e.preventDefault()} onClick={e=>toggleTagSelect(tag,e)}
+                    style={{display:'flex',alignItems:'center',gap:8,padding:'7px 12px',cursor:'pointer',borderBottom:'1px solid rgba(255,255,255,0.03)',
+                      background:isSel?'rgba(124,92,252,0.12)':inCur?'rgba(124,92,252,0.04)':'transparent',
+                      borderLeft:isSel?'2px solid #7c5cfc':'2px solid transparent',transition:'all 0.12s'}}
+                    onMouseEnter={e=>{if(!isSel)e.currentTarget.style.background=inCur?'rgba(124,92,252,0.08)':'var(--color-bg-hover)';}}
+                    onMouseLeave={e=>{e.currentTarget.style.background=isSel?'rgba(124,92,252,0.12)':inCur?'rgba(124,92,252,0.04)':'transparent';}}
+                  >
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontSize:11,fontWeight:500,color:c.tx,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                        {tag}{tr&&<span style={{color:'var(--color-text-tertiary)',fontWeight:400,fontSize:10,marginLeft:4}}>{tr}</span>}
+                      </div>
+                      <div style={{height:3,borderRadius:2,background:'var(--color-bg-input)',marginTop:3,overflow:'hidden'}}>
+                        <div style={{width:`${pct}%`,height:'100%',borderRadius:2,background:`linear-gradient(90deg,${c.bd},${c.tx})`}} />
+                      </div>
+                    </div>
+                    <span style={{fontSize:10,color:'var(--color-text-tertiary)',minWidth:28,textAlign:'right',flexShrink:0}}>{count}</span>
+                    {inCur&&<CheckCircle2 style={{width:12,height:12,color:'#4ade80',flexShrink:0}} />}
+                  </div>
+                );
+              })}
+              {images.length===0&&<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)',padding:20}}><Tags style={{width:28,height:28,opacity:0.2}} /><span style={{fontSize:11,opacity:0.6}}>{t('jsonTag.loadTagsHint')}</span></div>}
+              {images.length>0&&filteredStats.length===0&&<div style={{padding:20,textAlign:'center',fontSize:11,color:'var(--color-text-tertiary)'}}>{globalSearch?t('jsonTag.noMatch'):t('jsonTag.noTagData')}</div>}
+            </div>
+            {/* Footer */}
+            <div style={{padding:'6px 12px',borderTop:'1px solid var(--color-border)',fontSize:10,color:'var(--color-text-tertiary)',display:'flex',justifyContent:'space-between'}}>
+              {selectedTags.size>0?<span style={{color:'#a78bfa'}}>{t('jsonTag.selected',{n:selectedTags.size})}</span>:<span>{t('jsonTag.nTagTypes',{n:tagStats.length})}</span>}
+              <span>{taggedCount}/{images.length} {t('jsonTag.tagged')}</span>
+            </div>
+          </>):(
+            /* JSON Preview */
+            <div style={{flex:1,overflowY:'auto',padding:'10px 12px',fontSize:11}}>
+              {!cur?<span style={{color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('jsonTag.selectToView')}</span>:(()=>{
+                const d=cur.data;
+                const clean=(obj:Record<string,any>)=>{const r:Record<string,any>={};for(const[k,v]of Object.entries(obj)){if(v!==undefined&&v!==null&&v!=='')r[k]=v;}return Object.keys(r).length?r:undefined;};
+                let json:any;
+                if(simplified){
+                  const charParts:string[]=[];
+                  if(d.character.name)d.character.name.split(',').map(s=>s.trim()).filter(Boolean).forEach(t=>charParts.push(t));
+                  if(d.character.variant)d.character.variant.split(',').map(s=>s.trim()).filter(Boolean).forEach(t=>charParts.push(t));
+                  const charVal=charParts.length>1?charParts.join(', '):charParts.length===1?charParts[0]:undefined;
+                  const allAppearance=[...d.from_path.appearance,...d.ai_output.appearance];
+                  json=clean({quality:d.fixed.quality||undefined,series:d.fixed.series||undefined,artist:d.fixed.artist||undefined,character:charVal,count:d.ai_output.count||undefined,appearance:allAppearance.length?allAppearance:undefined,tags:d.ai_output.tags.length?d.ai_output.tags:undefined,environment:d.ai_output.environment.length?d.ai_output.environment:undefined,nl:d.ai_output.nl||undefined});
+                }else{
+                  const fixed=clean({quality:d.fixed.quality||undefined,series:d.fixed.series||undefined,artist:d.fixed.artist||undefined});
+                  const character=clean({name:d.character.name||undefined,variant:d.character.variant||undefined});
+                  const from_path=d.from_path.appearance.length?{appearance:d.from_path.appearance}:undefined;
+                  const ai_output=clean({count:d.ai_output.count||undefined,appearance:d.ai_output.appearance.length?d.ai_output.appearance:undefined,tags:d.ai_output.tags.length?d.ai_output.tags:undefined,environment:d.ai_output.environment.length?d.ai_output.environment:undefined,nl:d.ai_output.nl||undefined});
+                  const result:Record<string,any>={};
+                  if(fixed)result.fixed=fixed;if(character)result.character=character;if(from_path)result.from_path=from_path;if(ai_output)result.ai_output=ai_output;
+                  json=Object.keys(result).length?result:undefined;
+                }
+                return json?(
+                  <pre style={{margin:0,whiteSpace:'pre-wrap',wordBreak:'break-all',fontFamily:'"SF Mono","Fira Code","Cascadia Code",Menlo,Consolas,monospace',fontSize:10,lineHeight:1.7,color:'var(--color-text-primary)'}}>{JSON.stringify(json,null,2)}</pre>
+                ):(<span style={{color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('jsonTag.noTagDataView')}</span>);
+              })()}
+              {nlTranslation&&<div style={{marginTop:8,padding:'6px 8px',borderRadius:6,background:'rgba(148,163,184,0.06)',border:'1px solid rgba(148,163,184,0.1)',fontSize:10,color:'var(--color-text-tertiary)',lineHeight:1.6}}>
+                <span style={{fontWeight:600}}>{t('jsonTag.nlTranslation')}:</span> {nlTranslation}
+              </div>}
+            </div>
+          )}
+        </div>
+
+        {/* Sidebar action buttons */}
+        {col3Mode==='stats'&&<div style={{display:'flex',flexDirection:'column',gap:2,padding:'8px 4px',borderLeft:'1px solid var(--color-border)',alignItems:'center'}}>
+          {[
+            {icon:<Filter style={{width:14,height:14}} />,tip:t('jsonTag.filterByTag'),onClick:()=>setTagFilterActive(v=>!v),disabled:images.length===0,color:tagFilterActive?'#7c5cfc':undefined},
+            {icon:<ListPlus style={{width:14,height:14}} />,tip:t('jsonTag.batchAdd'),onClick:()=>{setBatchField('ai_output.tags');setBatchTags('');setBatchPosition('append');setShowBatchAddModal(true);},disabled:images.length===0},
+            {icon:<ListX style={{width:14,height:14}} />,tip:t('jsonTag.batchDelete'),onClick:()=>{setBatchField('all');setBatchTags('');setShowBatchDeleteModal(true);},disabled:images.length===0},
+            {icon:<Trash2 style={{width:14,height:14}} />,tip:t('jsonTag.deleteSelected'),onClick:handleSidebarBatchDelete,disabled:selectedTags.size===0,color:selectedTags.size>0?'#f87171':undefined},
+          ].map((item,i)=>(
+            <button key={i} className="btn btn-ghost" title={item.tip} disabled={item.disabled}
+              onClick={item.onClick}
+              style={{width:30,height:30,padding:0,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:6,color:item.color}}>
+              {item.icon}
+            </button>
+          ))}
+        </div>}
+      </div>
+
+      {/* Batch Add Modal */}
+      {showBatchAddModal&&<div style={{position:'fixed',inset:0,zIndex:999,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.5)',backdropFilter:'blur(4px)'}} onClick={()=>setShowBatchAddModal(false)}>
+        <div onClick={e=>e.stopPropagation()} style={{width:440,background:'var(--color-bg-card)',borderRadius:16,border:'1px solid var(--color-border)',boxShadow:'0 20px 60px rgba(0,0,0,0.3)',overflow:'hidden'}}>
+          <div style={{padding:'16px 20px',borderBottom:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:8}}>
+            <ListPlus style={{width:16,height:16,color:'#4ade80'}} />
+            <span style={{fontSize:13,fontWeight:700,color:'var(--color-text-primary)'}}>{t('jsonTag.batchAddTitle')}</span>
+          </div>
+          <div style={{padding:'16px 20px',display:'flex',flexDirection:'column',gap:14}}>
+            <div>
+              <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:6}}>{t('jsonTag.targetField')}</span>
+              <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+                {BATCH_FIELD_OPTIONS.map(o=>(
+                  <button key={o.value} onClick={()=>setBatchField(o.value)}
+                    style={{padding:'4px 10px',borderRadius:8,fontSize:10,fontWeight:600,border:'1px solid',cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                      background:batchField===o.value?'rgba(124,92,252,0.15)':'var(--color-bg-input)',
+                      borderColor:batchField===o.value?'rgba(124,92,252,0.4)':'var(--color-border)',
+                      color:batchField===o.value?'#a78bfa':'var(--color-text-tertiary)'}}>
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:6}}>{t('jsonTag.position')}</span>
+              <div style={{display:'flex',gap:4}}>
+                {[{v:'prepend' as const,l:t('jsonTag.prepend')},{v:'append' as const,l:t('jsonTag.append')}].map(p=>(
+                  <button key={p.v} onClick={()=>setBatchPosition(p.v)}
+                    style={{padding:'4px 14px',borderRadius:8,fontSize:10,fontWeight:600,border:'1px solid',cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                      background:batchPosition===p.v?'rgba(74,222,128,0.15)':'var(--color-bg-input)',
+                      borderColor:batchPosition===p.v?'rgba(74,222,128,0.4)':'var(--color-border)',
+                      color:batchPosition===p.v?'#4ade80':'var(--color-text-tertiary)'}}>
+                    {p.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:4}}>{t('jsonTag.batchTagsPlaceholder')}</span>
+              <input autoFocus className="form-input" value={batchTags} onChange={e=>setBatchTags(e.target.value)}
+                onKeyDown={e=>{if(e.key==='Enter'&&batchTags.trim())handleBatchAdd();}}
+                placeholder="tag1, tag2, tag3" style={{fontSize:12,height:34,width:'100%'}} />
+            </div>
+          </div>
+          <div style={{padding:'12px 20px',borderTop:'1px solid var(--color-border)',display:'flex',justifyContent:'flex-end',gap:8}}>
+            <button className="btn btn-ghost" onClick={()=>setShowBatchAddModal(false)} style={{fontSize:11,height:30,padding:'0 16px'}}>{t('jsonTag.cancel')}</button>
+            <button className="btn btn-primary" onClick={handleBatchAdd} disabled={!batchTags.trim()} style={{fontSize:11,height:30,padding:'0 16px',gap:4}}>
+              <ListPlus style={{width:12,height:12}} /> {t('jsonTag.batchApplyAdd')}
+            </button>
           </div>
         </div>
-        <div style={{flex:1,overflowY:'auto',padding:'10px 12px',fontSize:11}}>
-          {!cur?<span style={{color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('jsonTag.selectToView')}</span>:(()=>{
-            // 构建只含有效数据的JSON对象
-            const d=cur.data;
-            const clean=(obj:Record<string,any>)=>{const r:Record<string,any>={};for(const[k,v]of Object.entries(obj)){if(v!==undefined&&v!==null&&v!=='')r[k]=v;}return Object.keys(r).length?r:undefined;};
-            let json:any;
-            if(simplified){
-              // character = name + variant 合并
-              const charParts:string[]=[];
-              if(d.character.name)d.character.name.split(',').map(s=>s.trim()).filter(Boolean).forEach(t=>charParts.push(t));
-              if(d.character.variant)d.character.variant.split(',').map(s=>s.trim()).filter(Boolean).forEach(t=>charParts.push(t));
-              const charVal=charParts.length>1?charParts.join(', '):charParts.length===1?charParts[0]:undefined;
-              // from_path + ai_output appearance 合并
-              const allAppearance=[...d.from_path.appearance,...d.ai_output.appearance];
-              json=clean({
-                quality:d.fixed.quality||undefined,
-                series:d.fixed.series||undefined,
-                artist:d.fixed.artist||undefined,
-                character:charVal,
-                count:d.ai_output.count||undefined,
-                appearance:allAppearance.length?allAppearance:undefined,
-                tags:d.ai_output.tags.length?d.ai_output.tags:undefined,
-                environment:d.ai_output.environment.length?d.ai_output.environment:undefined,
-                nl:d.ai_output.nl||undefined,
-              });
-            }else{
-              const fixed=clean({quality:d.fixed.quality||undefined,series:d.fixed.series||undefined,artist:d.fixed.artist||undefined});
-              const character=clean({name:d.character.name||undefined,variant:d.character.variant||undefined});
-              const from_path=d.from_path.appearance.length?{appearance:d.from_path.appearance}:undefined;
-              const ai_output=clean({count:d.ai_output.count||undefined,appearance:d.ai_output.appearance.length?d.ai_output.appearance:undefined,tags:d.ai_output.tags.length?d.ai_output.tags:undefined,environment:d.ai_output.environment.length?d.ai_output.environment:undefined,nl:d.ai_output.nl||undefined});
-              const result:Record<string,any>={};
-              if(fixed)result.fixed=fixed;
-              if(character)result.character=character;
-              if(from_path)result.from_path=from_path;
-              if(ai_output)result.ai_output=ai_output;
-              json=Object.keys(result).length?result:undefined;
-            }
-            return json?(
-              <pre style={{margin:0,whiteSpace:'pre-wrap',wordBreak:'break-all',fontFamily:'"SF Mono","Fira Code","Cascadia Code",Menlo,Consolas,monospace',fontSize:10,lineHeight:1.7,color:'var(--color-text-primary)'}}>{JSON.stringify(json,null,2)}</pre>
-            ):(<span style={{color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('jsonTag.noTagDataView')}</span>);
-          })()}
-          {nlTranslation&&<div style={{marginTop:8,padding:'6px 8px',borderRadius:6,background:'rgba(148,163,184,0.06)',border:'1px solid rgba(148,163,184,0.1)',fontSize:10,color:'var(--color-text-tertiary)',lineHeight:1.6}}>
-            <span style={{fontWeight:600}}>{t('jsonTag.nlTranslation')}:</span> {nlTranslation}
-          </div>}
+      </div>}
+
+      {/* Batch Delete Modal */}
+      {showBatchDeleteModal&&<div style={{position:'fixed',inset:0,zIndex:999,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.5)',backdropFilter:'blur(4px)'}} onClick={()=>setShowBatchDeleteModal(false)}>
+        <div onClick={e=>e.stopPropagation()} style={{width:440,background:'var(--color-bg-card)',borderRadius:16,border:'1px solid var(--color-border)',boxShadow:'0 20px 60px rgba(0,0,0,0.3)',overflow:'hidden'}}>
+          <div style={{padding:'16px 20px',borderBottom:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:8}}>
+            <ListX style={{width:16,height:16,color:'#f87171'}} />
+            <span style={{fontSize:13,fontWeight:700,color:'var(--color-text-primary)'}}>{t('jsonTag.batchDeleteTitle')}</span>
+          </div>
+          <div style={{padding:'16px 20px',display:'flex',flexDirection:'column',gap:14}}>
+            <div>
+              <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:6}}>{t('jsonTag.targetField')}</span>
+              <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+                <button onClick={()=>setBatchField('all')}
+                  style={{padding:'4px 10px',borderRadius:8,fontSize:10,fontWeight:600,border:'1px solid',cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                    background:batchField==='all'?'rgba(248,113,113,0.15)':'var(--color-bg-input)',
+                    borderColor:batchField==='all'?'rgba(248,113,113,0.4)':'var(--color-border)',
+                    color:batchField==='all'?'#f87171':'var(--color-text-tertiary)'}}>
+                  {t('jsonTag.allFields')}
+                </button>
+                {BATCH_FIELD_OPTIONS.map(o=>(
+                  <button key={o.value} onClick={()=>setBatchField(o.value)}
+                    style={{padding:'4px 10px',borderRadius:8,fontSize:10,fontWeight:600,border:'1px solid',cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                      background:batchField===o.value?'rgba(248,113,113,0.15)':'var(--color-bg-input)',
+                      borderColor:batchField===o.value?'rgba(248,113,113,0.4)':'var(--color-border)',
+                      color:batchField===o.value?'#f87171':'var(--color-text-tertiary)'}}>
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:4}}>{t('jsonTag.batchTagsPlaceholder')}</span>
+              <input autoFocus className="form-input" value={batchTags} onChange={e=>setBatchTags(e.target.value)}
+                onKeyDown={e=>{if(e.key==='Enter'&&batchTags.trim())handleBatchDelete();}}
+                placeholder="tag1, tag2, tag3" style={{fontSize:12,height:34,width:'100%'}} />
+            </div>
+          </div>
+          <div style={{padding:'12px 20px',borderTop:'1px solid var(--color-border)',display:'flex',justifyContent:'flex-end',gap:8}}>
+            <button className="btn btn-ghost" onClick={()=>setShowBatchDeleteModal(false)} style={{fontSize:11,height:30,padding:'0 16px'}}>{t('jsonTag.cancel')}</button>
+            <button className="btn btn-primary" onClick={handleBatchDelete} disabled={!batchTags.trim()} style={{fontSize:11,height:30,padding:'0 16px',gap:4,background:'rgba(248,113,113,0.9)'}}>
+              <ListX style={{width:12,height:12}} /> {t('jsonTag.batchApplyDelete')}
+            </button>
+          </div>
         </div>
-      </div>
+      </div>}
     </div>
   );
 });
