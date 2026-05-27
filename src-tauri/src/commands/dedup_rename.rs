@@ -358,7 +358,9 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
 }
 
 fn compute_fingerprint(path: &Path) -> Result<ImageFingerprint, String> {
-    let img = image::open(path).map_err(|e| e.to_string())?;
+    let img = image::ImageReader::open(path).map_err(|e| e.to_string())?
+        .with_guessed_format().map_err(|e| e.to_string())?
+        .decode().map_err(|e| e.to_string())?;
     let gray = img.to_luma8();
     let rgb = img.to_rgb8();
 

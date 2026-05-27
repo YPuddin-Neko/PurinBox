@@ -408,8 +408,12 @@ async fn refine_tags_with_llm(
 ) -> Result<Vec<String>, String> {
     // 读取并缩放图片
     let max_side = if options.image_size > 0 { options.image_size } else { 1024 };
-    let img = image::open(img_path)
-        .map_err(|e| format!("读取图片失败: {}", e))?;
+    let img = image::ImageReader::open(img_path)
+        .map_err(|e| format!("读取图片失败: {}", e))?
+        .with_guessed_format()
+        .map_err(|e| format!("无法识别图片格式: {}", e))?
+        .decode()
+        .map_err(|e| format!("无法解码图片: {}", e))?;
 
     let img = if img.width() > max_side || img.height() > max_side {
         img.resize(max_side, max_side, image::imageops::FilterType::Lanczos3)

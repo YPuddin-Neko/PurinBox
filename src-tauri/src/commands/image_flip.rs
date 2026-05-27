@@ -114,8 +114,12 @@ fn flip_images_sync(app: &tauri::AppHandle, options: &FlipOptions) -> Result<Pro
 }
 
 fn process_flip(file_path: &Path, output_dir: &Path, direction: &str) -> Result<(), String> {
-    let img = image::open(file_path)
-        .map_err(|e| format!("无法打开图片: {}", e))?;
+    let img = image::ImageReader::open(file_path)
+        .map_err(|e| format!("无法打开图片: {}", e))?
+        .with_guessed_format()
+        .map_err(|e| format!("无法识别图片格式: {}", e))?
+        .decode()
+        .map_err(|e| format!("无法解码图片: {}", e))?;
 
     let flipped = match direction {
         "horizontal" => img.fliph(),

@@ -117,8 +117,12 @@ fn blur_noise_sync(app: &tauri::AppHandle, options: &BlurNoiseOptions) -> Result
 }
 
 fn process_blur_noise(file_path: &Path, output_dir: &Path, blur_radius: f64, noise_strength: u32) -> Result<(), String> {
-    let mut img = image::open(file_path)
-        .map_err(|e| format!("无法打开图片: {}", e))?;
+    let mut img = image::ImageReader::open(file_path)
+        .map_err(|e| format!("无法打开图片: {}", e))?
+        .with_guessed_format()
+        .map_err(|e| format!("无法识别图片格式: {}", e))?
+        .decode()
+        .map_err(|e| format!("无法解码图片: {}", e))?;
 
     // 高斯模糊
     if blur_radius > 0.0 {

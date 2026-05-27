@@ -133,8 +133,12 @@ fn process_scale(
     output_dir: &Path,
     options: &ScaleOptions,
 ) -> Result<String, String> {
-    let img = image::open(file_path)
-        .map_err(|e| format!("无法打开图片: {}", e))?;
+    let img = image::ImageReader::open(file_path)
+        .map_err(|e| format!("无法打开图片: {}", e))?
+        .with_guessed_format()
+        .map_err(|e| format!("无法识别图片格式: {}", e))?
+        .decode()
+        .map_err(|e| format!("无法解码图片: {}", e))?;
 
     let (orig_w, orig_h) = img.dimensions();
     let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();

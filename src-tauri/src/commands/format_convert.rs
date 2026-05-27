@@ -69,8 +69,10 @@ fn open_image(file_path: &Path) -> Result<DynamicImage, String> {
 
         Ok(DynamicImage::ImageRgba8(img_buf))
     } else {
-        image::open(file_path)
+        image::ImageReader::open(file_path)
             .map_err(|e| format!("无法打开图片: {}", e))
+            .and_then(|r| r.with_guessed_format().map_err(|e| format!("无法识别图片格式: {}", e)))
+            .and_then(|r| r.decode().map_err(|e| format!("无法解码图片: {}", e)))
     }
 }
 
