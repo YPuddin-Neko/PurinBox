@@ -148,8 +148,12 @@ fn convert_alpha_sync(app: &tauri::AppHandle, options: &AlphaConvertOptions) -> 
 }
 
 fn process_alpha(file_path: &Path, output_dir: &Path, bg_color: &[u8; 3]) -> Result<bool, String> {
-    let img = image::open(file_path)
-        .map_err(|e| format!("无法打开图片: {}", e))?;
+    let img = image::ImageReader::open(file_path)
+        .map_err(|e| format!("无法打开图片: {}", e))?
+        .with_guessed_format()
+        .map_err(|e| format!("无法识别图片格式: {}", e))?
+        .decode()
+        .map_err(|e| format!("无法解码图片: {}", e))?;
 
     if !has_alpha(&img) {
         let filename = file_path.file_name().ok_or("无效的文件名")?.to_string_lossy();

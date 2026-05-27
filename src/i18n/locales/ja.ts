@@ -557,6 +557,7 @@ const ja = {
     stepsLabel: 'バケット解像度ステップ',
     stepsError: '最小32、64の倍数である必要',
     noUpscale: 'バケットアップスケールなし',
+    recursive: 'サブフォルダ再帰スキャン',
     bucketMode: 'バケット戦略',
     modeLegacy: '全列挙',
     modeNearest: '最近接',

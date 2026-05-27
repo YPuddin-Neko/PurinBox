@@ -37,8 +37,8 @@ interface BucketAnalysis {
   total_count: number;
   bucket_count: number;
   skipped: [string, string][];
-
   buckets: BucketGroup[];
+  mean_ar_error: number;
 }
 
 interface ScanProgress {
@@ -60,8 +60,8 @@ export default function BucketPreviewPage() {
   const [bucketRange, setBucketRange] = useState('256,2048');
   const [steps, setSteps] = useState(32);
   const [noUpscale, setNoUpscale] = useState(true);
-  const [repeats, setRepeats] = useState(1);
   const [bucketMode, setBucketMode] = useState('legacy');
+  const [recursive, setRecursive] = useState(false);
 
   // 解析分辨率
   const parsePair = (s: string): [number, number] | null => {
@@ -135,10 +135,10 @@ export default function BucketPreviewPage() {
           res_height: resHeight,
           steps,
           no_upscale: noUpscale,
-          repeats,
           min_bucket_reso: noUpscale ? null : minBucketReso,
           max_bucket_reso: noUpscale ? null : maxBucketReso,
           bucket_mode: bucketMode,
+          recursive,
         },
       });
       setAnalysis(result);
@@ -158,7 +158,7 @@ export default function BucketPreviewPage() {
     if (!analysis || !exportPath) return;
     setExporting(true);
     try {
-      const msg = await invoke<string>('export_buckets', { analysis, outputPath: exportPath, repeats });
+      const msg = await invoke<string>('export_buckets', { analysis, outputPath: exportPath });
       showToast(msg, 'success');
     } catch (e: any) {
       showToast(`${t('bucketPreview.exportFailed')}: ${String(e)}`, 'error');
@@ -203,10 +203,18 @@ export default function BucketPreviewPage() {
 
       {/* Params */}
       <div className="tool-panel" style={{ flexShrink: 0 }}>
-        <div className="tool-panel-header"><span className="tool-panel-title">{t('bucketPreview.paramSettings')}</span></div>
+        <div className="tool-panel-header">
+          <span className="tool-panel-title">{t('bucketPreview.paramSettings')}</span>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: 'var(--color-text-secondary)' }}>
+            <input type="checkbox" checked={recursive} onChange={e => setRecursive(e.target.checked)} style={{ accentColor: 'var(--color-accent-primary)' }} />
+            {t('bucketPreview.recursive')}
+          </label>
+        </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           <div className="form-group">
-            <label className="form-label">{t('bucketPreview.datasetFolder')}</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label className="form-label" style={{ margin: 0 }}>{t('bucketPreview.datasetFolder')}</label>
+            </div>
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
               <input className="form-input" placeholder={t('bucketPreview.datasetPlaceholder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
               <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
@@ -242,12 +250,6 @@ export default function BucketPreviewPage() {
                 position: 'absolute', top: '100%', left: 0, marginTop: 2,
                 fontSize: 9, color: '#ef4444', whiteSpace: 'nowrap',
               }}>{t('bucketPreview.stepsError')}</div>}
-            </div>
-
-            {/* Repeats */}
-            <div style={{ width: 60 }}>
-              <label className="form-label" style={{ fontSize: 10 }}>Repeats</label>
-              <input className="form-input" type="number" value={repeats} onChange={e => setRepeats(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setRepeats(1); }} min={1} style={{ height: 32 }} />
             </div>
 
             {/* 分桶策略 pill buttons */}
@@ -311,6 +313,9 @@ export default function BucketPreviewPage() {
             <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.nImages', { n: analysis.total_images })}</span>
             <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.totalCount', { n: analysis.total_count })}</span>
             {analysis.skipped.length > 0 && <span style={{ fontSize: 11, color: '#f87171' }}>{t('bucketPreview.readFail', { n: analysis.skipped.length })}</span>}
+            <span style={{ fontSize: 11, fontWeight: 600, fontFamily: '"SF Mono","Fira Code",Menlo,monospace', color: analysis.mean_ar_error < 0.01 ? '#4ade80' : analysis.mean_ar_error < 0.05 ? '#fbbf24' : '#f87171' }} title={`Mean AR Error (without repeats): ${analysis.mean_ar_error}`}>
+              AR Error: {analysis.mean_ar_error.toFixed(16)}
+            </span>
 
           </div>
 

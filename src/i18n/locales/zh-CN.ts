@@ -581,6 +581,7 @@ const zhCN = {
     stepsLabel: '桶分辨率划分单位',
     stepsError: '最小 32，且必须是 64 的倍数',
     noUpscale: '桶不放大图片',
+    recursive: '递归扫描子文件夹',
     bucketMode: '分桶策略',
     modeLegacy: '穷举桶',
     modeNearest: '就近桶',

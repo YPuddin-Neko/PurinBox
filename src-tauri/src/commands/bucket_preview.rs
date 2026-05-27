@@ -15,14 +15,14 @@ pub struct BucketOptions {
     pub steps: u32,
     /// 是否禁止放大（小图不拉伸）
     pub no_upscale: bool,
-    /// repeat 次数
-    pub repeats: u32,
     /// 桶最小分辨率边长 (min_bucket_reso)
     pub min_bucket_reso: Option<u32>,
     /// 桶最大分辨率边长 (max_bucket_reso)
     pub max_bucket_reso: Option<u32>,
     /// 分桶策略: "legacy" | "nearest_only"
     pub bucket_mode: Option<String>,
+    /// 是否递归扫描子文件夹
+    pub recursive: Option<bool>,
 }
 
 /// 单张图片的分桶信息
@@ -36,6 +36,8 @@ pub struct BucketImageInfo {
     pub orig_width: u32,
     /// 原始高
     pub orig_height: u32,
+    /// 重复次数（从父文件夹名前缀检测）
+    pub repeats: u32,
 }
 
 /// 单个桶
@@ -70,6 +72,8 @@ pub struct BucketAnalysis {
     pub skipped: Vec<(String, String)>,
     /// 各桶详情
     pub buckets: Vec<BucketGroup>,
+    /// 平均 AR 误差 (without repeats)，对应 sd-scripts train_util.py:315
+    pub mean_ar_error: f64,
 }
 
 /// 进度事件
@@ -86,6 +90,16 @@ fn round_to_steps(x: f64, steps: u32) -> u32 {
     let v = (x + 0.5) as u32;
     let aligned = v - v % steps;
     aligned.max(steps)
+}
+
+/// 从文件夹名提取 repeats 前缀（如 "10_character" → 10，无前缀则返回 1）
+fn extract_repeats(folder_name: &str) -> u32 {
+    if let Some(pos) = folder_name.find('_') {
+        if let Ok(n) = folder_name[..pos].parse::<u32>() {
+            return n.max(1);
+        }
+    }
+    1
 }
 
 /// 生成候选桶分辨率列表（对应 sd-scripts model_util.make_bucket_resolutions）
@@ -212,8 +226,9 @@ pub async fn analyze_buckets(
 
     let max_area = options.res_width as f64 * options.res_height as f64;
     let steps = options.steps.max(1);
-    let repeats = options.repeats.max(1);
     let bucket_mode = options.bucket_mode.as_deref().unwrap_or("legacy");
+    let recursive = options.recursive.unwrap_or(false);
+    let walk_depth = if recursive { usize::MAX } else { 1 };
 
     // min/max bucket reso（仅 no_upscale=false 且 legacy 模式时有效）
     let min_size = options.min_bucket_reso.unwrap_or(256).max(steps);
@@ -226,7 +241,7 @@ pub async fn analyze_buckets(
     let mut image_files: Vec<std::path::PathBuf> = Vec::new();
 
     for entry in walkdir::WalkDir::new(&input_path)
-        .max_depth(1)
+        .max_depth(walk_depth)
         .into_iter()
         .filter_map(|e| e.ok())
     {
@@ -253,16 +268,20 @@ pub async fn analyze_buckets(
     // nearest_only 需要先读取所有图片尺寸
     if bucket_mode == "nearest_only" {
         let mut image_sizes: Vec<(u32, u32)> = Vec::new();
-        let mut image_data: Vec<(std::path::PathBuf, String, u32, u32)> = Vec::new();
+        let mut image_data: Vec<(std::path::PathBuf, String, u32, u32, u32)> = Vec::new();
         let mut skipped: Vec<(String, String)> = Vec::new();
         let mut processed = 0u32;
 
         for file_path in &image_files {
             let name = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let img_repeats = file_path.parent()
+                .and_then(|p| p.file_name())
+                .map(|n| extract_repeats(&n.to_string_lossy()))
+                .unwrap_or(1);
             match image::image_dimensions(file_path) {
                 Ok((w, h)) => {
                     image_sizes.push((w, h));
-                    image_data.push((file_path.clone(), name, w, h));
+                    image_data.push((file_path.clone(), name, w, h, img_repeats));
                 }
                 Err(e) => { skipped.push((name, e.to_string())); }
             }
@@ -282,17 +301,18 @@ pub async fn analyze_buckets(
         // 分配图片到桶
         let mut bucket_map: std::collections::BTreeMap<(u32, u32), Vec<BucketImageInfo>> =
             std::collections::BTreeMap::new();
-        for (file_path, name, w, h) in &image_data {
+        for (file_path, name, w, h, img_repeats) in &image_data {
             let (bw, bh) = select_bucket_predefined(*w, *h, &predefined_resos);
             bucket_map.entry((bw, bh)).or_default().push(BucketImageInfo {
                 path: file_path.to_string_lossy().to_string(),
                 name: name.clone(),
                 orig_width: *w,
                 orig_height: *h,
+                repeats: *img_repeats,
             });
         }
 
-        return build_analysis_result(&app, bucket_map, skipped, repeats, file_count);
+        return build_analysis_result(&app, bucket_map, skipped, file_count);
     }
 
     // legacy 模式
@@ -315,6 +335,10 @@ pub async fn analyze_buckets(
 
     for file_path in &image_files {
         let name = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let img_repeats = file_path.parent()
+            .and_then(|p| p.file_name())
+            .map(|n| extract_repeats(&n.to_string_lossy()))
+            .unwrap_or(1);
         match image::image_dimensions(file_path) {
             Ok((w, h)) => {
                 let (bw, bh) = if use_predefined {
@@ -327,6 +351,7 @@ pub async fn analyze_buckets(
                     name,
                     orig_width: w,
                     orig_height: h,
+                    repeats: img_repeats,
                 });
             }
             Err(e) => { skipped.push((name, e.to_string())); }
@@ -341,7 +366,7 @@ pub async fn analyze_buckets(
         }
     }
 
-    build_analysis_result(&app, bucket_map, skipped, repeats, file_count)
+    build_analysis_result(&app, bucket_map, skipped, file_count)
 }
 
 /// 构建分桶分析结果
@@ -349,33 +374,43 @@ fn build_analysis_result(
     app: &tauri::AppHandle,
     bucket_map: std::collections::BTreeMap<(u32, u32), Vec<BucketImageInfo>>,
     skipped: Vec<(String, String)>,
-    repeats: u32,
     file_count: u32,
 ) -> Result<BucketAnalysis, String> {
     let mut buckets: Vec<BucketGroup> = Vec::new();
     let mut total_images = 0u32;
+    let mut total_count = 0u32;
+    let mut ar_error_sum = 0.0f64;
 
     for (idx, ((bw, bh), images)) in bucket_map.iter().enumerate() {
         let count = images.len() as u32;
         total_images += count;
+        let bucket_ar = *bw as f64 / *bh as f64;
+        let mut bucket_total_count = 0u32;
+        // 计算每张图片的 AR 误差 和 count
+        for img in images {
+            let image_ar = img.orig_width as f64 / img.orig_height as f64;
+            ar_error_sum += (image_ar - bucket_ar).abs();
+            bucket_total_count += img.repeats;
+        }
+        total_count += bucket_total_count;
         buckets.push(BucketGroup {
             index: idx as u32,
             bucket_width: *bw,
             bucket_height: *bh,
             image_count: count,
-            total_count: count * repeats,
-            aspect_ratio: (*bw as f64 / *bh as f64 * 100.0).round() / 100.0,
+            total_count: bucket_total_count,
+            aspect_ratio: (bucket_ar * 100.0).round() / 100.0,
             images: images.clone(),
         });
     }
 
-    let total_count = total_images * repeats;
+    let mean_ar_error = if total_images > 0 { ar_error_sum / total_images as f64 } else { 0.0 };
 
     let _ = app.emit("bucket-progress", ScanProgress {
         current: file_count, total: file_count,
         status: "done".to_string(),
-        message: format!("分析完成: {} 张图片 → {} 个桶, 总 count {}",
-            total_images, buckets.len(), total_count),
+        message: format!("分析完成: {} 张图片 → {} 个桶, 总 count {}, AR误差 {:.10}",
+            total_images, buckets.len(), total_count, mean_ar_error),
     });
 
     Ok(BucketAnalysis {
@@ -384,6 +419,7 @@ fn build_analysis_result(
         bucket_count: buckets.len() as u32,
         skipped,
         buckets,
+        mean_ar_error,
     })
 }
 
@@ -393,7 +429,6 @@ pub async fn export_buckets(
     app: tauri::AppHandle,
     analysis: BucketAnalysis,
     output_path: String,
-    repeats: u32,
 ) -> Result<String, String> {
     let out_dir = Path::new(&output_path);
     if !out_dir.exists() {
@@ -408,7 +443,7 @@ pub async fn export_buckets(
         let folder_name = format!(
             "Bucket {} - {}x{} (count {})",
             bucket.index, bucket.bucket_width, bucket.bucket_height,
-            bucket.image_count * repeats
+            bucket.total_count
         );
         let bucket_dir = out_dir.join(&folder_name);
         std::fs::create_dir_all(&bucket_dir)

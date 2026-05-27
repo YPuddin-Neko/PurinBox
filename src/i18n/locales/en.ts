@@ -557,6 +557,7 @@ const en = {
     stepsLabel: 'Bucket Resolution Step',
     stepsError: 'Min 32, must be multiple of 64',
     noUpscale: 'No Bucket Upscale',
+    recursive: 'Recursive Scan',
     bucketMode: 'Bucket Mode',
     modeLegacy: 'Legacy',
     modeNearest: 'Nearest',
