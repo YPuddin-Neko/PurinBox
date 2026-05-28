@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import TagAutocomplete from './TagAutocomplete';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -42,7 +42,7 @@ export interface JsonTagTabHandle {
   saving: boolean;
 }
 
-const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref) {
+const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number) => void }>(function JsonTagTab({ onDirtyChange }, ref) {
   const { t } = useTranslation();
   const [images,setImages]=useState<JsonImageItem[]>([]);
   const [selectedIdx,setSelectedIdx]=useState(-1);
@@ -168,6 +168,8 @@ const JsonTagTab = forwardRef<JsonTagTabHandle>(function JsonTagTab(_props, ref)
     loading,
     saving,
   }), [handleLoadFolder, handleSaveAll, dirtyCount, loading, saving]);
+
+  useEffect(() => { onDirtyChange?.(dirtyCount); }, [dirtyCount, onDirtyChange]);
   const taggedN=images.filter(i=>i.has_json).length;
   const goPrev=()=>{if(selectedIdx>0)setSelectedIdx(selectedIdx-1);};
   const goNext=()=>{if(selectedIdx<images.length-1)setSelectedIdx(selectedIdx+1);};

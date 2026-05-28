@@ -76,6 +76,7 @@ export default function TagManagerPage() {
 
   const [folderPath, setFolderPath] = useState('');
   const jsonTabRef = useRef<JsonTagTabHandle>(null);
+  const [jsonDirtyCount, setJsonDirtyCount] = useState(0);
   const [tagSortBy, setTagSortBy] = useState<'freq'|'name'>('freq');
   const [tagSortDir, setTagSortDir] = useState<'asc'|'desc'>('desc');
 
@@ -558,7 +559,7 @@ export default function TagManagerPage() {
               {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{nlDirty>0?` (${nlDirty})`:''}
             </button>
           );})()}
-          {mode==='json'&&(()=>{const jd=jsonTabRef.current?.dirtyCount||0;return(
+          {mode==='json'&&(()=>{const jd=jsonDirtyCount;return(
             <button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={jd===0||jsonTabRef.current?.saving} onClick={()=>jsonTabRef.current?.saveAll()}>
               {jsonTabRef.current?.saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{jd>0?` (${jd})`:''}
             </button>
@@ -834,7 +835,7 @@ export default function TagManagerPage() {
       )}
 
       <div style={{display:mode==='json'?'flex':'none',flex:1,overflow:'hidden',minHeight:0}}>
-        <JsonTagTab ref={jsonTabRef} />
+        <JsonTagTab ref={jsonTabRef} onDirtyChange={setJsonDirtyCount} />
       </div>
 
       {/* ═ 批量添加弹窗 ═ */}
