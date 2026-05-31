@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
 
-use super::{ProcessResult, ProgressEvent};
+use super::{wait_for_global_llm_slot, ProcessResult, ProgressEvent};
 
 static TAG_SORT_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -152,6 +152,7 @@ pub async fn start_tag_sorting(
     let warning_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let last_req_time = Arc::new(tokio::sync::Mutex::new(None));
 
     let mut handles = Vec::new();
 
@@ -175,6 +176,7 @@ pub async fn start_tag_sorting(
         let cancelled = cancelled.clone();
         let error_files = error_files.clone();
         let warning_files = warning_files.clone();
+        let last_req_time = last_req_time.clone();
 
         let handle = tokio::spawn(async move {
             // 等待信号量前检查取消
@@ -194,35 +196,9 @@ pub async fn start_tag_sorting(
                 return;
             }
 
-            // 请求间隔
-            if options.request_interval_ms > 0 {
-                let cur = processed.load(Ordering::SeqCst);
-                if cur > 0 {
-                    // 间隔期间也检查取消
-                    let interval = options.request_interval_ms as u64;
-                    let step = 200u64;
-                    let mut waited = 0u64;
-                    while waited < interval {
-                        if TAG_SORT_CANCELLED.load(Ordering::SeqCst) {
-                            cancelled.store(true, Ordering::SeqCst);
-                            return;
-                        }
-                        let sleep_ms = std::cmp::min(step, interval - waited);
-                        tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
-                        waited += sleep_ms;
-                    }
-                }
-            }
-
-            // 再次检查
-            if TAG_SORT_CANCELLED.load(Ordering::SeqCst) {
-                cancelled.store(true, Ordering::SeqCst);
-                return;
-            }
-
             // 使用 select! 让取消可以立即中断处理
             let result = tokio::select! {
-                r = process_single_file(&client, &file_path, &output_dir, &options) => r,
+                r = process_single_file(&client, &file_path, &output_dir, &options, &last_req_time) => r,
                 _ = async {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -358,6 +334,7 @@ async fn process_single_file(
     file_path: &Path,
     output_dir: &Path,
     options: &TagSortOptions,
+    last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
 ) -> FileResult {
     let start = std::time::Instant::now();
     let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -380,7 +357,7 @@ async fn process_single_file(
         return FileResult::Skipped { filename };
     }
 
-    match sort_tags_with_llm(client, &original_tags, options).await {
+    match sort_tags_with_llm(client, &original_tags, options, last_req_time).await {
         Ok(sorted_tags) => {
             let elapsed_ms = start.elapsed().as_millis();
             // 完整标签对比
@@ -431,6 +408,7 @@ async fn sort_tags_with_llm(
     client: &reqwest::Client,
     tags: &[String],
     options: &TagSortOptions,
+    last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
 ) -> Result<Vec<String>, String> {
     let tag_list = tags.join(", ");
 
@@ -467,6 +445,10 @@ async fn sort_tags_with_llm(
 
     if !options.api_key.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", options.api_key));
+    }
+
+    if !wait_for_global_llm_slot(last_req_time, options.request_interval_ms, &TAG_SORT_CANCELLED).await {
+        return Err("已取消".to_string());
     }
 
     let response = req.send().await

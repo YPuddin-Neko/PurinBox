@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use super::{ProcessResult, ProgressEvent};
-use crate::commands::{collect_image_files, collect_image_files_recursive};
+use crate::commands::{collect_image_files, collect_image_files_recursive, wait_for_global_llm_slot};
 
 static LLM_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -166,7 +166,7 @@ pub async fn start_llm_tagging(
     let errors_arc = std::sync::Arc::new(tokio::sync::Mutex::new(errors));
     let failed_arc = std::sync::Arc::new(tokio::sync::Mutex::new(failed_files));
 
-    let last_req_time = std::sync::Arc::new(tokio::sync::Mutex::new(std::time::Instant::now()));
+    let last_req_time = std::sync::Arc::new(tokio::sync::Mutex::new(None));
 
     let mut handles = Vec::new();
 
@@ -187,18 +187,6 @@ pub async fn start_llm_tagging(
             let _permit = permit;
             if LLM_CANCELLED.load(Ordering::SeqCst) { return; }
 
-            // 全局请求间隔控制
-            if interval_ms > 0 {
-                let mut last = last_req.lock().await;
-                let elapsed = last.elapsed().as_millis() as i64;
-                if elapsed < interval_ms {
-                    tokio::time::sleep(std::time::Duration::from_millis((interval_ms - elapsed) as u64)).await;
-                }
-                *last = std::time::Instant::now();
-            }
-
-            if LLM_CANCELLED.load(Ordering::SeqCst) { return; }
-
             let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
             let _ = app_c.emit("llm-tagger-progress", ProgressEvent {
                 current: i as u32 + 1, total,
@@ -211,7 +199,7 @@ pub async fn start_llm_tagging(
             let file_start = std::time::Instant::now();
 
             let tag_result = tokio::select! {
-                result = tag_with_llm(&cli, &file_path, &opts) => result,
+                result = tag_with_llm(&cli, &file_path, &opts, &last_req, interval_ms) => result,
                 _ = async {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -365,6 +353,8 @@ async fn tag_with_llm(
     client: &reqwest::Client,
     img_path: &Path,
     options: &LlmTaggerOptions,
+    last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
+    request_interval_ms: i64,
 ) -> Result<String, String> {
     // 读取并缩放图片
     let max_side = if options.image_size > 0 { options.image_size } else { 1024 };
@@ -419,6 +409,10 @@ async fn tag_with_llm(
 
     if !options.api_key.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", options.api_key));
+    }
+
+    if !wait_for_global_llm_slot(last_req_time, request_interval_ms, &LLM_CANCELLED).await {
+        return Err("已取消".to_string());
     }
 
     let response = req.send().await

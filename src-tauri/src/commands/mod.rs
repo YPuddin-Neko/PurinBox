@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod image_scale;
 pub mod image_crop;
@@ -47,6 +48,44 @@ pub struct ProgressEvent {
     /// i18n 参数
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub i18n_params: Option<serde_json::Value>,
+}
+
+/// 全局 LLM 请求起点节流。
+///
+/// 第一次请求立即放行；之后所有并发 worker 共享同一个时间戳，
+/// 保证新请求之间至少间隔 `request_interval_ms`。
+pub async fn wait_for_global_llm_slot(
+    last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
+    request_interval_ms: i64,
+    cancel_flag: &AtomicBool,
+) -> bool {
+    if request_interval_ms <= 0 {
+        return true;
+    }
+
+    let mut last = last_req_time.lock().await;
+    if let Some(previous) = *last {
+        let interval_ms = request_interval_ms as u128;
+        let elapsed_ms = previous.elapsed().as_millis();
+        if elapsed_ms < interval_ms {
+            let mut remaining_ms = (interval_ms - elapsed_ms) as u64;
+            while remaining_ms > 0 {
+                if cancel_flag.load(Ordering::SeqCst) {
+                    return false;
+                }
+                let sleep_ms = remaining_ms.min(200);
+                tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+                remaining_ms -= sleep_ms;
+            }
+        }
+    }
+
+    if cancel_flag.load(Ordering::SeqCst) {
+        return false;
+    }
+
+    *last = Some(std::time::Instant::now());
+    true
 }
 
 /// 扫描指定目录下的所有图片文件，返回文件路径列表

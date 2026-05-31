@@ -2,11 +2,12 @@ import { useState, useEffect, useMemo, useCallback, useRef, forwardRef, useImper
 import TagAutocomplete from './TagAutocomplete';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import {
   FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,
   Image as ImageIcon, Loader2, RefreshCw, Tags, Sparkles, Eye, Shirt, TreePine, Lock, User, Layers, Languages,
-  ListPlus, ListX, BarChart3, ArrowUpDown, Hash, BarChart, CheckCircle2, Filter, Code, Trash2
+  ListPlus, ListX, BarChart3, ArrowUpDown, Hash, BarChart, CheckCircle2, Filter, Code, Trash2, CopyX
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -57,8 +58,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
 
   const [simplified,setSimplified]=useState(()=>localStorage.getItem('json_tag_simplified')==='true');
   const [translations,setTranslations]=useState<Record<string,string>>({});
-  const [nlTranslation,setNlTranslation]=useState('');
   const [translating,setTranslating]=useState(false);
+  const [translateProgress,setTranslateProgress]=useState<{ current: number; total: number } | null>(null);
+  const [showTranslateBar,setShowTranslateBar]=useState(false);
+  const hideTranslateTimerRef=useRef<ReturnType<typeof setTimeout> | null>(null);
   const [editingField,setEditingField]=useState<string|null>(null);
   // drag reorder
   const [dragCat,setDragCat]=useState<string|null>(null);
@@ -313,6 +316,73 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
     setBatchTags('');setShowBatchDeleteModal(false);
   },[batchField,batchTags]);
 
+  const dedupeValues=(values:string[],seen:Set<string>)=>{
+    let changed=false;
+    const next:string[]=[];
+    values.forEach(raw=>{
+      const tag=raw.trim();
+      if(!tag){changed=true;return;}
+      const key=tag.toLowerCase();
+      if(seen.has(key)){changed=true;return;}
+      seen.add(key);
+      next.push(tag);
+      if(tag!==raw)changed=true;
+    });
+    if(next.length!==values.length)changed=true;
+    return{values:next,changed};
+  };
+
+  const dedupeCommaField=(value:string|undefined,seen:Set<string>,required=false)=>{
+    const original=value||'';
+    const parts=original?original.split(',').map(s=>s.trim()).filter(Boolean):[];
+    const result=dedupeValues(parts,seen);
+    const next=result.values.join(', ');
+    const nextValue=required?next:(next||undefined);
+    return{value:nextValue,changed:result.changed||(nextValue||'')!==original};
+  };
+
+  const dedupeArrayField=(arr:string[],seen:Set<string>)=>{
+    const result=dedupeValues(arr,seen);
+    const changed=result.changed||result.values.some((v,i)=>v!==arr[i]);
+    return{value:result.values,changed};
+  };
+
+  const dedupeJsonData=(data:JsonTagData)=>{
+    const d=JSON.parse(JSON.stringify(data)) as JsonTagData;
+    const seen=new Set<string>();
+    let changed=false;
+    const applyComma=(value:string|undefined,setter:(v:string|undefined)=>void,required=false)=>{
+      const result=dedupeCommaField(value,seen,required);
+      setter(result.value);
+      changed=changed||result.changed;
+    };
+    const applyArray=(value:string[],setter:(v:string[])=>void)=>{
+      const result=dedupeArrayField(value,seen);
+      setter(result.value);
+      changed=changed||result.changed;
+    };
+
+    applyComma(d.fixed.quality,v=>{d.fixed.quality=v;});
+    applyComma(d.fixed.series,v=>{d.fixed.series=v;});
+    applyComma(d.fixed.artist,v=>{d.fixed.artist=v;});
+    applyComma(d.character.name,v=>{d.character.name=v||'';},true);
+    applyComma(d.character.variant,v=>{d.character.variant=v||'';},true);
+    applyArray(d.from_path.appearance,v=>{d.from_path.appearance=v;});
+    applyComma(d.ai_output.count,v=>{d.ai_output.count=v;});
+    applyArray(d.ai_output.appearance,v=>{d.ai_output.appearance=v;});
+    applyArray(d.ai_output.tags,v=>{d.ai_output.tags=v;});
+    applyArray(d.ai_output.environment,v=>{d.ai_output.environment=v;});
+
+    return{data:d,changed};
+  };
+
+  const handleDeduplicateTags=useCallback(()=>{
+    setImages(prev=>prev.map(img=>{
+      const result=dedupeJsonData(img.data);
+      return result.changed?{...img,data:result.data,dirty:true}:img;
+    }));
+  },[]);
+
   const totalPages = Math.max(1, Math.ceil(filtered.length / IMG_PER_PAGE));
   const pagedFiltered = filtered.slice(imgPage * IMG_PER_PAGE, (imgPage + 1) * IMG_PER_PAGE);
   const prevFilteredLen = useRef(filtered.length);
@@ -331,41 +401,35 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
 
 
 
-  // 翻译当前图片所有标签+NL
+  // 翻译整个数据集的所有标签，和 TXT Danbooru 模式保持一致
   const handleTranslate=useCallback(async()=>{
-    if(!cur)return;
-    setTranslating(true);setNlTranslation('');
-    const allTags=[...cur.data.from_path.appearance,...cur.data.ai_output.appearance,...cur.data.ai_output.tags,...cur.data.ai_output.environment];
-    const pushSplit=(v:string|undefined)=>{if(v)v.split(',').map(s=>s.trim()).filter(Boolean).forEach(t=>allTags.push(t));};
-    pushSplit(cur.data.fixed.quality);
-    pushSplit(cur.data.fixed.series);
-    pushSplit(cur.data.fixed.artist);
-    pushSplit(cur.data.character.name);
-    pushSplit(cur.data.character.variant);
-    pushSplit(cur.data.ai_output.count);
+    const enabled=localStorage.getItem('translate_enabled')==='true';
+    if(!enabled)return;
+    const allTags=tagStats.map(([tag])=>tag);
+    if(allTags.length===0)return;
     const provider=localStorage.getItem('translate_provider')||'google';
+    setTranslating(true);
+    setTranslateProgress({current:0,total:allTags.length});
+    setShowTranslateBar(true);
+    if(hideTranslateTimerRef.current){clearTimeout(hideTranslateTimerRef.current);hideTranslateTimerRef.current=null;}
+
+    const unlisten=await listen<{current:number;total:number}>('translate-progress',e=>{
+      setTranslateProgress({current:e.payload.current,total:e.payload.total});
+    });
+
     try{
-      if(allTags.length>0){
-        const result=await invoke<{translations:{source:string;translated:string}[];cached_count:number;translated_count:number}>('translate_tags',{
-          tags:allTags,targetLang:localStorage.getItem('translate_target_lang')||'zh-CN',provider,
-          baiduAppid:localStorage.getItem('baidu_appid')||'',baiduKey:localStorage.getItem('baidu_key')||'',
-          youdaoAppKey:localStorage.getItem('youdao_app_key')||'',youdaoAppSecret:localStorage.getItem('youdao_app_secret')||'',
-          bingKey:localStorage.getItem('bing_key')||'',bingRegion:localStorage.getItem('bing_region')||'',
-        });
-        setTranslations(prev=>{const next={...prev};result.translations.forEach(item=>{if(item.translated)next[item.source]=item.translated;});return next;});
-      }
-      // NL翻译（不缓存）
-      if(cur.data.ai_output.nl){
-        const nlResult=await invoke<{translations:{source:string;translated:string}[]}>('translate_tags',{
-          tags:[cur.data.ai_output.nl],targetLang:localStorage.getItem('translate_target_lang')||'zh-CN',provider,
-          baiduAppid:localStorage.getItem('baidu_appid')||'',baiduKey:localStorage.getItem('baidu_key')||'',
-          youdaoAppKey:localStorage.getItem('youdao_app_key')||'',youdaoAppSecret:localStorage.getItem('youdao_app_secret')||'',
-          bingKey:localStorage.getItem('bing_key')||'',bingRegion:localStorage.getItem('bing_region')||'',
-        });
-        if(nlResult.translations[0]?.translated)setNlTranslation(nlResult.translations[0].translated);
-      }
+      const result=await invoke<{translations:{source:string;translated:string}[];cached_count:number;translated_count:number}>('translate_tags',{
+        tags:allTags,targetLang:localStorage.getItem('translate_target_lang')||'zh-CN',provider,
+        baiduAppid:localStorage.getItem('baidu_appid')||'',baiduKey:localStorage.getItem('baidu_key')||'',
+        youdaoAppKey:localStorage.getItem('youdao_app_key')||'',youdaoAppSecret:localStorage.getItem('youdao_app_secret')||'',
+        bingKey:localStorage.getItem('bing_key')||'',bingRegion:localStorage.getItem('bing_region')||'',
+      });
+      setTranslations(prev=>{const next={...prev};result.translations.forEach(item=>{if(item.translated)next[item.source]=item.translated;});return next;});
+      setTranslateProgress({current:allTags.length,total:allTags.length});
+      hideTranslateTimerRef.current=setTimeout(()=>{setShowTranslateBar(false);setTranslateProgress(null);},3000);
     }catch(e){console.error('translate failed:',e);}finally{setTranslating(false);}
-  },[cur]);
+    unlisten();
+  },[tagStats]);
 
 
   // drag reorder handlers
@@ -570,9 +634,6 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
               {images.length>0&&<span style={{fontSize:9,padding:'2px 8px',borderRadius:10,background:simplified?'rgba(34,197,94,0.15)':'rgba(99,102,241,0.15)',color:simplified?'#22c55e':'#818cf8',fontWeight:700,border:`1px solid ${simplified?'rgba(34,197,94,0.25)':'rgba(99,102,241,0.25)'}`}}>{simplified?t('jsonTag.simplified'):t('jsonTag.full')}</span>}
             </div>
             <div style={{display:'flex',alignItems:'center',gap:6}}>
-              <button className="btn btn-ghost btn-sm" onClick={handleTranslate} disabled={!cur||translating} title={t('jsonTag.translateTags')} style={{gap:4,fontSize:10,height:24,padding:'0 8px',color:Object.keys(translations).length>0?'#60a5fa':undefined}}>
-                {translating?<Loader2 style={{width:10,height:10,animation:'spin 1s linear infinite'}} />:<Languages style={{width:10,height:10}} />}
-              </button>
               <button className="btn btn-primary" style={{fontSize:10,gap:4,height:24,padding:'0 10px'}} disabled={!cur||!cur.dirty||savingSingle} onClick={handleSaveSingle}>
                 {savingSingle?<Loader2 style={{width:10,height:10,animation:'spin 1s linear infinite'}} />:<Save style={{width:10,height:10}} />} {t('jsonTag.save')}
               </button>
@@ -741,9 +802,14 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
               {col3Mode==='stats'&&<span style={{fontSize:10,padding:'1px 8px',borderRadius:10,background:'rgba(96,165,250,0.1)',color:'#60a5fa',fontWeight:600}}>{filteredStats.length}</span>}
             </div>
             <div style={{display:'flex',alignItems:'center',gap:4}}>
-              {col3Mode==='stats'&&<button className="btn btn-ghost btn-sm" style={{fontSize:9,height:22,padding:'0 6px'}} onClick={()=>setTagListMode(m=>m==='all'?'common':'all')} disabled={images.length===0}>
-                {tagListMode==='all'?t('jsonTag.commonLabel'):t('jsonTag.allLabel')}
-              </button>}
+              {col3Mode==='stats'&&<>
+                <button className="btn btn-ghost btn-sm" onClick={handleTranslate} disabled={images.length===0||localStorage.getItem('translate_enabled')!=='true'||translating} title={t('jsonTag.translateTags')} style={{width:22,height:22,padding:0,display:'flex',alignItems:'center',justifyContent:'center',color:Object.keys(translations).length>0?'#60a5fa':undefined}}>
+                  {translating?<Loader2 style={{width:12,height:12,animation:'spin 1s linear infinite'}} />:<Languages style={{width:12,height:12}} />}
+                </button>
+                <button className="btn btn-ghost btn-sm" style={{fontSize:9,height:22,padding:'0 6px'}} onClick={()=>setTagListMode(m=>m==='all'?'common':'all')} disabled={images.length===0}>
+                  {tagListMode==='all'?t('jsonTag.commonLabel'):t('jsonTag.allLabel')}
+                </button>
+              </>}
               <button className="btn btn-ghost btn-sm" onClick={()=>setCol3Mode(m=>m==='json'?'stats':'json')} title={col3Mode==='json'?t('jsonTag.allTags'):t('jsonTag.tagContent')} style={{width:22,height:22,padding:0,display:'flex',alignItems:'center',justifyContent:'center',color:col3Mode==='stats'?'#60a5fa':undefined}}>
                 {col3Mode==='json'?<BarChart3 style={{width:12,height:12}} />:<Code style={{width:12,height:12}} />}
               </button>
@@ -812,6 +878,15 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
               {selectedTags.size>0?<span style={{color:'#a78bfa'}}>{t('jsonTag.selected',{n:selectedTags.size})}</span>:<span>{t('jsonTag.nTagTypes',{n:tagStats.length})}</span>}
               <span>{taggedCount}/{images.length} {t('jsonTag.tagged')}</span>
             </div>
+            {showTranslateBar&&translateProgress&&<div style={{padding:'5px 12px',borderTop:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:8,background:'rgba(96,165,250,0.04)'}}>
+              <span style={{fontSize:10,fontWeight:600,color:'#60a5fa',flexShrink:0}}>{t('jsonTag.translateProgress')}</span>
+              <div style={{flex:1,height:3,borderRadius:2,background:'var(--color-border)',overflow:'hidden'}}>
+                <div style={{width:`${translateProgress.total>0?(translateProgress.current/translateProgress.total)*100:0}%`,height:'100%',borderRadius:2,background:translateProgress.current>=translateProgress.total?'#4ade80':'linear-gradient(90deg, #7c5cfc, #00d4ff)',transition:'width 0.3s ease'}} />
+              </div>
+              <span style={{fontSize:10,color:translateProgress.current>=translateProgress.total?'#4ade80':'var(--color-text-tertiary)',whiteSpace:'nowrap',fontVariantNumeric:'tabular-nums'}}>
+                {translateProgress.current>=translateProgress.total?'✓ ':''}{translateProgress.current}/{translateProgress.total}
+              </span>
+            </div>}
           </>):(
             /* JSON Preview */
             <div style={{flex:1,overflowY:'auto',padding:'10px 12px',fontSize:11}}>
@@ -839,9 +914,6 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
                   <pre style={{margin:0,whiteSpace:'pre-wrap',wordBreak:'break-all',fontFamily:'"SF Mono","Fira Code","Cascadia Code",Menlo,Consolas,monospace',fontSize:10,lineHeight:1.7,color:'var(--color-text-primary)'}}>{JSON.stringify(json,null,2)}</pre>
                 ):(<span style={{color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('jsonTag.noTagDataView')}</span>);
               })()}
-              {nlTranslation&&<div style={{marginTop:8,padding:'6px 8px',borderRadius:6,background:'rgba(148,163,184,0.06)',border:'1px solid rgba(148,163,184,0.1)',fontSize:10,color:'var(--color-text-tertiary)',lineHeight:1.6}}>
-                <span style={{fontWeight:600}}>{t('jsonTag.nlTranslation')}:</span> {nlTranslation}
-              </div>}
             </div>
           )}
         </div>
@@ -852,6 +924,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
             {icon:<Filter style={{width:14,height:14}} />,tip:t('jsonTag.filterByTag'),onClick:()=>setTagFilterActive(v=>!v),disabled:images.length===0,color:tagFilterActive?'#7c5cfc':undefined},
             {icon:<ListPlus style={{width:14,height:14}} />,tip:t('jsonTag.batchAdd'),onClick:()=>{setBatchField('ai_output.tags');setBatchTags('');setBatchPosition('append');setShowBatchAddModal(true);},disabled:images.length===0},
             {icon:<ListX style={{width:14,height:14}} />,tip:t('jsonTag.batchDelete'),onClick:()=>{setBatchField('all');setBatchTags('');setShowBatchDeleteModal(true);},disabled:images.length===0},
+            {icon:<CopyX style={{width:14,height:14}} />,tip:t('jsonTag.dedupeTags'),onClick:handleDeduplicateTags,disabled:images.length===0,color:'#f59e0b'},
             {icon:<Trash2 style={{width:14,height:14}} />,tip:t('jsonTag.deleteSelected'),onClick:handleSidebarBatchDelete,disabled:selectedTags.size===0,color:selectedTags.size>0?'#f87171':undefined},
           ].map((item,i)=>(
             <button key={i} className="btn btn-ghost" title={item.tip} disabled={item.disabled}

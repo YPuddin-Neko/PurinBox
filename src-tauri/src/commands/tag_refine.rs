@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
 
-use super::{ProcessResult, ProgressEvent};
+use super::{wait_for_global_llm_slot, ProcessResult, ProgressEvent};
 use crate::commands::collect_image_files;
 
 static TAG_REFINE_CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -132,6 +132,7 @@ pub async fn start_tag_refining(
     let warning_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let last_req_time = Arc::new(tokio::sync::Mutex::new(None));
     let mut handles = Vec::new();
 
     for file_path in files.iter() {
@@ -153,6 +154,7 @@ pub async fn start_tag_refining(
         let cancelled = cancelled.clone();
         let error_files = error_files.clone();
         let warning_files = warning_files.clone();
+        let last_req_time = last_req_time.clone();
 
         let handle = tokio::spawn(async move {
             if TAG_REFINE_CANCELLED.load(Ordering::SeqCst) {
@@ -170,32 +172,8 @@ pub async fn start_tag_refining(
                 return;
             }
 
-            // 请求间隔
-            if options.request_interval_ms > 0 {
-                let cur = processed.load(Ordering::SeqCst);
-                if cur > 0 {
-                    let interval = options.request_interval_ms as u64;
-                    let step = 200u64;
-                    let mut waited = 0u64;
-                    while waited < interval {
-                        if TAG_REFINE_CANCELLED.load(Ordering::SeqCst) {
-                            cancelled.store(true, Ordering::SeqCst);
-                            return;
-                        }
-                        let sleep_ms = std::cmp::min(step, interval - waited);
-                        tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
-                        waited += sleep_ms;
-                    }
-                }
-            }
-
-            if TAG_REFINE_CANCELLED.load(Ordering::SeqCst) {
-                cancelled.store(true, Ordering::SeqCst);
-                return;
-            }
-
             let result = tokio::select! {
-                r = process_single_file(&client, &file_path, &output_dir, &options) => r,
+                r = process_single_file(&client, &file_path, &output_dir, &options, &last_req_time) => r,
                 _ = async {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -329,6 +307,7 @@ async fn process_single_file(
     img_path: &Path,
     output_dir: &Path,
     options: &TagRefineOptions,
+    last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
 ) -> FileResult {
     let start = std::time::Instant::now();
     let filename = img_path.file_name().unwrap_or_default().to_string_lossy().to_string();
@@ -360,7 +339,7 @@ async fn process_single_file(
     }
 
     // 调用 LLM 细化
-    match refine_tags_with_llm(client, img_path, &original_tags, options).await {
+    match refine_tags_with_llm(client, img_path, &original_tags, options, last_req_time).await {
         Ok(refined_tags) => {
             let elapsed_ms = start.elapsed().as_millis();
             let original_count = original_tags.len();
@@ -405,6 +384,7 @@ async fn refine_tags_with_llm(
     img_path: &Path,
     tags: &[String],
     options: &TagRefineOptions,
+    last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
 ) -> Result<Vec<String>, String> {
     // 读取并缩放图片
     let max_side = if options.image_size > 0 { options.image_size } else { 1024 };
@@ -468,6 +448,10 @@ async fn refine_tags_with_llm(
 
     if !options.api_key.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", options.api_key));
+    }
+
+    if !wait_for_global_llm_slot(last_req_time, options.request_interval_ms, &TAG_REFINE_CANCELLED).await {
+        return Err("已取消".to_string());
     }
 
     let response = req.send().await

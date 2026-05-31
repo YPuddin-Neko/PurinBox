@@ -8,7 +8,7 @@ import {
   Tags, FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,
   Trash2, Image as ImageIcon, BarChart3, CheckCircle2, Loader2,
   Replace, Filter, ListPlus, PlusCircle, MinusCircle, Languages, RefreshCw,
-  ArrowUpDown, Hash, BarChart, List
+  ArrowUpDown, Hash, BarChart, List, CopyX
 } from 'lucide-react';
 import NaturalLangTab from '../components/NaturalLangTab';
 import JsonTagTab, { type JsonTagTabHandle } from '../components/JsonTagTab';
@@ -366,6 +366,36 @@ export default function TagManagerPage() {
       return { ...img, tags: newTags, dirty: true };
     }));
     setSelectedTags(new Set());
+  };
+
+  const dedupeTagList = (tags: string[]) => {
+    const seen = new Set<string>();
+    let changed = false;
+    const next: string[] = [];
+    tags.forEach(raw => {
+      const tag = raw.trim();
+      if (!tag) {
+        changed = true;
+        return;
+      }
+      const key = tag.toLowerCase();
+      if (seen.has(key)) {
+        changed = true;
+        return;
+      }
+      seen.add(key);
+      next.push(tag);
+      if (tag !== raw) changed = true;
+    });
+    if (next.length !== tags.length) changed = true;
+    return { tags: next, changed };
+  };
+
+  const handleDeduplicateTags = () => {
+    setImages(prev => prev.map(img => {
+      const result = dedupeTagList(img.tags);
+      return result.changed ? { ...img, tags: result.tags, dirty: true } : img;
+    }));
   };
 
   // ── 标签替换 ──
@@ -815,6 +845,7 @@ export default function TagManagerPage() {
               {icon:<Filter style={{width:14,height:14}} />,tip:t('tagManager.filterByTag'),onClick:()=>setTagFilterActive(v=>!v),disabled:images.length===0,color:tagFilterActive?'#7c5cfc':undefined},
               {icon:<Replace style={{width:14,height:14}} />,tip:t('tagManager.replaceTag'),onClick:()=>{setShowReplaceModal(true);if(selectedTags.size===1)setReplaceFrom([...selectedTags][0]);},disabled:images.length===0},
               {icon:<ListPlus style={{width:14,height:14}} />,tip:t('tagManager.batchAdd'),onClick:()=>setShowAddModal(true),disabled:images.length===0},
+              {icon:<CopyX style={{width:14,height:14}} />,tip:t('tagManager.dedupeTags'),onClick:handleDeduplicateTags,disabled:images.length===0,color:'#f59e0b'},
               {icon:<Trash2 style={{width:14,height:14}} />,tip:t('tagManager.deleteSelected'),onClick:handleBatchDelete,disabled:selectedTags.size===0,color:selectedTags.size>0?'#f87171':undefined},
               {icon:<PlusCircle style={{width:14,height:14}} />,tip:t('tagManager.addToCurrent'),onClick:addSelectedToCurrent,disabled:!cur||selectedTags.size===0},
               {icon:<MinusCircle style={{width:14,height:14}} />,tip:t('tagManager.removeFromCurrent'),onClick:removeSelectedFromCurrent,disabled:!cur||selectedTags.size===0||!curHasAllSelected,color:curHasAllSelected&&selectedTags.size>0?'#f87171':undefined},
