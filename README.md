@@ -80,7 +80,7 @@ PurinBox 是一个基于 **Tauri 2 + React** 的桌面应用，专注于二次�
 | Windows | `PurinBox_x.x.x_x64-setup.exe` |
 | macOS (Apple Silicon) | `PurinBox_x.x.x_aarch64.dmg` |
 | macOS (Intel) | `PurinBox_x.x.x_x64.dmg` |
-| Linux | `.deb` / `.rpm` / `.AppImage` |
+| Linux (x64 / ARM64) | `.deb` / `.rpm` / `.AppImage` |
 
 ### 系统要求
 
