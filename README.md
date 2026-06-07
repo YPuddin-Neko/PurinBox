@@ -102,7 +102,8 @@ Linux 还需要安装 Tauri 构建依赖（以 Ubuntu/Debian 为例）：
 sudo apt-get update
 sudo apt-get install -y \
   build-essential curl file libayatana-appindicator3-dev libgtk-3-dev \
-  libssl-dev libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev patchelf wget
+  libssl-dev libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev \
+  libfuse2 patchelf rpm wget
 ```
 
 #### 构建步骤
