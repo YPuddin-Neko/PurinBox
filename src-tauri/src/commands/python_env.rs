@@ -70,6 +70,13 @@ fn get_download_info() -> PythonDownloadInfo {
 
         }
     }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        PythonDownloadInfo {
+            url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.12.13+20260414-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz",
+
+        }
+    }
 }
 
 /// 获取 env 根目录（存放 Python 环境等）

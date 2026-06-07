@@ -10,6 +10,10 @@ on:
         description: 'Existing release tag to build, for example v0.3.17'
         required: true
         type: string
+      checkout_ref:
+        description: 'Git ref to build from. Defaults to release_tag.'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -17,6 +21,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+  CHECKOUT_REF: ${{ github.event_name == 'workflow_dispatch' && (inputs.checkout_ref || inputs.release_tag) || github.ref_name }}
 
 jobs:
   # 1. 先创建 GitHub Release（带更新日志）
@@ -29,7 +34,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Create Release
         id: create
@@ -49,7 +54,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -117,7 +122,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Install Linux system dependencies
         run: |
@@ -179,7 +184,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
