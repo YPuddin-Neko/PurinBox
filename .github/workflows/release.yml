@@ -4,12 +4,19 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release tag to build, for example v0.3.17'
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
 
 jobs:
   # 1. 先创建 GitHub Release（带更新日志）
@@ -21,13 +28,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Create Release
         id: create
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: 'PurinBox ${{ github.ref_name }}'
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: 'PurinBox ${{ env.RELEASE_TAG }}'
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -39,6 +48,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -66,7 +77,7 @@ jobs:
       - name: Package portable ZIP
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $version = "${{ env.RELEASE_TAG }}" -replace '^v', ''
           $exePath = "src-tauri/target/release/PurinBox.exe"
           if (-not (Test-Path $exePath)) {
             Write-Error "PurinBox.exe not found at $exePath"
@@ -88,7 +99,7 @@ jobs:
       - name: Upload portable ZIP to Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: ${{ env.PORTABLE_ZIP }}
 
   # 3. 构建 Linux x64 / ARM64 (deb + rpm + AppImage)
@@ -105,6 +116,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Linux system dependencies
         run: |
@@ -165,6 +178,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
