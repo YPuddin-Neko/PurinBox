@@ -7,7 +7,7 @@
 一个AI图片训练数据集处理工具箱
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![Version](https://img.shields.io/github/v/tag/YPuddin-Neko/PurinBox?label=Version)
 ![Rust](https://img.shields.io/badge/Rust-Tauri%202-orange)
 ![React](https://img.shields.io/badge/React-19-61DAFB)
@@ -80,11 +80,12 @@ PurinBox 是一个基于 **Tauri 2 + React** 的桌面应用，专注于二次�
 | Windows | `PurinBox_x.x.x_x64-setup.exe` |
 | macOS (Apple Silicon) | `PurinBox_x.x.x_aarch64.dmg` |
 | macOS (Intel) | `PurinBox_x.x.x_x64.dmg` |
+| Linux (x64 / ARM64) | `.deb` / `.rpm` / `.AppImage` |
 
 ### 系统要求
 
-- **Windows** 10/11 或 **macOS** 12+
-- GPU 加速（可选）：Windows 需要 CUDA 12.x 和 cuDNN 9.x，macOS 使用 CoreML
+- **Windows** 10/11、**macOS** 12+ 或主流 **Linux** 发行版
+- GPU 加速（可选）：Windows/Linux 需要 CUDA 12.x 和 cuDNN 9.x，macOS 使用 CoreML
 
 ### 从源码构建
 
@@ -94,6 +95,16 @@ PurinBox 是一个基于 **Tauri 2 + React** 的桌面应用，专注于二次�
 - [Node.js](https://nodejs.org/) >= 18
 - [Rust](https://www.rust-lang.org/tools/install) >= 1.77
 - [Tauri CLI](https://v2.tauri.app/start/prerequisites/)
+
+Linux 还需要安装 Tauri 构建依赖（以 Ubuntu/Debian 为例）：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential curl file libayatana-appindicator3-dev libgtk-3-dev \
+  libssl-dev libwebkit2gtk-4.1-dev libxdo-dev librsvg2-dev \
+  libfuse2 patchelf rpm wget
+```
 
 #### 构建步骤
 
