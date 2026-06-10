@@ -3740,6 +3740,7 @@ dependencies = [
  "urlencoding",
  "walkdir",
  "webview2-com",
+ "windows",
  "zip",
 ]
 

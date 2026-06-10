@@ -34,7 +34,7 @@ use commands::dedup_rename::{scan_dedup_rename, cancel_dedup_rename, execute_ded
 use commands::sd_metadata::{scan_sd_metadata, export_sd_tags, read_single_sd_metadata};
 use commands::tag_db::{get_tag_db_stats, download_danbooru_tags, cancel_tag_db_download, clear_tag_db, search_tags, translate_tag_db, is_tag_db_busy, check_tag_db_update};
 use commands::aesthetic::{start_aesthetic_scoring, cancel_aesthetic_scoring};
-use commands::{scan_images, scan_concept_folders, apply_concept_repeats, get_system_stats, check_for_updates};
+use commands::{scan_images, scan_concept_folders, apply_concept_repeats, get_system_stats, check_for_updates, frontend_ready};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -138,6 +138,7 @@ pub fn run() {
             export_sd_tags,
             read_single_sd_metadata,
             check_for_updates,
+            frontend_ready,
             get_tag_db_stats,
             download_danbooru_tags,
             cancel_tag_db_download,
@@ -172,6 +173,51 @@ pub fn run() {
             // 所有平台: 禁用 WebView 缩放快捷键（Ctrl+滚轮/Ctrl++/-），防止意外缩放
             #[cfg(not(target_os = "windows"))]
             let _ = app;
+
+            // 启动看门狗（仅 Windows release）：WebView2 偶发会在初始化阶段卡死
+            // （例如恰逢系统后台更新 WebView2 运行时），表现为窗口永久白屏且无响应，
+            // 用户只能手动杀进程。前端加载完成后会立即调用 frontend_ready 命令；
+            // 超时未收到信号说明界面已卡死——自动重启一次，仍失败则弹原生提示框。
+            #[cfg(all(target_os = "windows", not(debug_assertions)))]
+            std::thread::spawn(|| {
+                use std::sync::atomic::Ordering;
+
+                const STARTUP_TIMEOUT_SECS: u64 = 20;
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_secs(STARTUP_TIMEOUT_SECS);
+                while std::time::Instant::now() < deadline {
+                    if commands::FRONTEND_READY.load(Ordering::SeqCst) {
+                        return; // 界面正常加载，看门狗退出
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+
+                if std::env::var("PURINBOX_STARTUP_RETRIED").is_err() {
+                    // 第一次卡死：直接重新拉起自身后退出。
+                    // 不走 AppHandle::restart()——它依赖事件循环，而此时事件循环正卡死。
+                    if let Ok(exe) = std::env::current_exe() {
+                        let _ = std::process::Command::new(exe)
+                            .args(std::env::args().skip(1))
+                            .env("PURINBOX_STARTUP_RETRIED", "1")
+                            .spawn();
+                    }
+                } else {
+                    // 重启后仍卡死：用原生消息框告知用户（不依赖应用事件循环）
+                    unsafe {
+                        use windows::core::w;
+                        use windows::Win32::UI::WindowsAndMessaging::{
+                            MessageBoxW, MB_ICONERROR, MB_OK,
+                        };
+                        MessageBoxW(
+                            None,
+                            w!("界面初始化失败，可能是系统 WebView2 组件暂时不可用。\n请稍后重新打开应用；若反复出现，请尝试重启系统或重新安装 Microsoft Edge WebView2 Runtime。\n\nUI failed to initialize (WebView2 may be temporarily unavailable).\nPlease reopen the app later, or reinstall the WebView2 Runtime if it keeps happening."),
+                            w!("PurinBox"),
+                            MB_OK | MB_ICONERROR,
+                        );
+                    }
+                }
+                std::process::exit(1);
+            });
 
             Ok(())
         })
