@@ -37,6 +37,7 @@ futures-util = "0.3"
 csv = "1"
 
 base64 = "0.22"
+dirs = "5"
 sysinfo = "0.35"
 zip = "2"
 urlencoding = "2"

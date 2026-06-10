@@ -22,27 +22,11 @@ impl Default for ApiConfig {
     }
 }
 
-/// 获取配置目录
-fn get_config_dir() -> PathBuf {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
+const CONFIG_FILE: &str = "api_config.json";
 
-    let base = if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or(exe_dir)
-    } else {
-        exe_dir
-    };
-
-    base.join("config")
-}
-
+/// 配置文件读取路径（含旧 exe 同目录 config/ 的自动迁移）
 fn config_path() -> PathBuf {
-    get_config_dir().join("api_config.json")
+    super::config_paths::resolve_config_file(CONFIG_FILE)
 }
 
 /// 编码 API Key（base64）
@@ -67,10 +51,8 @@ fn decode_key(encoded: &str) -> String {
 /// 保存 API 配置
 #[tauri::command]
 pub fn save_api_config(preset: String, custom_endpoint: String, api_key: String) -> Result<(), String> {
-    let dir = get_config_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
-    }
+    let dir = super::config_paths::user_config_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
 
     let config = ApiConfig {
         preset,
@@ -80,7 +62,7 @@ pub fn save_api_config(preset: String, custom_endpoint: String, api_key: String)
 
     let json = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("序列化失败: {}", e))?;
-    std::fs::write(config_path(), json)
+    std::fs::write(dir.join(CONFIG_FILE), json)
         .map_err(|e| format!("写入配置失败: {}", e))?;
     Ok(())
 }
