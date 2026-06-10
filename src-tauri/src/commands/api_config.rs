@@ -4,7 +4,7 @@ use std::path::PathBuf;
 /// API 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiConfig {
-    /// 预设类型: "openai" | "gemini" | "deepseek" | "custom"
+    /// 预设类型: "openai" | "gemini" | "claude" | "custom"（旧版 "deepseek" 由前端迁移为 custom）
     pub preset: String,
     /// 自定义端点 URL（仅 preset="custom" 时使用）
     pub custom_endpoint: String,

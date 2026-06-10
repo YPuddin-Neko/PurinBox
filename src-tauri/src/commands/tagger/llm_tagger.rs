@@ -474,7 +474,14 @@ pub async fn fetch_llm_models(
         .header("Content-Type", "application/json");
 
     if !api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
+        if api_endpoint.contains("api.anthropic.com") {
+            // Claude 的 /v1/models 是原生端点（不走 OpenAI 兼容层），需要 x-api-key + anthropic-version 认证
+            req = req
+                .header("x-api-key", &api_key)
+                .header("anthropic-version", "2023-06-01");
+        } else {
+            req = req.header("Authorization", format!("Bearer {}", api_key));
+        }
     }
 
     let response = req.send().await

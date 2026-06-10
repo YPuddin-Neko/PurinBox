@@ -85,7 +85,7 @@ export default function LlmTaggerTab() {
   const [modelList, setModelList] = useState<string[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchMsg, setFetchMsg] = useState<{ text: string; ok: boolean } | null>(null);
-  const [temperature, setTemperature] = useState('0.2');
+  const [temperature, setTemperature] = useState('0.8');
   const [maxTokens, setMaxTokens] = useState('-1');
   const [sysPrompt, setSysPrompt] = useState(() => getDefaultPrompts('txt', false).sys);
   const [userPrompt, setUserPrompt] = useState(() => getDefaultPrompts('txt', false).user);
@@ -98,7 +98,7 @@ export default function LlmTaggerTab() {
   const [hasErr, setHasErr] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [imageSize, setImageSize] = useState('1024');
-  const [topP, setTopP] = useState('');
+  const [topP, setTopP] = useState('0.95');
   const [skipExisting, setSkipExisting] = useState(false);
   const [outputFormat, setOutputFormat] = useState<'txt' | 'json'>('txt');
   const [jsonSimplified, setJsonSimplified] = useState(()=>localStorage.getItem('tagger_json_simplified')==='true');
@@ -115,7 +115,7 @@ export default function LlmTaggerTab() {
   const PRESETS: Record<string, { label: string; url: string }> = {
     openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
     gemini: { label: 'Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/' },
-    deepseek: { label: 'DeepSeek', url: 'https://api.deepseek.com/v1/' },
+    claude: { label: 'Claude', url: 'https://api.anthropic.com/v1/' },
     custom: { label: t('llmTagger.customLabel'), url: '' },
   };
 
@@ -124,8 +124,14 @@ export default function LlmTaggerTab() {
   // 加载保存的配置
   useEffect(() => {
     invoke<[string, string, string]>('load_api_config').then(([p, ce, key]) => {
-      if (p) setPreset(p);
-      if (ce) setCustomEndpoint(ce);
+      if (p === 'deepseek') {
+        // 旧版 DeepSeek 预设已移除：迁移为自定义端点，保持原有配置继续可用
+        setPreset('custom');
+        setCustomEndpoint('https://api.deepseek.com/v1/');
+      } else {
+        if (p) setPreset(p);
+        if (ce) setCustomEndpoint(ce);
+      }
       if (key) setApiKey(key);
     }).catch(() => {});
   }, []);
@@ -193,7 +199,7 @@ export default function LlmTaggerTab() {
         options: {
           input_path: inputPath, api_endpoint: endpoint, api_key: apiKey, model_name: modelName,
           system_prompt: sysPrompt, user_prompt: userPrompt,
-          temperature: parseFloat(temperature) || 0.2, max_tokens: parseInt(maxTokens) || -1,
+          temperature: parseFloat(temperature) || 0.8, max_tokens: parseInt(maxTokens) || -1,
           image_size: parseInt(imageSize) || 1024,
           top_p: parseFloat(topP) || 0,
           skip_existing: skipExisting,

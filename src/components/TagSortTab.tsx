@@ -64,7 +64,7 @@ export default function TagSortTab() {
   const PRESETS: Record<string, { label: string; url: string }> = {
     openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
     gemini: { label: 'Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/' },
-    deepseek: { label: 'DeepSeek', url: 'https://api.deepseek.com/v1/' },
+    claude: { label: 'Claude', url: 'https://api.anthropic.com/v1/' },
     custom: { label: t('tagSort.customLabel'), url: '' },
   };
 
@@ -73,8 +73,14 @@ export default function TagSortTab() {
   // 加载保存的配置
   useEffect(() => {
     invoke<[string, string, string]>('load_api_config').then(([p, ce, key]) => {
-      if (p) setPreset(p);
-      if (ce) setCustomEndpoint(ce);
+      if (p === 'deepseek') {
+        // 旧版 DeepSeek 预设已移除：迁移为自定义端点，保持原有配置继续可用
+        setPreset('custom');
+        setCustomEndpoint('https://api.deepseek.com/v1/');
+      } else {
+        if (p) setPreset(p);
+        if (ce) setCustomEndpoint(ce);
+      }
       if (key) setApiKey(key);
     }).catch(() => {});
   }, []);
