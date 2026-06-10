@@ -34,6 +34,8 @@ pub struct DedupRenameScanResult {
     pub unmatched_a: Vec<String>,
     pub unmatched_b: Vec<String>,
     pub scan_time_ms: u64,
+    /// 指纹计算失败的文件（路径 + 原因）
+    pub failed_files: Vec<String>,
 }
 
 #[tauri::command]
@@ -127,11 +129,16 @@ pub async fn execute_dedup_rename(
         if target_path.exists() && target_path != src {
             if let Some(conflict) = &action.conflict_path {
                 let conflict_p = Path::new(conflict);
-                // 给冲突文件加 _rename 后缀
-                let stem = conflict_p.file_stem().unwrap_or_default().to_string_lossy();
+                // 给冲突文件加 _rename 后缀，若该名已被占用则追加序号直到唯一
+                let stem = conflict_p.file_stem().unwrap_or_default().to_string_lossy().to_string();
                 let ext = conflict_p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-                let rename_name = format!("{}_rename{}", stem, ext);
-                let rename_path = conflict_p.parent().unwrap_or(Path::new(".")).join(&rename_name);
+                let parent = conflict_p.parent().unwrap_or(Path::new("."));
+                let mut rename_path = parent.join(format!("{}_rename{}", stem, ext));
+                let mut suffix = 1u32;
+                while rename_path.exists() {
+                    rename_path = parent.join(format!("{}_rename_{}{}", stem, suffix, ext));
+                    suffix += 1;
+                }
 
                 if let Err(e) = std::fs::rename(conflict_p, &rename_path) {
                     fail_count += 1;
@@ -140,7 +147,14 @@ pub async fn execute_dedup_rename(
                 }
 
                 // 同时处理关联的标签文件
-                rename_associated_files(conflict_p, &rename_path);
+                errors.extend(rename_associated_files(conflict_p, &rename_path));
+            }
+
+            // 后端自查：冲突未被避让（前端未传 conflict_path 或避让后目标仍存在），拒绝覆盖
+            if target_path.exists() {
+                fail_count += 1;
+                errors.push(format!("目标文件已存在，跳过以免覆盖: {}", target_path.display()));
+                continue;
             }
         }
 
@@ -148,7 +162,7 @@ pub async fn execute_dedup_rename(
         match std::fs::rename(src, &target_path) {
             Ok(_) => {
                 // 同时处理关联的标签文件
-                rename_associated_files(src, &target_path);
+                errors.extend(rename_associated_files(src, &target_path));
                 success_count += 1;
             }
             Err(e) => {
@@ -179,8 +193,9 @@ pub async fn execute_dedup_rename(
     Ok(DedupRenameResult { success_count, fail_count, errors })
 }
 
-/// 重命名关联文件（.txt, .json, .caption）
-fn rename_associated_files(old_path: &Path, new_path: &Path) {
+/// 重命名关联文件（.txt, .json, .caption），返回错误信息列表（目标已存在则跳过并记录，绝不覆盖）
+fn rename_associated_files(old_path: &Path, new_path: &Path) -> Vec<String> {
+    let mut errors = Vec::new();
     let old_stem = old_path.file_stem().unwrap_or_default();
     let new_stem = new_path.file_stem().unwrap_or_default();
     let old_dir = old_path.parent().unwrap_or(Path::new("."));
@@ -190,11 +205,16 @@ fn rename_associated_files(old_path: &Path, new_path: &Path) {
         let old_assoc = old_dir.join(format!("{}.{}", old_stem.to_string_lossy(), ext));
         if old_assoc.exists() {
             let new_assoc = new_dir.join(format!("{}.{}", new_stem.to_string_lossy(), ext));
+            if new_assoc.exists() {
+                errors.push(format!("关联文件目标已存在，跳过以免覆盖: {} → {}", old_assoc.display(), new_assoc.display()));
+                continue;
+            }
             if let Err(e) = std::fs::rename(&old_assoc, &new_assoc) {
-                eprintln!("[dedup_rename] 关联文件重命名失败 {}: {}", old_assoc.display(), e);
+                errors.push(format!("关联文件重命名失败 {}: {}", old_assoc.display(), e));
             }
         }
     }
+    errors
 }
 
 // ── Fingerprint (reuse dedup logic) ──
@@ -233,6 +253,7 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
             unmatched_a: files_a.iter().map(|f| f.file_name().unwrap_or_default().to_string_lossy().to_string()).collect(),
             unmatched_b: files_b.iter().map(|f| f.file_name().unwrap_or_default().to_string_lossy().to_string()).collect(),
             scan_time_ms: 0,
+            failed_files: vec![],
         });
     }
 
@@ -247,15 +268,16 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
     let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(16);
     let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
 
-    let compute_batch = |files: &[PathBuf], app: &tauri::AppHandle, counter: &std::sync::Arc<std::sync::atomic::AtomicU32>, total: u32| -> Vec<ImageFingerprint> {
+    let compute_batch = |files: &[PathBuf], app: &tauri::AppHandle, counter: &std::sync::Arc<std::sync::atomic::AtomicU32>, total: u32| -> (Vec<ImageFingerprint>, Vec<String>) {
         let mut fps = Vec::with_capacity(files.len());
+        let mut failed: Vec<String> = Vec::new();
         for chunk in files.chunks(num_threads) {
             if CANCEL_FLAG.load(Ordering::SeqCst) { break; }
             let handles: Vec<_> = chunk.iter().map(|file| {
                 let path = file.clone();
                 std::thread::spawn(move || compute_fingerprint(&path))
             }).collect();
-            for handle in handles {
+            for (file, handle) in chunk.iter().zip(handles) {
                 let cnt = counter.fetch_add(1, Ordering::SeqCst) + 1;
                 let _ = app.emit("dedup-rename-progress", ProgressEvent {
                     current: cnt, total,
@@ -264,17 +286,20 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
                     message: format!("计算指纹 {}/{}", cnt, total),
                 ..Default::default()
                 });
-                if let Ok(Ok(fp)) = handle.join() {
-                    fps.push(fp);
+                match handle.join() {
+                    Ok(Ok(fp)) => fps.push(fp),
+                    Ok(Err(e)) => failed.push(format!("{}: {}", file.display(), e)),
+                    Err(_) => failed.push(format!("{}: 指纹计算线程异常退出", file.display())),
                 }
             }
         }
-        fps
+        (fps, failed)
     };
 
-    let fps_a = compute_batch(&files_a, app, &counter, total_all);
+    let (fps_a, mut failed_files) = compute_batch(&files_a, app, &counter, total_all);
     if CANCEL_FLAG.load(Ordering::SeqCst) { return Err("已取消".into()); }
-    let fps_b = compute_batch(&files_b, app, &counter, total_all);
+    let (fps_b, failed_b) = compute_batch(&files_b, app, &counter, total_all);
+    failed_files.extend(failed_b);
     if CANCEL_FLAG.load(Ordering::SeqCst) { return Err("已取消".into()); }
 
     // Phase 2: cross-compare A vs B
@@ -354,6 +379,7 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
         unmatched_a,
         unmatched_b,
         scan_time_ms: elapsed,
+        failed_files,
     })
 }
 

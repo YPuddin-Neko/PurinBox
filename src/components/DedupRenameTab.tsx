@@ -12,7 +12,7 @@ import { useTranslation } from 'react-i18next';
 
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 interface DedupPair { path_a: string; name_a: string; path_b: string; name_b: string; similarity: number; method: string; }
-interface ScanResult { pairs: DedupPair[]; total_a: number; total_b: number; unmatched_a: string[]; unmatched_b: string[]; scan_time_ms: number; }
+interface ScanResult { pairs: DedupPair[]; total_a: number; total_b: number; unmatched_a: string[]; unmatched_b: string[]; scan_time_ms: number; failed_files?: string[]; }
 // direction: 'a' = B uses A's name, 'b' = A uses B's name
 type Direction = 'a' | 'b';
 

@@ -147,10 +147,13 @@ pub fn is_tag_db_busy() -> (bool, bool) {
 /// 下载并导入 Danbooru 标签数据
 #[tauri::command]
 pub async fn download_danbooru_tags(app: tauri::AppHandle) -> Result<u32, String> {
-    if IS_DOWNLOADING.load(Ordering::SeqCst) {
+    // compare_exchange 原子地"检查并置位"，避免并发双开任务
+    if IS_DOWNLOADING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Err("下载已在进行中".into());
     }
-    IS_DOWNLOADING.store(true, Ordering::SeqCst);
     DOWNLOAD_CANCEL.store(false, Ordering::SeqCst);
 
     let result = download_danbooru_tags_inner(app).await;
@@ -243,10 +246,13 @@ async fn download_danbooru_tags_inner(app: tauri::AppHandle) -> Result<u32, Stri
 
     let count = tokio::task::spawn_blocking(move || -> Result<u32, String> {
         let conn = open_tag_db()?;
-        conn.execute("DELETE FROM danbooru_tags", [])
-            .map_err(|e| format!("清空旧数据失败: {}", e))?;
         conn.execute_batch("BEGIN TRANSACTION;")
             .map_err(|e| format!("开始事务失败: {}", e))?;
+        // 清空旧数据必须在事务内执行，确保中途取消/失败时 ROLLBACK 能恢复旧库
+        if let Err(e) = conn.execute("DELETE FROM danbooru_tags", []) {
+            conn.execute_batch("ROLLBACK;").ok();
+            return Err(format!("清空旧数据失败: {}", e));
+        }
 
         let mut stmt = conn.prepare(
             "INSERT OR REPLACE INTO danbooru_tags (name, category, post_count, aliases) VALUES (?1, ?2, ?3, ?4)"
@@ -470,10 +476,13 @@ pub async fn translate_tag_db(
     target_lang: String,
     batch_size: Option<u32>,
 ) -> Result<u32, String> {
-    if IS_TRANSLATING.load(Ordering::SeqCst) {
+    // compare_exchange 原子地"检查并置位"，避免并发双开任务
+    if IS_TRANSLATING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Err("翻译已在进行中".into());
     }
-    IS_TRANSLATING.store(true, Ordering::SeqCst);
     DOWNLOAD_CANCEL.store(false, Ordering::SeqCst);
 
     let result = translate_tag_db_inner(app, target_lang, batch_size).await;
@@ -568,32 +577,41 @@ async fn translate_tag_db_inner(
                     }
                     let translated_parts: Vec<&str> = translated_text.split('\n').collect();
 
-                    let pairs: Vec<(String, String)> = tags.iter()
-                        .zip(translated_parts.iter())
-                        .map(|(src, tr)| (src.clone(), tr.trim().to_string()))
-                        .filter(|(_, tr)| !tr.is_empty())
-                        .collect();
+                    // 返回行数与请求行数不一致说明结果已错位，整批放弃，避免错误翻译写入缓存
+                    if translated_parts.len() != tags.len() {
+                        let _ = app.emit("tag-db-progress", serde_json::json!({
+                            "status": "warning",
+                            "message": format!("翻译返回行数 ({}) 与请求行数 ({}) 不一致，跳过当前批次", translated_parts.len(), tags.len()),
+                            "current": translated_count, "total": total
+                        }));
+                    } else {
+                        let pairs: Vec<(String, String)> = tags.iter()
+                            .zip(translated_parts.iter())
+                            .map(|(src, tr)| (src.clone(), tr.trim().to_string()))
+                            .filter(|(_, tr)| !tr.is_empty())
+                            .collect();
 
-                    let batch_count = pairs.len() as u32;
+                        let batch_count = pairs.len() as u32;
 
-                    let target_lang_clone = target.clone();
-                    tokio::task::spawn_blocking(move || -> Result<(), String> {
-                        // 只写入翻译缓存数据库
-                        let cache_conn = super::translator::open_db()
-                            .map_err(|e| format!("打开翻译缓存失败: {}", e))?;
-                        cache_conn.execute_batch("BEGIN").ok();
-                        let mut stmt = cache_conn.prepare(
-                            "INSERT OR REPLACE INTO translations (tag, translated, lang) VALUES (?1, ?2, ?3)"
-                        ).map_err(|e| format!("准备写入语句失败: {}", e))?;
-                        for (source, translated) in &pairs {
-                            stmt.execute(rusqlite::params![source, translated, &target_lang_clone]).ok();
-                        }
-                        drop(stmt);
-                        cache_conn.execute_batch("COMMIT").ok();
-                        Ok(())
-                    }).await.map_err(|e| format!("写入翻译失败: {}", e))??;
+                        let target_lang_clone = target.clone();
+                        tokio::task::spawn_blocking(move || -> Result<(), String> {
+                            // 只写入翻译缓存数据库
+                            let cache_conn = super::translator::open_db()
+                                .map_err(|e| format!("打开翻译缓存失败: {}", e))?;
+                            cache_conn.execute_batch("BEGIN").ok();
+                            let mut stmt = cache_conn.prepare(
+                                "INSERT OR REPLACE INTO translations (tag, translated, lang) VALUES (?1, ?2, ?3)"
+                            ).map_err(|e| format!("准备写入语句失败: {}", e))?;
+                            for (source, translated) in &pairs {
+                                stmt.execute(rusqlite::params![source, translated, &target_lang_clone]).ok();
+                            }
+                            drop(stmt);
+                            cache_conn.execute_batch("COMMIT").ok();
+                            Ok(())
+                        }).await.map_err(|e| format!("写入翻译失败: {}", e))??;
 
-                    translated_count += batch_count;
+                        translated_count += batch_count;
+                    }
                 }
             },
             Ok(r) => {

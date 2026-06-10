@@ -313,11 +313,15 @@ fn sha256_hex(input: &str) -> String {
 }
 
 fn youdao_truncate(q: &str) -> String {
-    let len = q.len();
+    // 有道签名规则按字符数截取，必须按 char 边界切分，按字节切 UTF-8 多字节文本会 panic
+    let chars: Vec<char> = q.chars().collect();
+    let len = chars.len();
     if len <= 20 {
         q.to_string()
     } else {
-        format!("{}{}{}", &q[..10], len, &q[len - 10..])
+        let head: String = chars[..10].iter().collect();
+        let tail: String = chars[len - 10..].iter().collect();
+        format!("{}{}{}", head, len, tail)
     }
 }
 
@@ -653,6 +657,15 @@ pub async fn translate_tags(
                         translate_google(&client, chunk, &target_lang).await?
                     }
                 };
+
+                // 返回行数与请求行数不一致说明结果已错位，整批放弃，避免错误翻译写入缓存
+                if translated_lines.len() != original_chunk.len() {
+                    return Err(format!(
+                        "翻译返回行数 ({}) 与请求行数 ({}) 不一致，已中止本次翻译以避免缓存错误结果，请重试",
+                        translated_lines.len(),
+                        original_chunk.len()
+                    ));
+                }
 
                 for (i, original) in original_chunk.iter().enumerate() {
                     let tr = translated_lines

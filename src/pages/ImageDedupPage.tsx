@@ -12,7 +12,7 @@ import { useTranslation } from 'react-i18next';
 
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 interface DupGroup { paths: string[]; similarity: number; method: string; }
-interface DedupResult { total_images: number; duplicate_groups: DupGroup[]; scan_time_ms: number; }
+interface DedupResult { total_images: number; duplicate_groups: DupGroup[]; scan_time_ms: number; failed_files?: string[]; }
 
 export default function ImageDedupPage() {
   const { t } = useTranslation();

@@ -138,9 +138,29 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
     }
 
     // Step 2: Rename to temp names
-    for (original, temp, _) in &temp_mappings {
+    for (idx, (original, temp, _)) in temp_mappings.iter().enumerate() {
         if let Err(e) = std::fs::rename(original, temp) {
-            return Err(format!("临时重命名失败 {}: {}", original.display(), e));
+            // 失败时尽力回滚：把已改为临时名的文件恢复为原名，避免文件滞留在临时名
+            let mut rollback_fails: Vec<String> = Vec::new();
+            for (orig, tmp, _) in temp_mappings.iter().take(idx) {
+                if let Err(re) = std::fs::rename(tmp, orig) {
+                    rollback_fails.push(format!("{} → {}: {}", tmp.display(), orig.display(), re));
+                }
+            }
+            let mut msg = format!("临时重命名失败 {}: {}", original.display(), e);
+            if rollback_fails.is_empty() {
+                if idx > 0 {
+                    msg.push_str(&format!("（已回滚 {} 个文件）", idx));
+                }
+            } else {
+                msg.push_str(&format!(
+                    "（已回滚 {} 个文件，{} 个回滚失败: {}）",
+                    idx - rollback_fails.len(),
+                    rollback_fails.len(),
+                    rollback_fails.join("; ")
+                ));
+            }
+            return Err(msg);
         }
     }
 
@@ -160,7 +180,14 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
         ..Default::default()
         });
 
-        match std::fs::rename(temp, &final_path) {
+        // 最终名被批外文件占用时拒绝覆盖（批内文件此时都已移到临时名）
+        let rename_result = if final_path.exists() {
+            Err(format!("目标文件已存在，跳过以免覆盖: {}", final_name))
+        } else {
+            std::fs::rename(temp, &final_path).map_err(|e| e.to_string())
+        };
+
+        match rename_result {
             Ok(_) => {
                 success_count += 1;
                 let _ = app.emit("rename-progress", ProgressEvent {
@@ -174,7 +201,11 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
             }
             Err(e) => {
                 fail_count += 1;
-                let err_msg = format!("{} → {}: {}", original_name, final_name, e);
+                // 把临时名滚回原名，避免文件滞留无扩展名的临时名
+                let mut err_msg = format!("{} → {}: {}", original_name, final_name, e);
+                if let Err(re) = std::fs::rename(temp, original) {
+                    err_msg.push_str(&format!("（且回滚原名失败，文件滞留临时名 {}: {}）", temp.display(), re));
+                }
                 errors.push(err_msg.clone());
                 let _ = app.emit("rename-progress", ProgressEvent {
                     current: i as u32 + 1,

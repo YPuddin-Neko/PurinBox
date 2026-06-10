@@ -27,6 +27,8 @@ pub struct DedupResult {
     pub total_images: u32,
     pub duplicate_groups: Vec<DupGroup>,
     pub scan_time_ms: u64,
+    /// 指纹计算失败的文件（路径 + 原因）
+    pub failed_files: Vec<String>,
 }
 
 #[tauri::command]
@@ -95,6 +97,7 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
             total_images: 0,
             duplicate_groups: vec![],
             scan_time_ms: 0,
+            failed_files: vec![],
         });
     }
 
@@ -109,6 +112,7 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
     let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(16);
     let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let mut fingerprints: Vec<ImageFingerprint> = Vec::with_capacity(files.len());
+    let mut failed_files: Vec<String> = Vec::new();
 
     for chunk in files.chunks(num_threads) {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
@@ -120,7 +124,7 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
             std::thread::spawn(move || compute_fingerprint(&path))
         }).collect();
 
-        for handle in handles {
+        for (file, handle) in chunk.iter().zip(handles) {
             let cnt = counter.fetch_add(1, Ordering::SeqCst) + 1;
             let _ = app.emit("dedup_progress", ProgressEvent {
                 current: cnt, total,
@@ -130,8 +134,10 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
             ..Default::default()
             });
 
-            if let Ok(Ok(fp)) = handle.join() {
-                fingerprints.push(fp);
+            match handle.join() {
+                Ok(Ok(fp)) => fingerprints.push(fp),
+                Ok(Err(e)) => failed_files.push(format!("{}: {}", file.display(), e)),
+                Err(_) => failed_files.push(format!("{}: 指纹计算线程异常退出", file.display())),
             }
         }
     }
@@ -207,6 +213,7 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
         total_images: total,
         duplicate_groups,
         scan_time_ms: elapsed,
+        failed_files,
     })
 }
 
