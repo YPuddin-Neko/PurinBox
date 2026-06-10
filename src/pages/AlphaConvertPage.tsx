@@ -56,7 +56,7 @@ export default function AlphaConvertPage() {
     if (selected) setOutputPath(selected as string);
   };
 
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
 
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
@@ -71,6 +71,7 @@ export default function AlphaConvertPage() {
       });
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
+      updateTask('alpha', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasError(true); setIsDone(true);
     } finally {
       setProcessing(false);

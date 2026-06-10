@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo } from 'react';
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
@@ -11,7 +11,7 @@ import {
   ArrowUpDown, Hash, BarChart, List, CopyX
 } from 'lucide-react';
 import NaturalLangTab from '../components/NaturalLangTab';
-import JsonTagTab, { type JsonTagTabHandle } from '../components/JsonTagTab';
+import JsonTagTab, { translateOwner, type JsonTagTabHandle } from '../components/JsonTagTab';
 import TagAutocomplete from '../components/TagAutocomplete';
 import { useTranslation } from 'react-i18next';
 
@@ -50,6 +50,7 @@ function getChipColor(tag: string) {
 
 const phdr:React.CSSProperties={display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',borderBottom:'1px solid var(--color-border)',flexShrink:0};
 const ptitle:React.CSSProperties={fontSize:12,fontWeight:700,color:'var(--color-text-primary)',textTransform:'uppercase',letterSpacing:'0.5px'};
+const TAG_STATS_BATCH = 300;
 
 export default function TagManagerPage() {
   const { t } = useTranslation();
@@ -77,6 +78,9 @@ export default function TagManagerPage() {
   const [folderPath, setFolderPath] = useState('');
   const jsonTabRef = useRef<JsonTagTabHandle>(null);
   const [jsonDirtyCount, setJsonDirtyCount] = useState(0);
+  // JsonTagTab 的 loading/saving 通过回调上报为 state（渲染期读 ref 不会触发重渲染，按钮禁用态会陈旧）
+  const [jsonLoading, setJsonLoading] = useState(false);
+  const [jsonSaving, setJsonSaving] = useState(false);
   const [tagSortBy, setTagSortBy] = useState<'freq'|'name'>('freq');
   const [tagSortDir, setTagSortDir] = useState<'asc'|'desc'>('desc');
 
@@ -101,11 +105,17 @@ export default function TagManagerPage() {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       document.body.style.cursor = '';
+      resizeCleanupRef.current = null;
     };
+    resizeCleanupRef.current = onUp;
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
     document.body.style.cursor = 'col-resize';
   }, [col1W, col3W]);
+
+  // 卸载时兜底移除拖拽期间挂在 document 上的监听
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => { resizeCleanupRef.current?.(); }, []);
 
   // ── 预览/标签区高度拖拽 ──
   const col2Ref = useRef<HTMLDivElement>(null);
@@ -127,7 +137,9 @@ export default function TagManagerPage() {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       document.body.style.cursor = '';
+      resizeCleanupRef.current = null;
     };
+    resizeCleanupRef.current = onUp;
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
     document.body.style.cursor = 'row-resize';
@@ -158,12 +170,14 @@ export default function TagManagerPage() {
     const allTags = [...new Set(images.flatMap(img => img.tags))];
     if (allTags.length === 0) return;
     const provider = localStorage.getItem('translate_provider') || 'google';
+    translateOwner.current = 'danbooru';
     setTranslating(true);
     setTranslateProgress({ current: 0, total: allTags.length });
     setShowTranslateBar(true);
     if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
 
     const unlisten = await listen<{ current: number; total: number }>('translate-progress', (e) => {
+      if (translateOwner.current !== 'danbooru') return; // 非当前翻译所有者，忽略事件
       setTranslateProgress({ current: e.payload.current, total: e.payload.total });
     });
 
@@ -193,9 +207,10 @@ export default function TagManagerPage() {
       setTranslateProgress(null);
     } finally {
       setTranslating(false);
+      if (translateOwner.current === 'danbooru') translateOwner.current = '';
       unlisten();
     }
-  }, [images]);
+  }, [images, t]);
 
   // ── load folder ──
   const handleLoadFolder = async () => {
@@ -282,6 +297,10 @@ export default function TagManagerPage() {
     const q=globalSearch.toLowerCase();
     return sorted.filter(([t])=>t.includes(q)||getTranslation(t,translations).includes(q));
   }, [tagStats, globalSearch, tagListMode, taggedCount, translations, tagSortBy, tagSortDir]);
+
+  // 标签统计列表分批渲染（初始 300 条，"显示更多"每次 +300；筛选条件变化时重置）
+  const [statsLimit, setStatsLimit] = useState(TAG_STATS_BATCH);
+  useEffect(() => { setStatsLimit(TAG_STATS_BATCH); }, [globalSearch, tagListMode, images]);
 
   // ── 标签筛选图片 ──
   const filtered = useMemo(() => {
@@ -402,16 +421,17 @@ export default function TagManagerPage() {
   const handleReplace = () => {
     const from = replaceFrom.trim();
     const to = replaceTo.trim().toLowerCase();
-    if (!from || !to || from === to) return;
+    // 匹配统一用小写比较（replaceTo 强制小写，replaceFrom 也按小写匹配）
+    const fromKey = from.toLowerCase();
+    if (!from || !to || fromKey === to) return;
     setImages(p => p.map(img => {
-      const idx = img.tags.indexOf(from);
-      if (idx < 0) return img;
-      const newTags = [...img.tags];
-      newTags[idx] = to;
-      return { ...img, tags: newTags, dirty: true };
+      if (!img.tags.some(t2 => t2.toLowerCase() === fromKey)) return img;
+      const replaced = img.tags.map(t2 => t2.toLowerCase() === fromKey ? to : t2);
+      // 替换后可能产生重复标签，去重（保序）
+      return { ...img, tags: dedupeTagList(replaced).tags, dirty: true };
     }));
     setShowReplaceModal(false); setReplaceFrom(''); setReplaceTo('');
-    setSelectedTags(prev => { const n = new Set(prev); n.delete(from); return n; });
+    setSelectedTags(prev => { const n = new Set(prev); [...n].forEach(t2 => { if (t2.toLowerCase() === fromKey) n.delete(t2); }); return n; });
   };
 
   // ── 为当前图片添加/删除选中标签 ──
@@ -571,8 +591,8 @@ export default function TagManagerPage() {
           {mode!=='json'&&<button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={handleLoadFolder} disabled={loading}>
             {loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {loading?t('tagManager.loading'):t('tagManager.loadFolder')}
           </button>}
-          {mode==='json'&&<button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={()=>jsonTabRef.current?.loadFolder()} disabled={jsonTabRef.current?.loading}>
-            {jsonTabRef.current?.loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {jsonTabRef.current?.loading?t('tagManager.loading'):t('tagManager.loadFolder')}
+          {mode==='json'&&<button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={()=>jsonTabRef.current?.loadFolder()} disabled={jsonLoading}>
+            {jsonLoading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {jsonLoading?t('tagManager.loading'):t('tagManager.loadFolder')}
           </button>}
           {mode==='danbooru'&&<button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={dirtyCount===0||saving} onClick={handleSaveAll}>
             {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{dirtyCount>0?` (${dirtyCount})`:''}
@@ -590,8 +610,8 @@ export default function TagManagerPage() {
             </button>
           );})()}
           {mode==='json'&&(()=>{const jd=jsonDirtyCount;return(
-            <button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={jd===0||jsonTabRef.current?.saving} onClick={()=>jsonTabRef.current?.saveAll()}>
-              {jsonTabRef.current?.saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{jd>0?` (${jd})`:''}
+            <button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={jd===0||jsonSaving} onClick={()=>jsonTabRef.current?.saveAll()}>
+              {jsonSaving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{jd>0?` (${jd})`:''}
             </button>
           );})()}
         </div>
@@ -789,7 +809,7 @@ export default function TagManagerPage() {
               <button onClick={()=>setTagFilterActive(false)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:16,height:16,borderRadius:'50%',background:'rgba(248,113,113,0.1)',border:'none',cursor:'pointer',color:'#f87171',padding:0,flexShrink:0}}><X style={{width:8,height:8}} /></button>
             </div>}
             <div style={{flex:1,overflowY:'auto',userSelect:'none'}}>
-              {filteredStats.map(([tag,count])=>{
+              {filteredStats.slice(0,statsLimit).map(([tag,count])=>{
                 const c=getChipColor(tag);const pct=images.length>0?(count/images.length)*100:0;
                 const inCur=cur?.tags.includes(tag);const tr=getTranslation(tag,translations);
                 const isSel=selectedTags.has(tag);
@@ -814,6 +834,12 @@ export default function TagManagerPage() {
                   </div>
                 );
               })}
+              {filteredStats.length>statsLimit&&(
+                <button className="btn btn-ghost" style={{width:'100%',height:30,fontSize:10,borderRadius:0}}
+                  onClick={()=>setStatsLimit(l=>l+TAG_STATS_BATCH)}>
+                  {t('common.showMore',{n:filteredStats.length-statsLimit})}
+                </button>
+              )}
               {images.length===0&&<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)',padding:20}}><Tags style={{width:28,height:28,opacity:0.2}} /><span style={{fontSize:11,opacity:0.6}}>{t('tagManager.loadTagsHint')}</span></div>}
               {images.length>0&&filteredStats.length===0&&<div style={{padding:20,textAlign:'center',fontSize:11,color:'var(--color-text-tertiary)'}}>{globalSearch?t('tagManager.noMatch'):tagListMode==='common'?t('tagManager.commonTags'):t('tagManager.noTags')}</div>}
             </div>
@@ -866,7 +892,7 @@ export default function TagManagerPage() {
       )}
 
       <div style={{display:mode==='json'?'flex':'none',flex:1,overflow:'hidden',minHeight:0}}>
-        <JsonTagTab ref={jsonTabRef} onDirtyChange={setJsonDirtyCount} />
+        <JsonTagTab ref={jsonTabRef} onDirtyChange={setJsonDirtyCount} onLoadingChange={setJsonLoading} onSavingChange={setJsonSaving} />
       </div>
 
       {/* ═ 批量添加弹窗 ═ */}

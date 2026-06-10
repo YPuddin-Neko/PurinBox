@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
+import i18n from '../i18n';
 import { Star, FolderOpen, Cpu, Gpu } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
@@ -51,7 +52,7 @@ export default function AestheticPage() {
         const pct = d.total > 0 ? Math.round((d.current / d.total) * 100) : 0;
         setProgress(pct); setProgressCurrent(d.current); setProgressTotal(d.total);
         if (d.status === 'error') setHasError(true);
-        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
+        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (i18n.t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? i18n.t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
         setLogs(p => [...p, { time: getTimeStr(), message: resolveMsg(d), status: d.status as any }]);
         updateTask('aesthetic', { status: 'running', message: `${d.current}/${d.total}`, progress: pct, current: d.current, total: d.total });
       }
@@ -95,6 +96,9 @@ export default function AestheticPage() {
 
   const handleProcess = async () => {
     if (!inputPath) return;
+    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    const bs = Number.isFinite(batchSize) && batchSize >= 1 ? Math.min(batchSize, 64) : 1;
+    if (bs !== batchSize) setBatchSize(bs);
     setProcessing(true); setIsDone(false); setHasError(false); setProgress(0);
     setProgressCurrent(0); setProgressTotal(0);
     setLogs([{ time: getTimeStr(), message: t('aesthetic.starting'), status: 'info' }]);
@@ -105,7 +109,7 @@ export default function AestheticPage() {
           input_path: inputPath,
           output_path: outputPath || '',
           use_gpu: useGpu,
-          batch_size: useGpu ? batchSize : 1,
+          batch_size: useGpu ? bs : 1,
           move_files: true,
         }
       });

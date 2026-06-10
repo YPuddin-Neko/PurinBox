@@ -54,6 +54,9 @@ const TASK_ROUTE_MAP: Record<string, string> = {
   'tag-refine': '/tag-sort',
   upscale: '/upscale',
   aesthetic: '/aesthetic',
+  'dedup-rename': '/batch-rename',
+  'image-cluster': '/image-cluster',
+  'sd-metadata': '/sd-metadata',
 };
 
 interface SystemStats {

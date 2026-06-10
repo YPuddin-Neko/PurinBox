@@ -1,4 +1,8 @@
 // 简体中文 — 默认语言
+
+// 深度形状约束：en/ja 的键集必须与 zh-CN 完全一致（叶子节点均为 string），缺键/多键会在编译期报错
+export type I18nShape<T> = { [K in keyof T]: T[K] extends object ? I18nShape<T[K]> : string };
+
 const zhCN = {
   // ═══════════════ 通用 ═══════════════
   common: {
@@ -36,6 +40,7 @@ const zhCN = {
     preparing: '准备中...',
     search: '搜索...',
     dragResize: '拖拽调整宽度',
+    showMore: '显示更多 ({{n}})',
   },
 
   contextMenu: {

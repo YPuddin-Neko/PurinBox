@@ -96,7 +96,9 @@ export function TaskProvider({ children }: { children: ReactNode }) {
           const progress = p.total > 0 ? (p.current / p.total) * 100 : 0;
           let status: TaskInfo['status'] = task.status;
           if (p.status === 'done') status = 'done';
-          else if (p.status === 'error' && /已取消|cancel/i.test(p.message)) status = 'cancelled';
+          else if (p.status === 'error') status = /已取消|cancel/i.test(p.message) ? 'cancelled' : 'error';
+          // 后续仍有进度事件说明任务还在跑（中途的单文件 error 不应让任务永远停在 error）
+          else if (p.status === 'processing' || p.status === 'success') status = 'running';
           return prev.map(t => t.id === taskId ? { ...t, progress, current: p.current, total: p.total, message: p.message, status } : t);
         });
       });

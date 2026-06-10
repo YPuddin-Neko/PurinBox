@@ -95,10 +95,23 @@ export default function CropPage() {
     if (selected) setOutputPath(selected as string);
   };
 
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
 
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
+    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    const num = (v: number, fallback: number, min: number) => (Number.isFinite(v) && v >= min ? v : fallback);
+    const cw = num(centerW, 1024, 1), ch = num(centerH, 1024, 1);
+    const rw = num(ratioW, 1, 1), rh = num(ratioH, 1, 1);
+    const cTop = num(cropTop, 0, 0), cBottom = num(cropBottom, 0, 0), cLeft = num(cropLeft, 0, 0), cRight = num(cropRight, 0, 0);
+    if (cw !== centerW) setCenterW(cw);
+    if (ch !== centerH) setCenterH(ch);
+    if (rw !== ratioW) setRatioW(rw);
+    if (rh !== ratioH) setRatioH(rh);
+    if (cTop !== cropTop) setCropTop(cTop);
+    if (cBottom !== cropBottom) setCropBottom(cBottom);
+    if (cLeft !== cropLeft) setCropLeft(cLeft);
+    if (cRight !== cropRight) setCropRight(cRight);
     setProcessing(true);
     addTask('crop', t('crop.taskName'));
     setProgress(0);
@@ -116,17 +129,18 @@ export default function CropPage() {
           input_path: inputPath,
           output_path: outputPath,
           mode,
-          target_width: centerW,
-          target_height: centerH,
-          aspect_ratio: ratioW / ratioH,
-          crop_top: cropTop,
-          crop_bottom: cropBottom,
-          crop_left: cropLeft,
-          crop_right: cropRight,
+          target_width: cw,
+          target_height: ch,
+          aspect_ratio: rw / rh,
+          crop_top: cTop,
+          crop_bottom: cBottom,
+          crop_left: cLeft,
+          crop_right: cRight,
         },
       });
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
+      updateTask('crop', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasError(true);
       setIsDone(true);
     } finally {

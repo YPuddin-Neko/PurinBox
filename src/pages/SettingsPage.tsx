@@ -11,6 +11,30 @@ import { getVersion } from '@tauri-apps/api/app';
 
 import SystemMonitor from '../components/SystemMonitor';
 
+// 密钥输入框组件（提升到模块顶层，避免每次重渲染重建组件类型导致输入丢焦点）
+const SecretInput = ({ value, onChange, placeholder, show, onToggle }: { value: string; onChange: (v: string) => void; placeholder: string; show: boolean; onToggle: () => void }) => (
+  <div style={{ position: 'relative' }}>
+    <input className="form-input" type={show ? 'text' : 'password'} value={value} onChange={e => onChange(e.target.value)}
+      placeholder={placeholder} style={{ fontSize: 12, height: 32, paddingRight: 32 }} />
+    <button onClick={onToggle} style={{
+      position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)',
+      width: 24, height: 24, borderRadius: 4, border: 'none', background: 'none',
+      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      color: 'var(--color-text-tertiary)',
+    }}>
+      {show ? <EyeOff style={{ width: 12, height: 12 }} /> : <Eye style={{ width: 12, height: 12 }} />}
+    </button>
+  </div>
+);
+
+const LinkButton = ({ href, text }: { href: string; text: string }) => (
+  <a href={href} target="_blank" rel="noreferrer" style={{
+    fontSize: 10, color: '#60a5fa', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 3,
+  }}>
+    {text} <ExternalLink style={{ width: 9, height: 9 }} />
+  </a>
+);
+
 export default function SettingsPage() {
   const { t } = useTranslation();
   const { monitorInterval, setMonitorInterval } = useTheme();
@@ -205,8 +229,11 @@ export default function SettingsPage() {
 
   const handleSaveProxy = async () => {
     setProxySaving(true); setProxySaveMsg(null);
+    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法端口
+    const port = Number.isFinite(proxyPort) && proxyPort > 0 ? Math.floor(proxyPort) : 0;
+    if (port !== proxyPort) setProxyPort(port);
     try {
-      await invoke('save_proxy_config', { enabled: proxyEnabled, llmProxy, proxyType, host: proxyHost, port: proxyPort, username: proxyUser, password: proxyPass });
+      await invoke('save_proxy_config', { enabled: proxyEnabled, llmProxy, proxyType, host: proxyHost, port, username: proxyUser, password: proxyPass });
       setProxySaveMsg({ text: t('settings.proxySaved'), ok: true });
     } catch (e: any) { setProxySaveMsg({ text: e?.message || String(e), ok: false }); }
     finally { setProxySaving(false); setTimeout(() => setProxySaveMsg(null), 3000); }
@@ -240,32 +267,6 @@ export default function SettingsPage() {
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   };
-
-
-
-  // 密钥输入框组件
-  const SecretInput = ({ value, onChange, placeholder, show, onToggle }: { value: string; onChange: (v: string) => void; placeholder: string; show: boolean; onToggle: () => void }) => (
-    <div style={{ position: 'relative' }}>
-      <input className="form-input" type={show ? 'text' : 'password'} value={value} onChange={e => onChange(e.target.value)}
-        placeholder={placeholder} style={{ fontSize: 12, height: 32, paddingRight: 32 }} />
-      <button onClick={onToggle} style={{
-        position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)',
-        width: 24, height: 24, borderRadius: 4, border: 'none', background: 'none',
-        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        color: 'var(--color-text-tertiary)',
-      }}>
-        {show ? <EyeOff style={{ width: 12, height: 12 }} /> : <Eye style={{ width: 12, height: 12 }} />}
-      </button>
-    </div>
-  );
-
-  const LinkButton = ({ href, text }: { href: string; text: string }) => (
-    <a href={href} target="_blank" rel="noreferrer" style={{
-      fontSize: 10, color: '#60a5fa', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 3,
-    }}>
-      {text} <ExternalLink style={{ width: 9, height: 9 }} />
-    </a>
-  );
 
   return (
     <>

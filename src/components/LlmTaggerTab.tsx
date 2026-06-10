@@ -177,7 +177,7 @@ export default function LlmTaggerTab() {
     }
   };
 
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
 
   const handleStart = async () => {
     if (!inputPath || !endpoint || !modelName) return;
@@ -206,6 +206,7 @@ export default function LlmTaggerTab() {
       });
     } catch (e: any) {
       setLogs(p => [...p, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
+      updateTask('llm-tagger', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasErr(true); setIsDone(true);
     } finally { setProcessing(false); }
   };

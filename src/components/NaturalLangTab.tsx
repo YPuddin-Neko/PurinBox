@@ -51,11 +51,17 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
       document.body.style.cursor = '';
+      resizeCleanupRef.current = null;
     };
+    resizeCleanupRef.current = onUp;
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
     document.body.style.cursor = 'col-resize';
   }, [col1W, col3W]);
+
+  // 卸载时兜底移除拖拽期间挂在 document 上的监听
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => { resizeCleanupRef.current?.(); }, []);
 
   // 翻译
   const [translatedText, setTranslatedText] = useState('');
