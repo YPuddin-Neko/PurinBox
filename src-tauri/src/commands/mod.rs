@@ -30,6 +30,48 @@ pub mod tag_db;
 pub mod sd_metadata;
 pub mod aesthetic;
 
+/// 下载临时文件辅助：返回 `{dest}.part` 临时路径，并清理上次中断遗留的旧残件。
+/// 下载应先写入 .part 文件，完成校验后再用 `finalize_part_file` 原子替换到最终路径，
+/// 避免中断产生的不完整文件被 `dest.exists()` 误判为已下载。
+pub fn prepare_part_file(dest: &Path) -> std::path::PathBuf {
+    let mut os = dest.as_os_str().to_os_string();
+    os.push(".part");
+    let part = std::path::PathBuf::from(os);
+    if part.exists() {
+        let _ = std::fs::remove_file(&part);
+    }
+    part
+}
+
+/// 完成下载：校验实际字节数（若服务器提供了 content-length），通过后把 .part 重命名为最终文件。
+/// Windows 上 rename 不能覆盖已存在的目标，因此先删除旧的最终文件再重命名。
+/// 任何失败路径都会清理 .part 残件。
+pub fn finalize_part_file(
+    part: &Path,
+    dest: &Path,
+    downloaded: u64,
+    total_size: u64,
+) -> Result<(), String> {
+    if total_size > 0 && downloaded != total_size {
+        let _ = std::fs::remove_file(part);
+        return Err(format!(
+            "下载不完整: 预期 {} 字节，实际 {} 字节",
+            total_size, downloaded
+        ));
+    }
+    if dest.exists() {
+        if let Err(e) = std::fs::remove_file(dest) {
+            let _ = std::fs::remove_file(part);
+            return Err(format!("删除旧文件失败 {}: {}", dest.display(), e));
+        }
+    }
+    if let Err(e) = std::fs::rename(part, dest) {
+        let _ = std::fs::remove_file(part);
+        return Err(format!("替换文件失败 {}: {}", dest.display(), e));
+    }
+    Ok(())
+}
+
 /// 进度事件 payload
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProgressEvent {

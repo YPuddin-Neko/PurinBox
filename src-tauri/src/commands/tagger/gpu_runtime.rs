@@ -206,23 +206,32 @@ async fn download_with_progress(
 
     let total_size = response.content_length().unwrap_or(0);
     let mut stream = response.bytes_stream();
-    let mut file = tokio::fs::File::create(dest).await
+    // 先写入 .part 临时文件，校验完成后再原子替换到最终路径，避免中断残件
+    let part_path = crate::commands::prepare_part_file(dest);
+    let mut file = tokio::fs::File::create(&part_path).await
         .map_err(|e| format!("创建文件失败: {}", e))?;
 
     let mut downloaded: u64 = 0;
     let start = std::time::Instant::now();
     let mut last_report = std::time::Instant::now();
 
+    // 下载循环结果 — 任何错误（含取消）统一在循环外清理 .part 残件
+    let mut result: Result<(), String> = Ok(());
+
     while let Some(chunk) = stream.next().await {
         if ORT_DL_CANCELLED.load(Ordering::SeqCst) {
-            drop(file);
-            let _ = tokio::fs::remove_file(dest).await;
-            return Err("下载已取消".into());
+            result = Err("下载已取消".into());
+            break;
         }
 
-        let chunk = chunk.map_err(|e| format!("下载数据失败: {}", e))?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await
-            .map_err(|e| format!("写入失败: {}", e))?;
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => { result = Err(format!("下载数据失败: {}", e)); break; }
+        };
+        if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
+            result = Err(format!("写入失败: {}", e));
+            break;
+        }
 
         downloaded += chunk.len() as u64;
 
@@ -249,6 +258,23 @@ async fn download_with_progress(
             });
         }
     }
+
+    // 确保缓冲数据全部落盘
+    if result.is_ok() {
+        if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut file).await {
+            result = Err(format!("写入失败: {}", e));
+        }
+    }
+    drop(file);
+
+    // 任何错误路径（包括取消）都删除 .part 残件
+    if let Err(e) = result {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return Err(e);
+    }
+
+    // 校验字节数并原子替换到最终文件
+    crate::commands::finalize_part_file(&part_path, dest, downloaded, total_size)?;
 
     let _ = app.emit("tagger-download", super::download::DownloadProgress {
         filename: label.to_string(),

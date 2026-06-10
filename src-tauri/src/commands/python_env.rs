@@ -478,26 +478,37 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
     let total_size = resp.content_length().unwrap_or(0);
     let archive_path = env_dir.join("python_download.tar.gz");
 
+    // 先写入 .part 临时文件，校验完成后再原子替换，避免中断残件
+    let part_path = super::prepare_part_file(&archive_path);
+
     // 流式写入
     use futures_util::StreamExt;
     let mut stream = resp.bytes_stream();
-    let mut file = tokio::fs::File::create(&archive_path).await
+    let mut file = tokio::fs::File::create(&part_path).await
         .map_err(|e| format!("创建文件失败: {}", e))?;
 
     let mut downloaded: u64 = 0;
     let mut last_pct: u64 = 0;
     let start_time = std::time::Instant::now();
 
+    // 下载循环结果 — 任何错误（含取消）统一在循环外清理 .part 残件
+    let mut result: Result<(), String> = Ok(());
+
     while let Some(chunk) = stream.next().await {
         if is_cancelled() {
-            let _ = tokio::fs::remove_file(&archive_path).await;
-            return Err("已取消".into());
+            result = Err("已取消".into());
+            break;
         }
 
-        let bytes = chunk.map_err(|e| format!("下载错误: {}", e))?;
+        let bytes = match chunk {
+            Ok(b) => b,
+            Err(e) => { result = Err(format!("下载错误: {}", e)); break; }
+        };
         use tokio::io::AsyncWriteExt;
-        file.write_all(&bytes).await
-            .map_err(|e| format!("写入失败: {}", e))?;
+        if let Err(e) = file.write_all(&bytes).await {
+            result = Err(format!("写入失败: {}", e));
+            break;
+        }
 
         downloaded += bytes.len() as u64;
         let pct = if total_size > 0 { downloaded * 100 / total_size } else { 0 };
@@ -519,7 +530,24 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
         }
     }
 
+    // 确保缓冲数据全部落盘
+    if result.is_ok() {
+        use tokio::io::AsyncWriteExt;
+        if let Err(e) = file.flush().await {
+            result = Err(format!("写入失败: {}", e));
+        }
+    }
     drop(file);
+
+    // 任何错误路径（包括取消）都删除 .part 残件
+    if let Err(e) = result {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return Err(e);
+    }
+
+    // 校验字节数并原子替换到最终文件
+    super::finalize_part_file(&part_path, &archive_path, downloaded, total_size)?;
+
     // 通知前端下载完成，清除日志中的进度条
     let _ = app.emit(DOWNLOAD_EVENT, PythonDownloadProgress {
         filename: "python".into(),
@@ -630,7 +658,8 @@ fn create_venv(app: &tauri::AppHandle) -> Result<(), String> {
 fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
     let python = get_venv_python();
     let python_str = python.to_string_lossy().to_string();
-    pip_install_with_python(app, &python_str, &["onnxruntime", "numpy", "pillow"])
+    // 固定版本，避免供应链风险（onnxruntime 与 install_gpu_deps 的 onnxruntime-gpu==1.25.1 保持一致）
+    pip_install_with_python(app, &python_str, &["onnxruntime==1.25.1", "numpy==2.2.6", "pillow==11.3.0"])
 }
 
 /// 安装 GPU 版 onnxruntime（替换 CPU 版）
