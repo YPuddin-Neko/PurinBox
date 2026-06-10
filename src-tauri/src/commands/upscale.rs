@@ -569,6 +569,19 @@ pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Re
         return Err(format!("{} 尚未下载，请先下载", engine.name));
     }
 
+    // NCNN 逐图阻塞循环放入 blocking 线程，避免占死 tokio worker
+    let app_clone = app.clone();
+    tokio::task::spawn_blocking(move || run_ncnn_upscale(&app_clone, engine, &options))
+        .await
+        .map_err(|e| format!("任务执行失败: {}", e))?
+}
+
+/// NCNN 引擎逐图超分（阻塞循环，需在 spawn_blocking 中运行）
+fn run_ncnn_upscale(
+    app: &tauri::AppHandle,
+    engine: &EngineDef,
+    options: &UpscaleOptions,
+) -> Result<ProcessResult, String> {
     let bin = engine_binary(engine);
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
@@ -662,6 +675,10 @@ pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Re
         if options.tta {
             cmd.arg("-x");
         }
+
+        // 捕获输出（必须 piped，否则 wait_with_output 拿到的 stderr 恒为空，错误信息丢失）
+        cmd.stdout(std::process::Stdio::piped())
+           .stderr(std::process::Stdio::piped());
 
         // Quiet: hide console window on Windows
         #[cfg(target_os = "windows")]
@@ -881,8 +898,18 @@ async fn run_python_upscale(
             *guard = Some(child.id());
         }
 
-        let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
-        let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
+        let (stdout, stderr) = match (child.stdout.take(), child.stderr.take()) {
+            (Some(o), Some(e)) => (o, e),
+            _ => {
+                // 取管道失败：杀掉并回收子进程，清空 PID 记录
+                let _ = child.kill();
+                let _ = child.wait();
+                if let Ok(mut guard) = ACTIVE_CHILD.lock() {
+                    *guard = None;
+                }
+                return Err("无法获取 Python 进程管道".into());
+            }
+        };
 
         // stderr 线程: 输出 Python 警告到日志（过滤 onnxruntime 内部告警）
         let app_err = app_clone.clone();
@@ -964,6 +991,13 @@ async fn run_python_upscale(
                     }
                     "error" => {
                         let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                        // 出错时先杀掉并回收子进程，再清空 PID 记录，
+                        // 避免僵尸进程以及之后"强制取消"对陈旧 PID 误杀无关进程
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        if let Ok(mut guard) = ACTIVE_CHILD.lock() {
+                            *guard = None;
+                        }
                         return Err(format!("Real-ESRGAN 错误: {}", text));
                     }
                     "progress" => {

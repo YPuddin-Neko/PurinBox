@@ -343,9 +343,18 @@ fn run_aesthetic_scoring(
     let mut child = cmd.spawn()
         .map_err(|e| format!("启动 Python 进程失败: {}", e))?;
 
-    let mut stdin = child.stdin.take().ok_or("无法获取 Python stdin")?;
-    let stdout = child.stdout.take().ok_or("无法获取 Python stdout")?;
-    let stderr = child.stderr.take().ok_or("无法获取 Python stderr")?;
+    // 取出管道句柄（take 出管道后 Child 仍可 kill/wait）
+    let (mut stdin, stdout, stderr) = match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
+        (Some(i), Some(o), Some(e)) => (i, o, e),
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("无法获取 Python 进程管道".into());
+        }
+    };
+
+    // 把 Child 句柄存入全局，这样 cancel_aesthetic_scoring() -> kill_process() 才能真正杀掉进程
+    *AESTHETIC_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
 
     // stderr 读取线程
     let app_err = app.clone();
@@ -398,8 +407,10 @@ fn run_aesthetic_scoring(
         "use_gpu": options.use_gpu,
     });
 
-    writeln!(stdin, "{}", init_cmd)
-        .map_err(|e| format!("发送 init 命令失败: {}", e))?;
+    if let Err(e) = writeln!(stdin, "{}", init_cmd) {
+        kill_process();
+        return Err(format!("发送 init 命令失败: {}", e));
+    }
 
     // 等待 ready — UTF-8 安全行读取
     let mut reader = BufReader::new(stdout);
@@ -408,7 +419,7 @@ fn run_aesthetic_scoring(
     let timeout = std::time::Instant::now();
     while let Some(line) = read_utf8_line(&mut reader) {
         if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
-            let _ = child.kill();
+            kill_process();
             return Ok(ProcessResult { success_count: 0, fail_count: 0, total: 0, errors: vec![] });
         }
 
@@ -429,7 +440,7 @@ fn run_aesthetic_scoring(
                 }
                 "error" => {
                     let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                    let _ = child.kill();
+                    kill_process();
                     return Err(format!("初始化失败: {}", text));
                 }
                 "ready" => {
@@ -441,19 +452,28 @@ fn run_aesthetic_scoring(
         }
 
         if timeout.elapsed() > std::time::Duration::from_secs(120) {
-            let _ = child.kill();
+            kill_process();
             return Err("模型加载超时(120秒)".into());
         }
     }
 
     if !ready {
-        let _ = child.kill();
+        kill_process();
+        if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
+            return Ok(ProcessResult { success_count: 0, fail_count: 0, total: 0, errors: vec![] });
+        }
         return Err("Python 进程未能成功初始化".into());
     }
 
-    // 收集图片
+    // 收集图片（失败时杀掉已启动的 Python 进程，避免泄漏）
     let input_dir = Path::new(&options.input_path);
-    let files = super::collect_image_files(input_dir)?;
+    let files = match super::collect_image_files(input_dir) {
+        Ok(f) => f,
+        Err(e) => {
+            kill_process();
+            return Err(e);
+        }
+    };
     let total = files.len() as u32;
     let mut success_count = 0u32;
     let mut fail_count = 0u32;
@@ -641,7 +661,10 @@ fn run_aesthetic_scoring(
     }
 
     let _ = writeln!(stdin, r#"{{"cmd":"quit"}}"#);
-    let _ = child.wait();
+    // 取出全局句柄并等待进程退出（若已被取消杀掉则为 None）
+    if let Some(mut child) = AESTHETIC_PROCESS.lock().ok().and_then(|mut g| g.take()) {
+        let _ = child.wait();
+    }
 
     let _ = app.emit("aesthetic-progress", ProgressEvent {
         current: total, total, filename: String::new(),

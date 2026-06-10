@@ -236,8 +236,18 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
             *guard = Some(child.id());
         }
 
-        let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
-        let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
+        let (stdout, stderr) = match (child.stdout.take(), child.stderr.take()) {
+            (Some(o), Some(e)) => (o, e),
+            _ => {
+                // 取管道失败：杀掉并回收子进程，清空 PID 记录
+                let _ = child.kill();
+                let _ = child.wait();
+                if let Ok(mut guard) = CHILD_PID.lock() {
+                    *guard = None;
+                }
+                return Err("无法获取 Python 进程管道".into());
+            }
+        };
 
         // stderr 线程
         let app_err = app_clone.clone();
@@ -323,6 +333,13 @@ pub async fn start_image_cluster(app: tauri::AppHandle, options: ClusterOptions)
                     }
                     "error" => {
                         let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                        // 出错时先杀掉并回收子进程，再清空 PID 记录，
+                        // 避免僵尸进程以及之后"强制取消"对陈旧 PID 误杀无关进程
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        if let Ok(mut guard) = CHILD_PID.lock() {
+                            *guard = None;
+                        }
                         return Err(format!("聚类错误: {}", text));
                     }
                     "progress" => {

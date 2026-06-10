@@ -28,6 +28,10 @@ const DOWNLOAD_EVENT: &str = "python-env-download";
 /// 全局取消标志
 static SETUP_CANCELLED: AtomicBool = AtomicBool::new(false);
 
+/// 全局 setup 互斥锁 — 串行化整个环境安装流程，
+/// 防止多个功能（tagger/upscale/cluster 等）并发触发 setup 导致两个 pip install 互相踩踏
+static SETUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub fn cancel_setup() {
     SETUP_CANCELLED.store(true, Ordering::SeqCst);
 }
@@ -350,22 +354,32 @@ fn resolve_python_path(name: &str) -> String {
     name.to_string()
 }
 
-/// 完整的 Python 环境设置流程
+/// 完整的 Python 环境设置流程（入口，全局串行化）
 pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> {
+    // 串行化整个 setup 流程；tokio::sync::Mutex 的 guard 可安全地跨 await 持有
+    let _setup_guard = SETUP_LOCK.lock().await;
+    setup_python_env_inner(app).await
+}
+
+/// setup 实际逻辑（调用方必须已持有 SETUP_LOCK）
+async fn setup_python_env_inner(app: &tauri::AppHandle) -> Result<String, String> {
     SETUP_CANCELLED.store(false, Ordering::SeqCst);
 
     let venv_python = get_venv_python();
 
-    // 1. 如果 venv 已就绪，直接返回
-    if is_ready() {
+    // 1. 如果 venv 已就绪，直接返回（is_ready 内部会运行子进程，放入 blocking 线程）
+    if tokio::task::spawn_blocking(is_ready).await.unwrap_or(false) {
         return Ok(venv_python.to_string_lossy().to_string());
     }
 
-    // 2. 优先检测系统 Python
-    if let Some((sys_python, _sys_version)) = detect_system_python() {
+    // 2. 优先检测系统 Python（内部多次调用 cmd.output()，放入 blocking 线程）
+    let detected = tokio::task::spawn_blocking(detect_system_python)
+        .await
+        .map_err(|e| format!("检测线程异常: {}", e))?;
+    if let Some((sys_python, _sys_version)) = detected {
 
-        // 用系统 Python 创建 venv（如果 venv python 不可用）
-        if !venv_python.exists() || !is_ready() {
+        // 步骤 1 已确认环境未就绪，这里总是（重）建 venv
+        {
             let venv_dir = get_venv_dir();
             // 清理旧的 venv（可能有残留的 broken symlink）
             if venv_dir.exists() {
@@ -376,15 +390,22 @@ pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> 
             std::fs::create_dir_all(&python_parent)
                 .map_err(|e| format!("创建目录失败: {}", e))?;
 
-            let mut cmd = std::process::Command::new(&sys_python);
-            cmd.args(["-m", "venv", &venv_dir.to_string_lossy()])
-                .env("PYTHONIOENCODING", "utf-8");
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            let output = cmd.output().map_err(|e| format!("创建 venv 失败: {}", e))?;
+            // venv 创建可能耗时较久，cmd.output() 放入 blocking 线程
+            let sys_python_clone = sys_python.clone();
+            let venv_dir_str = venv_dir.to_string_lossy().to_string();
+            let output = tokio::task::spawn_blocking(move || {
+                let mut cmd = std::process::Command::new(&sys_python_clone);
+                cmd.args(["-m", "venv", &venv_dir_str])
+                    .env("PYTHONIOENCODING", "utf-8");
+                #[cfg(target_os = "windows")]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x08000000);
+                }
+                cmd.output()
+            }).await
+            .map_err(|e| format!("创建 venv 线程异常: {}", e))?
+            .map_err(|e| format!("创建 venv 失败: {}", e))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 emit_progress(app, &format!("@pythonEnv.venvFailed|{}", stderr.to_string().chars().take(100).collect::<String>()), "info");
@@ -396,13 +417,14 @@ pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> 
 
         if is_cancelled() { return Err("已取消".into()); }
 
-        // 安装依赖
-
-        install_deps(app)?;
+        // 安装依赖（pip install 可阻塞数分钟，放入 blocking 线程）
+        let app2 = app.clone();
+        tokio::task::spawn_blocking(move || install_deps(&app2)).await
+            .map_err(|e| format!("安装线程异常: {}", e))??;
 
         if is_cancelled() { return Err("已取消".into()); }
 
-        if !is_ready() {
+        if !tokio::task::spawn_blocking(is_ready).await.unwrap_or(false) {
             return Err("Python 环境安装后验证失败".into());
         }
 
@@ -427,21 +449,24 @@ async fn setup_with_standalone(app: &tauri::AppHandle) -> Result<String, String>
 
     if is_cancelled() { return Err("已取消".into()); }
 
-    // 创建 venv
+    // 创建 venv（内部 cmd.output() 可能耗时，放入 blocking 线程）
     if !venv_python.exists() {
-        create_venv(app)?;
+        let app2 = app.clone();
+        tokio::task::spawn_blocking(move || create_venv(&app2)).await
+            .map_err(|e| format!("创建 venv 线程异常: {}", e))??;
     }
 
     if is_cancelled() { return Err("已取消".into()); }
 
-    // 安装依赖
-
-    install_deps(app)?;
+    // 安装依赖（pip install 可阻塞数分钟，放入 blocking 线程）
+    let app2 = app.clone();
+    tokio::task::spawn_blocking(move || install_deps(&app2)).await
+        .map_err(|e| format!("安装线程异常: {}", e))??;
 
     if is_cancelled() { return Err("已取消".into()); }
 
     // 验证
-    if !is_ready() {
+    if !tokio::task::spawn_blocking(is_ready).await.unwrap_or(false) {
         return Err("Python 环境安装后验证失败".into());
     }
 
