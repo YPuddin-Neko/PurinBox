@@ -237,7 +237,14 @@ def main():
 
             # BGR → RGB
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img_f = img.astype(np.float32) / 255.0
+            # 按位深归一化: 16-bit PNG (uint16) 除以 65535，8-bit 除以 255
+            if img.dtype == np.uint16:
+                img_f = img.astype(np.float32) / 65535.0
+                if has_alpha:
+                    # alpha 统一转 uint8，便于后续与 uint8 输出拼接
+                    alpha = (alpha.astype(np.float32) / 65535.0 * 255.0).round().astype(np.uint8)
+            else:
+                img_f = img.astype(np.float32) / 255.0
             # HWC → NCHW
             tensor = np.transpose(img_f, (2, 0, 1))[np.newaxis, ...]
 
@@ -265,8 +272,10 @@ def main():
             try:
                 output = _do_inference(tensor, session, input_name, output_name, native_scale, tile_size)
             except Exception as inf_err:
-                err_msg = str(inf_err)
-                if "CUDA" in err_msg or "Resize" in err_msg or "ORT" in err_msg or "onnxruntime" in err_msg.lower():
+                # 仅在明确的显存不足/分配失败时给显存提示，其余原样透传真实错误
+                err_lower = str(inf_err).lower()
+                oom_keywords = ("out of memory", "alloc", "memory", "oom")
+                if any(k in err_lower for k in oom_keywords):
                     raise RuntimeError(f"GPU 显存不足，请在设置中开启分块处理或降低图片分辨率") from inf_err
                 raise
 
