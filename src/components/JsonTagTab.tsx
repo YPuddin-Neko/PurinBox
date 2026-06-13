@@ -34,6 +34,8 @@ const chipC: Record<AiCatKey, {bg:string;bd:string;tx:string}> = {
 const phdr:React.CSSProperties={display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',borderBottom:'1px solid var(--color-border)',flexShrink:0};
 const ptitle:React.CSSProperties={fontSize:12,fontWeight:700,color:'var(--color-text-primary)',textTransform:'uppercase',letterSpacing:'0.5px'};
 
+const normalizeEditableTag=(tag:string)=>tag.trim().replace(/_/g,' ').replace(/\s+/g,' ');
+
 
 export interface JsonTagTabHandle {
   loadFolder: () => Promise<void>;
@@ -570,7 +572,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
           placeholder={t('jsonTag.inputTag')}
           clearOnSelect={true}
           keepOpen={true}
-          onSelect={(v) => { if(v.trim())onAdd(v.trim()); }}
+          onSelect={(v) => { const tag=normalizeEditableTag(v); if(tag)onAdd(tag); }}
           onBlur={() => setEditingField(null)}
           onKeyDown={(e) => { if (e.key === 'Escape') setEditingField(null); }}
           inputStyle={{fontSize:11,height:24,border:'none',background:'transparent',padding:'0 4px',flex:'1 0 60px',minWidth:60,outline:'none',maxWidth:200}}
@@ -717,7 +719,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
                         placeholder={ph}
                         clearOnSelect={true}
                         keepOpen={true}
-                        onSelect={(v) => { if(v.trim())addOne(v.trim()); }}
+                        onSelect={(v) => { const tag=normalizeEditableTag(v); if(tag)addOne(tag); }}
                         onBlur={() => setEditingField(null)}
                         onKeyDown={(e) => { if (e.key === 'Escape') setEditingField(null); }}
                         inputStyle={{fontSize:11,height:24,border:'none',background:'transparent',padding:'0 4px',flex:1,minWidth:60,outline:'none',maxWidth:200}}
