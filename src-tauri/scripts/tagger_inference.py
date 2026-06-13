@@ -234,6 +234,13 @@ _COUNT_TAGS = {
     "solo", "duo", "trio", "group",
 }
 
+# 颜文字标签白名单 (kohya/wd14 通用列表)：这些标签的下划线是表情的一部分，不做替换
+_KAOMOJI_TAGS = {
+    "0_0", "(o)_(o)", "+_+", "+_-", "._.", "<o>_<o>", "<|>_<|>", "=_=",
+    ">_<", "3_3", "6_9", ">_o", "@_@", "^_^", "o_o", "u_u", "x_x",
+    "|_|", "||_||",
+}
+
 
 def _classify_general_tag(tag_name):
     """判断 general 标签属于 appearance / environment / tags"""
@@ -576,7 +583,7 @@ def main():
                     best_idx, best_prob = max(pairs, key=lambda x: x[1])
                     tag_name = tags[best_idx]["name"]
                     tag_count = tags[best_idx].get("count", 0)
-                    if replace_underscore:
+                    if replace_underscore and tag_name not in _KAOMOJI_TAGS:
                         tag_name = tag_name.replace("_", " ")
                     if escape_parentheses:
                         tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
@@ -605,7 +612,7 @@ def main():
                             continue
                         tag_name = tags[idx]["name"]
                         tag_count = tags[idx].get("count", 0)
-                        if replace_underscore:
+                        if replace_underscore and tag_name not in _KAOMOJI_TAGS:
                             tag_name = tag_name.replace("_", " ")
                         if escape_parentheses:
                             tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
@@ -693,14 +700,9 @@ def main():
                                         merged[k] = merged[k] + [t for t in v if t not in existing_set]
                             with open(json_path, "w", encoding="utf-8") as f:
                                 json.dump(merged, f, ensure_ascii=False, indent=2)
-                        except Exception:
-                            # 合并失败时回退到覆盖
-                            if json_simplified:
-                                data = _build_simplified_json(selected_tags)
-                            else:
-                                data = _build_structured_json(selected_tags)
-                            with open(json_path, "w", encoding="utf-8") as f:
-                                json.dump(data, f, ensure_ascii=False, indent=2)
+                        except Exception as merge_err:
+                            # 合并失败时不覆盖用户原文件：仅警告并跳过写入
+                            log(f"⚠ JSON 合并失败，跳过写入以保护原文件 [{json_path.name}]: {merge_err}")
                     else:
                         # overwrite 或文件不存在
                         if json_simplified:
@@ -792,20 +794,25 @@ def main():
                 # 拼接 batch tensor: [N, C, H, W] or [N, H, W, C]
                 batch_tensor = np.concatenate(batch_data, axis=0)
 
-                # 批量推理
+                # 批量推理 (失败时降级为逐张推理重试)
                 try:
                     outputs = session.run(None, {input_name: batch_tensor})
                     all_probs = outputs[0]  # shape: [N, num_tags]
                 except Exception as e:
-                    # 批量推理失败, 对每个图片返回 error
-                    for vi in valid_indices:
+                    log(f"批量推理失败，降级为逐张推理重试: {type(e).__name__}")
+                    all_probs = []
+                    for bi, vi in enumerate(valid_indices):
                         img_path = images[vi].get("image_path", "")
-                        result({
-                            "type": "error",
-                            "image_path": img_path,
-                            "message": f"批量推理失败: {e}",
-                        })
-                    continue
+                        try:
+                            out_single = session.run(None, {input_name: batch_data[bi]})
+                            all_probs.append(out_single[0][0])
+                        except Exception as e2:
+                            all_probs.append(None)
+                            result({
+                                "type": "error",
+                                "image_path": img_path,
+                                "message": f"推理失败: {e2}",
+                            })
 
                 # 逐张处理结果
                 for batch_idx, orig_idx in enumerate(valid_indices):
@@ -813,6 +820,8 @@ def main():
                     image_path = img_cmd.get("image_path", "")
                     try:
                         probs = all_probs[batch_idx]
+                        if probs is None:
+                            continue  # 逐张重试已失败并报过 error
 
                         general_threshold = img_cmd.get("general_threshold", 0.35)
                         character_threshold = img_cmd.get("character_threshold", 0.85)
@@ -865,7 +874,7 @@ def main():
                             best_idx, best_prob = max(pairs, key=lambda x: x[1])
                             tag_name = tags[best_idx]["name"]
                             tag_count = tags[best_idx].get("count", 0)
-                            if replace_underscore:
+                            if replace_underscore and tag_name not in _KAOMOJI_TAGS:
                                 tag_name = tag_name.replace("_", " ")
                             if escape_parentheses:
                                 tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
@@ -892,7 +901,7 @@ def main():
                                     continue
                                 tag_name = tags[idx]["name"]
                                 tag_count = tags[idx].get("count", 0)
-                                if replace_underscore:
+                                if replace_underscore and tag_name not in _KAOMOJI_TAGS:
                                     tag_name = tag_name.replace("_", " ")
                                 if escape_parentheses:
                                     tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
@@ -941,10 +950,9 @@ def main():
                                             merged[k] = merged[k] + [t_val for t_val in v if t_val not in existing_set]
                                     with open(json_path, "w", encoding="utf-8") as f:
                                         json.dump(merged, f, ensure_ascii=False, indent=2)
-                                except Exception:
-                                    data = _build_simplified_json(selected_tags) if json_simplified else _build_structured_json(selected_tags)
-                                    with open(json_path, "w", encoding="utf-8") as f:
-                                        json.dump(data, f, ensure_ascii=False, indent=2)
+                                except Exception as merge_err:
+                                    # 合并失败时不覆盖用户原文件：仅警告并跳过写入
+                                    log(f"⚠ JSON 合并失败，跳过写入以保护原文件 [{json_path.name}]: {merge_err}")
                             else:
                                 data = _build_simplified_json(selected_tags) if json_simplified else _build_structured_json(selected_tags)
                                 with open(json_path, "w", encoding="utf-8") as f:
@@ -1003,7 +1011,12 @@ def main():
                 error(f"未知命令: {cmd['cmd']}")
 
         except Exception as e:
-            error(f"{traceback.format_exc()}")
+            err_payload = {"type": "error", "message": f"{traceback.format_exc()}"}
+            # 单图模式带上当前正在处理的图片路径（拿不到则省略）
+            img_p = cmd.get("image_path", "") if isinstance(cmd, dict) else ""
+            if img_p:
+                err_payload["image_path"] = img_p
+            result(err_payload)
 
 if __name__ == "__main__":
     main()

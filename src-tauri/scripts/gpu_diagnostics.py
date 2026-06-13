@@ -34,7 +34,7 @@ def diagnose_gpu():
             parts = r.stdout.strip().split(", ")
             gpu_name = parts[0] if len(parts) > 0 else None
             driver_version = parts[1] if len(parts) > 1 else None
-    except (FileNotFoundError, Exception):
+    except Exception:
         pass
 
     # 2. nvidia-smi: 获取驱动支持的最高 CUDA 版本
@@ -44,7 +44,7 @@ def diagnose_gpu():
             m = re.search(r"CUDA Version:\s*([\d.]+)", r.stdout)
             if m:
                 driver_cuda_version = m.group(1)
-    except (FileNotFoundError, Exception):
+    except Exception:
         pass
 
     # 3. nvcc: 检测 CUDA Toolkit 是否安装
@@ -54,7 +54,7 @@ def diagnose_gpu():
             m = re.search(r"release\s+([\d.]+)", r.stdout)
             if m:
                 nvcc_version = m.group(1)
-    except (FileNotFoundError, Exception):
+    except Exception:
         pass
 
     # 输出诊断信息

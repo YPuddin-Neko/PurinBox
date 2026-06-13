@@ -54,12 +54,16 @@ LABEL_SCORES = {
 }
 
 def preprocess_image(image_path, target_size, input_format="NCHW"):
-    """预处理图片 - SwinV2 模型输入"""
+    """预处理图片 - SwinV2 模型输入
+    对齐官方 imgutils generic/classify 实现:
+    白底合成转 RGB -> 直接 BILINEAR 拉伸 resize 到 target_size (不保持比例、不 pad 正方形)
+    -> (x/255 - 0.5) / 0.5 归一化到 [-1, 1] -> float32
+    """
     from PIL import Image
 
     image = Image.open(image_path)
 
-    # 处理透明通道
+    # 处理透明通道 (白色背景合成)
     if image.mode not in ["RGB", "RGBA"]:
         image = image.convert("RGBA") if "transparency" in image.info else image.convert("RGB")
     if image.mode == "RGBA":
@@ -67,29 +71,20 @@ def preprocess_image(image_path, target_size, input_format="NCHW"):
         background.paste(image, mask=image.split()[3])
         image = background
 
-    # Pad to square (白色填充)
-    w, h = image.size
-    if w != h:
-        max_dim = max(w, h)
-        padded = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
-        padded.paste(image, ((max_dim - w) // 2, (max_dim - h) // 2))
-        image = padded
+    # 官方实现: 直接拉伸 resize 到目标尺寸
+    image = image.resize((target_size, target_size), Image.BILINEAR)
 
-    # Resize
-    image = image.resize((target_size, target_size), Image.LANCZOS)
-
-    # 转 numpy: float32, 归一化 [0,1]
+    # 转 numpy: float32, 归一化到 [-1, 1]
     img_array = np.array(image, dtype=np.float32) / 255.0
+    img_array = (img_array - 0.5) / 0.5
 
     if input_format == "NCHW":
-        # HWC -> NCHW
+        # HWC -> CHW
         img_array = np.transpose(img_array, (2, 0, 1))
-        img_array = np.expand_dims(img_array, axis=0)
-    else:
-        # NHWC: just add batch dim
-        img_array = np.expand_dims(img_array, axis=0)
+    # 加 batch 维: NCHW 或 NHWC
+    img_array = np.expand_dims(img_array, axis=0)
 
-    return img_array
+    return img_array.astype(np.float32)
 
 def softmax(x):
     """Softmax 函数"""
@@ -97,7 +92,11 @@ def softmax(x):
     return e_x / e_x.sum()
 
 def main():
+    # Windows: 注册 CUDA DLL 目录（必须在 import onnxruntime 之前）
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from cuda_dll_helper import register_cuda_dlls
+    register_cuda_dlls()
+
     session = None
     labels = []
     input_size = 448
@@ -312,7 +311,11 @@ def main():
                 })
 
             except Exception as e:
-                error(f"评分失败 [{Path(image_path).name}]: {traceback.format_exc()}")
+                _emit({
+                    "type": "error",
+                    "image_path": image_path,
+                    "message": f"评分失败 [{Path(image_path).name}]: {traceback.format_exc()}",
+                })
 
         elif command == "score_batch":
             if session is None:
@@ -345,7 +348,8 @@ def main():
 
             batch_tensor = np.concatenate(batch_data, axis=0)
 
-            # 批量推理
+            # 批量推理 (GPU 失败回退 CPU，仍失败则降级为逐张推理)
+            all_logits = None
             try:
                 outputs = session.run(None, {input_name: batch_tensor})
                 all_logits = outputs[0]  # shape: [N, num_labels]
@@ -366,14 +370,23 @@ def main():
                     outputs = session.run(None, {input_name: batch_tensor})
                     all_logits = outputs[0]
                 except Exception as e2:
-                    for vi in valid_indices:
-                        img_path = images[vi].get("image_path", "")
+                    log(f"批量推理失败，降级为逐张推理重试: {type(e2).__name__}")
+
+            if all_logits is None:
+                # 逐张推理重试，单张失败才对该张报 error
+                all_logits = []
+                for bi, vi in enumerate(valid_indices):
+                    img_path = images[vi].get("image_path", "")
+                    try:
+                        out_single = session.run(None, {input_name: batch_data[bi]})
+                        all_logits.append(out_single[0][0])
+                    except Exception as e3:
+                        all_logits.append(None)
                         result({
                             "type": "error",
                             "image_path": img_path,
-                            "message": f"批量推理失败: {e2}",
+                            "message": f"推理失败: {e3}",
                         })
-                    continue
 
             # 逐张处理结果
             for batch_idx, orig_idx in enumerate(valid_indices):
@@ -384,6 +397,8 @@ def main():
 
                 try:
                     logits = all_logits[batch_idx]
+                    if logits is None:
+                        continue  # 逐张重试已失败并报过 error
                     probs = softmax(logits)
 
                     top_idx = int(np.argmax(probs))
@@ -444,7 +459,11 @@ def main():
                         "moved_to": moved_to,
                     })
                 except Exception as e:
-                    error(f"评分失败 [{Path(image_path).name}]: {traceback.format_exc()}")
+                    _emit({
+                        "type": "error",
+                        "image_path": image_path,
+                        "message": f"评分失败 [{Path(image_path).name}]: {traceback.format_exc()}",
+                    })
 
         else:
             error(f"未知命令: {command}")

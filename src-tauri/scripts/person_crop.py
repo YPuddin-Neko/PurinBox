@@ -320,7 +320,11 @@ def _emit(data):
 
 def main():
     """主循环: stdin 读取 JSON, stdout 输出结果"""
+    # Windows: 注册 CUDA DLL 目录（必须在 import onnxruntime 之前）
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from cuda_dll_helper import register_cuda_dlls
+    register_cuda_dlls()
+
     import io
     stdin_reader = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
 
@@ -384,8 +388,11 @@ def main():
         image_path = cmd.get('image_path', '')
         output_dir = cmd.get('output_dir', '')
         options = cmd.get('options', {})
-        
+
         try:
+            # 保存裁切结果前确保输出目录存在
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
             result = process_image(models, image_path, options, output_dir)
             _emit(result)
         except Exception as e:

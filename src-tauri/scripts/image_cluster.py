@@ -163,9 +163,21 @@ class FeatureExtractor:
         self.semantic_feature = output
 
     def _gram_matrix(self, feat):
-        """计算 Gram Matrix 作为风格特征"""
+        """计算 Gram Matrix 作为风格特征
+
+        内存说明: layer3 输出 1024 通道，完整 Gram 上三角约 52.5 万维/图，
+        数千张图时特征矩阵会撑爆内存。这里先将通道按相邻分组平均池化降到
+        128 通道（每 8 个通道求均值），Gram 上三角降为 128*129/2 = 8256 维。
+        分组池化保留了通道间相关性（风格信息）、确定性且无需额外的投影矩阵
+        （稀疏随机投影需要 52万x几千 的矩阵，本身就占数 GB 内存），
+        是内存可控且实现最简洁的方案。
+        """
         import torch
         b, c, h, w = feat.shape
+        groups = 128
+        if c > groups and c % groups == 0:
+            feat = feat.view(b, groups, c // groups, h, w).mean(dim=2)
+            c = groups
         feat = feat.view(b, c, -1)
         gram = torch.bmm(feat, feat.transpose(1, 2))
         gram = gram / (c * h * w)
@@ -346,9 +358,9 @@ def main():
 
     features = []
     valid_files = []
-    # 总步数 = 提取 + 聚类(1) + 分布图(1) + 复制文件数
-    # 先用提取阶段的 total，后续更新
-    phase_total = total + 3  # 预估：提取 + 聚类 + 分布图 + 完成
+    # 总步数（统一口径，从一开始固定，避免中途变化导致前端进度跳变）:
+    # 提取 total 步 + 聚类 1 步 + 分布图 1 步 + 复制文件(按 total 估算) 步
+    phase_total = total * 2 + 2
 
     for i, fpath in enumerate(files):
         fname = os.path.basename(fpath)
@@ -368,8 +380,7 @@ def main():
     features = np.array(features)
     emit_log(f"特征维度: {features.shape[1]}，有效图片: {len(valid_files)}")
 
-    # 更新总步数：提取完成的 + 聚类 + 分布图 + 复制文件
-    phase_total = total + 2 + len(valid_files)
+    # phase_total 在开始时已按统一口径固定，这里不再变更，避免进度跳变
     step = total  # 当前步骤：提取已完成 total 步
 
     # 聚类
@@ -469,8 +480,14 @@ def generate_distribution_map(features, labels, file_paths, output_dir, theme="l
         else:
             from sklearn.manifold import TSNE
             perplexity = max(2, min(30, (n_samples - 1) // 3))
-            tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42,
-                         n_iter=1000, init='random', learning_rate='auto')
+            tsne_kwargs = dict(n_components=2, perplexity=perplexity, random_state=42,
+                               init='random', learning_rate='auto')
+            try:
+                # sklearn >= 1.5 使用 max_iter（n_iter 在 1.7 已移除）
+                tsne = TSNE(max_iter=1000, **tsne_kwargs)
+            except TypeError:
+                emit_log("当前 sklearn 版本不支持 max_iter，回退使用 n_iter 参数")
+                tsne = TSNE(n_iter=1000, **tsne_kwargs)
             coords_2d = tsne.fit_transform(features)
     except Exception:
         # t-SNE 失败，直接用 PCA 到 2D
@@ -658,7 +675,7 @@ def generate_distribution_map(features, labels, file_paths, output_dir, theme="l
     # 保存
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, "cluster_distribution.png")
-    canvas.save(out_path, quality=95)
+    canvas.save(out_path)  # PNG 无 quality 参数
     emit_log(f"分布图: {out_path}")
 
 
