@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -89,10 +89,15 @@ export default function BucketPreviewPage() {
   const [exportPath, setExportPath] = useState('');
   const [exporting, setExporting] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  // toast 定时器：先 clear 再设，避免快速连续 toast 时旧定时器提前清掉新 toast
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [expandedBuckets, setExpandedBuckets] = useState<Set<number>>(new Set());
   const [bucketPage, setBucketPage] = useState(0);
   const BUCKETS_PER_PAGE = 3;
+  // 展开桶的图片分批渲染（每批 60 张）
+  const IMAGES_PER_BATCH = 60;
+  const [bucketImgLimits, setBucketImgLimits] = useState<Record<number, number>>({});
 
   useEffect(() => {
     let active = true;
@@ -104,9 +109,13 @@ export default function BucketPreviewPage() {
     const p2 = listen<ScanProgress>('bucket-export-progress', (e) => {
       if (!active) return;
       setToast({ msg: e.payload.message, type: 'success' });
-      setTimeout(() => setToast(null), 3000);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = setTimeout(() => setToast(null), 3000);
     });
-    return () => { active = false; p1.then(fn => fn()); p2.then(fn => fn()); };
+    return () => {
+      active = false; p1.then(fn => fn()); p2.then(fn => fn());
+      if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); toastTimerRef.current = null; }
+    };
   }, []);
 
   const selectInputFolder = async () => {
@@ -121,19 +130,23 @@ export default function BucketPreviewPage() {
 
   const handleAnalyze = async () => {
     if (!inputPath) return;
+    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    const stepsVal = Number.isFinite(steps) && steps >= 32 ? steps : 32;
+    if (stepsVal !== steps) setSteps(stepsVal);
     setAnalyzing(true);
     setAnalysis(null);
     setScanProgress(0);
     setScanMsg(t('bucketPreview.scanning'));
     setExpandedBuckets(new Set());
     setBucketPage(0);
+    setBucketImgLimits({});
     try {
       const result = await invoke<BucketAnalysis>('analyze_buckets', {
         options: {
           input_path: inputPath,
           res_width: resWidth,
           res_height: resHeight,
-          steps,
+          steps: stepsVal,
           no_upscale: noUpscale,
           min_bucket_reso: noUpscale ? null : minBucketReso,
           max_bucket_reso: noUpscale ? null : maxBucketReso,
@@ -151,7 +164,8 @@ export default function BucketPreviewPage() {
 
   const showToast = (msg: string, type: 'success' | 'error') => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 3000);
   };
 
   const handleExport = async () => {
@@ -171,6 +185,13 @@ export default function BucketPreviewPage() {
     setExpandedBuckets(prev => {
       const next = new Set(prev);
       if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+    // 重新展开时重置该桶的图片渲染批次
+    setBucketImgLimits(prev => {
+      if (!(idx in prev)) return prev;
+      const next = { ...prev };
+      delete next[idx];
       return next;
     });
   };
@@ -432,7 +453,13 @@ export default function BucketPreviewPage() {
                         overflowX: 'hidden',
                         alignContent: 'start',
                       }}>
-                        {bucket.images.map((img, i) => (
+                        {(() => {
+                          const imgLimit = bucketImgLimits[bucket.index] ?? IMAGES_PER_BATCH;
+                          const visibleImages = bucket.images.slice(0, imgLimit);
+                          const remaining = bucket.images.length - visibleImages.length;
+                          return (
+                            <>
+                        {visibleImages.map((img, i) => (
                           <div key={i} style={{
                             borderRadius: 4, overflow: 'hidden',
                             border: '1px solid var(--color-border)',
@@ -460,6 +487,15 @@ export default function BucketPreviewPage() {
                             }} title={img.name}>{img.name}</div>
                           </div>
                         ))}
+                        {remaining > 0 && (
+                          <button className="btn btn-ghost" style={{ gridColumn: '1 / -1', height: 26, fontSize: 10 }}
+                            onClick={() => setBucketImgLimits(prev => ({ ...prev, [bucket.index]: imgLimit + IMAGES_PER_BATCH }))}>
+                            {t('common.showMore', { n: remaining })}
+                          </button>
+                        )}
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>

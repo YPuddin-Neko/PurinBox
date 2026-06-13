@@ -9,6 +9,7 @@ import { useTaskQueue } from './TaskContext';
 import { ConfirmModal } from './Modal';
 import CustomSelect from './CustomSelect';
 import { useTranslation } from 'react-i18next';
+import i18n from '../i18n';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 
 interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; supported_categories: string[]; }
@@ -191,7 +192,7 @@ export default function AiTaggerTab() {
       if (p.status === 'done') setIsDone(true);
       if (p.status === 'error') setHasErr(true);
       setLogs(prev => {
-        const msg = p.i18n_key ? (t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
+        const msg = p.i18n_key ? (i18n.t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? i18n.t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
         return [...prev, { time: getTimeStr(), message: msg, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }];
       });
     };
@@ -208,7 +209,7 @@ export default function AiTaggerTab() {
       if (d.status === 'done' || d.status === 'cancelled') {
         setLogs(p => p.filter(l => l.status !== 'download'));
       } else if (d.status === 'error') {
-        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: `${t('aiTagger.downloadFail')}: ${d.message}`, status: 'error' }]);
+        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: `${i18n.t('aiTagger.downloadFail')}: ${d.message}`, status: 'error' }]);
       } else {
         const avgSpeed = d.speed_mbps > 0 ? `${d.speed_mbps.toFixed(1)} MB/s` : '';
         setLogs(p => {
@@ -239,6 +240,9 @@ export default function AiTaggerTab() {
 
   const handleStart = async () => {
     if (!inputPath || !selectedModel || enabled.size === 0) return;
+    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    const bs = Number.isFinite(batchSize) && batchSize >= 1 ? Math.min(batchSize, 64) : 1;
+    if (bs !== batchSize) setBatchSize(bs);
     // 如果正在打标，先取消上一次
     if (processing) {
       doCancel();
@@ -248,7 +252,7 @@ export default function AiTaggerTab() {
     setLogs([{ time: getTimeStr(), message: t('aiTagger.startMsg', { model: cur?.name, hw: useGpu ? 'GPU' : 'CPU' }), status: 'info' }]);
     addTask('tagger', `${t('aiTagger.taskName')} - ${cur?.name || '?'}`);
     try {
-      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, batch_size: useGpu ? batchSize : 1, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, sort_by: sortBy, existing_tags_action: existingTagsAction, output_format: outputFormat, json_simplified: jsonSimplified, recursive } });
+      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, batch_size: useGpu ? bs : 1, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, sort_by: sortBy, existing_tags_action: existingTagsAction, output_format: outputFormat, json_simplified: jsonSimplified, recursive } });
       updateTask('tagger', { status: 'done' });
       await load();
     } catch (e: any) {
@@ -287,9 +291,12 @@ export default function AiTaggerTab() {
       setLogs(p => [...p, { time: getTimeStr(), message: t('aiTagger.fillAllFields'), status: 'error' }]);
       return;
     }
+    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    const size = Number.isFinite(nSize) && nSize >= 1 ? nSize : 448;
+    if (size !== nSize) setNSize(size);
     setImporting(true);
     try {
-      await invoke<string>('import_local_tagger_model', { name: nName, modelPath: nModelPath, tagsPath: nTagsPath, inputSize: nSize, inputFormat: nFormat });
+      await invoke<string>('import_local_tagger_model', { name: nName, modelPath: nModelPath, tagsPath: nTagsPath, inputSize: size, inputFormat: nFormat });
       setLogs(p => [...p, { time: getTimeStr(), message: t('aiTagger.importOk', { name: nName }), status: 'success' }]);
       setShowAdd(false); setNName(''); setNModelPath(''); setNTagsPath(''); setNSize(448); setNFormat('NHWC');
       await load();

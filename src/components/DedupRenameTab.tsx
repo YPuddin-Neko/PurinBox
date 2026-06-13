@@ -18,7 +18,7 @@ type Direction = 'a' | 'b';
 
 export default function DedupRenameTab() {
   const { t } = useTranslation();
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
   const [folderA, setFolderA] = useState('');
   const [folderB, setFolderB] = useState('');
   const [dhash, setDhash] = useState(10);
@@ -90,6 +90,7 @@ export default function DedupRenameTab() {
       }]);
     } catch (e: any) {
       setLogs(prev => [...prev, { time: getTimeStr(), message: String(e), status: 'error' }]);
+      updateTask('dedup-rename', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasError(true);
     } finally { setIsDone(true); setScanning(false); }
   }, [folderA, folderB, dhash, phash, colorTh, t]);
@@ -147,6 +148,7 @@ export default function DedupRenameTab() {
       setPairs([]);
     } catch (e: any) {
       setLogs(prev => [...prev, { time: getTimeStr(), message: String(e), status: 'error' }]);
+      updateTask('dedup-rename', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasError(true);
     } finally { setExecuting(false); setIsDone(true); }
   }, [pairs, directions, folderA, folderB, t]);

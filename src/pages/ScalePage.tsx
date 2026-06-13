@@ -86,7 +86,7 @@ export default function ScalePage() {
     if (selected) setOutputPath(selected as string);
   };
 
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
 
   // Determine mode string
   const getMode = () => {
@@ -107,6 +107,14 @@ export default function ScalePage() {
   const handleProcess = async () => {
     const mode = getMode();
     if (!inputPath || !outputPath || !mode) return;
+    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    const num = (v: number, fallback: number) => (Number.isFinite(v) && v >= 1 ? v : fallback);
+    const upW = num(upWidth, 1024), upH = num(upHeight, 1024);
+    const downW = num(downWidth, 512), downH = num(downHeight, 512);
+    if (upW !== upWidth) setUpWidth(upW);
+    if (upH !== upHeight) setUpHeight(upH);
+    if (downW !== downWidth) setDownWidth(downW);
+    if (downH !== downHeight) setDownHeight(downH);
     setProcessing(true);
     addTask('scale', t('scale.taskName'));
     setProgress(0);
@@ -115,8 +123,8 @@ export default function ScalePage() {
     setIsDone(false);
     setHasError(false);
 
-    const targetW = mode === 'downscale' ? downWidth : upWidth;
-    const targetH = mode === 'downscale' ? downHeight : upHeight;
+    const targetW = mode === 'downscale' ? downW : upW;
+    const targetH = mode === 'downscale' ? downH : upH;
     const label = getModeLabel();
     setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${label}${t('pages.process')} → ${targetW}×${targetH}`, status: 'info' }]);
     try {
@@ -127,13 +135,14 @@ export default function ScalePage() {
           mode,
           target_width: targetW,
           target_height: targetH,
-          down_target_width: mode === 'both' ? downWidth : 0,
-          down_target_height: mode === 'both' ? downHeight : 0,
+          down_target_width: mode === 'both' ? downW : 0,
+          down_target_height: mode === 'both' ? downH : 0,
         },
       });
       // done
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
+      updateTask('scale', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasError(true);
       setIsDone(true);
     } finally {

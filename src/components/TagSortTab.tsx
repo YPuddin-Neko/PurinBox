@@ -144,7 +144,7 @@ export default function TagSortTab() {
     }
   };
 
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
 
   // 开始排序
   const handleStart = async () => {
@@ -175,6 +175,7 @@ export default function TagSortTab() {
       });
     } catch (e: any) {
       setLogs(p => [...p, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
+      updateTask('tag-sort', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasErr(true); setIsDone(true);
     } finally { setProcessing(false); }
   };

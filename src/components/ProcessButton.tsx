@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Play, Loader2, X, AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -77,9 +77,9 @@ export default function ProcessButton({
   }, [processing, cancelStage, cancelCommand, forceCancelCommand, onCancelLog, onStart]);
 
   // 处理完成后重置 cancelStage
-  if (!processing && cancelStage > 0) {
-    setTimeout(() => setCancelStage(0), 0);
-  }
+  useEffect(() => {
+    if (!processing) setCancelStage(0);
+  }, [processing]);
 
   // 决定显示内容
   const renderContent = () => {

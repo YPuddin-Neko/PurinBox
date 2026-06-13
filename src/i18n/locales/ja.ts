@@ -1,4 +1,7 @@
 // 日本語
+import type zhCN from './zh-CN';
+import type { I18nShape } from './zh-CN';
+
 const ja = {
   // ═══════════════ 共通 ═══════════════
   common: {
@@ -36,6 +39,7 @@ const ja = {
     preparing: '準備中...',
     search: '検索...',
     dragResize: 'ドラッグで幅を調整',
+    showMore: 'さらに表示 ({{n}})',
   },
 
   contextMenu: {
@@ -1176,6 +1180,9 @@ const ja = {
     dropRelease: 'ドロップしてメタデータを読み取り',
     dropFound: '読み取り成功: {{name}} (ソース: {{source}})',
     dropNoMeta: 'この画像に生成メタデータはありません',
+    copied: 'クリップボードにコピーしました',
+    noMetaFilesTitle: 'メタデータのない画像',
+    noMetaFilesDesc: '以下の {{count}} 枚の画像に生成メタデータが検出されませんでした',
   },
 
   aesthetic: {
@@ -1213,6 +1220,6 @@ const ja = {
     macPlatform: 'macOSプラットフォーム、CoreML / MPSアクセラレーションを使用',
     noBackend: 'サポートされているGPU推論バックエンドが見つかりません',
   },
-};
+} satisfies I18nShape<typeof zhCN>;
 
 export default ja;

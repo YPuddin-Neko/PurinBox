@@ -66,7 +66,7 @@ export default function FileKeeperPage() {
     if (selected) setFolderPath(selected as string);
   };
 
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
 
   const handleProcess = async () => {
     if (!folderPath || keepExts.size === 0) return;
@@ -81,6 +81,7 @@ export default function FileKeeperPage() {
       });
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
+      updateTask('keeper', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasError(true); setIsDone(true);
     } finally {
       setProcessing(false);

@@ -31,7 +31,7 @@ const SOURCE_COLORS: Record<string, string> = {
 
 export default function SdMetadataPage() {
   const { t } = useTranslation();
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
   const [inputPath, setInputPath] = useState('');
   const [scanning, setScanning] = useState(false);
   const [items, setItems] = useState<SdImageMeta[]>([]);
@@ -133,6 +133,7 @@ export default function SdMetadataPage() {
       }]);
     } catch (e: any) {
       setLogs(prev => [...prev, { time: getTimeStr(), message: String(e), status: 'error' }]);
+      updateTask('sd-metadata', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasError(true);
     } finally { setIsDone(true); setScanning(false); }
   };
@@ -165,6 +166,7 @@ export default function SdMetadataPage() {
       }]);
     } catch (e: any) {
       setLogs(prev => [...prev, { time: getTimeStr(), message: `${t('sdMetadata.exportFail')}: ${String(e)}`, status: 'error' }]);
+      updateTask('sd-metadata', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
     } finally { setExporting(false); }
   };
 

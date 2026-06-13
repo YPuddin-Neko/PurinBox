@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
+import i18n from '../i18n';
 import {
   ZoomIn,
   FolderOpen,
@@ -83,7 +84,7 @@ export default function UpscalePage() {
     const unlisten = listen<any>('upscale-progress', (e) => {
       if (!active) return;
       const d = e.payload;
-      const resolveMsg = (p: any) => p.i18n_key ? (t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
+      const resolveMsg = (p: any) => p.i18n_key ? (i18n.t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? i18n.t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
       if (d.status === 'done') {
         setProgress(100); setIsDone(true); setProcessing(false);
         setProgressCurrent(d.total); setProgressTotal(d.total);

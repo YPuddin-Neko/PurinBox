@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
+import i18n from '../i18n';
 import {
   Network,
   FolderOpen,
@@ -62,7 +63,7 @@ export default function ImageClusterPage() {
       if (d.status === 'error') setHasError(true);
       // Show log for all non-processing statuses + processing messages that have content
       if (d.status !== 'processing' || d.message) {
-        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
+        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (i18n.t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? i18n.t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
         setLogs((prev) => [...prev, {
           time: getTimeStr(),
           message: resolveMsg(d) || `${d.current}/${d.total}`,
@@ -79,17 +80,22 @@ export default function ImageClusterPage() {
   const selectInputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') }); if (s) setInputPath(s as string); };
   const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') }); if (s) setOutputPath(s as string); };
 
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
 
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
+    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    const num = (v: number, fallback: number) => (Number.isFinite(v) && v >= 2 ? v : fallback);
+    const nC = num(nClusters, 5), minSize = num(minClusterSize, 3);
+    if (nC !== nClusters) setNClusters(nC);
+    if (minSize !== minClusterSize) setMinClusterSize(minSize);
     setProcessing(true); addTask('image-cluster', t('imageCluster.taskName'));
     setProgress(0); setProgressCurrent(0); setProgressTotal(0); setIsDone(false); setHasError(false);
     setProcessStartTime(Date.now());
 
     const algoLabel = ALGORITHMS_BASE.find(a => a.value === algorithm)?.label || algorithm;
     const featLabel = featureType;
-    const paramStr = algorithm === 'kmeans' ? `${t('imageCluster.groupCount')}: ${nClusters}` : `${t('imageCluster.minClusterSize')}: ${minClusterSize}`;
+    const paramStr = algorithm === 'kmeans' ? `${t('imageCluster.groupCount')}: ${nC}` : `${t('imageCluster.minClusterSize')}: ${minSize}`;
     const deviceLabel = device === 'auto' ? t('imageCluster.gpuAuto') : 'CPU';
     setLogs([{ time: getTimeStr(), message: t('imageCluster.startMsg', { algo: algoLabel, feat: featLabel, param: paramStr, device: deviceLabel }), status: 'info' }]);
 
@@ -100,8 +106,8 @@ export default function ImageClusterPage() {
           output_path: outputPath,
           algorithm,
           feature_type: featureType,
-          n_clusters: nClusters,
-          min_cluster_size: minClusterSize,
+          n_clusters: nC,
+          min_cluster_size: minSize,
           device,
           weight_style: wStyle,
           weight_semantic: wSemantic,
@@ -111,6 +117,7 @@ export default function ImageClusterPage() {
       });
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
+      updateTask('image-cluster', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasError(true); setIsDone(true);
     } finally { setProcessing(false); }
   };

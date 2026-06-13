@@ -1,4 +1,7 @@
 // English
+import type zhCN from './zh-CN';
+import type { I18nShape } from './zh-CN';
+
 const en = {
   // ═══════════════ Common ═══════════════
   common: {
@@ -36,6 +39,7 @@ const en = {
     preparing: 'Preparing...',
     search: 'Search...',
     dragResize: 'Drag to resize',
+    showMore: 'Show more ({{n}})',
   },
 
   contextMenu: {
@@ -1216,6 +1220,6 @@ const en = {
     macPlatform: 'macOS platform, using CoreML / MPS acceleration',
     noBackend: 'No supported GPU inference backend found',
   },
-};
+} satisfies I18nShape<typeof zhCN>;
 
 export default en;

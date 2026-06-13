@@ -91,11 +91,16 @@ export default function FilterPage() {
     if (selected) setOutputPath(selected as string);
   };
 
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
 
   const handleProcess = async () => {
     if (!inputPath) return;
     if (action === 'copy' && !outputPath) return;
+    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    const num = (v: number, fallback: number) => (Number.isFinite(v) && v >= 1 ? v : fallback);
+    const w = num(width, 512), h = num(height, 512);
+    if (w !== width) setWidth(w);
+    if (h !== height) setHeight(h);
     setProcessing(true);
     addTask('filter', t('filter.taskName'));
     setProgress(0);
@@ -107,10 +112,11 @@ export default function FilterPage() {
     setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${t('filter.startFilter')}: ${condLabel}, ${action === 'copy' ? t('filter.actionCopy') : t('filter.actionDelete')}`, status: 'info' }]);
     try {
       await invoke<ProcessResult>('filter_by_resolution', {
-        options: { input_path: inputPath, output_path: outputPath || inputPath, action, condition, width, height },
+        options: { input_path: inputPath, output_path: outputPath || inputPath, action, condition, width: w, height: h },
       });
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
+      updateTask('filter', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasError(true);
       setIsDone(true);
     } finally {

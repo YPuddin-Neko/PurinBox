@@ -73,6 +73,8 @@ export default function TagAutocomplete({
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // 请求序号：只采纳最新一次搜索的结果，防止乱序返回覆盖新结果
+  const searchSeqRef = useRef(0);
 
   // 计算下拉位置（基于 input 的 getBoundingClientRect）
   const updateDropdownPosition = useCallback(() => {
@@ -97,6 +99,7 @@ export default function TagAutocomplete({
   }, []);
 
   const search = useCallback(async (q: string) => {
+    const seq = ++searchSeqRef.current;
     if (q.length < 1) {
       setSuggestions([]);
       return;
@@ -104,12 +107,21 @@ export default function TagAutocomplete({
     try {
       const targetLang = localStorage.getItem('translate_target_lang') || 'zh-CN';
       const results = await invoke<TagSuggestion[]>('search_tags', { query: q, limit: 10, targetLang });
+      if (seq !== searchSeqRef.current) return; // 已有更新的请求，丢弃过期结果
       setSuggestions(results);
       setShowDropdown(results.length > 0);
       setActiveIndex(-1);
     } catch {
+      if (seq !== searchSeqRef.current) return;
       setSuggestions([]);
     }
+  }, []);
+
+  // 卸载时清理防抖定时器
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
   }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {

@@ -70,12 +70,22 @@ export default function BatchRenamePage() {
     }
   };
 
+  // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+  const sanitizeRenameNums = () => {
+    const sn = Number.isFinite(startNumber) && startNumber >= 0 ? startNumber : 0;
+    const dc = Number.isFinite(digitCount) && digitCount >= 1 ? Math.min(digitCount, 10) : 1;
+    if (sn !== startNumber) setStartNumber(sn);
+    if (dc !== digitCount) setDigitCount(dc);
+    return { sn, dc };
+  };
+
   const handlePreview = async () => {
     if (!inputPath) return;
+    const { sn, dc } = sanitizeRenameNums();
     setPreviewLoading(true);
     try {
       const result = await invoke<PreviewItem[]>('preview_rename', {
-        options: { input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount, shuffle: shuffleOrder, rename_tags: renameTags },
+        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: shuffleOrder, rename_tags: renameTags },
       });
       setPreviews(result);
     } catch (e: any) {
@@ -88,10 +98,11 @@ export default function BatchRenamePage() {
 
   const handleShuffle = async () => {
     if (!inputPath) return;
+    const { sn, dc } = sanitizeRenameNums();
     setPreviewLoading(true);
     try {
       const result = await invoke<PreviewItem[]>('preview_rename', {
-        options: { input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount, shuffle: true, rename_tags: renameTags },
+        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: true, rename_tags: renameTags },
       });
       setPreviews(result);
       setShuffleOrder(true);
@@ -102,22 +113,24 @@ export default function BatchRenamePage() {
     }
   };
 
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
 
   const handleExecute = async () => {
     if (!inputPath || previews.length === 0) return;
+    const { sn, dc } = sanitizeRenameNums();
     setProcessing(true);
     addTask('rename', t('batchRename.taskName'));
     setProgress(0); setProgressCurrent(0); setProgressTotal(0);
     setIsDone(false); setHasError(false);
-    setLogs([{ time: getTimeStr(), message: t('batchRename.startMsg', { prefix, start: startNumber, digits: digitCount }), status: 'info' }]);
+    setLogs([{ time: getTimeStr(), message: t('batchRename.startMsg', { prefix, start: sn, digits: dc }), status: 'info' }]);
     try {
       await invoke<ProcessResult>('execute_rename', {
-        options: { input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount, shuffle: shuffleOrder, rename_tags: renameTags },
+        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: shuffleOrder, rename_tags: renameTags },
       });
       setPreviews([]);
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
+      updateTask('rename', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasError(true); setIsDone(true);
     } finally {
       setProcessing(false);

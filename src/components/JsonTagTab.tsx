@@ -43,7 +43,17 @@ export interface JsonTagTabHandle {
   saving: boolean;
 }
 
-const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number) => void }>(function JsonTagTab({ onDirtyChange }, ref) {
+// 「当前翻译所有者」标记：TagManagerPage 与 JsonTagTab 两个常驻组件同时监听
+// 'translate-progress' 事件，互相串扰。翻译前置上所有者，非所有者忽略事件。
+export const translateOwner = { current: '' };
+
+const TAG_STATS_BATCH = 300;
+
+const JsonTagTab = forwardRef<JsonTagTabHandle, {
+  onDirtyChange?: (count: number) => void;
+  onLoadingChange?: (loading: boolean) => void;
+  onSavingChange?: (saving: boolean) => void;
+}>(function JsonTagTab({ onDirtyChange, onLoadingChange, onSavingChange }, ref) {
   const { t } = useTranslation();
   const [images,setImages]=useState<JsonImageItem[]>([]);
   const [selectedIdx,setSelectedIdx]=useState(-1);
@@ -110,7 +120,8 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
       const nw=Math.max(160,Math.min(500,startW+dir*(ev.clientX-startX)));setW(nw);
       localStorage.setItem(col==='col1'?'json_col1w':'json_col3w',String(nw));
     };
-    const onUp=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);document.body.style.cursor='';};
+    const onUp=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);document.body.style.cursor='';resizeCleanupRef.current=null;};
+    resizeCleanupRef.current=onUp;
     document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);document.body.style.cursor='col-resize';
   },[col1W,col3W]);
 
@@ -120,9 +131,14 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
       const nh=Math.max(100,Math.min(500,startH+(ev.clientY-startY)));setPreviewH(nh);
       localStorage.setItem('json_previewh',String(nh));
     };
-    const onUp=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);document.body.style.cursor='';};
+    const onUp=()=>{document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp);document.body.style.cursor='';resizeCleanupRef.current=null;};
+    resizeCleanupRef.current=onUp;
     document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);document.body.style.cursor='row-resize';
   },[previewH]);
+
+  // 卸载时兜底移除拖拽期间挂在 document 上的监听
+  const resizeCleanupRef=useRef<(()=>void)|null>(null);
+  useEffect(()=>()=>{resizeCleanupRef.current?.();},[]);
 
   // 安全化数据
   const safeData = (d: any): JsonTagData => ({
@@ -173,6 +189,8 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
   }), [handleLoadFolder, handleSaveAll, dirtyCount, loading, saving]);
 
   useEffect(() => { onDirtyChange?.(dirtyCount); }, [dirtyCount, onDirtyChange]);
+  useEffect(() => { onLoadingChange?.(loading); }, [loading, onLoadingChange]);
+  useEffect(() => { onSavingChange?.(saving); }, [saving, onSavingChange]);
   const taggedN=images.filter(i=>i.has_json).length;
   const goPrev=()=>{if(selectedIdx>0)setSelectedIdx(selectedIdx-1);};
   const goNext=()=>{if(selectedIdx<images.length-1)setSelectedIdx(selectedIdx+1);};
@@ -225,6 +243,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
     const q=globalSearch.toLowerCase();
     return sorted.filter(([t])=>t.includes(q)||(translations[t]||'').includes(q));
   },[tagStats,globalSearch,tagListMode,taggedCount,translations,tagSortBy,tagSortDir]);
+
+  // 标签统计列表分批渲染（初始 300 条，"显示更多"每次 +300；筛选条件变化时重置）
+  const [statsLimit,setStatsLimit]=useState(TAG_STATS_BATCH);
+  useEffect(()=>{setStatsLimit(TAG_STATS_BATCH);},[globalSearch,tagListMode,images]);
 
   // Tag selection
   const toggleTagSelect=(tag:string,e:React.MouseEvent)=>{
@@ -408,12 +430,14 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
     const allTags=tagStats.map(([tag])=>tag);
     if(allTags.length===0)return;
     const provider=localStorage.getItem('translate_provider')||'google';
+    translateOwner.current='json';
     setTranslating(true);
     setTranslateProgress({current:0,total:allTags.length});
     setShowTranslateBar(true);
     if(hideTranslateTimerRef.current){clearTimeout(hideTranslateTimerRef.current);hideTranslateTimerRef.current=null;}
 
     const unlisten=await listen<{current:number;total:number}>('translate-progress',e=>{
+      if(translateOwner.current!=='json')return; // 非当前翻译所有者，忽略事件
       setTranslateProgress({current:e.payload.current,total:e.payload.total});
     });
 
@@ -427,7 +451,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
       setTranslations(prev=>{const next={...prev};result.translations.forEach(item=>{if(item.translated)next[item.source]=item.translated;});return next;});
       setTranslateProgress({current:allTags.length,total:allTags.length});
       hideTranslateTimerRef.current=setTimeout(()=>{setShowTranslateBar(false);setTranslateProgress(null);},3000);
-    }catch(e){console.error('translate failed:',e);}finally{setTranslating(false);}
+    }catch(e){console.error('translate failed:',e);}finally{
+      setTranslating(false);
+      if(translateOwner.current==='json')translateOwner.current='';
+    }
     unlisten();
   },[tagStats]);
 
@@ -844,7 +871,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
             </div>}
             {/* Tag list */}
             <div style={{flex:1,overflowY:'auto',userSelect:'none'}}>
-              {filteredStats.map(([tag,count])=>{
+              {filteredStats.slice(0,statsLimit).map(([tag,count])=>{
                 const c=getStatColor(tag);const pct=images.length>0?(count/images.length)*100:0;
                 const inCur=cur?[...cur.data.ai_output.appearance,...cur.data.ai_output.tags,...cur.data.ai_output.environment,...cur.data.from_path.appearance,...(cur.data.fixed.quality?.split(',').map(s=>s.trim())||[])].includes(tag):false;
                 const tr=translations[tag];
@@ -870,6 +897,12 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, { onDirtyChange?: (count: number
                   </div>
                 );
               })}
+              {filteredStats.length>statsLimit&&(
+                <button className="btn btn-ghost" style={{width:'100%',height:30,fontSize:10,borderRadius:0}}
+                  onClick={()=>setStatsLimit(l=>l+TAG_STATS_BATCH)}>
+                  {t('common.showMore',{n:filteredStats.length-statsLimit})}
+                </button>
+              )}
               {images.length===0&&<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)',padding:20}}><Tags style={{width:28,height:28,opacity:0.2}} /><span style={{fontSize:11,opacity:0.6}}>{t('jsonTag.loadTagsHint')}</span></div>}
               {images.length>0&&filteredStats.length===0&&<div style={{padding:20,textAlign:'center',fontSize:11,color:'var(--color-text-tertiary)'}}>{globalSearch?t('jsonTag.noMatch'):t('jsonTag.noTagData')}</div>}
             </div>

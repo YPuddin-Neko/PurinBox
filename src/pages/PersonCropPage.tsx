@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
+import i18n from '../i18n';
 import {
   ScanFace, FolderOpen, Loader2, Info, User,
   PersonStanding, CircleUser, Eye, Download,
@@ -98,7 +99,7 @@ export default function PersonCropPage() {
       if (d.status === 'done') setIsDone(true);
       if (d.status === 'error') setHasError(true);
       if (d.status !== 'processing') {
-        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
+        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (i18n.t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? i18n.t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
         setLogs((prev) => [...prev, { time: getTimeStr(), message: resolveMsg(d), status: d.status === 'done' ? 'info' : d.status as LogEntry['status'] }]);
       }
     });
@@ -111,10 +112,21 @@ export default function PersonCropPage() {
   const selectInputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') }); if (s) setInputPath(s as string); };
   const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') }); if (s) setOutputPath(s as string); };
 
-  const { addTask } = useTaskQueue();
+  const { addTask, updateTask } = useTaskQueue();
 
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
+    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    const num = (v: number, fallback: number, min: number, max: number) => (Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback);
+    const pConf = num(personConf, 0.3, 0.1, 0.9), uConf = num(upperConf, 0.5, 0.1, 0.9);
+    const hConf = num(headConf, 0.4, 0.1, 0.9), eConf = num(eyesConf, 0.3, 0.1, 0.9);
+    const hScale = num(headScale, 1.5, 1.0, 3.0), eScale = num(eyesScale, 2.4, 1.0, 4.0);
+    if (pConf !== personConf) setPersonConf(pConf);
+    if (uConf !== upperConf) setUpperConf(uConf);
+    if (hConf !== headConf) setHeadConf(hConf);
+    if (eConf !== eyesConf) setEyesConf(eConf);
+    if (hScale !== headScale) setHeadScale(hScale);
+    if (eScale !== eyesScale) setEyesScale(eScale);
     setProcessing(true); addTask('person-crop', t('personCrop.taskName'));
     setProgress(0); setProgressCurrent(0); setProgressTotal(0); setIsDone(false); setHasError(false);
     setLogs([{ time: getTimeStr(), message: t('personCrop.startMsg'), status: 'info' }]);
@@ -122,15 +134,16 @@ export default function PersonCropPage() {
       await invoke<ProcessResult>('start_person_crop', {
         options: {
           input_path: inputPath, output_path: outputPath, use_gpu: useGpu,
-          person_enabled: personEnabled, person_conf: personConf,
-          upper_enabled: upperEnabled, upper_conf: upperConf, upper_tag: upperTag,
-          head_enabled: headEnabled, head_conf: headConf, head_tag: headTag, head_scale: headScale,
-          eyes_enabled: eyesEnabled, eyes_conf: eyesConf, eyes_tag: eyesTag, eyes_scale: eyesScale,
+          person_enabled: personEnabled, person_conf: pConf,
+          upper_enabled: upperEnabled, upper_conf: uConf, upper_tag: upperTag,
+          head_enabled: headEnabled, head_conf: hConf, head_tag: headTag, head_scale: hScale,
+          eyes_enabled: eyesEnabled, eyes_conf: eConf, eyes_tag: eyesTag, eyes_scale: eScale,
           keep_original_tags: keepOriginalTags,
         },
       });
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
+      updateTask('person-crop', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
       setHasError(true); setIsDone(true);
     } finally { setProcessing(false); }
   };
