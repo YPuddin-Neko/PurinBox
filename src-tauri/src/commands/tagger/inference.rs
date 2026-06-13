@@ -2,6 +2,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::Mutex;
 use tauri::Emitter;
 
@@ -606,9 +607,18 @@ pub fn run_tagging(
     let mut child = cmd.spawn()
         .map_err(|e| format!("启动 Python 进程失败: {}", e))?;
 
-    let mut stdin = child.stdin.take().ok_or("无法获取 Python stdin")?;
-    let stdout = child.stdout.take().ok_or("无法获取 Python stdout")?;
-    let stderr = child.stderr.take().ok_or("无法获取 Python stderr")?;
+    // 取出管道句柄（take 出管道后 Child 仍可 kill/wait）
+    let (mut stdin, stdout, stderr) = match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
+        (Some(i), Some(o), Some(e)) => (i, o, e),
+        _ => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("无法获取 Python 进程管道".into());
+        }
+    };
+
+    // 把 Child 句柄存入全局，这样 cancel_tagging() -> kill_python_process() 才能真正杀掉进程
+    *PYTHON_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
 
     // 启动 stderr 读取线程（输出到日志，过滤 ANSI 颜色码）
     let app_err = app.clone();
@@ -675,20 +685,49 @@ pub fn run_tagging(
         "input_size": _input_size,
     });
 
-    writeln!(stdin, "{}", init_cmd)
-        .map_err(|e| format!("发送 init 命令失败: {}", e))?;
+    if let Err(e) = writeln!(stdin, "{}", init_cmd) {
+        kill_python_process();
+        return Err(format!("发送 init 命令失败: {}", e));
+    }
 
-    // 读取 stdout 直到 ready
-    let reader = BufReader::new(stdout);
-    let mut lines_iter = reader.lines();
+    // stdout 读取线程：阻塞的行读取放到独立线程，通过 channel 把行发给主逻辑，
+    // 这样模型加载的超时检查不会被阻塞的读取卡住
+    let (line_tx, line_rx) = mpsc::channel::<std::io::Result<String>>();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            let is_err = line.is_err();
+            if line_tx.send(line).is_err() || is_err {
+                break;
+            }
+        }
+        // 线程退出时 line_tx 被 drop，接收端收到 Disconnected 即等价于 EOF
+    });
 
+    // 等待 ready（120 秒加载超时，即使 Python 无任何输出挂死也能触发）
     let mut ready = false;
-    let timeout = std::time::Instant::now();
-    while let Some(Ok(line)) = lines_iter.next() {
+    let load_deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
         if is_tagging_cancelled() {
-            let _ = child.kill();
+            kill_python_process();
             return Ok(ProcessResult { success_count: 0, fail_count: 0, total: 0, errors: vec![] });
         }
+
+        let now = std::time::Instant::now();
+        if now >= load_deadline {
+            kill_python_process();
+            return Err("模型加载超时(120秒)".into());
+        }
+
+        let line = match line_rx.recv_timeout(load_deadline - now) {
+            Ok(Ok(line)) => line,
+            // 读取出错或进程退出（EOF）：跳出循环按未就绪处理
+            Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                kill_python_process();
+                return Err("模型加载超时(120秒)".into());
+            }
+        };
 
         if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
             let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -713,7 +752,7 @@ pub fn run_tagging(
                         message: text.to_string(),
                     ..Default::default()
                     });
-                    let _ = child.kill();
+                    kill_python_process();
                     return Err(format!("Python 推理错误: {}", text));
                 }
                 "ready" => {
@@ -723,24 +762,29 @@ pub fn run_tagging(
                 _ => {}
             }
         }
-
-        if timeout.elapsed() > std::time::Duration::from_secs(120) {
-            let _ = child.kill();
-            return Err("模型加载超时(120秒)".into());
-        }
     }
 
     if !ready {
-        let _ = child.kill();
+        kill_python_process();
+        if is_tagging_cancelled() {
+            return Ok(ProcessResult { success_count: 0, fail_count: 0, total: 0, errors: vec![] });
+        }
         return Err("Python 进程未能成功初始化".into());
     }
 
-    // 收集图片文件
+    // 收集图片文件（失败时杀掉已启动的 Python 进程，避免泄漏）
     let input_dir = Path::new(&options.input_path);
-    let files = if options.recursive {
-        collect_image_files_recursive(input_dir)?
+    let files_result = if options.recursive {
+        collect_image_files_recursive(input_dir)
     } else {
-        collect_image_files(input_dir)?
+        collect_image_files(input_dir)
+    };
+    let files = match files_result {
+        Ok(f) => f,
+        Err(e) => {
+            kill_python_process();
+            return Err(e);
+        }
     };
     let total = files.len() as u32;
     let mut success_count = 0u32;
@@ -823,8 +867,8 @@ pub fn run_tagging(
                 break;
             }
             loop {
-                match lines_iter.next() {
-                    Some(Ok(line)) => {
+                match line_rx.recv() {
+                    Ok(Ok(line)) => {
                         if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
                             let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
                             match msg_type {
@@ -870,8 +914,8 @@ pub fn run_tagging(
                             }
                         }
                     }
-                    Some(Err(e)) => { fail_count += 1; errors.push(format!("{}: 读取失败: {}", filename, e)); break; }
-                    None => { fail_count += 1; errors.push(format!("{}: Python 进程退出", filename)); break; }
+                    Ok(Err(e)) => { fail_count += 1; errors.push(format!("{}: 读取失败: {}", filename, e)); break; }
+                    Err(_) => { fail_count += 1; errors.push(format!("{}: Python 进程退出", filename)); break; }
                 }
             }
         } else {
@@ -901,8 +945,8 @@ pub fn run_tagging(
             }
             let mut results_read = 0usize;
             while results_read < batch_len {
-                match lines_iter.next() {
-                    Some(Ok(line)) => {
+                match line_rx.recv() {
+                    Ok(Ok(line)) => {
                         if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
                             let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
                             match msg_type {
@@ -950,8 +994,8 @@ pub fn run_tagging(
                             }
                         }
                     }
-                    Some(Err(e)) => { fail_count += (batch_len - results_read) as u32; errors.push(format!("批量读取失败: {}", e)); break; }
-                    None => { fail_count += (batch_len - results_read) as u32; errors.push("Python 进程退出".to_string()); break; }
+                    Ok(Err(e)) => { fail_count += (batch_len - results_read) as u32; errors.push(format!("批量读取失败: {}", e)); break; }
+                    Err(_) => { fail_count += (batch_len - results_read) as u32; errors.push("Python 进程退出".to_string()); break; }
                 }
             }
         }
@@ -962,7 +1006,10 @@ pub fn run_tagging(
 
     // 发送 quit 命令
     let _ = writeln!(stdin, r#"{{"cmd":"quit"}}"#);
-    let _ = child.wait();
+    // 取出全局句柄并等待进程退出（若已被取消杀掉则为 None）
+    if let Some(mut child) = PYTHON_PROCESS.lock().ok().and_then(|mut g| g.take()) {
+        let _ = child.wait();
+    }
 
     let _ = app.emit("tagger-progress", ProgressEvent {
         current: total, total, filename: String::new(),
