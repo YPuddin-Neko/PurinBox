@@ -1,8 +1,12 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import { invoke } from '@tauri-apps/api/core';
 import './i18n';  // 初始化 i18n
 import i18next from 'i18next';
 import App from './App';
+
+// 通知后端前端已加载（启动看门狗信号，见 src-tauri/src/lib.rs setup）
+invoke('frontend_ready').catch(() => {});
 
 // 自定义右键菜单
 (() => {

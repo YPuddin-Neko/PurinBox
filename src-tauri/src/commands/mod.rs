@@ -73,6 +73,15 @@ pub fn finalize_part_file(
     Ok(())
 }
 
+/// 前端是否已完成加载（启动看门狗用，见 lib.rs setup）
+pub static FRONTEND_READY: AtomicBool = AtomicBool::new(false);
+
+/// 前端加载完成后调用，通知后端界面已正常初始化
+#[tauri::command]
+pub fn frontend_ready() {
+    FRONTEND_READY.store(true, Ordering::SeqCst);
+}
+
 /// 进度事件 payload
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProgressEvent {
