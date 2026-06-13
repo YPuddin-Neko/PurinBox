@@ -17,6 +17,7 @@ pub mod translator;
 pub mod tag_sort;
 pub mod tag_refine;
 pub mod api_config;
+pub mod config_paths;
 pub mod proxy_config;
 pub mod bucket_preview;
 pub mod perspective;
