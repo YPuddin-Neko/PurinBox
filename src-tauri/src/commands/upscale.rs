@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use futures_util::StreamExt;
 use tauri::Emitter;
 
-use super::{collect_image_files, ProcessResult, ProgressEvent};
+use super::{collect_image_files, finalize_part_file, prepare_part_file, ProcessResult, ProgressEvent};
 
 /// 超分子进程句柄（Python 或 NCNN），用于强制取消
 static ACTIVE_CHILD: Mutex<Option<u32>> = Mutex::new(None);
@@ -282,22 +282,31 @@ pub async fn download_upscale_engine(app: tauri::AppHandle, engine_id: String) -
 
     let total_size = resp.content_length().unwrap_or(0);
     let mut stream = resp.bytes_stream();
-    let mut file = tokio::fs::File::create(&zip_path).await
+    // 先写入 .part 临时文件，校验完成后再原子替换，避免中断残件
+    let part_path = prepare_part_file(&zip_path);
+    let mut file = tokio::fs::File::create(&part_path).await
         .map_err(|e| format!("创建文件失败: {}", e))?;
     let mut downloaded: u64 = 0;
     let mut last_t = std::time::Instant::now();
     let mut last_b: u64 = 0;
     let start = std::time::Instant::now();
 
+    // 下载循环结果 — 任何错误（含取消）统一在循环外清理 .part 残件
+    let mut result: Result<(), String> = Ok(());
+
     while let Some(chunk) = stream.next().await {
         if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
-            drop(file);
-            let _ = tokio::fs::remove_file(&zip_path).await;
-            return Err("下载已取消".into());
+            result = Err("下载已取消".into());
+            break;
         }
-        let chunk = chunk.map_err(|e| format!("下载失败: {}", e))?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await
-            .map_err(|e| format!("写入失败: {}", e))?;
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => { result = Err(format!("下载失败: {}", e)); break; }
+        };
+        if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
+            result = Err(format!("写入失败: {}", e));
+            break;
+        }
         downloaded += chunk.len() as u64;
 
         let now = std::time::Instant::now();
@@ -319,6 +328,23 @@ pub async fn download_upscale_engine(app: tauri::AppHandle, engine_id: String) -
             });
         }
     }
+
+    // 确保缓冲数据全部落盘
+    if result.is_ok() {
+        if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut file).await {
+            result = Err(format!("写入失败: {}", e));
+        }
+    }
+    drop(file);
+
+    // 任何错误路径（包括取消）都删除 .part 残件
+    if let Err(e) = result {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return Err(e);
+    }
+
+    // 校验字节数并原子替换到最终文件
+    finalize_part_file(&part_path, &zip_path, downloaded, total_size)?;
 
     // Extracting zip
     let _ = app.emit("upscale-download", UpscaleDownloadProgress {
@@ -375,6 +401,12 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path, _bin_name: &str) -> Result<(), 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(|e| format!("zip entry error: {}", e))?;
         let raw_name = entry.name().to_string();
+
+        // Zip Slip 防护: enclosed_name() 对包含 ../、绝对路径等不安全条目返回 None，直接跳过
+        if entry.enclosed_name().is_none() {
+            eprintln!("[upscale] 跳过不安全的 zip 条目: {}", raw_name);
+            continue;
+        }
 
         // Strip the top-level directory prefix
         let relative = if !prefix.is_empty() && raw_name.starts_with(&prefix) {
@@ -446,7 +478,7 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
         let p = python.clone();
         let app2 = app.clone();
         tokio::task::spawn_blocking(move || {
-            super::python_env::pip_install_with_python(&app2, &p, &["opencv-python-headless"])
+            super::python_env::pip_install_with_python(&app2, &p, &["opencv-python-headless==4.11.0.86"])
         }).await
         .map_err(|e| format!("安装线程异常: {}", e))??;
         emit(30.0, "downloading", "OpenCV 安装完成".into());
@@ -491,21 +523,30 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
 
         let total_size = resp.content_length().unwrap_or(0);
         let mut stream = resp.bytes_stream();
-        let mut file = tokio::fs::File::create(&dest).await
+        // 先写入 .part 临时文件，校验完成后再原子替换到最终路径，避免中断残件被当作完整文件
+        let part_path = prepare_part_file(&dest);
+        let mut file = tokio::fs::File::create(&part_path).await
             .map_err(|e| format!("创建文件失败: {}", e))?;
         let mut downloaded: u64 = 0;
         let start = std::time::Instant::now();
         let mut last_t = std::time::Instant::now();
 
+        // 下载循环结果 — 任何错误（含取消）统一在循环外清理 .part 残件
+        let mut result: Result<(), String> = Ok(());
+
         while let Some(chunk) = stream.next().await {
             if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
-                drop(file);
-                let _ = tokio::fs::remove_file(&dest).await;
-                return Err("下载已取消".into());
+                result = Err("下载已取消".into());
+                break;
             }
-            let chunk = chunk.map_err(|e| format!("下载失败: {}", e))?;
-            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await
-                .map_err(|e| format!("写入失败: {}", e))?;
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(e) => { result = Err(format!("下载失败: {}", e)); break; }
+            };
+            if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
+                result = Err(format!("写入失败: {}", e));
+                break;
+            }
             downloaded += chunk.len() as u64;
 
             let now = std::time::Instant::now();
@@ -527,6 +568,23 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
                 });
             }
         }
+
+        // 确保缓冲数据全部落盘
+        if result.is_ok() {
+            if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut file).await {
+                result = Err(format!("写入失败: {}", e));
+            }
+        }
+        drop(file);
+
+        // 任何错误路径（包括取消）都删除 .part 残件
+        if let Err(e) = result {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err(e);
+        }
+
+        // 校验字节数并原子替换到最终文件
+        finalize_part_file(&part_path, &dest, downloaded, total_size)?;
     }
 
     emit(100.0, "done", format!("{} 准备完成 ✓", engine.name));
