@@ -13,6 +13,7 @@ import {
 import NaturalLangTab from '../components/NaturalLangTab';
 import JsonTagTab, { translateOwner, type JsonTagTabHandle } from '../components/JsonTagTab';
 import TagAutocomplete from '../components/TagAutocomplete';
+import ImageLightbox from '../components/ImageLightbox';
 import { useTranslation } from 'react-i18next';
 
 type ImageItem = { filename: string; path: string; tags: string[]; dirty: boolean; };
@@ -47,6 +48,7 @@ function getChipColor(tag: string) {
   for (let i = 0; i < tag.length; i++) h = ((h << 5) - h + tag.charCodeAt(i)) | 0;
   return chipColors[Math.abs(h) % chipColors.length];
 }
+const normalizeDanbooruTag = (tag: string) => tag.trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
 
 const phdr:React.CSSProperties={display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',borderBottom:'1px solid var(--color-border)',flexShrink:0};
 const ptitle:React.CSSProperties={fontSize:12,fontWeight:700,color:'var(--color-text-primary)',textTransform:'uppercase',letterSpacing:'0.5px'};
@@ -71,6 +73,8 @@ export default function TagManagerPage() {
   const [savingSingle, setSavingSingle] = useState(false);
   const [alertMsg, setAlertMsg] = useState('');
   const [editingDanbooru, setEditingDanbooru] = useState(false);
+  const [editingTagIdx, setEditingTagIdx] = useState<number | null>(null);
+  const [showLargePreview, setShowLargePreview] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -462,6 +466,30 @@ export default function TagManagerPage() {
     setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,tags:img.tags.filter(t=>t!==tag),dirty:true}:img));
   };
 
+  const replaceTagAt = (idx: number, raw: string) => {
+    const nextTag = normalizeDanbooruTag(raw);
+    if (!nextTag) { setEditingTagIdx(null); return; }
+    setImages(p => p.map((img, i) => {
+      if (i !== selectedIdx) return img;
+      const tags = [...img.tags];
+      const oldTag = tags[idx];
+      if (!oldTag || oldTag === nextTag) return img;
+      const duplicateIdx = tags.findIndex((t, ti) => ti !== idx && t.toLowerCase() === nextTag.toLowerCase());
+      if (duplicateIdx >= 0) tags.splice(idx, 1);
+      else tags[idx] = nextTag;
+      return { ...img, tags, dirty: true };
+    }));
+    setSelectedTags(prev => {
+      const oldTag = cur?.tags[idx];
+      if (!oldTag || !prev.has(oldTag)) return prev;
+      const next = new Set(prev);
+      next.delete(oldTag);
+      next.add(nextTag);
+      return next;
+    });
+    setEditingTagIdx(null);
+  };
+
 
   // ── drag reorder (mouse-event based, no HTML5 DnD) ──
   const chipRefs = useRef<(HTMLDivElement|null)[]>([]);
@@ -688,7 +716,7 @@ export default function TagManagerPage() {
             </div>
             <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.15)',minHeight:0,overflow:'hidden'}}>
               {cur?(
-                <img src={imgSrc} alt={cur.filename} draggable={false} style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',pointerEvents:'none'}} />
+                <img src={imgSrc} alt={cur.filename} draggable={false} onClick={()=>setShowLargePreview(true)} style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',cursor:'zoom-in'}} />
               ):(
                 <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:8,color:'var(--color-text-tertiary)'}}>
                   <ImageIcon style={{width:56,height:56,opacity:0.2}} />
@@ -722,11 +750,27 @@ export default function TagManagerPage() {
                 const isDragging=dragIdx===ti;
                 const isOverBefore=dragOverIdx===ti && dropSide==='before';
                 const isOverAfter=dragOverIdx===ti && dropSide==='after';
+                if(editingTagIdx===ti){
+                  return(
+                    <div key={ti} style={{flex:'1 0 120px',minWidth:120,maxWidth:240}}>
+                      <TagAutocomplete
+                        autoFocus
+                        initialValue={tag}
+                        placeholder={t('tagManager.inputTagPlaceholder')}
+                        clearOnSelect={true}
+                        onSelect={(v)=>replaceTagAt(ti,v)}
+                        onBlur={()=>setEditingTagIdx(null)}
+                        onKeyDown={(e)=>{ if(e.key==='Escape')setEditingTagIdx(null); }}
+                        inputStyle={{fontSize:11,height:26,border:'none',background:'var(--color-bg-input)',padding:'0 8px',outline:'none'}}
+                      />
+                    </div>
+                  );
+                }
                 return(
                   <div key={ti} ref={el=>{chipRefs.current[ti]=el;}} style={{position:'relative',display:'inline-flex'}}
                     onPointerDown={e=>handlePointerDown(e,ti)}>
                     {isOverBefore&&<div style={{position:'absolute',left:-3,top:2,bottom:2,width:2,borderRadius:1,background:'#7c5cfc',zIndex:1}} />}
-                    <div style={{display:'inline-flex',alignItems:'center',gap:3,padding:'3px 8px 3px 8px',borderRadius:16,background:c.bg,border:`1px solid ${c.bd}`,fontSize:11,color:c.tx,lineHeight:1.2,cursor:'grab',transition:'opacity 0.12s',opacity:isDragging?0.35:1,userSelect:'none'}}>
+                    <div onDoubleClick={e=>{e.stopPropagation();setEditingDanbooru(false);setEditingTagIdx(ti);}} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'3px 8px 3px 8px',borderRadius:16,background:c.bg,border:`1px solid ${c.bd}`,fontSize:11,color:c.tx,lineHeight:1.2,cursor:'grab',transition:'opacity 0.12s',opacity:isDragging?0.35:1,userSelect:'none'}}>
                       <span>{tag}{tr&&<span style={{color:'var(--color-text-tertiary)',fontSize:10,marginLeft:3}}>({tr})</span>}</span>
                       <button onClick={()=>removeTag(tag)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:14,height:14,borderRadius:'50%',background:'transparent',color:c.tx,opacity:0.4,transition:'all 0.12s',flexShrink:0}}
                         onMouseEnter={e=>{e.currentTarget.style.opacity='1';e.currentTarget.style.background='rgba(248,113,113,0.15)';e.currentTarget.style.color='#f87171';}}
@@ -886,6 +930,8 @@ export default function TagManagerPage() {
         </div>
       </div>
       )}
+
+      {showLargePreview&&cur&&<ImageLightbox src={imgSrc} filename={cur.filename} onClose={()=>setShowLargePreview(false)} />}
 
       {mode === 'natural' && (
         <NaturalLangTab images={nlImages} setImages={setNlImages} onRefresh={folderPath ? handleRefresh : undefined} />

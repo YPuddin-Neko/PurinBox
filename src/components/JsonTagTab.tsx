@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
 import TagAutocomplete from './TagAutocomplete';
+import ImageLightbox from './ImageLightbox';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -35,6 +36,17 @@ const phdr:React.CSSProperties={display:'flex',alignItems:'center',justifyConten
 const ptitle:React.CSSProperties={fontSize:12,fontWeight:700,color:'var(--color-text-primary)',textTransform:'uppercase',letterSpacing:'0.5px'};
 
 const normalizeEditableTag=(tag:string)=>tag.trim().replace(/_/g,' ').replace(/\s+/g,' ');
+const SIMPLIFIED_UNSUPPORTED_FIELDS = new Set(['character.variant', 'from_path.appearance']);
+const replaceTagAtIndex=(values:string[],idx:number,raw:string)=>{
+  const tag=normalizeEditableTag(raw);
+  if(!tag)return values;
+  const next=[...values];
+  if(next[idx]===tag)return next;
+  const duplicateIdx=next.findIndex((v,i)=>i!==idx&&v.toLowerCase()===tag.toLowerCase());
+  if(duplicateIdx>=0)next.splice(idx,1);
+  else next[idx]=tag;
+  return next;
+};
 
 
 export interface JsonTagTabHandle {
@@ -75,6 +87,8 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   const [showTranslateBar,setShowTranslateBar]=useState(false);
   const hideTranslateTimerRef=useRef<ReturnType<typeof setTimeout> | null>(null);
   const [editingField,setEditingField]=useState<string|null>(null);
+  const [editingChip,setEditingChip]=useState<{cat:string;idx:number}|null>(null);
+  const [showLargePreview,setShowLargePreview]=useState(false);
   // drag reorder
   const [dragCat,setDragCat]=useState<string|null>(null);
   const [dragIdx,setDragIdx]=useState<number|null>(null);
@@ -104,6 +118,9 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
     { value: 'ai_output.tags', label: 'tags — ' + t('jsonTag.fieldTags') },
     { value: 'ai_output.environment', label: 'environment — ' + t('jsonTag.fieldEnvironment') },
   ];
+  const visibleBatchFieldOptions = simplified
+    ? BATCH_FIELD_OPTIONS.filter(o=>!SIMPLIFIED_UNSUPPORTED_FIELDS.has(o.value))
+    : BATCH_FIELD_OPTIONS;
 
   // Col3 sidebar state
   const [col3Mode,setCol3Mode]=useState<'json'|'stats'>('stats');
@@ -193,6 +210,11 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   useEffect(() => { onDirtyChange?.(dirtyCount); }, [dirtyCount, onDirtyChange]);
   useEffect(() => { onLoadingChange?.(loading); }, [loading, onLoadingChange]);
   useEffect(() => { onSavingChange?.(saving); }, [saving, onSavingChange]);
+  useEffect(() => {
+    if (simplified && SIMPLIFIED_UNSUPPORTED_FIELDS.has(batchField)) {
+      setBatchField('ai_output.tags');
+    }
+  }, [simplified, batchField]);
   const taggedN=images.filter(i=>i.has_json).length;
   const goPrev=()=>{if(selectedIdx>0)setSelectedIdx(selectedIdx-1);};
   const goNext=()=>{if(selectedIdx<images.length-1)setSelectedIdx(selectedIdx+1);};
@@ -537,7 +559,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
     setDragIdx(null);setDragOverIdx(null);setDragCat(null);
   };
 
-  const tagChips=(arr:string[],cc:{bg:string;bd:string;tx:string},onRemove:(t:string)=>void,cat:string,editKey?:string,onAdd?:(v:string)=>void)=>{
+  const tagChips=(arr:string[],cc:{bg:string;bd:string;tx:string},onRemove:(t:string)=>void,cat:string,editKey?:string,onAdd?:(v:string)=>void,onReplace?:(idx:number,v:string)=>void)=>{
     if(!chipRefsMap.current[cat])chipRefsMap.current[cat]=[];
     return(
     <div style={{display:'flex',flexWrap:'wrap',gap:4,minHeight:24,alignItems:'center',touchAction:'none'}}
@@ -547,11 +569,27 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
         const isDragging=dragCat===cat&&dragIdx===ti;
         const isOverBefore=dragCat===cat&&dragOverIdx===ti&&dropSide==='before';
         const isOverAfter=dragCat===cat&&dragOverIdx===ti&&dropSide==='after';
+        if(editingChip?.cat===cat&&editingChip.idx===ti&&onReplace){
+          return(
+            <div key={ti} style={{flex:'1 0 120px',minWidth:120,maxWidth:240}}>
+              <TagAutocomplete
+                autoFocus
+                initialValue={tag}
+                placeholder={t('jsonTag.inputTag')}
+                clearOnSelect={true}
+                onSelect={(v)=>{const next=normalizeEditableTag(v);if(next)onReplace(ti,next);setEditingChip(null);}}
+                onBlur={()=>setEditingChip(null)}
+                onKeyDown={(e)=>{if(e.key==='Escape')setEditingChip(null);}}
+                inputStyle={{fontSize:11,height:24,border:'none',background:'var(--color-bg-input)',padding:'0 8px',outline:'none'}}
+              />
+            </div>
+          );
+        }
         return(
         <div key={ti} ref={el=>{chipRefsMap.current[cat][ti]=el;}} style={{position:'relative',display:'inline-flex'}}
           onPointerDown={e=>handleChipPointerDown(e,ti,cat)}>
           {isOverBefore&&<div style={{position:'absolute',left:-3,top:2,bottom:2,width:2,borderRadius:1,background:'#7c5cfc',zIndex:1}} />}
-          <div style={{display:'inline-flex',alignItems:'center',gap:3,padding:'2px 7px',borderRadius:12,background:cc.bg,border:`1px solid ${cc.bd}`,fontSize:11,color:cc.tx,lineHeight:1.3,cursor:'grab',transition:'opacity 0.12s',opacity:isDragging?0.35:1,userSelect:'none'}}>
+          <div onDoubleClick={e=>{if(!onReplace)return;e.stopPropagation();setEditingField(null);setEditingChip({cat,idx:ti});}} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'2px 7px',borderRadius:12,background:cc.bg,border:`1px solid ${cc.bd}`,fontSize:11,color:cc.tx,lineHeight:1.3,cursor:'grab',transition:'opacity 0.12s',opacity:isDragging?0.35:1,userSelect:'none'}}>
             <span>{tag}{tr&&<span style={{color:'var(--color-text-tertiary)',fontSize:10,marginLeft:3}}>({tr})</span>}</span>
             <button onClick={()=>onRemove(tag)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:13,height:13,borderRadius:'50%',background:'transparent',color:cc.tx,opacity:0.4,transition:'all 0.12s',flexShrink:0}}
               onMouseEnter={e=>{e.currentTarget.style.opacity='1';e.currentTarget.style.background='rgba(248,113,113,0.15)';e.currentTarget.style.color='#f87171';}}
@@ -644,7 +682,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
             </div>
           </div>
           <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.15)',minHeight:0,overflow:'hidden'}}>
-            {cur?<img src={imgSrc} alt={cur.filename} draggable={false} style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',pointerEvents:'none'}} />
+            {cur?<img src={imgSrc} alt={cur.filename} draggable={false} onClick={()=>setShowLargePreview(true)} style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',cursor:'zoom-in'}} />
               :<div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:8,color:'var(--color-text-tertiary)'}}><ImageIcon style={{width:48,height:48,opacity:0.2}} /><span style={{fontSize:12,opacity:0.6}}>{images.length===0?t('jsonTag.loadToShow'):t('jsonTag.selectToPreview')}</span></div>}
           </div>
         </div>
@@ -684,6 +722,12 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
                     if(newParts.length===0) onClear();
                     else onSet(newParts.join(', '));
                   };
+                  const replaceOne = (idx:number, v:string) => {
+                    const newParts = replaceTagAtIndex(parts, idx, v);
+                    if(newParts.length===0) onClear();
+                    else onSet(newParts.join(', '));
+                    setEditingChip(null);
+                  };
                   const addOne = (v:string) => {
                     if(parts.length===0) onSet(v);
                     else onSet([...parts, v].join(', '));
@@ -697,11 +741,27 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
                         const isDragging=dragCat===fieldKey&&dragIdx===pi;
                         const isOverBefore=dragCat===fieldKey&&dragOverIdx===pi&&dropSide==='before';
                         const isOverAfter=dragCat===fieldKey&&dragOverIdx===pi&&dropSide==='after';
+                        if(editingChip?.cat===fieldKey&&editingChip.idx===pi){
+                          return(
+                            <div key={pi} style={{flex:'1 0 120px',minWidth:120,maxWidth:240}}>
+                              <TagAutocomplete
+                                autoFocus
+                                initialValue={p}
+                                placeholder={ph}
+                                clearOnSelect={true}
+                                onSelect={(v)=>{const tag=normalizeEditableTag(v);if(tag)replaceOne(pi,tag);else setEditingChip(null);}}
+                                onBlur={()=>setEditingChip(null)}
+                                onKeyDown={(e)=>{if(e.key==='Escape')setEditingChip(null);}}
+                                inputStyle={{fontSize:11,height:24,border:'none',background:'var(--color-bg-input)',padding:'0 8px',outline:'none'}}
+                              />
+                            </div>
+                          );
+                        }
                         return(
                         <div key={pi} ref={el=>{chipRefsMap.current[fieldKey][pi]=el;}} style={{position:'relative',display:'inline-flex'}}
                           onPointerDown={e=>handleChipPointerDown(e,pi,fieldKey)}>
                           {isOverBefore&&<div style={{position:'absolute',left:-3,top:2,bottom:2,width:2,borderRadius:1,background:'#7c5cfc',zIndex:1}} />}
-                          <div style={{display:'inline-flex',alignItems:'center',gap:3,padding:'2px 7px',borderRadius:12,background:bgChip,border:`1px solid ${bdChip}`,fontSize:11,color,lineHeight:1.3,cursor:'grab',transition:'opacity 0.12s',opacity:isDragging?0.35:1,userSelect:'none'}}>
+                          <div onDoubleClick={e=>{e.stopPropagation();setEditingField(null);setEditingChip({cat:fieldKey,idx:pi});}} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'2px 7px',borderRadius:12,background:bgChip,border:`1px solid ${bdChip}`,fontSize:11,color,lineHeight:1.3,cursor:'grab',transition:'opacity 0.12s',opacity:isDragging?0.35:1,userSelect:'none'}}>
                             <span>{p}{tr&&<span style={{color:'var(--color-text-tertiary)',fontSize:10,marginLeft:3}}>({tr})</span>}</span>
                             <button onClick={e=>{e.stopPropagation();removeOne(pi);}} style={{display:'flex',alignItems:'center',justifyContent:'center',width:13,height:13,borderRadius:'50%',background:'transparent',color,opacity:0.4,flexShrink:0}}
                               onMouseEnter={e=>{e.currentTarget.style.opacity='1';e.currentTarget.style.background='rgba(248,113,113,0.15)';e.currentTarget.style.color='#f87171';}}
@@ -756,26 +816,26 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
                   <span style={{fontSize:10,fontWeight:700,color:'#f472b6'}}>{t('jsonTag.characterSection')}</span>
                 </div>
                 <div style={{marginBottom:6}}>
-                  <span style={{fontSize:9,fontWeight:600,color:'#f472b6',opacity:0.7,marginBottom:2,display:'block'}}>{t('jsonTag.nameLabel')}</span>
+                  <span style={{fontSize:9,fontWeight:600,color:'#f472b6',opacity:0.7,marginBottom:2,display:'block'}}>{simplified?'character — '+t('jsonTag.fieldCharacter'):t('jsonTag.nameLabel')}</span>
                   {fieldChips('c.name',cur.data.character.name||undefined,v=>updateData(d=>{d.character.name=v;return d;}),()=>updateData(d=>{d.character.name='';return d;}),'#f472b6',t('jsonTag.inputTag'))}
                 </div>
-                <div>
+                {!simplified&&<div>
                   <span style={{fontSize:9,fontWeight:600,color:'#f472b6',opacity:0.7,marginBottom:2,display:'block'}}>{t('jsonTag.variantLabel')}</span>
                   {fieldChips('c.variant',cur.data.character.variant||undefined,v=>updateData(d=>{d.character.variant=v;return d;}),()=>updateData(d=>{d.character.variant='';return d;}),'#f472b6',t('jsonTag.inputTag'))}
-                </div>
+                </div>}
               </div>
 
               {/* from_path — 路径提取外观 */}
-              <div style={{marginBottom:8}}>
+              {!simplified&&<div style={{marginBottom:8}}>
                 <div style={{display:'flex',alignItems:'center',gap:5,marginBottom:6}}>
                   <Layers style={{width:11,height:11,color:'#22d3ee'}} />
                   <span style={{fontSize:10,fontWeight:700,color:'#22d3ee'}}>{t('jsonTag.fromPathSection')}</span>
                   <span style={{fontSize:9,padding:'0 5px',borderRadius:6,background:'rgba(34,211,238,0.08)',color:'#22d3ee',fontWeight:600}}>{cur.data.from_path.appearance.length}</span>
                 </div>
                 <div style={{padding:'5px 8px',borderRadius:'var(--radius-md)',background:'rgba(34,211,238,0.06)',border:'1px solid rgba(34,211,238,0.15)'}}>
-                  {tagChips(cur.data.from_path.appearance,{bg:'rgba(34,211,238,0.10)',bd:'rgba(34,211,238,0.25)',tx:'#22d3ee'},t=>removeFromPathTag(t),'fp','fp',v=>updateData(d=>{d.from_path.appearance=[...d.from_path.appearance,v];return d;}))}
+                  {tagChips(cur.data.from_path.appearance,{bg:'rgba(34,211,238,0.10)',bd:'rgba(34,211,238,0.25)',tx:'#22d3ee'},t=>removeFromPathTag(t),'fp','fp',v=>updateData(d=>{d.from_path.appearance=[...d.from_path.appearance,v];return d;}),(idx,v)=>updateData(d=>{d.from_path.appearance=replaceTagAtIndex(d.from_path.appearance,idx,v);return d;}))}
                 </div>
-              </div>
+              </div>}
 
               {/* ai_output — VLM 打标输出 */}
               <div style={{marginBottom:8}}>
@@ -795,7 +855,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
                       <span style={{fontSize:9,padding:'0 5px',borderRadius:6,background:cat.bg,color:cat.color,fontWeight:600}}>{arr.length}</span>
                     </div>
                     <div style={{padding:'5px 8px',borderRadius:'var(--radius-md)',background:cat.bg,border:`1px solid ${cat.bd}`}}>
-                      {tagChips(arr,cc,t=>removeAiTag(cat.key,t),cat.key,editKey,v=>updateData(d=>{const s=new Set(d.ai_output[cat.key]);if(!s.has(v)){d.ai_output[cat.key].push(v);}return d;}))}
+                      {tagChips(arr,cc,t=>removeAiTag(cat.key,t),cat.key,editKey,v=>updateData(d=>{const s=new Set(d.ai_output[cat.key]);if(!s.has(v)){d.ai_output[cat.key].push(v);}return d;}),(idx,v)=>updateData(d=>{d.ai_output[cat.key]=replaceTagAtIndex(d.ai_output[cat.key],idx,v);return d;}))}
                     </div>
                   </div>
                 );})}              </div>
@@ -971,6 +1031,8 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
         </div>}
       </div>
 
+      {showLargePreview&&cur&&<ImageLightbox src={imgSrc} filename={cur.filename} onClose={()=>setShowLargePreview(false)} />}
+
       {/* Batch Add Modal */}
       {showBatchAddModal&&<div style={{position:'fixed',inset:0,zIndex:999,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.5)',backdropFilter:'blur(4px)'}} onClick={()=>setShowBatchAddModal(false)}>
         <div onClick={e=>e.stopPropagation()} style={{width:440,background:'var(--color-bg-card)',borderRadius:16,border:'1px solid var(--color-border)',boxShadow:'0 20px 60px rgba(0,0,0,0.3)',overflow:'hidden'}}>
@@ -982,7 +1044,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
             <div>
               <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:6}}>{t('jsonTag.targetField')}</span>
               <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
-                {BATCH_FIELD_OPTIONS.map(o=>(
+                {visibleBatchFieldOptions.map(o=>(
                   <button key={o.value} onClick={()=>setBatchField(o.value)}
                     style={{padding:'4px 10px',borderRadius:8,fontSize:10,fontWeight:600,border:'1px solid',cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
                       background:batchField===o.value?'rgba(124,92,252,0.15)':'var(--color-bg-input)',
@@ -1041,7 +1103,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
                     color:batchField==='all'?'#f87171':'var(--color-text-tertiary)'}}>
                   {t('jsonTag.allFields')}
                 </button>
-                {BATCH_FIELD_OPTIONS.map(o=>(
+                {visibleBatchFieldOptions.map(o=>(
                   <button key={o.value} onClick={()=>setBatchField(o.value)}
                     style={{padding:'4px 10px',borderRadius:8,fontSize:10,fontWeight:600,border:'1px solid',cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
                       background:batchField===o.value?'rgba(248,113,113,0.15)':'var(--color-bg-input)',

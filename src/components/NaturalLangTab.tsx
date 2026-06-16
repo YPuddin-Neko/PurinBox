@@ -6,6 +6,7 @@ import {
   Image as ImageIcon, Loader2, Languages, FileText, FolderOpen, RefreshCw
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import ImageLightbox from './ImageLightbox';
 
 type ImageItem = { filename: string; path: string; caption: string; dirty: boolean; };
 
@@ -29,6 +30,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
   const [imgPage, setImgPage] = useState(0);
   const IMG_PER_PAGE = 30;
   const [savingSingle, setSavingSingle] = useState(false);
+  const [showLargePreview, setShowLargePreview] = useState(false);
 
   // 列宽拖拽
   const [col1W, setCol1W] = useState(220);
@@ -209,7 +211,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
           </div>
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.15)', minHeight: 0, overflow: 'hidden' }}>
             {cur ? (
-              <img src={imgSrc} alt={cur.filename} draggable={false} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', pointerEvents: 'none' }} />
+              <img src={imgSrc} alt={cur.filename} draggable={false} onClick={() => setShowLargePreview(true)} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', cursor: 'zoom-in' }} />
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: 'var(--color-text-tertiary)' }}>
                 <ImageIcon style={{ width: 56, height: 56, opacity: 0.2 }} />
@@ -272,6 +274,8 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
           </div>
         </div>
       </div>
+
+      {showLargePreview && cur && <ImageLightbox src={imgSrc} filename={cur.filename} onClose={() => setShowLargePreview(false)} />}
     </div>
   );
 }

@@ -46,6 +46,8 @@ interface TagAutocompleteProps {
   keepOpen?: boolean;
   /** Auto focus */
   autoFocus?: boolean;
+  /** Initial input value */
+  initialValue?: string;
   /** onBlur handler */
   onBlur?: () => void;
   /** onKeyDown passthrough */
@@ -60,12 +62,13 @@ export default function TagAutocomplete({
   inputClassName = 'form-input',
   keepOpen = false,
   autoFocus = false,
+  initialValue = '',
   onBlur,
   onKeyDown,
 }: TagAutocompleteProps) {
   const { t } = useTranslation();
   const resolvedPlaceholder = placeholder || t('common.searchTags');
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialValue);
   const [suggestions, setSuggestions] = useState<TagSuggestion[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -123,6 +126,17 @@ export default function TagAutocomplete({
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    setQuery(initialValue);
+  }, [initialValue]);
+
+  useEffect(() => {
+    if (autoFocus && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [autoFocus]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
