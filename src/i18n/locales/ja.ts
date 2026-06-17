@@ -147,6 +147,7 @@ const ja = {
     selectOutputFolder: '出力フォルダを選択...',
     selectInputTitle: '入力フォルダを選択',
     selectOutputTitle: '出力フォルダを選択',
+    recursiveScan: 'サブフォルダを再帰的にスキャン',
     startProcess: '処理開始',
     processing: '処理中...',
     errorPrefix: 'エラー',

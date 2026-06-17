@@ -36,15 +36,43 @@ def emit_done(msg):
 
 IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.tif'}
 
-def collect_images(path):
+def _is_under(path, parent):
+    if not parent:
+        return False
+    try:
+        return os.path.commonpath([os.path.abspath(path), os.path.abspath(parent)]) == os.path.abspath(parent)
+    except ValueError:
+        return False
+
+def collect_images(path, recursive=False, excluded_dir=None):
     if os.path.isfile(path):
         return [path]
     files = []
+    if recursive:
+        excluded_abs = os.path.abspath(excluded_dir) if excluded_dir else ""
+        for root, dirs, names in os.walk(path):
+            if excluded_abs:
+                dirs[:] = [d for d in dirs if not _is_under(os.path.join(root, d), excluded_abs)]
+            for f in names:
+                ext = os.path.splitext(f)[1].lower()
+                if ext in IMAGE_EXTS:
+                    fpath = os.path.join(root, f)
+                    if not _is_under(fpath, excluded_abs):
+                        files.append(fpath)
+        return sorted(files)
     for f in sorted(os.listdir(path)):
         ext = os.path.splitext(f)[1].lower()
-        if ext in IMAGE_EXTS:
-            files.append(os.path.join(path, f))
+        fpath = os.path.join(path, f)
+        if ext in IMAGE_EXTS and not _is_under(fpath, excluded_dir):
+            files.append(fpath)
     return files
+
+def relative_parent(input_path, file_path, recursive=False):
+    if recursive and os.path.isdir(input_path):
+        rel = os.path.dirname(os.path.relpath(file_path, input_path))
+        if rel and rel != ".":
+            return rel
+    return ""
 
 # ── 设备检测 ──────────────────────────────────────
 
@@ -321,6 +349,7 @@ def main():
     ap.add_argument("--weight-color", type=float, default=0.0)
     ap.add_argument("--model-dir", default="", help="PyTorch 模型缓存目录")
     ap.add_argument("--map-theme", default="light", choices=["light", "dark"], help="分布图主题")
+    ap.add_argument("--recursive", action="store_true")
     args = ap.parse_args()
 
     # 设置模型缓存目录
@@ -330,7 +359,7 @@ def main():
         emit_log(f"模型缓存目录: {args.model_dir}")
 
     # 收集图片
-    files = collect_images(args.input)
+    files = collect_images(args.input, args.recursive, args.output)
     if not files:
         emit_error("未找到图片文件")
         sys.exit(1)
@@ -432,6 +461,9 @@ def main():
         fname = os.path.basename(fpath)
         folder_name = "noise" if label < 0 else f"cluster_{label}"
         dest_dir = os.path.join(args.output, folder_name)
+        rel_dir = relative_parent(args.input, fpath, args.recursive)
+        if rel_dir:
+            dest_dir = os.path.join(dest_dir, rel_dir)
         os.makedirs(dest_dir, exist_ok=True)
         dest_path = os.path.join(dest_dir, fname)
 

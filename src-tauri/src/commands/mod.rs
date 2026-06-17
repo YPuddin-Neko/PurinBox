@@ -14,8 +14,8 @@ pub mod batch_rename;
 pub mod tagger;
 pub mod tag_manager;
 pub mod translator;
-pub mod tag_sort;
 pub mod tag_refine;
+pub mod tag_sort;
 pub mod api_config;
 pub mod config_paths;
 pub mod proxy_config;
@@ -181,6 +181,16 @@ pub fn scan_images(dir: String) -> Result<Vec<ImageInfo>, String> {
     Ok(images)
 }
 
+fn is_supported_image_file(path: &Path) -> bool {
+    let supported_exts = ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"];
+    path.extension()
+        .map(|ext| {
+            let ext_lower = ext.to_string_lossy().to_lowercase();
+            supported_exts.contains(&ext_lower.as_str())
+        })
+        .unwrap_or(false)
+}
+
 /// 收集目录中的图片文件路径
 pub fn collect_image_files(input: &Path) -> Result<Vec<std::path::PathBuf>, String> {
     let supported_exts = ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"];
@@ -214,32 +224,103 @@ pub fn collect_image_files(input: &Path) -> Result<Vec<std::path::PathBuf>, Stri
 
 /// 递归收集目录中的图片文件路径（包括子目录）
 pub fn collect_image_files_recursive(input: &Path) -> Result<Vec<std::path::PathBuf>, String> {
-    let supported_exts = ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"];
+    collect_image_files_with_recursive(input, true)
+}
+
+pub fn collect_image_files_with_recursive(
+    input: &Path,
+    recursive: bool,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    collect_image_files_with_recursive_excluding(input, recursive, None)
+}
+
+pub fn collect_image_files_with_recursive_excluding(
+    input: &Path,
+    recursive: bool,
+    excluded_dir: Option<&Path>,
+) -> Result<Vec<std::path::PathBuf>, String> {
     let mut files = Vec::new();
 
     if input.is_file() {
         files.push(input.to_path_buf());
     } else if input.is_dir() {
-        for entry in walkdir::WalkDir::new(input)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
+        let excluded = excluded_dir
+            .filter(|dir| dir.exists())
+            .and_then(|dir| std::fs::canonicalize(dir).ok());
+        let walker = if recursive {
+            walkdir::WalkDir::new(input)
+        } else {
+            walkdir::WalkDir::new(input).max_depth(1)
+        };
+
+        for entry in walker.into_iter().filter_map(|e| e.ok()) {
             let p = entry.path();
-            if p.is_file() {
-                if let Some(ext) = p.extension() {
-                    let ext_lower = ext.to_string_lossy().to_lowercase();
-                    if supported_exts.contains(&ext_lower.as_str()) {
-                        files.push(p.to_path_buf());
-                    }
+            if !p.is_file() {
+                continue;
+            }
+            if let Some(excluded) = excluded.as_ref() {
+                let normalized = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                if normalized.starts_with(excluded) {
+                    continue;
                 }
+            }
+            if is_supported_image_file(p) {
+                files.push(p.to_path_buf());
             }
         }
     } else {
         return Err(format!("输入路径无效: {}", input.display()));
     }
 
-    files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    if recursive {
+        files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+    } else {
+        files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    }
     Ok(files)
+}
+
+pub fn relative_dir_for_input(
+    input_root: &Path,
+    file_path: &Path,
+    recursive: bool,
+) -> Option<std::path::PathBuf> {
+    if !recursive || !input_root.is_dir() {
+        return None;
+    }
+
+    let relative = file_path.strip_prefix(input_root).ok()?;
+    let parent = relative.parent()?;
+    if parent.as_os_str().is_empty() {
+        None
+    } else {
+        Some(parent.to_path_buf())
+    }
+}
+
+pub fn output_dir_for_input(
+    input_root: &Path,
+    file_path: &Path,
+    output_dir: &Path,
+    recursive: bool,
+) -> Result<std::path::PathBuf, String> {
+    let target_dir = match relative_dir_for_input(input_root, file_path, recursive) {
+        Some(relative) => output_dir.join(relative),
+        None => output_dir.to_path_buf(),
+    };
+    std::fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("无法创建输出目录 {}: {}", target_dir.display(), e))?;
+    Ok(target_dir)
+}
+
+pub fn output_path_for_input(
+    input_root: &Path,
+    file_path: &Path,
+    output_dir: &Path,
+    output_name: &str,
+    recursive: bool,
+) -> Result<std::path::PathBuf, String> {
+    Ok(output_dir_for_input(input_root, file_path, output_dir, recursive)?.join(output_name))
 }
 
 /// 概念文件夹扫描结果
@@ -297,7 +378,10 @@ pub fn scan_concept_folders(dir: String) -> Result<Vec<ConceptFolderInfo>, Strin
                         e.path().is_file()
                             && e.path()
                                 .extension()
-                                .map(|ext| supported_exts.contains(&ext.to_string_lossy().to_lowercase().as_str()))
+                                .map(|ext| {
+                                    supported_exts
+                                        .contains(&ext.to_string_lossy().to_lowercase().as_str())
+                                })
                                 .unwrap_or(false)
                     })
                     .count() as u32
@@ -324,7 +408,10 @@ pub struct ApplyRepeatsItem {
 }
 
 #[tauri::command]
-pub fn apply_concept_repeats(dir: String, items: Vec<ApplyRepeatsItem>) -> Result<Vec<String>, String> {
+pub fn apply_concept_repeats(
+    dir: String,
+    items: Vec<ApplyRepeatsItem>,
+) -> Result<Vec<String>, String> {
     let base = Path::new(&dir);
     if !base.exists() || !base.is_dir() {
         return Err(format!("目录不存在: {}", dir));
@@ -397,7 +484,9 @@ pub async fn get_system_stats() -> Result<SystemStats, String> {
         sys.refresh_all();
 
         let cpu_usage = sys.global_cpu_usage();
-        let cpu_name = sys.cpus().first()
+        let cpu_name = sys
+            .cpus()
+            .first()
             .map(|c| c.brand().to_string())
             .unwrap_or_else(|| "Unknown".into());
         let cpu_cores = sys.cpus().len();
@@ -406,7 +495,9 @@ pub async fn get_system_stats() -> Result<SystemStats, String> {
         let memory_used = sys.used_memory();
         let memory_percent = if memory_total > 0 {
             (memory_used as f64 / memory_total as f64 * 100.0) as f32
-        } else { 0.0 };
+        } else {
+            0.0
+        };
 
         // GPU 检测
         let (gpu_name, gpu_usage, vram_used, vram_total, vram_percent) = detect_gpu();
@@ -449,7 +540,10 @@ fn detect_gpu() -> (String, f32, u64, u64, f32) {
 /// 通过 nvidia-smi 检测 NVIDIA 显卡（Windows 上隐藏控制台窗口）
 fn detect_nvidia_gpu() -> Option<(String, f32, u64, u64, f32)> {
     let mut cmd = std::process::Command::new("nvidia-smi");
-    cmd.args(["--query-gpu=name,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"]);
+    cmd.args([
+        "--query-gpu=name,utilization.gpu,memory.used,memory.total",
+        "--format=csv,noheader,nounits",
+    ]);
 
     // Windows: 添加 CREATE_NO_WINDOW 标志，防止弹出 CMD 窗口
     #[cfg(target_os = "windows")]
@@ -481,7 +575,9 @@ fn detect_nvidia_gpu() -> Option<(String, f32, u64, u64, f32)> {
     let vram_total = (vram_total_mb * 1024.0 * 1024.0) as u64;
     let vram_percent = if vram_total > 0 {
         (vram_used as f64 / vram_total as f64 * 100.0) as f32
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     Some((name, usage, vram_used, vram_total, vram_percent))
 }
@@ -493,40 +589,48 @@ static CACHED_GPU_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new()
 /// macOS: 检测 Apple Silicon GPU
 #[cfg(target_os = "macos")]
 fn detect_apple_gpu() -> Option<(String, f32, u64, u64, f32)> {
-    let gpu_name = CACHED_GPU_NAME.get_or_init(|| {
-        // 获取 GPU 芯片名称
-        let chip = std::process::Command::new("sysctl")
-            .args(["-n", "machdep.cpu.brand_string"])
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
+    let gpu_name = CACHED_GPU_NAME
+        .get_or_init(|| {
+            // 获取 GPU 芯片名称
+            let chip = std::process::Command::new("sysctl")
+                .args(["-n", "machdep.cpu.brand_string"])
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
 
-        // 从 system_profiler 获取 GPU 名称
-        let sp_output = std::process::Command::new("system_profiler")
-            .args(["SPDisplaysDataType", "-json"])
-            .output()
-            .ok();
+            // 从 system_profiler 获取 GPU 名称
+            let sp_output = std::process::Command::new("system_profiler")
+                .args(["SPDisplaysDataType", "-json"])
+                .output()
+                .ok();
 
-        if let Some(output) = sp_output {
-            let sp_str = String::from_utf8_lossy(&output.stdout);
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&sp_str) {
-                if let Some(name) = json["SPDisplaysDataType"]
-                    .as_array()
-                    .and_then(|arr| arr.first())
-                    .and_then(|gpu| gpu["sppci_model"].as_str())
-                {
-                    return name.to_string();
+            if let Some(output) = sp_output {
+                let sp_str = String::from_utf8_lossy(&output.stdout);
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&sp_str) {
+                    if let Some(name) = json["SPDisplaysDataType"]
+                        .as_array()
+                        .and_then(|arr| arr.first())
+                        .and_then(|gpu| gpu["sppci_model"].as_str())
+                    {
+                        return name.to_string();
+                    }
                 }
             }
-        }
 
-        if chip.contains("Apple") {
-            format!("{} GPU", chip.split_whitespace().take(3).collect::<Vec<_>>().join(" "))
-        } else {
-            "Apple GPU".into()
-        }
-    }).clone();
+            if chip.contains("Apple") {
+                format!(
+                    "{} GPU",
+                    chip.split_whitespace()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            } else {
+                "Apple GPU".into()
+            }
+        })
+        .clone();
 
     // 通过 ioreg 获取 GPU 使用率和显存（这些是动态数值，每次都要读取）
     let gpu_usage = get_apple_gpu_utilization().unwrap_or(-1.0);
@@ -536,7 +640,9 @@ fn detect_apple_gpu() -> Option<(String, f32, u64, u64, f32)> {
 
     let vram_percent = if vram_total > 0 {
         (vram_used as f64 / vram_total as f64 * 100.0) as f32
-    } else { -1.0 };
+    } else {
+        -1.0
+    };
 
     Some((gpu_name, gpu_usage, vram_used, vram_total, vram_percent))
 }
@@ -560,7 +666,10 @@ fn extract_ioreg_perf_value(key: &str) -> Option<f64> {
         if let Some(pos) = line.find(&search) {
             let after = &line[pos + search.len()..];
             // 取到逗号或 } 之前的数字
-            let num_str: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            let num_str: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
             if let Ok(val) = num_str.parse::<f64>() {
                 return Some(val);
             }
@@ -611,7 +720,10 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         .build()
         .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
 
-    let resp = client.get(url).send().await
+    let resp = client
+        .get(url)
+        .send()
+        .await
         .map_err(|e| format!("请求失败: {}", e))?;
 
     let status = resp.status();
@@ -629,7 +741,9 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
         return Err(format!("GitHub API 返回 {}", status));
     }
 
-    let json: serde_json::Value = resp.json().await
+    let json: serde_json::Value = resp
+        .json()
+        .await
         .map_err(|e| format!("解析响应失败: {}", e))?;
 
     let tag = json["tag_name"].as_str().unwrap_or("v0.0.0");
@@ -650,16 +764,18 @@ pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
 
 /// 简单版本号比较: 如果 latest > current 返回 true
 fn version_compare(latest: &str, current: &str) -> bool {
-    let parse = |s: &str| -> Vec<u32> {
-        s.split('.').filter_map(|p| p.parse().ok()).collect()
-    };
+    let parse = |s: &str| -> Vec<u32> { s.split('.').filter_map(|p| p.parse().ok()).collect() };
     let l = parse(latest);
     let c = parse(current);
     for i in 0..l.len().max(c.len()) {
         let lv = l.get(i).copied().unwrap_or(0);
         let cv = c.get(i).copied().unwrap_or(0);
-        if lv > cv { return true; }
-        if lv < cv { return false; }
+        if lv > cv {
+            return true;
+        }
+        if lv < cv {
+            return false;
+        }
     }
     false
 }

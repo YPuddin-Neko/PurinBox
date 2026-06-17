@@ -216,6 +216,7 @@ def main():
             image_path = cmd.get("image_path", "")
             move_files = cmd.get("move_files", True)
             output_path = cmd.get("output_path", "")
+            relative_dir = cmd.get("relative_dir", "")
 
             try:
                 # 预处理
@@ -270,6 +271,8 @@ def main():
                     else:
                         base_dir = src.parent
                     dest_dir = base_dir / top_label
+                    if relative_dir:
+                        dest_dir = dest_dir / relative_dir
                     dest_dir.mkdir(parents=True, exist_ok=True)
                     dest_path = dest_dir / src.name
 
@@ -394,6 +397,7 @@ def main():
                 image_path = img_cmd.get("image_path", "")
                 move_files = img_cmd.get("move_files", True)
                 output_path = img_cmd.get("output_path", "")
+                relative_dir = img_cmd.get("relative_dir", "")
 
                 try:
                     logits = all_logits[batch_idx]
@@ -423,6 +427,8 @@ def main():
                         else:
                             base_dir = src.parent
                         dest_dir = base_dir / top_label
+                        if relative_dir:
+                            dest_dir = dest_dir / relative_dir
                         dest_dir.mkdir(parents=True, exist_ok=True)
                         dest_path = dest_dir / src.name
 

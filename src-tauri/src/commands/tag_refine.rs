@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tauri::Emitter;
 
 use super::{wait_for_global_llm_slot, ProcessResult, ProgressEvent};
-use crate::commands::collect_image_files;
+use crate::commands::{collect_image_files_with_recursive_excluding, output_path_for_input};
 
 static TAG_REFINE_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -29,11 +29,19 @@ pub struct TagRefineOptions {
     pub request_interval_ms: i64,
     #[serde(default = "default_concurrency")]
     pub concurrency: u32,
+    #[serde(default)]
+    pub recursive: bool,
 }
 
-fn default_image_size() -> u32 { 1024 }
-fn default_interval() -> i64 { -1 }
-fn default_concurrency() -> u32 { 1 }
+fn default_image_size() -> u32 {
+    1024
+}
+fn default_interval() -> i64 {
+    -1
+}
+fn default_concurrency() -> u32 {
+    1
+}
 
 #[derive(Serialize)]
 struct ChatMessage {
@@ -80,8 +88,14 @@ enum FileResult {
         warnings: Vec<String>,
         elapsed_ms: u128,
     },
-    Skipped { filename: String, reason: String },
-    Error { filename: String, message: String },
+    Skipped {
+        filename: String,
+        reason: String,
+    },
+    Error {
+        filename: String,
+        message: String,
+    },
 }
 
 #[tauri::command]
@@ -97,17 +111,21 @@ pub async fn start_tag_refining(
     TAG_REFINE_CANCELLED.store(false, Ordering::SeqCst);
 
     let input_dir = Path::new(&options.input_path);
+    let input_dir_path = input_dir.to_path_buf();
     let output_dir_path = PathBuf::from(&options.output_path);
 
-    let files = collect_image_files(input_dir)?;
+    let files = collect_image_files_with_recursive_excluding(
+        input_dir,
+        options.recursive,
+        Some(&output_dir_path),
+    )?;
     let total = files.len() as u32;
 
     if total == 0 {
         return Err("输入目录中没有找到图片文件".to_string());
     }
 
-    std::fs::create_dir_all(&output_dir_path)
-        .map_err(|e| format!("创建输出目录失败: {}", e))?;
+    std::fs::create_dir_all(&output_dir_path).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
     let client = super::proxy_config::build_http_client_for_llm()
         .build()
@@ -115,21 +133,28 @@ pub async fn start_tag_refining(
 
     let concurrency = std::cmp::max(1, options.concurrency) as usize;
 
-    let _ = app.emit("tag-refine-progress", ProgressEvent {
-        current: 0, total,
-        filename: String::new(),
-        status: "info".to_string(),
-        message: format!("找到 {} 张图片，{} 线程开始标签细化...", total, concurrency),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "tag-refine-progress",
+        ProgressEvent {
+            current: 0,
+            total,
+            filename: String::new(),
+            status: "info".to_string(),
+            message: format!("找到 {} 张图片，{} 线程开始标签细化...", total, concurrency),
+            ..Default::default()
+        },
+    );
 
     let success_count = Arc::new(AtomicU32::new(0));
     let fail_count = Arc::new(AtomicU32::new(0));
     let processed = Arc::new(AtomicU32::new(0));
-    let errors: Arc<tokio::sync::Mutex<Vec<String>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let errors: Arc<tokio::sync::Mutex<Vec<String>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let cancelled = Arc::new(AtomicBool::new(false));
-    let error_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-    let warning_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let error_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let warning_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
     let last_req_time = Arc::new(tokio::sync::Mutex::new(None));
@@ -146,6 +171,7 @@ pub async fn start_tag_refining(
         let options = options.clone();
         let app = app.clone();
         let output_dir = output_dir_path.clone();
+        let input_root = input_dir_path.clone();
         let file_path = file_path.clone();
         let success_count = success_count.clone();
         let fail_count = fail_count.clone();
@@ -173,7 +199,7 @@ pub async fn start_tag_refining(
             }
 
             let result = tokio::select! {
-                r = process_single_file(&client, &file_path, &output_dir, &options, &last_req_time) => r,
+                r = process_single_file(&client, &file_path, &input_root, &output_dir, &options, &last_req_time) => r,
                 _ = async {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -193,7 +219,14 @@ pub async fn start_tag_refining(
             let cur = processed.fetch_add(1, Ordering::SeqCst) + 1;
 
             match result {
-                FileResult::Success { filename, original_count, refined_count, changed, warnings, elapsed_ms } => {
+                FileResult::Success {
+                    filename,
+                    original_count,
+                    refined_count,
+                    changed,
+                    warnings,
+                    elapsed_ms,
+                } => {
                     success_count.fetch_add(1, Ordering::SeqCst);
                     let has_warn = !warnings.is_empty();
                     if has_warn {
@@ -209,37 +242,62 @@ pub async fn start_tag_refining(
                     } else {
                         String::new()
                     };
-                    let _ = app.emit("tag-refine-progress", ProgressEvent {
-                        current: cur, total,
-                        filename: filename.clone(),
-                        status: "success".to_string(),
-                        message: format!("[完成] {} | 原TAG {} → 细化后 {} | {}{}{}",
-                            filename, original_count, refined_count, elapsed_str, warn_str,
-                            if !changed && !has_warn { " (未变化)" } else { "" }),
-                    ..Default::default()
-                    });
+                    let _ = app.emit(
+                        "tag-refine-progress",
+                        ProgressEvent {
+                            current: cur,
+                            total,
+                            filename: filename.clone(),
+                            status: "success".to_string(),
+                            message: format!(
+                                "[完成] {} | 原TAG {} → 细化后 {} | {}{}{}",
+                                filename,
+                                original_count,
+                                refined_count,
+                                elapsed_str,
+                                warn_str,
+                                if !changed && !has_warn {
+                                    " (未变化)"
+                                } else {
+                                    ""
+                                }
+                            ),
+                            ..Default::default()
+                        },
+                    );
                 }
                 FileResult::Skipped { filename, reason } => {
                     success_count.fetch_add(1, Ordering::SeqCst);
-                    let _ = app.emit("tag-refine-progress", ProgressEvent {
-                        current: cur, total,
-                        filename: filename.clone(),
-                        status: "success".to_string(),
-                        message: format!("[跳过] {} ({})", filename, reason),
-                    ..Default::default()
-                    });
+                    let _ = app.emit(
+                        "tag-refine-progress",
+                        ProgressEvent {
+                            current: cur,
+                            total,
+                            filename: filename.clone(),
+                            status: "success".to_string(),
+                            message: format!("[跳过] {} ({})", filename, reason),
+                            ..Default::default()
+                        },
+                    );
                 }
                 FileResult::Error { filename, message } => {
                     fail_count.fetch_add(1, Ordering::SeqCst);
                     error_files.lock().await.push(file_path.clone());
-                    errors.lock().await.push(format!("{}: {}", filename, message));
-                    let _ = app.emit("tag-refine-progress", ProgressEvent {
-                        current: cur, total,
-                        filename: filename.clone(),
-                        status: "error".to_string(),
-                        message: format!("[错误] {}: {}", filename, message),
-                    ..Default::default()
-                    });
+                    errors
+                        .lock()
+                        .await
+                        .push(format!("{}: {}", filename, message));
+                    let _ = app.emit(
+                        "tag-refine-progress",
+                        ProgressEvent {
+                            current: cur,
+                            total,
+                            filename: filename.clone(),
+                            status: "error".to_string(),
+                            message: format!("[错误] {}: {}", filename, message),
+                            ..Default::default()
+                        },
+                    );
                 }
             }
         });
@@ -254,7 +312,8 @@ pub async fn start_tag_refining(
     let sc = success_count.load(Ordering::SeqCst);
     let fc = fail_count.load(Ordering::SeqCst);
     let errs = errors.lock().await.clone();
-    let was_cancelled = cancelled.load(Ordering::SeqCst) || TAG_REFINE_CANCELLED.load(Ordering::SeqCst);
+    let was_cancelled =
+        cancelled.load(Ordering::SeqCst) || TAG_REFINE_CANCELLED.load(Ordering::SeqCst);
 
     // 将出错文件复制到 _errors
     let err_files = error_files.lock().await.clone();
@@ -267,7 +326,16 @@ pub async fn start_tag_refining(
             let mut copied = 0u32;
             for src in &err_files {
                 if let Some(name) = src.file_name() {
-                    let _ = std::fs::copy(src, err_dir.join(name)).map(|_| copied += 1);
+                    let name = name.to_string_lossy();
+                    if let Ok(dest) = output_path_for_input(
+                        &input_dir_path,
+                        src,
+                        &err_dir,
+                        name.as_ref(),
+                        options.recursive,
+                    ) {
+                        let _ = std::fs::copy(src, dest).map(|_| copied += 1);
+                    }
                 }
             }
             copy_msg.push_str(&format!("，{} 个错误文件已复制到 _errors/", copied));
@@ -279,63 +347,115 @@ pub async fn start_tag_refining(
             let mut copied = 0u32;
             for src in &warn_files_list {
                 if let Some(name) = src.file_name() {
-                    let _ = std::fs::copy(src, warn_dir.join(name)).map(|_| copied += 1);
+                    let name = name.to_string_lossy();
+                    if let Ok(dest) = output_path_for_input(
+                        &input_dir_path,
+                        src,
+                        &warn_dir,
+                        name.as_ref(),
+                        options.recursive,
+                    ) {
+                        let _ = std::fs::copy(src, dest).map(|_| copied += 1);
+                    }
                 }
             }
             copy_msg.push_str(&format!("，{} 个警告文件已复制到 _warnings/", copied));
         }
     }
 
-    let _ = app.emit("tag-refine-progress", ProgressEvent {
-        current: total, total,
-        filename: String::new(),
-        status: "done".to_string(),
-        message: if was_cancelled {
-            format!("已取消: 成功 {}, 失败 {}, 共处理 {}/{}{}", sc, fc, sc + fc, total, copy_msg)
-        } else {
-            format!("标签细化完成: 成功 {}, 失败 {}, 共 {}{}", sc, fc, total, copy_msg)
+    let _ = app.emit(
+        "tag-refine-progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "done".to_string(),
+            message: if was_cancelled {
+                format!(
+                    "已取消: 成功 {}, 失败 {}, 共处理 {}/{}{}",
+                    sc,
+                    fc,
+                    sc + fc,
+                    total,
+                    copy_msg
+                )
+            } else {
+                format!(
+                    "标签细化完成: 成功 {}, 失败 {}, 共 {}{}",
+                    sc, fc, total, copy_msg
+                )
+            },
+            ..Default::default()
         },
-    ..Default::default()
-    });
+    );
 
-    Ok(ProcessResult { success_count: sc, fail_count: fc, total, errors: errs })
+    Ok(ProcessResult {
+        success_count: sc,
+        fail_count: fc,
+        total,
+        errors: errs,
+    })
 }
 
 /// 处理单个文件：读取图片 + 对应标签 → LLM 细化
 async fn process_single_file(
     client: &reqwest::Client,
     img_path: &Path,
+    input_root: &Path,
     output_dir: &Path,
     options: &TagRefineOptions,
     last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
 ) -> FileResult {
     let start = std::time::Instant::now();
-    let filename = img_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-    let stem = img_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let filename = img_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let stem = img_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let parent = img_path.parent().unwrap_or(Path::new("."));
 
     // 查找对应的 .txt 标签文件
     let tag_path = parent.join(format!("{}.txt", stem));
     if !tag_path.exists() {
-        return FileResult::Skipped { filename, reason: "无对应 .txt 标签文件".to_string() };
+        return FileResult::Skipped {
+            filename,
+            reason: "无对应 .txt 标签文件".to_string(),
+        };
     }
 
     let tag_content = match std::fs::read_to_string(&tag_path) {
         Ok(c) => c.trim().to_string(),
-        Err(e) => return FileResult::Error { filename, message: format!("读取标签文件失败: {}", e) },
+        Err(e) => {
+            return FileResult::Error {
+                filename,
+                message: format!("读取标签文件失败: {}", e),
+            }
+        }
     };
 
     if tag_content.is_empty() {
-        return FileResult::Skipped { filename, reason: "标签文件为空".to_string() };
+        return FileResult::Skipped {
+            filename,
+            reason: "标签文件为空".to_string(),
+        };
     }
 
-    let original_tags: Vec<String> = tag_content.split(',')
+    let original_tags: Vec<String> = tag_content
+        .split(',')
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .collect();
 
     if original_tags.is_empty() {
-        return FileResult::Skipped { filename, reason: "无有效标签".to_string() };
+        return FileResult::Skipped {
+            filename,
+            reason: "无有效标签".to_string(),
+        };
     }
 
     // 调用 LLM 细化
@@ -356,25 +476,59 @@ async fn process_single_file(
 
             if !removed.is_empty() {
                 let display: Vec<&str> = removed.iter().take(5).copied().collect();
-                let suffix = if removed.len() > 5 { format!("等{}个", removed.len()) } else { String::new() };
+                let suffix = if removed.len() > 5 {
+                    format!("等{}个", removed.len())
+                } else {
+                    String::new()
+                };
                 warnings.push(format!("移除: {}{}", display.join(", "), suffix));
             }
             if !added.is_empty() {
                 let display: Vec<&str> = added.iter().take(5).copied().collect();
-                let suffix = if added.len() > 5 { format!("等{}个", added.len()) } else { String::new() };
+                let suffix = if added.len() > 5 {
+                    format!("等{}个", added.len())
+                } else {
+                    String::new()
+                };
                 warnings.push(format!("新增: {}{}", display.join(", "), suffix));
             }
 
-            let output_path = output_dir.join(format!("{}.txt", stem));
+            let output_name = format!("{}.txt", stem);
+            let output_path = match output_path_for_input(
+                input_root,
+                img_path,
+                output_dir,
+                &output_name,
+                options.recursive,
+            ) {
+                Ok(path) => path,
+                Err(e) => {
+                    return FileResult::Error {
+                        filename,
+                        message: e,
+                    }
+                }
+            };
             let output_content = refined_tags.join(", ");
             match std::fs::write(&output_path, &output_content) {
-                Ok(_) => {
-                    FileResult::Success { filename, original_count, refined_count, changed, warnings, elapsed_ms }
-                }
-                Err(e) => FileResult::Error { filename, message: format!("写入失败: {}", e) },
+                Ok(_) => FileResult::Success {
+                    filename,
+                    original_count,
+                    refined_count,
+                    changed,
+                    warnings,
+                    elapsed_ms,
+                },
+                Err(e) => FileResult::Error {
+                    filename,
+                    message: format!("写入失败: {}", e),
+                },
             }
         }
-        Err(e) => FileResult::Error { filename, message: e },
+        Err(e) => FileResult::Error {
+            filename,
+            message: e,
+        },
     }
 }
 
@@ -387,7 +541,11 @@ async fn refine_tags_with_llm(
     last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
 ) -> Result<Vec<String>, String> {
     // 读取并缩放图片
-    let max_side = if options.image_size > 0 { options.image_size } else { 1024 };
+    let max_side = if options.image_size > 0 {
+        options.image_size
+    } else {
+        1024
+    };
     let img = image::ImageReader::open(img_path)
         .map_err(|e| format!("读取图片失败: {}", e))?
         .with_guessed_format()
@@ -414,26 +572,35 @@ async fn refine_tags_with_llm(
     let user_text = if options.prompt.contains("{tags}") {
         options.prompt.replace("{tags}", &tag_list)
     } else {
-        format!("{}\n\nExisting tags: {}\n\nRefined tags:", options.prompt, tag_list)
+        format!(
+            "{}\n\nExisting tags: {}\n\nRefined tags:",
+            options.prompt, tag_list
+        )
     };
 
     // 构造多模态请求（图片 + 文字）
-    let messages = vec![
-        ChatMessage {
-            role: "user".to_string(),
-            content: serde_json::json!([
-                { "type": "text", "text": user_text },
-                { "type": "image_url", "image_url": { "url": data_url } }
-            ]),
-        },
-    ];
+    let messages = vec![ChatMessage {
+        role: "user".to_string(),
+        content: serde_json::json!([
+            { "type": "text", "text": user_text },
+            { "type": "image_url", "image_url": { "url": data_url } }
+        ]),
+    }];
 
     let request_body = ChatRequest {
         model: options.model_name.clone(),
         messages,
-        max_tokens: if options.max_tokens > 0 { Some(options.max_tokens as u32) } else { None },
+        max_tokens: if options.max_tokens > 0 {
+            Some(options.max_tokens as u32)
+        } else {
+            None
+        },
         temperature: options.temperature,
-        top_p: if options.top_p > 0.0 && options.top_p <= 1.0 { Some(options.top_p) } else { None },
+        top_p: if options.top_p > 0.0 && options.top_p <= 1.0 {
+            Some(options.top_p)
+        } else {
+            None
+        },
     };
 
     let endpoint = if options.api_endpoint.ends_with('/') {
@@ -442,7 +609,8 @@ async fn refine_tags_with_llm(
         format!("{}/chat/completions", options.api_endpoint)
     };
 
-    let mut req = client.post(&endpoint)
+    let mut req = client
+        .post(&endpoint)
         .header("Content-Type", "application/json")
         .json(&request_body);
 
@@ -450,11 +618,19 @@ async fn refine_tags_with_llm(
         req = req.header("Authorization", format!("Bearer {}", options.api_key));
     }
 
-    if !wait_for_global_llm_slot(last_req_time, options.request_interval_ms, &TAG_REFINE_CANCELLED).await {
+    if !wait_for_global_llm_slot(
+        last_req_time,
+        options.request_interval_ms,
+        &TAG_REFINE_CANCELLED,
+    )
+    .await
+    {
         return Err("已取消".to_string());
     }
 
-    let response = req.send().await
+    let response = req
+        .send()
+        .await
         .map_err(|e| format!("API 请求失败: {}", e))?;
 
     if !response.status().is_success() {
@@ -463,14 +639,30 @@ async fn refine_tags_with_llm(
         return Err(format!("API 错误 ({}): {}", status, body));
     }
 
-    let chat_resp: ChatResponse = response.json().await
+    let chat_resp: ChatResponse = response
+        .json()
+        .await
         .map_err(|e| format!("解析响应失败: {}", e))?;
 
-    let choice = chat_resp.choices.first()
+    let choice = chat_resp
+        .choices
+        .first()
         .ok_or_else(|| "API 未返回任何结果".to_string())?;
 
-    let content = choice.message.content.as_deref().unwrap_or("").trim().to_string();
-    let reasoning = choice.message.reasoning_content.as_deref().unwrap_or("").trim().to_string();
+    let content = choice
+        .message
+        .content
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let reasoning = choice
+        .message
+        .reasoning_content
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
 
     let final_content = if !content.is_empty() {
         content
@@ -482,7 +674,8 @@ async fn refine_tags_with_llm(
 
     // 解析返回的标签
     let cleaned = if final_content.contains('\n') {
-        final_content.lines()
+        final_content
+            .lines()
             .filter(|l| l.contains(','))
             .max_by_key(|l| l.len())
             .unwrap_or(&final_content)
@@ -491,7 +684,8 @@ async fn refine_tags_with_llm(
         final_content
     };
 
-    let refined_tags: Vec<String> = cleaned.split(',')
+    let refined_tags: Vec<String> = cleaned
+        .split(',')
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .collect();

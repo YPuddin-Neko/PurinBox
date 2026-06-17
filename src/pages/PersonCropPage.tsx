@@ -13,6 +13,7 @@ import {
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
@@ -23,6 +24,7 @@ export default function PersonCropPage() {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
+  const [recursive, setRecursive] = useState(false);
   const [useGpu, setUseGpu] = useState(() => localStorage.getItem('person_crop_gpu') === 'true');
   const [models, setModels] = useState<CropModelInfo[]>([]);
   const [downloading, setDownloading] = useState(false);
@@ -139,6 +141,7 @@ export default function PersonCropPage() {
           head_enabled: headEnabled, head_conf: hConf, head_tag: headTag, head_scale: hScale,
           eyes_enabled: eyesEnabled, eyes_conf: eConf, eyes_tag: eyesTag, eyes_scale: eScale,
           keep_original_tags: keepOriginalTags,
+          recursive,
         },
       });
     } catch (e: any) {
@@ -221,7 +224,10 @@ export default function PersonCropPage() {
             <div className="tool-panel-header"><span className="tool-panel-title">{t('personCrop.cropSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">{t('blurNoise.inputFolder')}</label>
+                <div className="form-label-row">
+                  <label className="form-label">{t('blurNoise.inputFolder')}</label>
+                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
+                </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>

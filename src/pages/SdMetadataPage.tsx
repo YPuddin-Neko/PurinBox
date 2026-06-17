@@ -10,6 +10,7 @@ import {
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 interface SdImageMeta { path: string; filename: string; positive: string; negative: string; params: string; artist: string; source: string; }
@@ -33,6 +34,7 @@ export default function SdMetadataPage() {
   const { t } = useTranslation();
   const { addTask, updateTask } = useTaskQueue();
   const [inputPath, setInputPath] = useState('');
+  const [recursive, setRecursive] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [items, setItems] = useState<SdImageMeta[]>([]);
   const [totalImages, setTotalImages] = useState(0);
@@ -119,7 +121,7 @@ export default function SdMetadataPage() {
     setLogs([{ time: getTimeStr(), message: t('sdMetadata.scanStart'), status: 'info' }]);
     addTask('sd-metadata', t('sidebar.sdMetadata'));
     try {
-      const result = await invoke<ScanResult>('scan_sd_metadata', { inputPath });
+      const result = await invoke<ScanResult>('scan_sd_metadata', { inputPath, recursive });
       setItems(result.items);
       setTotalImages(result.total_images);
       setHasMeta(result.has_meta_count);
@@ -156,6 +158,7 @@ export default function SdMetadataPage() {
         options: {
           mode: exportMode,
           dest_folder: exportMode === 'custom' ? destFolder : null,
+          input_root: inputPath,
           items: items.map(i => ({ source_path: i.path, positive: i.positive })),
         },
       });
@@ -192,10 +195,13 @@ export default function SdMetadataPage() {
           {/* Folder */}
           <div className="tool-panel">
             <div className="form-group">
-              <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <FolderOpen style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
-                {t('sdMetadata.inputFolder')}
-              </label>
+              <div className="form-label-row">
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <FolderOpen style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
+                  {t('sdMetadata.inputFolder')}
+                </label>
+                <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
+              </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <input className="form-input" value={inputPath} readOnly placeholder={t('sdMetadata.selectFolder')} style={{ flex: 1 }} />
                 <button className="btn btn-secondary" onClick={() => pickFolder(setInputPath)} style={{ flexShrink: 0 }}>

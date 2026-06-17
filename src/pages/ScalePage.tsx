@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface ProcessResult {
   success_count: number;
@@ -33,6 +34,7 @@ export default function ScalePage() {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
+  const [recursive, setRecursive] = useState(false);
   const [enableUpscale, setEnableUpscale] = useState(true);
   const [enableDownscale, setEnableDownscale] = useState(false);
   const [upWidth, setUpWidth] = useState(1024);
@@ -137,6 +139,7 @@ export default function ScalePage() {
           target_height: targetH,
           down_target_width: mode === 'both' ? downW : 0,
           down_target_height: mode === 'both' ? downH : 0,
+          recursive,
         },
       });
       // done
@@ -173,7 +176,10 @@ export default function ScalePage() {
             <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">{t('pages.inputPath')}</label>
+                <div className="form-label-row">
+                  <label className="form-label">{t('pages.inputPath')}</label>
+                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
+                </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>

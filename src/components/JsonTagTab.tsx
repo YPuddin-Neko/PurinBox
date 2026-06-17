@@ -64,10 +64,11 @@ export const translateOwner = { current: '' };
 const TAG_STATS_BATCH = 300;
 
 const JsonTagTab = forwardRef<JsonTagTabHandle, {
+  recursive?: boolean;
   onDirtyChange?: (count: number) => void;
   onLoadingChange?: (loading: boolean) => void;
   onSavingChange?: (saving: boolean) => void;
-}>(function JsonTagTab({ onDirtyChange, onLoadingChange, onSavingChange }, ref) {
+}>(function JsonTagTab({ recursive = false, onDirtyChange, onLoadingChange, onSavingChange }, ref) {
   const { t } = useTranslation();
   const [images,setImages]=useState<JsonImageItem[]>([]);
   const [selectedIdx,setSelectedIdx]=useState(-1);
@@ -170,18 +171,18 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   const handleLoadFolder=useCallback(async()=>{
     const sel=await dialogOpen({directory:true,multiple:false,title:t('jsonTag.selectFolder')});
     if(!sel)return; setLoading(true);
-    try{const r=await invoke<JsonDataset>('load_json_dataset',{folder:sel as string});
+    try{const r=await invoke<JsonDataset>('load_json_dataset',{folder:sel as string, recursive});
       setImages(r.images.map(img=>({...img,data:safeData(img.data),dirty:false})));setSelectedIdx(r.images.length>0?0:-1);
       setFolderPath(sel as string);setSearchText('');setFilterMode('all');setImgPage(0);
       if(r.detected_format==='simplified'){setSimplified(true);localStorage.setItem('json_tag_simplified','true');}
       else if(r.detected_format==='full'){setSimplified(false);localStorage.setItem('json_tag_simplified','false');}
     }catch(e){console.error(e);}finally{setLoading(false);}
-  },[]);
+  },[recursive,t]);
   const handleRefresh=useCallback(async()=>{if(!folderPath)return;setLoading(true);
-    try{const r=await invoke<JsonDataset>('load_json_dataset',{folder:folderPath});
+    try{const r=await invoke<JsonDataset>('load_json_dataset',{folder:folderPath, recursive});
       setImages(r.images.map(img=>({...img,data:safeData(img.data),dirty:false})));
     }catch(e){console.error(e);}finally{setLoading(false);}
-  },[folderPath]);
+  },[folderPath,recursive]);
 
   const cur=selectedIdx>=0&&selectedIdx<images.length?images[selectedIdx]:null;
   const imgSrc=cur?convertFileSrc(cur.path):'';

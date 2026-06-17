@@ -14,6 +14,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface BucketImageInfo {
   path: string;
@@ -226,15 +227,12 @@ export default function BucketPreviewPage() {
       <div className="tool-panel" style={{ flexShrink: 0 }}>
         <div className="tool-panel-header">
           <span className="tool-panel-title">{t('bucketPreview.paramSettings')}</span>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: 'var(--color-text-secondary)' }}>
-            <input type="checkbox" checked={recursive} onChange={e => setRecursive(e.target.checked)} style={{ accentColor: 'var(--color-accent-primary)' }} />
-            {t('bucketPreview.recursive')}
-          </label>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           <div className="form-group">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div className="form-label-row">
               <label className="form-label" style={{ margin: 0 }}>{t('bucketPreview.datasetFolder')}</label>
+              <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
             </div>
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
               <input className="form-input" placeholder={t('bucketPreview.datasetPlaceholder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />

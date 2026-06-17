@@ -155,11 +155,36 @@ def create_session(onnx_path, device):
 
 # ── 工具函数 ───────────────────────────────────────
 
-def collect_images(path):
+def is_under(path, parent):
+    if not parent:
+        return False
+    try:
+        return os.path.commonpath([os.path.abspath(path), os.path.abspath(parent)]) == os.path.abspath(parent)
+    except ValueError:
+        return False
+
+def collect_images(path, recursive=False, excluded_dir=None):
     if os.path.isfile(path):
         return [path]
-    return sorted(os.path.join(path, f) for f in os.listdir(path)
-                  if os.path.splitext(f)[1].lower() in SUPPORTED_EXTS)
+    if not recursive:
+        return sorted(os.path.join(path, f) for f in os.listdir(path)
+                      if os.path.splitext(f)[1].lower() in SUPPORTED_EXTS
+                      and not is_under(os.path.join(path, f), excluded_dir))
+    files = []
+    for root, _, names in os.walk(path):
+        for name in names:
+            if os.path.splitext(name)[1].lower() in SUPPORTED_EXTS:
+                fpath = os.path.join(root, name)
+                if not is_under(fpath, excluded_dir):
+                    files.append(fpath)
+    return sorted(files)
+
+def output_subdir(input_path, output_path, file_path, recursive=False):
+    if recursive and os.path.isdir(input_path):
+        rel_dir = os.path.dirname(os.path.relpath(file_path, input_path))
+        if rel_dir and rel_dir != ".":
+            return os.path.join(output_path, rel_dir)
+    return output_path
 
 # ── 主函数 ─────────────────────────────────────────
 
@@ -178,6 +203,7 @@ def main():
     ap.add_argument("--tta", action="store_true")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--weights-dir", default=None, help="Override weights directory")
+    ap.add_argument("--recursive", action="store_true")
     args = ap.parse_args()
 
     cfg = MODEL_CONFIGS.get(args.model)
@@ -185,7 +211,7 @@ def main():
         emit_error(f"未知模型: {args.model}")
         sys.exit(1)
 
-    files = collect_images(args.input)
+    files = collect_images(args.input, args.recursive, args.output)
     if not files:
         emit_error("未找到任何图片")
         sys.exit(1)
@@ -299,7 +325,9 @@ def main():
                 output = np.concatenate([output, alpha_up], axis=2)
 
             stem = os.path.splitext(fname)[0]
-            out_path = os.path.join(args.output, f"{stem}.png")
+            out_dir = output_subdir(args.input, args.output, fpath, args.recursive)
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, f"{stem}.png")
             # cv2.imwrite 在 Windows 上不支持 Unicode 路径，用 imencode 中转
             success_write, buf = cv2.imencode('.png', output)
             if success_write:

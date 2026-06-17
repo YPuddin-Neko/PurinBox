@@ -155,6 +155,7 @@ const zhCN = {
     selectOutputFolder: '选择输出文件夹...',
     selectInputTitle: '选择输入文件夹',
     selectOutputTitle: '选择输出文件夹',
+    recursiveScan: '递归扫描子文件夹',
     startProcess: '开始处理',
     processing: '处理中...',
     errorPrefix: '错误',

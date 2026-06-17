@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -19,6 +20,7 @@ export default function PerspectivePage() {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
+  const [recursive, setRecursive] = useState(false);
   const [intensity, setIntensity] = useState(0.10);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -61,7 +63,7 @@ export default function PerspectivePage() {
     setLogs([{ time: getTimeStr(), message: t('perspective.startMsg', { intensity: intensity.toFixed(2) }), status: 'info' }]);
     try {
       await invoke<ProcessResult>('perspective_transform', {
-        options: { input_path: inputPath, output_path: outputPath, intensity },
+        options: { input_path: inputPath, output_path: outputPath, intensity, recursive },
       });
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
@@ -90,7 +92,10 @@ export default function PerspectivePage() {
             <div className="tool-panel-header"><span className="tool-panel-title">{t('perspective.paramSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <div className="form-group">
-                <label className="form-label">{t('blurNoise.inputFolder')}</label>
+                <div className="form-label-row">
+                  <label className="form-label">{t('blurNoise.inputFolder')}</label>
+                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
+                </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('blurNoise.inputPlaceholder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>

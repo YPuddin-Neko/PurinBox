@@ -14,6 +14,7 @@ import NaturalLangTab from '../components/NaturalLangTab';
 import JsonTagTab, { translateOwner, type JsonTagTabHandle } from '../components/JsonTagTab';
 import TagAutocomplete from '../components/TagAutocomplete';
 import ImageLightbox from '../components/ImageLightbox';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 import { useTranslation } from 'react-i18next';
 
 type ImageItem = { filename: string; path: string; tags: string[]; dirty: boolean; };
@@ -78,6 +79,7 @@ export default function TagManagerPage() {
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [recursive, setRecursive] = useState(false);
 
   const [folderPath, setFolderPath] = useState('');
   const jsonTabRef = useRef<JsonTagTabHandle>(null);
@@ -223,12 +225,12 @@ export default function TagManagerPage() {
     setLoading(true);
     try {
       if (mode === 'danbooru') {
-        const result = await invoke<TagDataset>('load_tag_dataset', { folder: selected as string });
+        const result = await invoke<TagDataset>('load_tag_dataset', { folder: selected as string, recursive });
         setImages(result.images.map(img => ({ ...img, dirty: false })));
         setSelectedIdx(result.images.length > 0 ? 0 : -1);
         setSearchText(''); setFilterMode('all'); setGlobalSearch(''); setImgPage(0);
       } else {
-        const result = await invoke<CaptionDataset>('load_caption_dataset', { folder: selected as string });
+        const result = await invoke<CaptionDataset>('load_caption_dataset', { folder: selected as string, recursive });
         setNlImages(result.images.map(img => ({ ...img, dirty: false })));
       }
       setFolderPath(selected as string);
@@ -245,11 +247,11 @@ export default function TagManagerPage() {
     setLoading(true);
     try {
       if (mode === 'danbooru') {
-        const result = await invoke<TagDataset>('load_tag_dataset', { folder: folderPath });
+        const result = await invoke<TagDataset>('load_tag_dataset', { folder: folderPath, recursive });
         setImages(result.images.map(img => ({ ...img, dirty: false })));
         if (selectedIdx >= result.images.length) setSelectedIdx(result.images.length > 0 ? 0 : -1);
       } else {
-        const result = await invoke<CaptionDataset>('load_caption_dataset', { folder: folderPath });
+        const result = await invoke<CaptionDataset>('load_caption_dataset', { folder: folderPath, recursive });
         setNlImages(result.images.map(img => ({ ...img, dirty: false })));
       }
     } catch (e: any) {
@@ -616,6 +618,7 @@ export default function TagManagerPage() {
           }}>{t('tagManager.jsonTab')}</button>
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <RecursiveScanToggle checked={recursive} onChange={setRecursive} style={{ height: 34 }} />
           {mode!=='json'&&<button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={handleLoadFolder} disabled={loading}>
             {loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {loading?t('tagManager.loading'):t('tagManager.loadFolder')}
           </button>}
@@ -938,7 +941,7 @@ export default function TagManagerPage() {
       )}
 
       <div style={{display:mode==='json'?'flex':'none',flex:1,overflow:'hidden',minHeight:0}}>
-        <JsonTagTab ref={jsonTabRef} onDirtyChange={setJsonDirtyCount} onLoadingChange={setJsonLoading} onSavingChange={setJsonSaving} />
+        <JsonTagTab ref={jsonTabRef} recursive={recursive} onDirtyChange={setJsonDirtyCount} onLoadingChange={setJsonLoading} onSavingChange={setJsonSaving} />
       </div>
 
       {/* ═ 批量添加弹窗 ═ */}

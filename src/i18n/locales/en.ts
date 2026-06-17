@@ -147,6 +147,7 @@ const en = {
     selectOutputFolder: 'Select output folder...',
     selectInputTitle: 'Select Input Folder',
     selectOutputTitle: 'Select Output Folder',
+    recursiveScan: 'Recursive folder scan',
     startProcess: 'Start',
     processing: 'Processing...',
     errorPrefix: 'Error',

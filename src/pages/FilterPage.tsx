@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface ProcessResult {
   success_count: number;
@@ -44,6 +45,7 @@ export default function FilterPage() {
   ];
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
+  const [recursive, setRecursive] = useState(false);
   const [action, setAction] = useState<ActionType>('copy');
   const [condition, setCondition] = useState<ConditionType>('below_resolution');
   const [width, setWidth] = useState(512);
@@ -112,7 +114,7 @@ export default function FilterPage() {
     setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${t('filter.startFilter')}: ${condLabel}, ${action === 'copy' ? t('filter.actionCopy') : t('filter.actionDelete')}`, status: 'info' }]);
     try {
       await invoke<ProcessResult>('filter_by_resolution', {
-        options: { input_path: inputPath, output_path: outputPath || inputPath, action, condition, width: w, height: h },
+        options: { input_path: inputPath, output_path: outputPath || inputPath, action, condition, width: w, height: h, recursive },
       });
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
@@ -145,7 +147,10 @@ export default function FilterPage() {
             <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">{t('filter.inputFolder')}</label>
+                <div className="form-label-row">
+                  <label className="form-label">{t('filter.inputFolder')}</label>
+                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
+                </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>

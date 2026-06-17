@@ -13,6 +13,8 @@ pub struct DedupOptions {
     pub dhash_threshold: u32,
     pub phash_threshold: u32,
     pub color_threshold: f64,
+    #[serde(default)]
+    pub recursive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,7 +70,11 @@ pub async fn delete_dedup_files(paths: Vec<String>) -> Result<DeleteResult, Stri
             }
         }
     }
-    Ok(DeleteResult { deleted, failed, errors })
+    Ok(DeleteResult {
+        deleted,
+        failed,
+        errors,
+    })
 }
 
 // ── Hash types ──
@@ -89,7 +95,7 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
         return Err(format!("文件夹不存在: {}", options.folder_path));
     }
 
-    let files = super::collect_image_files(folder)?;
+    let files = super::collect_image_files_with_recursive(folder, options.recursive)?;
     let total = files.len() as u32;
 
     if total == 0 {
@@ -102,14 +108,22 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
     }
 
     // Phase 1: compute fingerprints (parallel)
-    let _ = app.emit("dedup_progress", ProgressEvent {
-        current: 0, total, filename: String::new(),
-        status: "processing".into(),
-        message: "正在计算图片指纹...".into(),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "dedup_progress",
+        ProgressEvent {
+            current: 0,
+            total,
+            filename: String::new(),
+            status: "processing".into(),
+            message: "正在计算图片指纹...".into(),
+            ..Default::default()
+        },
+    );
 
-    let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(16);
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(16);
     let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let mut fingerprints: Vec<ImageFingerprint> = Vec::with_capacity(files.len());
     let mut failed_files: Vec<String> = Vec::new();
@@ -119,20 +133,27 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
             return Err("已取消".into());
         }
 
-        let handles: Vec<_> = chunk.iter().map(|file| {
-            let path = file.clone();
-            std::thread::spawn(move || compute_fingerprint(&path))
-        }).collect();
+        let handles: Vec<_> = chunk
+            .iter()
+            .map(|file| {
+                let path = file.clone();
+                std::thread::spawn(move || compute_fingerprint(&path))
+            })
+            .collect();
 
         for (file, handle) in chunk.iter().zip(handles) {
             let cnt = counter.fetch_add(1, Ordering::SeqCst) + 1;
-            let _ = app.emit("dedup_progress", ProgressEvent {
-                current: cnt, total,
-                filename: String::new(),
-                status: "processing".into(),
-                message: format!("计算指纹 {}/{}", cnt, total),
-            ..Default::default()
-            });
+            let _ = app.emit(
+                "dedup_progress",
+                ProgressEvent {
+                    current: cnt,
+                    total,
+                    filename: String::new(),
+                    status: "processing".into(),
+                    message: format!("计算指纹 {}/{}", cnt, total),
+                    ..Default::default()
+                },
+            );
 
             match handle.join() {
                 Ok(Ok(fp)) => fingerprints.push(fp),
@@ -143,13 +164,17 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
     }
 
     // Phase 2: find duplicates by comparing fingerprints
-    let _ = app.emit("dedup_progress", ProgressEvent {
-        current: total, total,
-        filename: String::new(),
-        status: "processing".into(),
-        message: "正在比对图片...".into(),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "dedup_progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "processing".into(),
+            message: "正在比对图片...".into(),
+            ..Default::default()
+        },
+    );
 
     let mut duplicate_groups: Vec<DupGroup> = Vec::new();
     let mut used: Vec<bool> = vec![false; fingerprints.len()];
@@ -201,13 +226,17 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
 
     let elapsed = start.elapsed().as_millis() as u64;
 
-    let _ = app.emit("dedup_progress", ProgressEvent {
-        current: total, total,
-        filename: String::new(),
-        status: "done".into(),
-        message: format!("完成，发现 {} 组重复", duplicate_groups.len()),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "dedup_progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "done".into(),
+            message: format!("完成，发现 {} 组重复", duplicate_groups.len()),
+            ..Default::default()
+        },
+    );
 
     Ok(DedupResult {
         total_images: total,
@@ -218,9 +247,12 @@ fn dedup_sync(app: &tauri::AppHandle, options: &DedupOptions) -> Result<DedupRes
 }
 
 fn compute_fingerprint(path: &Path) -> Result<ImageFingerprint, String> {
-    let img = image::ImageReader::open(path).map_err(|e| e.to_string())?
-        .with_guessed_format().map_err(|e| e.to_string())?
-        .decode().map_err(|e| e.to_string())?;
+    let img = image::ImageReader::open(path)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?
+        .decode()
+        .map_err(|e| e.to_string())?;
     let gray = img.to_luma8();
     let rgb = img.to_rgb8();
 
@@ -258,7 +290,12 @@ fn compute_dhash(gray: &image::GrayImage) -> u64 {
 #[allow(clippy::needless_range_loop)]
 fn compute_phash(gray: &image::GrayImage) -> u64 {
     let size = 32usize;
-    let resized = image::imageops::resize(gray, size as u32, size as u32, image::imageops::FilterType::Lanczos3);
+    let resized = image::imageops::resize(
+        gray,
+        size as u32,
+        size as u32,
+        image::imageops::FilterType::Lanczos3,
+    );
     let pi = std::f64::consts::PI;
     let n = size as f64;
 
@@ -299,7 +336,9 @@ fn compute_phash(gray: &image::GrayImage) -> u64 {
     let mut low_freq: Vec<f64> = Vec::with_capacity(63);
     for v in 0..8 {
         for u in 0..8 {
-            if u == 0 && v == 0 { continue; }
+            if u == 0 && v == 0 {
+                continue;
+            }
             low_freq.push(dct_8x8[v][u]);
         }
     }

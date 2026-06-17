@@ -16,6 +16,7 @@ import {
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 
@@ -37,6 +38,7 @@ export default function UpscalePage() {
   const { addTask, updateTask } = useTaskQueue();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
+  const [recursive, setRecursive] = useState(false);
   const [engines, setEngines] = useState<UpscaleEngineInfo[]>([]);
   const [selectedEngine, setSelectedEngine] = useState('realcugan');
   const [selectedModel, setSelectedModel] = useState('');
@@ -171,6 +173,7 @@ export default function UpscalePage() {
           tta,
           gpu_id: useGpu ? 0 : -1,
           tile_size: tileSize,
+          recursive,
         }
       });
     } catch (e: any) {
@@ -199,7 +202,10 @@ export default function UpscalePage() {
             <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">{t('pages.inputPathShort')}</label>
+                <div className="form-label-row">
+                  <label className="form-label">{t('pages.inputPathShort')}</label>
+                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
+                </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>

@@ -9,6 +9,7 @@ import { Star, FolderOpen, Cpu, Gpu } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
@@ -19,6 +20,7 @@ export default function AestheticPage() {
   const { addTask, updateTask } = useTaskQueue();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
+  const [recursive, setRecursive] = useState(false);
   const isMac = /Mac|darwin/i.test(navigator.userAgent);
   const [useGpu, setUseGpu] = useState(!isMac);
   const [batchSize, setBatchSize] = useState(1);
@@ -111,6 +113,7 @@ export default function AestheticPage() {
           use_gpu: useGpu,
           batch_size: useGpu ? bs : 1,
           move_files: true,
+          recursive,
         }
       });
     } catch (e: any) {
@@ -161,7 +164,10 @@ export default function AestheticPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">{t('pages.inputPathShort')}</label>
+                <div className="form-label-row">
+                  <label className="form-label">{t('pages.inputPathShort')}</label>
+                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
+                </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>

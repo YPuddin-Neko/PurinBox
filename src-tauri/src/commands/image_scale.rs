@@ -5,7 +5,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
-use super::{collect_image_files, ProcessResult, ProgressEvent};
+use super::{
+    collect_image_files_with_recursive_excluding, output_path_for_input, ProcessResult,
+    ProgressEvent,
+};
 
 static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 
@@ -22,16 +25,19 @@ pub struct ScaleOptions {
     pub down_target_width: u32,
     #[serde(default)]
     pub down_target_height: u32,
+    #[serde(default)]
+    pub recursive: bool,
 }
 
 #[tauri::command]
-pub async fn scale_images(app: tauri::AppHandle, options: ScaleOptions) -> Result<ProcessResult, String> {
+pub async fn scale_images(
+    app: tauri::AppHandle,
+    options: ScaleOptions,
+) -> Result<ProcessResult, String> {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
-    tokio::task::spawn_blocking(move || {
-        scale_images_sync(&app, &options)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {}", e))?
+    tokio::task::spawn_blocking(move || scale_images_sync(&app, &options))
+        .await
+        .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 #[tauri::command]
@@ -39,16 +45,19 @@ pub fn cancel_scale() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
-fn scale_images_sync(app: &tauri::AppHandle, options: &ScaleOptions) -> Result<ProcessResult, String> {
+fn scale_images_sync(
+    app: &tauri::AppHandle,
+    options: &ScaleOptions,
+) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
 
     if !output_dir.exists() {
-        std::fs::create_dir_all(output_dir)
-            .map_err(|e| format!("无法创建输出目录: {}", e))?;
+        std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
     }
 
-    let files = collect_image_files(input)?;
+    let files =
+        collect_image_files_with_recursive_excluding(input, options.recursive, Some(output_dir))?;
     let total = files.len() as u32;
     let mut success_count = 0u32;
     let mut fail_count = 0u32;
@@ -56,63 +65,92 @@ fn scale_images_sync(app: &tauri::AppHandle, options: &ScaleOptions) -> Result<P
 
     for (i, file_path) in files.iter().enumerate() {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
-            let _ = app.emit("scale-progress", ProgressEvent {
-                current: i as u32, total, filename: String::new(),
-                status: "done".to_string(),
-                message: format!("已取消: 已处理 {}, 共 {}", i, total),
-            ..Default::default()
-            });
+            let _ = app.emit(
+                "scale-progress",
+                ProgressEvent {
+                    current: i as u32,
+                    total,
+                    filename: String::new(),
+                    status: "done".to_string(),
+                    message: format!("已取消: 已处理 {}, 共 {}", i, total),
+                    ..Default::default()
+                },
+            );
             break;
         }
-        let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let filename = file_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
-        let _ = app.emit("scale-progress", ProgressEvent {
-            current: i as u32 + 1,
-            total,
-            filename: filename.clone(),
-            status: "processing".to_string(),
-            message: format!("正在处理: {}", filename),
-        ..Default::default()
-        });
+        let _ = app.emit(
+            "scale-progress",
+            ProgressEvent {
+                current: i as u32 + 1,
+                total,
+                filename: filename.clone(),
+                status: "processing".to_string(),
+                message: format!("正在处理: {}", filename),
+                ..Default::default()
+            },
+        );
 
-        match process_scale(file_path, output_dir, options) {
+        match process_scale(file_path, input, output_dir, options) {
             Ok(msg) => {
                 success_count += 1;
-                let _ = app.emit("scale-progress", ProgressEvent {
-                    current: i as u32 + 1,
-                    total,
-                    filename: filename.clone(),
-                    status: "success".to_string(),
-                    message: msg,
-                ..Default::default()
-                });
+                let _ = app.emit(
+                    "scale-progress",
+                    ProgressEvent {
+                        current: i as u32 + 1,
+                        total,
+                        filename: filename.clone(),
+                        status: "success".to_string(),
+                        message: msg,
+                        ..Default::default()
+                    },
+                );
             }
             Err(e) => {
                 fail_count += 1;
                 let err_msg = format!("{}: {}", filename, e);
                 errors.push(err_msg.clone());
-                let _ = app.emit("scale-progress", ProgressEvent {
-                    current: i as u32 + 1,
-                    total,
-                    filename: filename.clone(),
-                    status: "error".to_string(),
-                    message: err_msg,
-                ..Default::default()
-                });
+                let _ = app.emit(
+                    "scale-progress",
+                    ProgressEvent {
+                        current: i as u32 + 1,
+                        total,
+                        filename: filename.clone(),
+                        status: "error".to_string(),
+                        message: err_msg,
+                        ..Default::default()
+                    },
+                );
             }
         }
     }
 
-    let _ = app.emit("scale-progress", ProgressEvent {
-        current: total,
-        total,
-        filename: String::new(),
-        status: "done".to_string(),
-        message: format!("处理完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "scale-progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "done".to_string(),
+            message: format!(
+                "处理完成: 成功 {}, 失败 {}, 共 {}",
+                success_count, fail_count, total
+            ),
+            ..Default::default()
+        },
+    );
 
-    Ok(ProcessResult { success_count, fail_count, total, errors })
+    Ok(ProcessResult {
+        success_count,
+        fail_count,
+        total,
+        errors,
+    })
 }
 
 /// Area-based proportional scaling (preserves aspect ratio, rounds to nearest multiple of 64)
@@ -130,6 +168,7 @@ fn area_scale(img: &image::DynamicImage, target_w: u32, target_h: u32) -> image:
 
 fn process_scale(
     file_path: &Path,
+    input_root: &Path,
     output_dir: &Path,
     options: &ScaleOptions,
 ) -> Result<String, String> {
@@ -141,8 +180,18 @@ fn process_scale(
         .map_err(|e| format!("无法解码图片: {}", e))?;
 
     let (orig_w, orig_h) = img.dimensions();
-    let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-    let output_path = output_dir.join(&filename);
+    let filename = file_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let output_path = output_path_for_input(
+        input_root,
+        file_path,
+        output_dir,
+        &filename,
+        options.recursive,
+    )?;
 
     match options.mode.as_str() {
         "upscale" => {
@@ -151,11 +200,20 @@ fn process_scale(
             if orig_w < target_w || orig_h < target_h {
                 let resized = area_scale(&img, target_w, target_h);
                 let (nw, nh) = resized.dimensions();
-                resized.save(&output_path).map_err(|e| format!("无法保存图片: {}", e))?;
-                Ok(format!("[上采样] {} ({}x{} → {}x{})", filename, orig_w, orig_h, nw, nh))
+                resized
+                    .save(&output_path)
+                    .map_err(|e| format!("无法保存图片: {}", e))?;
+                Ok(format!(
+                    "[上采样] {} ({}x{} → {}x{})",
+                    filename, orig_w, orig_h, nw, nh
+                ))
             } else {
-                std::fs::copy(file_path, &output_path).map_err(|e| format!("无法复制图片: {}", e))?;
-                Ok(format!("[跳过] {} ({}x{}, 无需上采样)", filename, orig_w, orig_h))
+                std::fs::copy(file_path, &output_path)
+                    .map_err(|e| format!("无法复制图片: {}", e))?;
+                Ok(format!(
+                    "[跳过] {} ({}x{}, 无需上采样)",
+                    filename, orig_w, orig_h
+                ))
             }
         }
         "downscale" => {
@@ -164,19 +222,36 @@ fn process_scale(
             if orig_w > target_w || orig_h > target_h {
                 let resized = area_scale(&img, target_w, target_h);
                 let (nw, nh) = resized.dimensions();
-                resized.save(&output_path).map_err(|e| format!("无法保存图片: {}", e))?;
-                Ok(format!("[下采样] {} ({}x{} → {}x{})", filename, orig_w, orig_h, nw, nh))
+                resized
+                    .save(&output_path)
+                    .map_err(|e| format!("无法保存图片: {}", e))?;
+                Ok(format!(
+                    "[下采样] {} ({}x{} → {}x{})",
+                    filename, orig_w, orig_h, nw, nh
+                ))
             } else {
-                std::fs::copy(file_path, &output_path).map_err(|e| format!("无法复制图片: {}", e))?;
-                Ok(format!("[跳过] {} ({}x{}, 无需下采样)", filename, orig_w, orig_h))
+                std::fs::copy(file_path, &output_path)
+                    .map_err(|e| format!("无法复制图片: {}", e))?;
+                Ok(format!(
+                    "[跳过] {} ({}x{}, 无需下采样)",
+                    filename, orig_w, orig_h
+                ))
             }
         }
         "both" => {
             // 先上采样，再下采样
             let up_w = options.target_width;
             let up_h = options.target_height;
-            let down_w = if options.down_target_width > 0 { options.down_target_width } else { up_w };
-            let down_h = if options.down_target_height > 0 { options.down_target_height } else { up_h };
+            let down_w = if options.down_target_width > 0 {
+                options.down_target_width
+            } else {
+                up_w
+            };
+            let down_h = if options.down_target_height > 0 {
+                options.down_target_height
+            } else {
+                up_h
+            };
 
             let mut current = img;
             let mut steps = Vec::new();
@@ -198,15 +273,26 @@ fn process_scale(
             }
 
             if steps.is_empty() {
-                std::fs::copy(file_path, &output_path).map_err(|e| format!("无法复制图片: {}", e))?;
-                Ok(format!("[跳过] {} ({}x{}, 已在目标范围内)", filename, orig_w, orig_h))
+                std::fs::copy(file_path, &output_path)
+                    .map_err(|e| format!("无法复制图片: {}", e))?;
+                Ok(format!(
+                    "[跳过] {} ({}x{}, 已在目标范围内)",
+                    filename, orig_w, orig_h
+                ))
             } else {
                 let (final_w, final_h) = current.dimensions();
-                current.save(&output_path).map_err(|e| format!("无法保存图片: {}", e))?;
-                Ok(format!("[缩放] {} ({}) → {}x{}", filename, steps.join(" → "), final_w, final_h))
+                current
+                    .save(&output_path)
+                    .map_err(|e| format!("无法保存图片: {}", e))?;
+                Ok(format!(
+                    "[缩放] {} ({}) → {}x{}",
+                    filename,
+                    steps.join(" → "),
+                    final_w,
+                    final_h
+                ))
             }
         }
         _ => Err("无效的缩放模式".to_string()),
     }
 }
-

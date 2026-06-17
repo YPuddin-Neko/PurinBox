@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface ProcessResult {
   success_count: number;
@@ -41,6 +42,7 @@ export default function FlipPage() {
 
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
+  const [recursive, setRecursive] = useState(false);
   const [direction, setDirection] = useState<FlipDirection>('horizontal');
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -96,7 +98,7 @@ export default function FlipPage() {
     setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${dirLabel}${t('pages.process')}`, status: 'info' }]);
     try {
       await invoke<ProcessResult>('flip_images', {
-        options: { input_path: inputPath, output_path: outputPath, direction },
+        options: { input_path: inputPath, output_path: outputPath, direction, recursive },
       });
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
@@ -129,7 +131,10 @@ export default function FlipPage() {
             <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">{t('pages.inputPath')}</label>
+                <div className="form-label-row">
+                  <label className="form-label">{t('pages.inputPath')}</label>
+                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
+                </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>

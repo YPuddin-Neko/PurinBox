@@ -9,6 +9,7 @@ import {
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import { useTranslation } from 'react-i18next';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 interface DupGroup { paths: string[]; similarity: number; method: string; }
@@ -17,6 +18,7 @@ interface DedupResult { total_images: number; duplicate_groups: DupGroup[]; scan
 export default function ImageDedupPage() {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
+  const [recursive, setRecursive] = useState(false);
   const [dhashThreshold, setDhashThreshold] = useState(10);
   const [phashThreshold, setPhashThreshold] = useState(10);
   const [colorThreshold, setColorThreshold] = useState(0.85);
@@ -81,6 +83,7 @@ export default function ImageDedupPage() {
           dhash_threshold: dhashThreshold,
           phash_threshold: phashThreshold,
           color_threshold: colorThreshold,
+          recursive,
         },
       });
       setDupGroups(result.duplicate_groups);
@@ -103,7 +106,7 @@ export default function ImageDedupPage() {
       setIsDone(true);
       setProcessing(false);
     }
-  }, [inputPath, dhashThreshold, phashThreshold, colorThreshold]);
+  }, [inputPath, dhashThreshold, phashThreshold, colorThreshold, recursive]);
 
   const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); setProcessStartTime(0); }, []);
   const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
@@ -166,7 +169,10 @@ export default function ImageDedupPage() {
         {/* Left: settings */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={panel}>
-            <label style={label}>{t('imageDedup.imageFolder')}</label>
+            <div className="form-label-row" style={{ marginBottom: 6 }}>
+              <label style={{ ...label, marginBottom: 0 }}>{t('imageDedup.imageFolder')}</label>
+              <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
+            </div>
             <div style={{ display: 'flex', gap: 6 }}>
               <input className="form-input" value={inputPath} onChange={e => setInputPath(e.target.value)}
                 placeholder={t('imageDedup.selectFolderPlaceholder')} style={{ flex: 1, fontSize: 12 }} />

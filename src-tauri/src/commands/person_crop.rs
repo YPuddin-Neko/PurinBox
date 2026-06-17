@@ -1,13 +1,16 @@
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use futures_util::StreamExt;
 use tauri::Emitter;
 
-use super::{collect_image_files, finalize_part_file, prepare_part_file, ProcessResult, ProgressEvent};
+use super::{
+    collect_image_files_with_recursive_excluding, finalize_part_file, output_dir_for_input,
+    prepare_part_file, ProcessResult, ProgressEvent,
+};
 
 // ===== DeepGHS Anime Detection Models =====
 
@@ -16,7 +19,7 @@ use super::{collect_image_files, finalize_part_file, prepare_part_file, ProcessR
 pub struct CropModelDef {
     pub id: &'static str,
     pub name: &'static str,
-    pub crop_type: &'static str,  // "person" | "halfbody" | "head" | "face" | "eyes"
+    pub crop_type: &'static str, // "person" | "halfbody" | "head" | "face" | "eyes"
     pub repo: &'static str,
     pub subfolder: &'static str,
     pub size_mb: f64,
@@ -92,17 +95,20 @@ pub struct CropModelInfo {
 
 #[tauri::command]
 pub fn get_person_crop_models() -> Result<Vec<CropModelInfo>, String> {
-    Ok(CROP_MODELS.iter().map(|m| {
-        let path = model_onnx_path(m);
-        CropModelInfo {
-            id: m.id.to_string(),
-            name: m.name.to_string(),
-            crop_type: m.crop_type.to_string(),
-            size_mb: m.size_mb,
-            downloaded: path.exists(),
-            path: path.to_string_lossy().to_string(),
-        }
-    }).collect())
+    Ok(CROP_MODELS
+        .iter()
+        .map(|m| {
+            let path = model_onnx_path(m);
+            CropModelInfo {
+                id: m.id.to_string(),
+                name: m.name.to_string(),
+                crop_type: m.crop_type.to_string(),
+                size_mb: m.size_mb,
+                downloaded: path.exists(),
+                path: path.to_string_lossy().to_string(),
+            }
+        })
+        .collect())
 }
 
 /// 下载进度
@@ -120,21 +126,34 @@ static DOWNLOAD_CANCEL: AtomicBool = AtomicBool::new(false);
 
 /// 下载所有缺失的模型（一键下载模型包）
 #[tauri::command]
-pub async fn download_person_crop_model(app: tauri::AppHandle, model_id: String) -> Result<String, String> {
+pub async fn download_person_crop_model(
+    app: tauri::AppHandle,
+    model_id: String,
+) -> Result<String, String> {
     DOWNLOAD_CANCEL.store(false, Ordering::SeqCst);
 
     // 支持 model_id = "all" 下载全部，或单个模型 id
     let models_to_download: Vec<&CropModelDef> = if model_id == "all" {
-        CROP_MODELS.iter().filter(|m| !model_onnx_path(m).exists()).collect()
+        CROP_MODELS
+            .iter()
+            .filter(|m| !model_onnx_path(m).exists())
+            .collect()
     } else {
         CROP_MODELS.iter().filter(|m| m.id == model_id).collect()
     };
 
     if models_to_download.is_empty() {
-        let _ = app.emit("person-crop-download", CropDownloadProgress {
-            downloaded: 0, total: 0, percent: 100.0, speed_mbps: 0.0,
-            status: "done".into(), message: "所有模型已就绪".into(),
-        });
+        let _ = app.emit(
+            "person-crop-download",
+            CropDownloadProgress {
+                downloaded: 0,
+                total: 0,
+                percent: 100.0,
+                speed_mbps: 0.0,
+                status: "done".into(),
+                message: "所有模型已就绪".into(),
+            },
+        );
         return Ok("all_ready".into());
     }
 
@@ -150,7 +169,9 @@ pub async fn download_person_crop_model(app: tauri::AppHandle, model_id: String)
         }
 
         let dest = model_onnx_path(model);
-        if dest.exists() { continue; }
+        if dest.exists() {
+            continue;
+        }
 
         let dir = dest.parent().unwrap();
         if !dir.exists() {
@@ -164,13 +185,23 @@ pub async fn download_person_crop_model(app: tauri::AppHandle, model_id: String)
 
         let prefix = format!("[{}/{}] {}", idx + 1, models_to_download.len(), model.name);
 
-        let _ = app.emit("person-crop-download", CropDownloadProgress {
-            downloaded: 0, total: 0, percent: 0.0, speed_mbps: 0.0,
-            status: "downloading".into(),
-            message: format!("{} — 开始下载...", prefix),
-        });
+        let _ = app.emit(
+            "person-crop-download",
+            CropDownloadProgress {
+                downloaded: 0,
+                total: 0,
+                percent: 0.0,
+                speed_mbps: 0.0,
+                status: "downloading".into(),
+                message: format!("{} — 开始下载...", prefix),
+            },
+        );
 
-        let resp = client.get(&url).send().await.map_err(|e| format!("请求失败: {}", e))?;
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("请求失败: {}", e))?;
         if !resp.status().is_success() {
             return Err(format!("HTTP {}: {}", resp.status(), url));
         }
@@ -179,7 +210,9 @@ pub async fn download_person_crop_model(app: tauri::AppHandle, model_id: String)
         let mut stream = resp.bytes_stream();
         // 先写入 .part 临时文件，校验完成后再原子替换到最终路径，避免中断残件被当作完整文件
         let part_path = prepare_part_file(&dest);
-        let mut file = tokio::fs::File::create(&part_path).await.map_err(|e| format!("创建文件失败: {}", e))?;
+        let mut file = tokio::fs::File::create(&part_path)
+            .await
+            .map_err(|e| format!("创建文件失败: {}", e))?;
         let mut downloaded: u64 = 0;
         let mut last_t = std::time::Instant::now();
         let mut last_b: u64 = 0;
@@ -195,7 +228,10 @@ pub async fn download_person_crop_model(app: tauri::AppHandle, model_id: String)
             }
             let chunk = match chunk {
                 Ok(c) => c,
-                Err(e) => { result = Err(format!("下载失败: {}", e)); break; }
+                Err(e) => {
+                    result = Err(format!("下载失败: {}", e));
+                    break;
+                }
             };
             if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
                 result = Err(format!("写入失败: {}", e));
@@ -206,20 +242,49 @@ pub async fn download_person_crop_model(app: tauri::AppHandle, model_id: String)
             let now = std::time::Instant::now();
             let elapsed_ms = now.duration_since(last_t).as_millis();
             if elapsed_ms >= 500 || (total_size > 0 && downloaded >= total_size) {
-                let speed = if elapsed_ms > 0 { (downloaded - last_b) as f64 / elapsed_ms as f64 * 1000.0 / 1_048_576.0 } else { 0.0 };
-                last_t = now; last_b = downloaded;
-                let pct = if total_size > 0 { (downloaded as f64 / total_size as f64 * 100.0) as f32 } else { 0.0 };
-                let avg = { let t = start.elapsed().as_secs_f64(); if t > 0.0 { downloaded as f64 / t / 1_048_576.0 } else { 0.0 } };
+                let speed = if elapsed_ms > 0 {
+                    (downloaded - last_b) as f64 / elapsed_ms as f64 * 1000.0 / 1_048_576.0
+                } else {
+                    0.0
+                };
+                last_t = now;
+                last_b = downloaded;
+                let pct = if total_size > 0 {
+                    (downloaded as f64 / total_size as f64 * 100.0) as f32
+                } else {
+                    0.0
+                };
+                let avg = {
+                    let t = start.elapsed().as_secs_f64();
+                    if t > 0.0 {
+                        downloaded as f64 / t / 1_048_576.0
+                    } else {
+                        0.0
+                    }
+                };
                 let mb_done = downloaded as f64 / 1_048_576.0;
                 let msg = if total_size > 0 {
-                    format!("{} — {:.1}/{:.1} MB ({:.1} MB/s)", prefix, mb_done, total_size as f64 / 1_048_576.0, avg)
+                    format!(
+                        "{} — {:.1}/{:.1} MB ({:.1} MB/s)",
+                        prefix,
+                        mb_done,
+                        total_size as f64 / 1_048_576.0,
+                        avg
+                    )
                 } else {
                     format!("{} — {:.1} MB ({:.1} MB/s)", prefix, mb_done, avg)
                 };
-                let _ = app.emit("person-crop-download", CropDownloadProgress {
-                    downloaded, total: total_size, percent: pct, speed_mbps: speed,
-                    status: "downloading".into(), message: msg,
-                });
+                let _ = app.emit(
+                    "person-crop-download",
+                    CropDownloadProgress {
+                        downloaded,
+                        total: total_size,
+                        percent: pct,
+                        speed_mbps: speed,
+                        status: "downloading".into(),
+                        message: msg,
+                    },
+                );
             }
         }
 
@@ -240,11 +305,17 @@ pub async fn download_person_crop_model(app: tauri::AppHandle, model_id: String)
         // 校验字节数并原子替换到最终文件
         finalize_part_file(&part_path, &dest, downloaded, total_size)?;
 
-        let _ = app.emit("person-crop-download", CropDownloadProgress {
-            downloaded, total: total_size, percent: 100.0, speed_mbps: 0.0,
-            status: "done".into(),
-            message: format!("{} — 下载完成 ✓", prefix),
-        });
+        let _ = app.emit(
+            "person-crop-download",
+            CropDownloadProgress {
+                downloaded,
+                total: total_size,
+                percent: 100.0,
+                speed_mbps: 0.0,
+                status: "done".into(),
+                message: format!("{} — 下载完成 ✓", prefix),
+            },
+        );
     }
 
     Ok("done".into())
@@ -254,7 +325,6 @@ pub async fn download_person_crop_model(app: tauri::AppHandle, model_id: String)
 pub fn cancel_person_crop_download() {
     DOWNLOAD_CANCEL.store(true, Ordering::SeqCst);
 }
-
 
 // ===== Person Crop Processing =====
 
@@ -285,6 +355,8 @@ pub struct PersonCropOptions {
     pub eyes_scale: f64,
     // other
     pub keep_original_tags: bool,
+    #[serde(default)]
+    pub recursive: bool,
 }
 
 #[tauri::command]
@@ -297,17 +369,21 @@ pub async fn start_person_crop(
     // Ensure Python environment is ready (onnxruntime + numpy + pillow)
     super::python_env::setup_python_env(&app).await?;
 
-    let _ = app.emit("person-crop-progress", ProgressEvent {
-        current: 0, total: 0, filename: String::new(),
-        status: "info".to_string(), message: "开始裁切...".to_string(),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "person-crop-progress",
+        ProgressEvent {
+            current: 0,
+            total: 0,
+            filename: String::new(),
+            status: "info".to_string(),
+            message: "开始裁切...".to_string(),
+            ..Default::default()
+        },
+    );
 
-    tokio::task::spawn_blocking(move || {
-        run_person_crop(&app, &options)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {}", e))?
+    tokio::task::spawn_blocking(move || run_person_crop(&app, &options))
+        .await
+        .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 #[tauri::command]
@@ -316,9 +392,15 @@ pub fn cancel_person_crop() {
     if let Ok(mut guard) = CHILD_PROCESS.lock() {
         if let Some(pid) = guard.take() {
             #[cfg(target_os = "windows")]
-            { let _ = Command::new("taskkill").args(["/F", "/T", "/PID", &pid.to_string()]).output(); }
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/T", "/PID", &pid.to_string()])
+                    .output();
+            }
             #[cfg(not(target_os = "windows"))]
-            { let _ = Command::new("kill").args(["-9", &pid.to_string()]).output(); }
+            {
+                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+            }
         }
     }
 }
@@ -362,7 +444,8 @@ fn get_crop_script_path() -> Result<std::path::PathBuf, String> {
         }
     }
 
-    let paths_str = candidates.iter()
+    let paths_str = candidates
+        .iter()
         .enumerate()
         .map(|(i, p)| format!("  {}. {}", i + 1, p.display()))
         .collect::<Vec<_>>()
@@ -373,9 +456,11 @@ fn get_crop_script_path() -> Result<std::path::PathBuf, String> {
 /// 构建每种裁切类型对应的模型路径映射
 fn build_model_paths(options: &PersonCropOptions) -> Result<serde_json::Value, String> {
     let mut paths = serde_json::Map::new();
-    
+
     let check_model = |crop_type: &str| -> Result<String, String> {
-        let model = CROP_MODELS.iter().find(|m| m.crop_type == crop_type)
+        let model = CROP_MODELS
+            .iter()
+            .find(|m| m.crop_type == crop_type)
             .ok_or_else(|| format!("未找到 {} 类型模型定义", crop_type))?;
         let path = model_onnx_path(model);
         if !path.exists() {
@@ -385,16 +470,28 @@ fn build_model_paths(options: &PersonCropOptions) -> Result<serde_json::Value, S
     };
 
     if options.person_enabled {
-        paths.insert("person".into(), serde_json::Value::String(check_model("person")?));
+        paths.insert(
+            "person".into(),
+            serde_json::Value::String(check_model("person")?),
+        );
     }
     if options.upper_enabled {
-        paths.insert("halfbody".into(), serde_json::Value::String(check_model("halfbody")?));
+        paths.insert(
+            "halfbody".into(),
+            serde_json::Value::String(check_model("halfbody")?),
+        );
     }
     if options.head_enabled {
-        paths.insert("head".into(), serde_json::Value::String(check_model("head")?));
+        paths.insert(
+            "head".into(),
+            serde_json::Value::String(check_model("head")?),
+        );
     }
     if options.eyes_enabled {
-        paths.insert("eyes".into(), serde_json::Value::String(check_model("eyes")?));
+        paths.insert(
+            "eyes".into(),
+            serde_json::Value::String(check_model("eyes")?),
+        );
     }
 
     if paths.is_empty() {
@@ -404,7 +501,10 @@ fn build_model_paths(options: &PersonCropOptions) -> Result<serde_json::Value, S
     Ok(serde_json::Value::Object(paths))
 }
 
-fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Result<ProcessResult, String> {
+fn run_person_crop(
+    app: &tauri::AppHandle,
+    options: &PersonCropOptions,
+) -> Result<ProcessResult, String> {
     let python = find_python()?;
     let script = get_crop_script_path()?;
     let model_paths = build_model_paths(options)?;
@@ -413,23 +513,33 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
     let output_dir = Path::new(&options.output_path);
 
     if !output_dir.exists() {
-        std::fs::create_dir_all(output_dir)
-            .map_err(|e| format!("无法创建输出目录: {}", e))?;
+        std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
     }
 
-    let files = collect_image_files(input)?;
+    let files =
+        collect_image_files_with_recursive_excluding(input, options.recursive, Some(output_dir))?;
     let total = files.len() as u32;
 
     if total == 0 {
-        return Ok(ProcessResult { success_count: 0, fail_count: 0, total: 0, errors: vec![] });
+        return Ok(ProcessResult {
+            success_count: 0,
+            fail_count: 0,
+            total: 0,
+            errors: vec![],
+        });
     }
 
-    let _ = app.emit("person-crop-progress", ProgressEvent {
-        current: 0, total, filename: String::new(),
-        status: "processing".to_string(),
-        message: format!("正在启动 Python 环境... (共 {} 张图片)", total),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "person-crop-progress",
+        ProgressEvent {
+            current: 0,
+            total,
+            filename: String::new(),
+            status: "processing".to_string(),
+            message: format!("正在启动 Python 环境... (共 {} 张图片)", total),
+            ..Default::default()
+        },
+    );
 
     // 启动 Python 子进程
     let mut cmd = Command::new(&python);
@@ -507,23 +617,36 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
                 let clean = line.trim().to_string();
-                if clean.is_empty() { continue; }
+                if clean.is_empty() {
+                    continue;
+                }
                 // 过滤 cuDNN/CUDA/onnxruntime 加载警告
                 let lower = clean.to_lowercase();
-                if lower.contains("cudnn") || lower.contains("cuda_path")
-                    || lower.contains("onnxruntime") || lower.contains("could not load")
-                    || lower.contains("loaded library") || lower.contains("context leak") {
+                if lower.contains("cudnn")
+                    || lower.contains("cuda_path")
+                    || lower.contains("onnxruntime")
+                    || lower.contains("could not load")
+                    || lower.contains("loaded library")
+                    || lower.contains("context leak")
+                {
                     continue;
                 }
                 // 跳过编码乱码
                 let non_ascii = clean.chars().filter(|c| !c.is_ascii()).count();
-                if clean.len() > 20 && non_ascii * 2 > clean.len() { continue; }
-                let _ = app_err.emit("person-crop-progress", ProgressEvent {
-                    current: 0, total: 0, filename: String::new(),
-                    status: "warning".to_string(),
-                    message: format!("[Python] {}", clean),
-                ..Default::default()
-                });
+                if clean.len() > 20 && non_ascii * 2 > clean.len() {
+                    continue;
+                }
+                let _ = app_err.emit(
+                    "person-crop-progress",
+                    ProgressEvent {
+                        current: 0,
+                        total: 0,
+                        filename: String::new(),
+                        status: "warning".to_string(),
+                        message: format!("[Python] {}", clean),
+                        ..Default::default()
+                    },
+                );
             }
         });
     }
@@ -533,8 +656,12 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
         "model_paths": model_paths,
         "use_gpu": options.use_gpu,
     });
-    writeln!(stdin, "{}", serde_json::to_string(&init_config).map_err(|e| format!("序列化配置失败: {}", e))?)
-        .map_err(|e| format!("写入 stdin 失败: {}", e))?;
+    writeln!(
+        stdin,
+        "{}",
+        serde_json::to_string(&init_config).map_err(|e| format!("序列化配置失败: {}", e))?
+    )
+    .map_err(|e| format!("写入 stdin 失败: {}", e))?;
     stdin.flush().map_err(|e| format!("flush 失败: {}", e))?;
 
     // 等待 ready — 可能先收到 GPU 诊断 log 消息
@@ -542,7 +669,8 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
     let mut lines = reader.lines();
 
     loop {
-        let line = lines.next()
+        let line = lines
+            .next()
             .ok_or("Python 进程无响应")?
             .map_err(|e| format!("读取响应失败: {}", e))?;
 
@@ -552,16 +680,28 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
         // 处理 log 类型消息（GPU 诊断等）
         if let Some(msg_type) = json.get("type").and_then(|v| v.as_str()) {
             if msg_type == "log" {
-                let text = json.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let i18n_key = json.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let text = json
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let i18n_key = json
+                    .get("i18n_key")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let i18n_params = json.get("i18n_params").cloned();
-                let _ = app.emit("person-crop-progress", ProgressEvent {
-                    current: 0, total, filename: String::new(),
-                    status: "info".to_string(),
-                    message: text,
-                    i18n_key,
-                    i18n_params,
-                });
+                let _ = app.emit(
+                    "person-crop-progress",
+                    ProgressEvent {
+                        current: 0,
+                        total,
+                        filename: String::new(),
+                        status: "info".to_string(),
+                        message: text,
+                        i18n_key,
+                        i18n_params,
+                    },
+                );
                 continue;
             }
         }
@@ -579,12 +719,17 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
         // 未知消息类型，继续读取
     }
 
-    let _ = app.emit("person-crop-progress", ProgressEvent {
-        current: 0, total, filename: String::new(),
-        status: "processing".to_string(),
-        message: "模型已加载，开始处理...".to_string(),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "person-crop-progress",
+        ProgressEvent {
+            current: 0,
+            total,
+            filename: String::new(),
+            status: "processing".to_string(),
+            message: "模型已加载，开始处理...".to_string(),
+            ..Default::default()
+        },
+    );
 
     let mut success_count = 0u32;
     let mut fail_count = 0u32;
@@ -592,30 +737,45 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
 
     for (i, file_path) in files.iter().enumerate() {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
-            let _ = app.emit("person-crop-progress", ProgressEvent {
-                current: i as u32, total, filename: String::new(),
-                status: "done".to_string(),
-                message: "已取消".to_string(),
-            ..Default::default()
-            });
+            let _ = app.emit(
+                "person-crop-progress",
+                ProgressEvent {
+                    current: i as u32,
+                    total,
+                    filename: String::new(),
+                    status: "done".to_string(),
+                    message: "已取消".to_string(),
+                    ..Default::default()
+                },
+            );
             break;
         }
 
-        let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let filename = file_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let target_output_dir =
+            output_dir_for_input(input, file_path, output_dir, options.recursive)?;
 
-        let _ = app.emit("person-crop-progress", ProgressEvent {
-            current: i as u32 + 1, total,
-            filename: filename.clone(),
-            status: "processing".to_string(),
-            message: format!("正在处理: {}", filename),
-        ..Default::default()
-        });
+        let _ = app.emit(
+            "person-crop-progress",
+            ProgressEvent {
+                current: i as u32 + 1,
+                total,
+                filename: filename.clone(),
+                status: "processing".to_string(),
+                message: format!("正在处理: {}", filename),
+                ..Default::default()
+            },
+        );
 
         // 发送处理命令
         let cmd_json = serde_json::json!({
             "action": "process",
             "image_path": file_path.to_string_lossy(),
-            "output_dir": options.output_path,
+            "output_dir": target_output_dir.to_string_lossy().to_string(),
             "options": {
                 "person_enabled": options.person_enabled,
                 "person_conf": options.person_conf,
@@ -634,7 +794,11 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
             }
         });
 
-        if let Err(e) = writeln!(stdin, "{}", serde_json::to_string(&cmd_json).unwrap_or_default()) {
+        if let Err(e) = writeln!(
+            stdin,
+            "{}",
+            serde_json::to_string(&cmd_json).unwrap_or_default()
+        ) {
             errors.push(format!("{}: 写入失败: {}", filename, e));
             fail_count += 1;
             continue;
@@ -646,40 +810,59 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
             Some(Ok(result_line)) => {
                 match serde_json::from_str::<serde_json::Value>(&result_line) {
                     Ok(result) => {
-                        let status = result.get("status").and_then(|s| s.as_str()).unwrap_or("error");
-                        let message = result.get("message").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                        let status = result
+                            .get("status")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("error");
+                        let message = result
+                            .get("message")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("")
+                            .to_string();
 
                         match status {
                             "success" => {
                                 success_count += 1;
-                                let _ = app.emit("person-crop-progress", ProgressEvent {
-                                    current: i as u32 + 1, total,
-                                    filename: filename.clone(),
-                                    status: "success".to_string(),
-                                    message: format!("[成功] {} — {}", filename, message),
-                                ..Default::default()
-                                });
+                                let _ = app.emit(
+                                    "person-crop-progress",
+                                    ProgressEvent {
+                                        current: i as u32 + 1,
+                                        total,
+                                        filename: filename.clone(),
+                                        status: "success".to_string(),
+                                        message: format!("[成功] {} — {}", filename, message),
+                                        ..Default::default()
+                                    },
+                                );
                             }
                             "skip" => {
                                 success_count += 1;
-                                let _ = app.emit("person-crop-progress", ProgressEvent {
-                                    current: i as u32 + 1, total,
-                                    filename: filename.clone(),
-                                    status: "success".to_string(),
-                                    message: format!("[跳过] {} — {}", filename, message),
-                                ..Default::default()
-                                });
+                                let _ = app.emit(
+                                    "person-crop-progress",
+                                    ProgressEvent {
+                                        current: i as u32 + 1,
+                                        total,
+                                        filename: filename.clone(),
+                                        status: "success".to_string(),
+                                        message: format!("[跳过] {} — {}", filename, message),
+                                        ..Default::default()
+                                    },
+                                );
                             }
                             _ => {
                                 fail_count += 1;
                                 errors.push(format!("{}: {}", filename, message));
-                                let _ = app.emit("person-crop-progress", ProgressEvent {
-                                    current: i as u32 + 1, total,
-                                    filename: filename.clone(),
-                                    status: "error".to_string(),
-                                    message: format!("[失败] {} — {}", filename, message),
-                                ..Default::default()
-                                });
+                                let _ = app.emit(
+                                    "person-crop-progress",
+                                    ProgressEvent {
+                                        current: i as u32 + 1,
+                                        total,
+                                        filename: filename.clone(),
+                                        status: "error".to_string(),
+                                        message: format!("[失败] {} — {}", filename, message),
+                                        ..Default::default()
+                                    },
+                                );
                             }
                         }
                     }
@@ -707,12 +890,25 @@ fn run_person_crop(app: &tauri::AppHandle, options: &PersonCropOptions) -> Resul
     let _ = child.wait();
     *CHILD_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
-    let _ = app.emit("person-crop-progress", ProgressEvent {
-        current: total, total, filename: String::new(),
-        status: "done".to_string(),
-        message: format!("处理完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "person-crop-progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "done".to_string(),
+            message: format!(
+                "处理完成: 成功 {}, 失败 {}, 共 {}",
+                success_count, fail_count, total
+            ),
+            ..Default::default()
+        },
+    );
 
-    Ok(ProcessResult { success_count, fail_count, total, errors })
+    Ok(ProcessResult {
+        success_count,
+        fail_count,
+        total,
+        errors,
+    })
 }

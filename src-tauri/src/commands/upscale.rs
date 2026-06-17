@@ -1,11 +1,14 @@
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use futures_util::StreamExt;
 use tauri::Emitter;
 
-use super::{collect_image_files, finalize_part_file, prepare_part_file, ProcessResult, ProgressEvent};
+use super::{
+    collect_image_files_with_recursive_excluding, finalize_part_file, output_path_for_input,
+    prepare_part_file, ProcessResult, ProgressEvent,
+};
 
 /// 超分子进程句柄（Python 或 NCNN），用于强制取消
 static ACTIVE_CHILD: Mutex<Option<u32>> = Mutex::new(None);
@@ -151,9 +154,13 @@ fn engine_dir(engine_id: &str) -> PathBuf {
 fn engine_binary(engine: &EngineDef) -> PathBuf {
     let dir = engine_dir(engine.id);
     #[cfg(target_os = "windows")]
-    { dir.join(format!("{}.exe", engine.bin_name)) }
+    {
+        dir.join(format!("{}.exe", engine.bin_name))
+    }
     #[cfg(not(target_os = "windows"))]
-    { dir.join(engine.bin_name) }
+    {
+        dir.join(engine.bin_name)
+    }
 }
 
 fn is_engine_ready(engine: &EngineDef) -> bool {
@@ -172,12 +179,24 @@ fn realesrgan_weights_dir() -> PathBuf {
 /// 检查是否有至少一个 ESRGAN 模型权重文件 (.onnx)
 fn has_any_esrgan_weight() -> bool {
     let dir = realesrgan_weights_dir();
-    if !dir.exists() { return false; }
-    dir.read_dir().ok().map(|mut entries| {
-        entries.any(|e| {
-            e.ok().map(|e| e.path().extension().map(|ext| ext == "onnx").unwrap_or(false)).unwrap_or(false)
+    if !dir.exists() {
+        return false;
+    }
+    dir.read_dir()
+        .ok()
+        .map(|mut entries| {
+            entries.any(|e| {
+                e.ok()
+                    .map(|e| {
+                        e.path()
+                            .extension()
+                            .map(|ext| ext == "onnx")
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            })
         })
-    }).unwrap_or(false)
+        .unwrap_or(false)
 }
 
 /// 检查 Python + onnxruntime + cv2 是否已安装
@@ -200,25 +219,30 @@ fn is_python_deps_ready() -> bool {
 
 #[tauri::command]
 pub fn get_upscale_engines() -> Result<Vec<UpscaleEngineInfo>, String> {
-    Ok(ENGINES.iter().map(|e| {
-        UpscaleEngineInfo {
+    Ok(ENGINES
+        .iter()
+        .map(|e| UpscaleEngineInfo {
             id: e.id.to_string(),
             name: e.name.to_string(),
             description: e.description.to_string(),
             downloaded: is_engine_ready(e),
             size_mb: e.size_mb,
             scales: e.scales.to_vec(),
-            models: e.models.iter().map(|(id, name, dir)| UpscaleModelChoice {
-                id: id.to_string(),
-                name: name.to_string(),
-                dir_name: dir.to_string(),
-            }).collect(),
+            models: e
+                .models
+                .iter()
+                .map(|(id, name, dir)| UpscaleModelChoice {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    dir_name: dir.to_string(),
+                })
+                .collect(),
             supports_denoise: e.supports_denoise,
             denoise_range: e.denoise_range,
             supports_cpu: e.supports_cpu,
             use_python: e.use_python,
-        }
-    }).collect())
+        })
+        .collect())
 }
 
 // ===== Download =====
@@ -236,17 +260,29 @@ pub struct UpscaleDownloadProgress {
 static DOWNLOAD_CANCEL: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
-pub async fn download_upscale_engine(app: tauri::AppHandle, engine_id: String) -> Result<String, String> {
+pub async fn download_upscale_engine(
+    app: tauri::AppHandle,
+    engine_id: String,
+) -> Result<String, String> {
     DOWNLOAD_CANCEL.store(false, Ordering::SeqCst);
 
-    let engine = ENGINES.iter().find(|e| e.id == engine_id)
+    let engine = ENGINES
+        .iter()
+        .find(|e| e.id == engine_id)
         .ok_or_else(|| format!("未知引擎: {}", engine_id))?;
 
     if is_engine_ready(engine) {
-        let _ = app.emit("upscale-download", UpscaleDownloadProgress {
-            downloaded: 0, total: 0, percent: 100.0, speed_mbps: 0.0,
-            status: "done".into(), message: format!("{} 已就绪", engine.name),
-        });
+        let _ = app.emit(
+            "upscale-download",
+            UpscaleDownloadProgress {
+                downloaded: 0,
+                total: 0,
+                percent: 100.0,
+                speed_mbps: 0.0,
+                status: "done".into(),
+                message: format!("{} 已就绪", engine.name),
+            },
+        );
         return Ok("already_ready".into());
     }
 
@@ -269,13 +305,23 @@ pub async fn download_upscale_engine(app: tauri::AppHandle, engine_id: String) -
         .build()
         .map_err(|e| format!("HTTP 客户端失败: {}", e))?;
 
-    let _ = app.emit("upscale-download", UpscaleDownloadProgress {
-        downloaded: 0, total: 0, percent: 0.0, speed_mbps: 0.0,
-        status: "downloading".into(),
-        message: format!("正在下载 {} ...", engine.name),
-    });
+    let _ = app.emit(
+        "upscale-download",
+        UpscaleDownloadProgress {
+            downloaded: 0,
+            total: 0,
+            percent: 0.0,
+            speed_mbps: 0.0,
+            status: "downloading".into(),
+            message: format!("正在下载 {} ...", engine.name),
+        },
+    );
 
-    let resp = client.get(url).send().await.map_err(|e| format!("请求失败: {}", e))?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {}: {}", resp.status(), url));
     }
@@ -284,7 +330,8 @@ pub async fn download_upscale_engine(app: tauri::AppHandle, engine_id: String) -
     let mut stream = resp.bytes_stream();
     // 先写入 .part 临时文件，校验完成后再原子替换，避免中断残件
     let part_path = prepare_part_file(&zip_path);
-    let mut file = tokio::fs::File::create(&part_path).await
+    let mut file = tokio::fs::File::create(&part_path)
+        .await
         .map_err(|e| format!("创建文件失败: {}", e))?;
     let mut downloaded: u64 = 0;
     let mut last_t = std::time::Instant::now();
@@ -301,7 +348,10 @@ pub async fn download_upscale_engine(app: tauri::AppHandle, engine_id: String) -
         }
         let chunk = match chunk {
             Ok(c) => c,
-            Err(e) => { result = Err(format!("下载失败: {}", e)); break; }
+            Err(e) => {
+                result = Err(format!("下载失败: {}", e));
+                break;
+            }
         };
         if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
             result = Err(format!("写入失败: {}", e));
@@ -312,20 +362,49 @@ pub async fn download_upscale_engine(app: tauri::AppHandle, engine_id: String) -
         let now = std::time::Instant::now();
         let elapsed_ms = now.duration_since(last_t).as_millis();
         if elapsed_ms >= 500 || (total_size > 0 && downloaded >= total_size) {
-            let speed = if elapsed_ms > 0 { (downloaded - last_b) as f64 / elapsed_ms as f64 * 1000.0 / 1_048_576.0 } else { 0.0 };
-            last_t = now; last_b = downloaded;
-            let pct = if total_size > 0 { (downloaded as f64 / total_size as f64 * 100.0) as f32 } else { 0.0 };
-            let avg = { let t = start.elapsed().as_secs_f64(); if t > 0.0 { downloaded as f64 / t / 1_048_576.0 } else { 0.0 } };
+            let speed = if elapsed_ms > 0 {
+                (downloaded - last_b) as f64 / elapsed_ms as f64 * 1000.0 / 1_048_576.0
+            } else {
+                0.0
+            };
+            last_t = now;
+            last_b = downloaded;
+            let pct = if total_size > 0 {
+                (downloaded as f64 / total_size as f64 * 100.0) as f32
+            } else {
+                0.0
+            };
+            let avg = {
+                let t = start.elapsed().as_secs_f64();
+                if t > 0.0 {
+                    downloaded as f64 / t / 1_048_576.0
+                } else {
+                    0.0
+                }
+            };
             let mb_done = downloaded as f64 / 1_048_576.0;
             let msg = if total_size > 0 {
-                format!("{} — {:.1}/{:.1} MB ({:.1} MB/s)", engine.name, mb_done, total_size as f64 / 1_048_576.0, avg)
+                format!(
+                    "{} — {:.1}/{:.1} MB ({:.1} MB/s)",
+                    engine.name,
+                    mb_done,
+                    total_size as f64 / 1_048_576.0,
+                    avg
+                )
             } else {
                 format!("{} — {:.1} MB ({:.1} MB/s)", engine.name, mb_done, avg)
             };
-            let _ = app.emit("upscale-download", UpscaleDownloadProgress {
-                downloaded, total: total_size, percent: pct, speed_mbps: speed,
-                status: "downloading".into(), message: msg,
-            });
+            let _ = app.emit(
+                "upscale-download",
+                UpscaleDownloadProgress {
+                    downloaded,
+                    total: total_size,
+                    percent: pct,
+                    speed_mbps: speed,
+                    status: "downloading".into(),
+                    message: msg,
+                },
+            );
         }
     }
 
@@ -347,22 +426,27 @@ pub async fn download_upscale_engine(app: tauri::AppHandle, engine_id: String) -
     finalize_part_file(&part_path, &zip_path, downloaded, total_size)?;
 
     // Extracting zip
-    let _ = app.emit("upscale-download", UpscaleDownloadProgress {
-        downloaded, total: total_size, percent: 99.0, speed_mbps: 0.0,
-        status: "extracting".into(),
-        message: format!("{} — 正在解压...", engine.name),
-    });
+    let _ = app.emit(
+        "upscale-download",
+        UpscaleDownloadProgress {
+            downloaded,
+            total: total_size,
+            percent: 99.0,
+            speed_mbps: 0.0,
+            status: "extracting".into(),
+            message: format!("{} — 正在解压...", engine.name),
+        },
+    );
 
     // Extract zip in blocking task
     let dest_dir_clone = dest_dir.clone();
     let zip_path_clone = zip_path.clone();
     let engine_name = engine.name.to_string();
     let bin_name = engine.bin_name.to_string();
-    tokio::task::spawn_blocking(move || {
-        extract_zip(&zip_path_clone, &dest_dir_clone, &bin_name)
-    }).await
-    .map_err(|e| format!("解压任务失败: {}", e))?
-    .map_err(|e| format!("解压失败: {}", e))?;
+    tokio::task::spawn_blocking(move || extract_zip(&zip_path_clone, &dest_dir_clone, &bin_name))
+        .await
+        .map_err(|e| format!("解压任务失败: {}", e))?
+        .map_err(|e| format!("解压失败: {}", e))?;
 
     // Clean up zip
     let _ = tokio::fs::remove_file(&zip_path).await;
@@ -377,11 +461,17 @@ pub async fn download_upscale_engine(app: tauri::AppHandle, engine_id: String) -
         }
     }
 
-    let _ = app.emit("upscale-download", UpscaleDownloadProgress {
-        downloaded, total: total_size, percent: 100.0, speed_mbps: 0.0,
-        status: "done".into(),
-        message: format!("{} — 下载完成 ✓", engine_name),
-    });
+    let _ = app.emit(
+        "upscale-download",
+        UpscaleDownloadProgress {
+            downloaded,
+            total: total_size,
+            percent: 100.0,
+            speed_mbps: 0.0,
+            status: "done".into(),
+            message: format!("{} — 下载完成 ✓", engine_name),
+        },
+    );
 
     Ok("done".into())
 }
@@ -399,7 +489,9 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path, _bin_name: &str) -> Result<(), 
     }
 
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| format!("zip entry error: {}", e))?;
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("zip entry error: {}", e))?;
         let raw_name = entry.name().to_string();
 
         // Zip Slip 防护: enclosed_name() 对包含 ../、绝对路径等不安全条目返回 None，直接跳过
@@ -415,7 +507,9 @@ fn extract_zip(zip_path: &Path, dest_dir: &Path, _bin_name: &str) -> Result<(), 
             &raw_name
         };
 
-        if relative.is_empty() { continue; }
+        if relative.is_empty() {
+            continue;
+        }
 
         let out_path = dest_dir.join(relative);
 
@@ -442,12 +536,22 @@ pub fn cancel_upscale_download() {
 
 /// Real-ESRGAN Python 引擎下载: 安装 Python + PyTorch + OpenCV 依赖
 /// 模型权重会在首次运行时由 Python 脚本自动下载
-async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> Result<String, String> {
+async fn download_python_engine(
+    app: &tauri::AppHandle,
+    engine: &EngineDef,
+) -> Result<String, String> {
     let emit = |pct: f32, status: &str, msg: String| {
-        let _ = app.emit("upscale-download", UpscaleDownloadProgress {
-            downloaded: 0, total: 0, percent: pct, speed_mbps: 0.0,
-            status: status.into(), message: msg,
-        });
+        let _ = app.emit(
+            "upscale-download",
+            UpscaleDownloadProgress {
+                downloaded: 0,
+                total: 0,
+                percent: pct,
+                speed_mbps: 0.0,
+                status: status.into(),
+                message: msg,
+            },
+        );
     };
 
     // Step 1: Ensure Python environment (onnxruntime already installed by setup_python_env)
@@ -470,7 +574,9 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
                 cmd.creation_flags(0x08000000);
             }
             cmd.output().map(|o| o.status.success()).unwrap_or(false)
-        }).await.unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false)
     };
 
     if !has_cv2 {
@@ -478,8 +584,13 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
         let p = python.clone();
         let app2 = app.clone();
         tokio::task::spawn_blocking(move || {
-            super::python_env::pip_install_with_python(&app2, &p, &["opencv-python-headless==4.11.0.86"])
-        }).await
+            super::python_env::pip_install_with_python(
+                &app2,
+                &p,
+                &["opencv-python-headless==4.11.0.86"],
+            )
+        })
+        .await
         .map_err(|e| format!("安装线程异常: {}", e))??;
         emit(30.0, "downloading", "OpenCV 安装完成".into());
     } else {
@@ -511,11 +622,18 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
         let dest = weights_dir.join(filename);
         if dest.exists() {
             let base_pct = 30.0 + ((fi + 1) as f32 / total_files as f32) * 68.0;
-            emit(base_pct, "downloading", format!("{} 已存在，跳过", filename));
+            emit(
+                base_pct,
+                "downloading",
+                format!("{} 已存在，跳过", filename),
+            );
             continue;
         }
 
-        let resp = client.get(*url).send().await
+        let resp = client
+            .get(*url)
+            .send()
+            .await
             .map_err(|e| format!("{} 下载请求失败: {}", filename, e))?;
         if !resp.status().is_success() {
             return Err(format!("{} 下载失败 HTTP {}", filename, resp.status()));
@@ -525,7 +643,8 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
         let mut stream = resp.bytes_stream();
         // 先写入 .part 临时文件，校验完成后再原子替换到最终路径，避免中断残件被当作完整文件
         let part_path = prepare_part_file(&dest);
-        let mut file = tokio::fs::File::create(&part_path).await
+        let mut file = tokio::fs::File::create(&part_path)
+            .await
             .map_err(|e| format!("创建文件失败: {}", e))?;
         let mut downloaded: u64 = 0;
         let start = std::time::Instant::now();
@@ -541,7 +660,10 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
             }
             let chunk = match chunk {
                 Ok(c) => c,
-                Err(e) => { result = Err(format!("下载失败: {}", e)); break; }
+                Err(e) => {
+                    result = Err(format!("下载失败: {}", e));
+                    break;
+                }
             };
             if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
                 result = Err(format!("写入失败: {}", e));
@@ -550,22 +672,48 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
             downloaded += chunk.len() as u64;
 
             let now = std::time::Instant::now();
-            if now.duration_since(last_t).as_millis() >= 500 || (total_size > 0 && downloaded >= total_size) {
+            if now.duration_since(last_t).as_millis() >= 500
+                || (total_size > 0 && downloaded >= total_size)
+            {
                 last_t = now;
-                let avg = { let t = start.elapsed().as_secs_f64(); if t > 0.0 { downloaded as f64 / t / 1_048_576.0 } else { 0.0 } };
+                let avg = {
+                    let t = start.elapsed().as_secs_f64();
+                    if t > 0.0 {
+                        downloaded as f64 / t / 1_048_576.0
+                    } else {
+                        0.0
+                    }
+                };
                 let mb_done = downloaded as f64 / 1_048_576.0;
                 let base_pct = 30.0 + (fi as f32 / total_files as f32) * 68.0;
-                let file_pct = if total_size > 0 { (downloaded as f32 / total_size as f32) * (68.0 / total_files as f32) } else { 0.0 };
+                let file_pct = if total_size > 0 {
+                    (downloaded as f32 / total_size as f32) * (68.0 / total_files as f32)
+                } else {
+                    0.0
+                };
                 let pct = base_pct + file_pct;
                 let msg = if total_size > 0 {
-                    format!("{} — {:.1}/{:.1} MB ({:.1} MB/s)", filename, mb_done, total_size as f64 / 1_048_576.0, avg)
+                    format!(
+                        "{} — {:.1}/{:.1} MB ({:.1} MB/s)",
+                        filename,
+                        mb_done,
+                        total_size as f64 / 1_048_576.0,
+                        avg
+                    )
                 } else {
                     format!("{} — {:.1} MB ({:.1} MB/s)", filename, mb_done, avg)
                 };
-                let _ = app.emit("upscale-download", UpscaleDownloadProgress {
-                    downloaded, total: total_size, percent: pct, speed_mbps: avg,
-                    status: "downloading".into(), message: msg,
-                });
+                let _ = app.emit(
+                    "upscale-download",
+                    UpscaleDownloadProgress {
+                        downloaded,
+                        total: total_size,
+                        percent: pct,
+                        speed_mbps: avg,
+                        status: "downloading".into(),
+                        message: msg,
+                    },
+                );
             }
         }
 
@@ -592,7 +740,6 @@ async fn download_python_engine(app: &tauri::AppHandle, engine: &EngineDef) -> R
     Ok("done".into())
 }
 
-
 // ===== Upscale Processing =====
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -606,15 +753,22 @@ pub struct UpscaleOptions {
     pub tta: bool,
     pub gpu_id: i32,
     pub tile_size: i32,
+    #[serde(default)]
+    pub recursive: bool,
 }
 
 static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
-pub async fn start_upscale(app: tauri::AppHandle, options: UpscaleOptions) -> Result<ProcessResult, String> {
+pub async fn start_upscale(
+    app: tauri::AppHandle,
+    options: UpscaleOptions,
+) -> Result<ProcessResult, String> {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
 
-    let engine = ENGINES.iter().find(|e| e.id == options.engine_id)
+    let engine = ENGINES
+        .iter()
+        .find(|e| e.id == options.engine_id)
         .ok_or_else(|| format!("未知引擎: {}", options.engine_id))?;
 
     // Python 引擎: 依赖已在 download_upscale_engine 中安装完成
@@ -648,7 +802,8 @@ fn run_ncnn_upscale(
         std::fs::create_dir_all(output_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
     }
 
-    let files = collect_image_files(input)?;
+    let files =
+        collect_image_files_with_recursive_excluding(input, options.recursive, Some(output_dir))?;
     if files.is_empty() {
         return Err("未找到任何图片".into());
     }
@@ -658,54 +813,87 @@ fn run_ncnn_upscale(
     let mut fail_count = 0u32;
     let mut errors = Vec::new();
 
-    let _ = app.emit("upscale-progress", ProgressEvent {
-        current: 0, total,
-        filename: String::new(),
-        status: "processing".to_string(),
-        message: format!("开始超分: 共 {} 张, 引擎: {}, 倍率: {}x", total, engine.name, options.scale),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "upscale-progress",
+        ProgressEvent {
+            current: 0,
+            total,
+            filename: String::new(),
+            status: "processing".to_string(),
+            message: format!(
+                "开始超分: 共 {} 张, 引擎: {}, 倍率: {}x",
+                total, engine.name, options.scale
+            ),
+            ..Default::default()
+        },
+    );
 
     let engine_dir = engine_dir(engine.id);
 
     // For Real-ESRGAN, the -n flag is model name, not denoise
     // For Real-CUGAN and Waifu2x, -n is noise-level and -m is model path
-    let model_choice = engine.models.iter().find(|m| m.0 == options.model_id)
+    let model_choice = engine
+        .models
+        .iter()
+        .find(|m| m.0 == options.model_id)
         .unwrap_or(&engine.models[0]);
 
     for (i, file_path) in files.iter().enumerate() {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
-            let _ = app.emit("upscale-progress", ProgressEvent {
-                current: i as u32, total, filename: String::new(),
-                status: "done".to_string(),
-                message: format!("已取消: 已处理 {}, 共 {}", i, total),
-            ..Default::default()
-            });
+            let _ = app.emit(
+                "upscale-progress",
+                ProgressEvent {
+                    current: i as u32,
+                    total,
+                    filename: String::new(),
+                    status: "done".to_string(),
+                    message: format!("已取消: 已处理 {}, 共 {}", i, total),
+                    ..Default::default()
+                },
+            );
             break;
         }
 
-        let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let filename = file_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
-        let _ = app.emit("upscale-progress", ProgressEvent {
-            current: i as u32, total,
-            filename: filename.clone(),
-            status: "processing".to_string(),
-            message: format!("[{}/{}] 正在处理: {}", i + 1, total, filename),
-        ..Default::default()
-        });
+        let _ = app.emit(
+            "upscale-progress",
+            ProgressEvent {
+                current: i as u32,
+                total,
+                filename: filename.clone(),
+                status: "processing".to_string(),
+                message: format!("[{}/{}] 正在处理: {}", i + 1, total, filename),
+                ..Default::default()
+            },
+        );
 
         // Build output filename — keep name, force png output
         let stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
-        let out_file = output_dir.join(format!("{}.png", stem));
+        let out_name = format!("{}.png", stem);
+        let out_file =
+            output_path_for_input(input, file_path, output_dir, &out_name, options.recursive)?;
 
         // Build command
         let mut cmd = std::process::Command::new(&bin);
 
         // Common args
-        cmd.arg("-i").arg(file_path)
-           .arg("-o").arg(&out_file)
-           .arg("-s").arg(options.scale.to_string())
-           .arg("-t").arg(if options.tile_size < 0 { "0".to_string() } else { options.tile_size.to_string() });
+        cmd.arg("-i")
+            .arg(file_path)
+            .arg("-o")
+            .arg(&out_file)
+            .arg("-s")
+            .arg(options.scale.to_string())
+            .arg("-t")
+            .arg(if options.tile_size < 0 {
+                "0".to_string()
+            } else {
+                options.tile_size.to_string()
+            });
 
         // GPU selection: macOS NCNN builds don't support -g -1 (CPU mode)
         if options.gpu_id >= 0 {
@@ -736,7 +924,7 @@ fn run_ncnn_upscale(
 
         // 捕获输出（必须 piped，否则 wait_with_output 拿到的 stderr 恒为空，错误信息丢失）
         cmd.stdout(std::process::Stdio::piped())
-           .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped());
 
         // Quiet: hide console window on Windows
         #[cfg(target_os = "windows")]
@@ -749,13 +937,17 @@ fn run_ncnn_upscale(
             fail_count += 1;
             let err_msg = format!("{}: 启动失败 - {}", filename, e);
             errors.push(err_msg.clone());
-            let _ = app.emit("upscale-progress", ProgressEvent {
-                current: i as u32 + 1, total,
-                filename: filename.clone(),
-                status: "error".to_string(),
-                message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
-            ..Default::default()
-            });
+            let _ = app.emit(
+                "upscale-progress",
+                ProgressEvent {
+                    current: i as u32 + 1,
+                    total,
+                    filename: filename.clone(),
+                    status: "error".to_string(),
+                    message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
+                    ..Default::default()
+                },
+            );
             err_msg
         });
 
@@ -780,51 +972,79 @@ fn run_ncnn_upscale(
             Ok(output) => {
                 if output.status.success() && out_file.exists() {
                     success_count += 1;
-                    let _ = app.emit("upscale-progress", ProgressEvent {
-                        current: i as u32 + 1, total,
-                        filename: filename.clone(),
-                        status: "success".to_string(),
-                        message: format!("[{}/{}] ✓ {}", i + 1, total, filename),
-                    ..Default::default()
-                    });
+                    let _ = app.emit(
+                        "upscale-progress",
+                        ProgressEvent {
+                            current: i as u32 + 1,
+                            total,
+                            filename: filename.clone(),
+                            status: "success".to_string(),
+                            message: format!("[{}/{}] ✓ {}", i + 1, total, filename),
+                            ..Default::default()
+                        },
+                    );
                 } else {
                     fail_count += 1;
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    let err_msg = format!("{}: {}", filename, stderr.lines().last().unwrap_or("未知错误"));
+                    let err_msg = format!(
+                        "{}: {}",
+                        filename,
+                        stderr.lines().last().unwrap_or("未知错误")
+                    );
                     errors.push(err_msg.clone());
-                    let _ = app.emit("upscale-progress", ProgressEvent {
-                        current: i as u32 + 1, total,
-                        filename: filename.clone(),
-                        status: "error".to_string(),
-                        message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
-                    ..Default::default()
-                    });
+                    let _ = app.emit(
+                        "upscale-progress",
+                        ProgressEvent {
+                            current: i as u32 + 1,
+                            total,
+                            filename: filename.clone(),
+                            status: "error".to_string(),
+                            message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
+                            ..Default::default()
+                        },
+                    );
                 }
             }
             Err(e) => {
                 fail_count += 1;
                 let err_msg = format!("{}: 执行失败 - {}", filename, e);
                 errors.push(err_msg.clone());
-                let _ = app.emit("upscale-progress", ProgressEvent {
-                    current: i as u32 + 1, total,
-                    filename: filename.clone(),
-                    status: "error".to_string(),
-                    message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
-                ..Default::default()
-                });
+                let _ = app.emit(
+                    "upscale-progress",
+                    ProgressEvent {
+                        current: i as u32 + 1,
+                        total,
+                        filename: filename.clone(),
+                        status: "error".to_string(),
+                        message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
+                        ..Default::default()
+                    },
+                );
             }
         }
     }
 
-    let _ = app.emit("upscale-progress", ProgressEvent {
-        current: total, total,
-        filename: String::new(),
-        status: "done".to_string(),
-        message: format!("完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "upscale-progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "done".to_string(),
+            message: format!(
+                "完成: 成功 {}, 失败 {}, 共 {}",
+                success_count, fail_count, total
+            ),
+            ..Default::default()
+        },
+    );
 
-    Ok(ProcessResult { success_count, fail_count, total, errors })
+    Ok(ProcessResult {
+        success_count,
+        fail_count,
+        total,
+        errors,
+    })
 }
 
 // ===== Python Upscale =====
@@ -859,8 +1079,7 @@ async fn run_python_upscale(
 ) -> Result<ProcessResult, String> {
     use std::io::BufRead;
 
-    let python = super::python_env::get_python_exe()
-        .ok_or("Python 环境未就绪，请先安装")?;
+    let python = super::python_env::get_python_exe().ok_or("Python 环境未就绪，请先安装")?;
     let script = get_upscale_script()?;
 
     // 确定设备参数
@@ -876,6 +1095,7 @@ async fn run_python_upscale(
     let scale = options.scale;
     let tile = options.tile_size;
     let tta = options.tta;
+    let recursive = options.recursive;
     let app_clone = app.clone();
 
     let weights_dir = realesrgan_weights_dir();
@@ -883,13 +1103,24 @@ async fn run_python_upscale(
     tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new(&python);
         cmd.arg(script.to_string_lossy().as_ref())
-            .arg("--input").arg(&input)
-            .arg("--output").arg(&output)
-            .arg("--model").arg(&model)
-            .arg("--scale").arg(scale.to_string())
-            .arg("--tile").arg(if tile < 0 { "0".to_string() } else { tile.to_string() })
-            .arg("--device").arg(&device)
-            .arg("--weights-dir").arg(&weights_dir)
+            .arg("--input")
+            .arg(&input)
+            .arg("--output")
+            .arg(&output)
+            .arg("--model")
+            .arg(&model)
+            .arg("--scale")
+            .arg(scale.to_string())
+            .arg("--tile")
+            .arg(if tile < 0 {
+                "0".to_string()
+            } else {
+                tile.to_string()
+            })
+            .arg("--device")
+            .arg(&device)
+            .arg("--weights-dir")
+            .arg(&weights_dir)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .env("PYTHONUNBUFFERED", "1")
@@ -897,6 +1128,9 @@ async fn run_python_upscale(
 
         if tta {
             cmd.arg("--tta");
+        }
+        if recursive {
+            cmd.arg("--recursive");
         }
 
         #[cfg(target_os = "windows")]
@@ -948,7 +1182,8 @@ async fn run_python_upscale(
             }
         }
 
-        let mut child = cmd.spawn()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| format!("启动 Python 失败: {}", e))?;
 
         // 存储子进程 PID 以便强制取消
@@ -982,34 +1217,52 @@ async fn run_python_upscale(
                     Ok(_) => {
                         if byte[0] == b'\n' {
                             let line = String::from_utf8(buf.clone()).unwrap_or_else(|_| {
-                                let (s, _, _) = encoding_rs::GBK.decode(&buf); s.to_string()
+                                let (s, _, _) = encoding_rs::GBK.decode(&buf);
+                                s.to_string()
                             });
                             buf.clear();
                             let clean = line.trim();
-                            if clean.is_empty() { continue; }
+                            if clean.is_empty() {
+                                continue;
+                            }
                             // 去除 ANSI 转义序列
-                            let clean = clean.replace('\x1b', "")
-                                .replace("[0m", "").replace("[1m", "")
-                                .replace("[31m", "").replace("[33m", "");
+                            let clean = clean
+                                .replace('\x1b', "")
+                                .replace("[0m", "")
+                                .replace("[1m", "")
+                                .replace("[31m", "")
+                                .replace("[33m", "");
                             let clean = clean.trim();
-                            if clean.is_empty() { continue; }
+                            if clean.is_empty() {
+                                continue;
+                            }
                             // 过滤 onnxruntime 内部日志
-                            if clean.contains("[W:onnxruntime:") || clean.contains("[I:onnxruntime:") {
+                            if clean.contains("[W:onnxruntime:")
+                                || clean.contains("[I:onnxruntime:")
+                            {
                                 continue;
                             }
                             // 过滤 cuDNN/CUDA 加载警告和编码乱码
                             let lower = clean.to_lowercase();
-                            if lower.contains("cudnn") || lower.contains("cuda_path")
-                                || lower.contains("could not load") || lower.contains("loaded library") {
+                            if lower.contains("cudnn")
+                                || lower.contains("cuda_path")
+                                || lower.contains("could not load")
+                                || lower.contains("loaded library")
+                            {
                                 continue;
                             }
 
-                            let _ = app_err.emit("upscale-progress", ProgressEvent {
-                                current: 0, total: 0, filename: String::new(),
-                                status: "warning".to_string(),
-                                message: format!("[Python] {}", clean),
-                            ..Default::default()
-                            });
+                            let _ = app_err.emit(
+                                "upscale-progress",
+                                ProgressEvent {
+                                    current: 0,
+                                    total: 0,
+                                    filename: String::new(),
+                                    status: "warning".to_string(),
+                                    message: format!("[Python] {}", clean),
+                                    ..Default::default()
+                                },
+                            );
                         } else if byte[0] != b'\r' {
                             buf.push(byte[0]);
                         }
@@ -1036,16 +1289,28 @@ async fn run_python_upscale(
                 let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match msg_type {
                     "log" => {
-                        let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let text = msg
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let i18n_key = msg
+                            .get("i18n_key")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
                         let i18n_params = msg.get("i18n_params").cloned();
-                        let _ = app_clone.emit("upscale-progress", ProgressEvent {
-                            current: 0, total: 0, filename: String::new(),
-                            status: "info".to_string(),
-                            message: text,
-                            i18n_key,
-                            i18n_params,
-                        });
+                        let _ = app_clone.emit(
+                            "upscale-progress",
+                            ProgressEvent {
+                                current: 0,
+                                total: 0,
+                                filename: String::new(),
+                                status: "info".to_string(),
+                                message: text,
+                                i18n_key,
+                                i18n_params,
+                            },
+                        );
                     }
                     "error" => {
                         let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
@@ -1062,7 +1327,10 @@ async fn run_python_upscale(
                         let cur = msg.get("current").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                         let tot = msg.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                         let fname = msg.get("filename").and_then(|v| v.as_str()).unwrap_or("");
-                        let status = msg.get("status").and_then(|v| v.as_str()).unwrap_or("processing");
+                        let status = msg
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("processing");
                         let message = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
                         total = tot;
 
@@ -1073,16 +1341,21 @@ async fn run_python_upscale(
                             errors.push(message.to_string());
                         }
 
-                        let _ = app_clone.emit("upscale-progress", ProgressEvent {
-                            current: cur, total: tot,
-                            filename: fname.to_string(),
-                            status: status.to_string(),
-                            message: message.to_string(),
-                        ..Default::default()
-                        });
+                        let _ = app_clone.emit(
+                            "upscale-progress",
+                            ProgressEvent {
+                                current: cur,
+                                total: tot,
+                                filename: fname.to_string(),
+                                status: status.to_string(),
+                                message: message.to_string(),
+                                ..Default::default()
+                            },
+                        );
                     }
                     "done" => {
-                        success_count = msg.get("success").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        success_count =
+                            msg.get("success").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                         fail_count = msg.get("fail").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                         total = msg.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                     }
@@ -1097,16 +1370,29 @@ async fn run_python_upscale(
             *guard = None;
         }
 
-        let _ = app_clone.emit("upscale-progress", ProgressEvent {
-            current: total, total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!("完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
-        ..Default::default()
-        });
+        let _ = app_clone.emit(
+            "upscale-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: "done".to_string(),
+                message: format!(
+                    "完成: 成功 {}, 失败 {}, 共 {}",
+                    success_count, fail_count, total
+                ),
+                ..Default::default()
+            },
+        );
 
-        Ok(ProcessResult { success_count, fail_count, total, errors })
-    }).await
+        Ok(ProcessResult {
+            success_count,
+            fail_count,
+            total,
+            errors,
+        })
+    })
+    .await
     .map_err(|e| format!("任务执行失败: {}", e))?
 }
 

@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { Layers, FolderOpen } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
+import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -20,6 +21,7 @@ export default function AlphaConvertPage() {
   ];
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
+  const [recursive, setRecursive] = useState(false);
   const [background, setBackground] = useState('white');
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -67,7 +69,7 @@ export default function AlphaConvertPage() {
     setLogs([{ time: getTimeStr(), message: t('alphaConvert.startMsg', { bg: background === 'white' ? t('alphaConvert.bgWhite') : t('alphaConvert.bgBlack') }), status: 'info' }]);
     try {
       await invoke<ProcessResult>('convert_alpha', {
-        options: { input_path: inputPath, output_path: outputPath, background },
+        options: { input_path: inputPath, output_path: outputPath, background, recursive },
       });
     } catch (e: any) {
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
@@ -98,7 +100,10 @@ export default function AlphaConvertPage() {
             <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
-                <label className="form-label">{t('pages.inputPathShort')}</label>
+                <div className="form-label-row">
+                  <label className="form-label">{t('pages.inputPathShort')}</label>
+                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
+                </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>

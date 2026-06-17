@@ -13,6 +13,7 @@ import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
 import CustomSelect from '../components/CustomSelect';
 import ProcessButton from '../components/ProcessButton';
+import RecursiveScanToggle from './RecursiveScanToggle';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -40,6 +41,7 @@ export default function TagRefineTab() {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
+  const [recursive, setRecursive] = useState(false);
   const [preset, setPreset] = useState('openai');
   const [customEndpoint, setCustomEndpoint] = useState('');
   const [apiKey, setApiKey] = useState('');
@@ -169,6 +171,7 @@ export default function TagRefineTab() {
           request_interval_ms: intervalMs,
           concurrency: threads,
           top_p: parseFloat(topP) || 0,
+          recursive,
         },
       });
     } catch (e: any) {
@@ -232,9 +235,12 @@ export default function TagRefineTab() {
             <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Image style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('tagRefine.inputDir')}
-                </label>
+                <div className="form-label-row">
+                  <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Image style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('tagRefine.inputDir')}
+                  </label>
+                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
+                </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('tagRefine.inputPlaceholder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
                   <button className="btn btn-secondary" onClick={async () => { const s = await open({ directory: true, multiple: false }); if (s) setInputPath(s as string); }}><FolderOpen style={{ width: 16, height: 16 }} /></button>
