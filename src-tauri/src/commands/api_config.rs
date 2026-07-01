@@ -50,7 +50,11 @@ fn decode_key(encoded: &str) -> String {
 
 /// 保存 API 配置
 #[tauri::command]
-pub fn save_api_config(preset: String, custom_endpoint: String, api_key: String) -> Result<(), String> {
+pub fn save_api_config(
+    preset: String,
+    custom_endpoint: String,
+    api_key: String,
+) -> Result<(), String> {
     let dir = super::config_paths::user_config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
 
@@ -60,10 +64,8 @@ pub fn save_api_config(preset: String, custom_endpoint: String, api_key: String)
         api_key_encoded: encode_key(&api_key),
     };
 
-    let json = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("序列化失败: {}", e))?;
-    std::fs::write(dir.join(CONFIG_FILE), json)
-        .map_err(|e| format!("写入配置失败: {}", e))?;
+    let json = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {}", e))?;
+    std::fs::write(dir.join(CONFIG_FILE), json).map_err(|e| format!("写入配置失败: {}", e))?;
     Ok(())
 }
 
@@ -75,10 +77,13 @@ pub fn load_api_config() -> Result<(String, String, String), String> {
         return Ok(("openai".to_string(), String::new(), String::new()));
     }
 
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取配置失败: {}", e))?;
-    let config: ApiConfig = serde_json::from_str(&content)
-        .map_err(|e| format!("解析配置失败: {}", e))?;
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取配置失败: {}", e))?;
+    let config: ApiConfig =
+        serde_json::from_str(&content).map_err(|e| format!("解析配置失败: {}", e))?;
 
-    Ok((config.preset, config.custom_endpoint, decode_key(&config.api_key_encoded)))
+    Ok((
+        config.preset,
+        config.custom_endpoint,
+        decode_key(&config.api_key_encoded),
+    ))
 }

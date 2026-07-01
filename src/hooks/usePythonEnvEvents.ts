@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../utils/tauriRuntime';
 import { useTranslation } from 'react-i18next';
 import { LogEntry, getTimeStr } from '../components/ProgressLog';
 

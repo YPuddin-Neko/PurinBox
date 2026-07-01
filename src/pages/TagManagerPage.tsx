@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../utils/tauriRuntime';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { AlertModal } from '../components/Modal';
 import {

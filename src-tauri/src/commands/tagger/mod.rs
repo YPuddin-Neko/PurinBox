@@ -1,8 +1,8 @@
-pub mod models;
 pub mod download;
+pub mod gpu_runtime;
 pub mod inference;
 pub mod llm_tagger;
-pub mod gpu_runtime;
+pub mod models;
 pub mod python_env;
 
 use serde::{Deserialize, Serialize};
@@ -73,13 +73,25 @@ pub struct TaggerOptions {
     pub recursive: bool,
 }
 
-fn default_batch_size() -> u32 { 1 }
+fn default_batch_size() -> u32 {
+    1
+}
 
-fn default_append_position() -> String { "append".into() }
-fn default_true() -> bool { true }
-fn default_output_format() -> String { "txt".into() }
-fn default_sort_by() -> String { "confidence".into() }
-fn default_existing_tags_action() -> String { "overwrite".into() }
+fn default_append_position() -> String {
+    "append".into()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_output_format() -> String {
+    "txt".into()
+}
+fn default_sort_by() -> String {
+    "confidence".into()
+}
+fn default_existing_tags_action() -> String {
+    "overwrite".into()
+}
 
 /// 模型信息（给前端用）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,7 +159,10 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
         if ext == "json" {
             // JSON 格式 (CL Tagger)
             if let Ok(content) = std::fs::read_to_string(tags_path) {
-                if let Ok(map) = serde_json::from_str::<std::collections::BTreeMap<String, serde_json::Value>>(&content) {
+                if let Ok(map) = serde_json::from_str::<
+                    std::collections::BTreeMap<String, serde_json::Value>,
+                >(&content)
+                {
                     for val in map.values() {
                         if let Some(cat) = val.get("category").and_then(|v| v.as_str()) {
                             cats.insert(cat.to_lowercase());
@@ -158,9 +173,14 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
         } else {
             // CSV 格式 (WD Tagger)
             let cat_map = [
-                (0, "general"), (1, "artist"), (3, "copyright"),
-                (4, "character"), (5, "meta"), (6, "quality"),
-                (7, "model"), (9, "rating"),
+                (0, "general"),
+                (1, "artist"),
+                (3, "copyright"),
+                (4, "character"),
+                (5, "meta"),
+                (6, "quality"),
+                (7, "model"),
+                (9, "rating"),
             ];
             if let Ok(mut reader) = csv::Reader::from_path(tags_path) {
                 for result in reader.records().flatten() {
@@ -186,12 +206,25 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
 fn infer_categories_from_filename(tags_filename: &str) -> Vec<String> {
     if tags_filename.ends_with(".json") {
         // CL Tagger 类型: 全分类
-        vec!["general", "character", "rating", "artist", "copyright", "meta", "quality", "model"]
-            .into_iter().map(|s| s.to_string()).collect()
+        vec![
+            "general",
+            "character",
+            "rating",
+            "artist",
+            "copyright",
+            "meta",
+            "quality",
+            "model",
+        ]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect()
     } else {
         // WD Tagger 类型: 只有 general, character, rating
         vec!["general", "character", "rating"]
-            .into_iter().map(|s| s.to_string()).collect()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 }
 
@@ -212,8 +245,8 @@ pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        let is_downloaded = model_dir.join("model.onnx").exists()
-            && model_dir.join(&tags_basename).exists();
+        let is_downloaded =
+            model_dir.join("model.onnx").exists() && model_dir.join(&tags_basename).exists();
         let fmt_str = match m.input_format {
             models::InputFormat::NHWC => "NHWC",
             models::InputFormat::NCHW => "NCHW",
@@ -250,11 +283,9 @@ pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
 /// 自动检测 ONNX 模型的输入尺寸和通道格式
 #[tauri::command]
 pub async fn detect_onnx_model_info(model_path: String) -> Result<OnnxModelInfo, String> {
-    tokio::task::spawn_blocking(move || {
-        inference::detect_model_info(&model_path)
-    })
-    .await
-    .map_err(|e| format!("检测失败: {}", e))?
+    tokio::task::spawn_blocking(move || inference::detect_model_info(&model_path))
+        .await
+        .map_err(|e| format!("检测失败: {}", e))?
 }
 
 /// 导入本地模型
@@ -285,13 +316,17 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
     use tauri::Emitter;
 
     let emit_line = |msg: &str, status: &str| {
-        let _ = app.emit("tagger-progress", ProgressEvent {
-            current: 0, total: 0,
-            filename: String::new(),
-            status: status.to_string(),
-            message: msg.to_string(),
-        ..Default::default()
-        });
+        let _ = app.emit(
+            "tagger-progress",
+            ProgressEvent {
+                current: 0,
+                total: 0,
+                filename: String::new(),
+                status: status.to_string(),
+                message: msg.to_string(),
+                ..Default::default()
+            },
+        );
     };
 
     let mut summary_lines: Vec<String> = Vec::new();
@@ -304,7 +339,9 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
             let mut lines: Vec<String> = Vec::new();
             inference::detect_apple_gpu_pub(&mut lines);
             lines
-        }).await.unwrap_or_else(|_| vec!["检测线程异常".into()]);
+        })
+        .await
+        .unwrap_or_else(|_| vec!["检测线程异常".into()]);
 
         for line in &gpu_lines {
             emit_line(line, "success");
@@ -319,11 +356,17 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
             let ok = inference::detect_nvidia_env_pub(&mut lines);
             inference::detect_cuda_toolkit_pub(&mut lines);
             (ok, lines)
-        }).await.unwrap_or_else(|_| (false, vec!["检测线程异常".into()]));
+        })
+        .await
+        .unwrap_or_else(|_| (false, vec!["检测线程异常".into()]));
 
         let (_has_nvidia, env_lines) = nvidia_result;
         for line in &env_lines {
-            let status = if line.contains("未检测到") { "error" } else { "success" };
+            let status = if line.contains("未检测到") {
+                "error"
+            } else {
+                "success"
+            };
             emit_line(line, status);
         }
         summary_lines.extend(env_lines);
@@ -332,14 +375,17 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
     // 2. Python onnxruntime 检测
     emit_line("正在检测推理环境...", "info");
 
-    let python_check = tokio::task::spawn_blocking(|| {
-        inference::check_python_env()
-    }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
+    let python_check = tokio::task::spawn_blocking(|| inference::check_python_env())
+        .await
+        .unwrap_or_else(|_| Err("检测线程异常".into()));
 
     #[allow(unused_variables, unused_mut)]
     let (mut gpu_ok, python_ok) = match python_check {
         Ok((ort_ver, providers)) => {
-            emit_line(&format!("✓ 推理环境就绪 (onnxruntime v{})", ort_ver), "success");
+            emit_line(
+                &format!("✓ 推理环境就绪 (onnxruntime v{})", ort_ver),
+                "success",
+            );
 
             // 检测 GPU provider
             let has_cuda = providers.contains("CUDAExecutionProvider");
@@ -349,7 +395,10 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
             if has_cuda {
                 emit_line("✓ CUDA ExecutionProvider 可用", "success");
             } else if has_coreml {
-                emit_line("✓ CoreML ExecutionProvider 可用 (Apple Neural Engine)", "success");
+                emit_line(
+                    "✓ CoreML ExecutionProvider 可用 (Apple Neural Engine)",
+                    "success",
+                );
             } else {
                 emit_line("GPU ExecutionProvider 不可用", "info");
             }
@@ -361,19 +410,25 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
             match python_env::setup_python_env(&app).await {
                 Ok(_) => {
                     // 配置成功，重新检测
-                    let recheck = tokio::task::spawn_blocking(|| {
-                        inference::check_python_env()
-                    }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
+                    let recheck = tokio::task::spawn_blocking(|| inference::check_python_env())
+                        .await
+                        .unwrap_or_else(|_| Err("检测线程异常".into()));
                     match recheck {
                         Ok((ort_ver, providers)) => {
-                            emit_line(&format!("✓ 推理环境就绪 (onnxruntime v{})", ort_ver), "success");
+                            emit_line(
+                                &format!("✓ 推理环境就绪 (onnxruntime v{})", ort_ver),
+                                "success",
+                            );
                             let has_cuda = providers.contains("CUDAExecutionProvider");
                             let has_coreml = providers.contains("CoreMLExecutionProvider");
                             let has_gpu = has_cuda || has_coreml;
                             if has_cuda {
                                 emit_line("✓ CUDA ExecutionProvider 可用", "success");
                             } else if has_coreml {
-                                emit_line("✓ CoreML ExecutionProvider 可用 (Apple Neural Engine)", "success");
+                                emit_line(
+                                    "✓ CoreML ExecutionProvider 可用 (Apple Neural Engine)",
+                                    "success",
+                                );
                             } else {
                                 emit_line("GPU ExecutionProvider 不可用", "info");
                             }
@@ -402,21 +457,24 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
         let has_nvidia = tokio::task::spawn_blocking(|| {
             let mut lines = Vec::new();
             inference::detect_nvidia_env_pub(&mut lines)
-        }).await.unwrap_or(false);
+        })
+        .await
+        .unwrap_or(false);
 
         if has_nvidia {
             emit_line("正在自动安装 GPU 版 onnxruntime...", "info");
             let app_ref = app.clone();
-            let install_result = tokio::task::spawn_blocking(move || {
-                python_env::install_gpu_deps(&app_ref)
-            }).await.unwrap_or_else(|_| Err("安装线程异常".into()));
+            let install_result =
+                tokio::task::spawn_blocking(move || python_env::install_gpu_deps(&app_ref))
+                    .await
+                    .unwrap_or_else(|_| Err("安装线程异常".into()));
 
             match install_result {
                 Ok(()) => {
                     emit_line("✓ onnxruntime-gpu 已安装", "success");
-                    let recheck = tokio::task::spawn_blocking(|| {
-                        inference::check_python_env()
-                    }).await.unwrap_or_else(|_| Err("检测线程异常".into()));
+                    let recheck = tokio::task::spawn_blocking(|| inference::check_python_env())
+                        .await
+                        .unwrap_or_else(|_| Err("检测线程异常".into()));
                     if let Ok((_, providers)) = recheck {
                         gpu_ok = providers.contains("CUDAExecutionProvider");
                         if gpu_ok {
@@ -434,7 +492,11 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
 
     // 4. 总结
     if gpu_ok {
-        let backend = if cfg!(target_os = "macos") { "CoreML" } else { "CUDA" };
+        let backend = if cfg!(target_os = "macos") {
+            "CoreML"
+        } else {
+            "CUDA"
+        };
         emit_line(&format!("✓ GPU 加速已就绪 ({})", backend), "success");
     } else {
         emit_line("将使用 CPU 推理", "info");
@@ -476,7 +538,6 @@ pub fn cancel_tagging() {
     python_env::cancel_setup();
 }
 
-
 /// 开始打标
 #[tauri::command]
 pub async fn start_tagging(
@@ -489,9 +550,9 @@ pub async fn start_tagging(
     inference::reset_tagging_cancel();
 
     // 检查 Python 环境，没有则自动安装
-    let python_check = tokio::task::spawn_blocking(|| {
-        inference::check_python_env()
-    }).await.map_err(|e| format!("检测线程异常: {}", e))?;
+    let python_check = tokio::task::spawn_blocking(|| inference::check_python_env())
+        .await
+        .map_err(|e| format!("检测线程异常: {}", e))?;
 
     match &python_check {
         Ok((_ver, _providers)) => {
@@ -499,12 +560,17 @@ pub async fn start_tagging(
         }
         Err(_) => {
             // Python 环境不可用，自动安装
-            let _ = app.emit("tagger-progress", ProgressEvent {
-                current: 0, total: 0, filename: String::new(),
-                status: "info".to_string(),
-                message: "Python 环境未就绪，正在自动配置...".to_string(),
-            ..Default::default()
-            });
+            let _ = app.emit(
+                "tagger-progress",
+                ProgressEvent {
+                    current: 0,
+                    total: 0,
+                    filename: String::new(),
+                    status: "info".to_string(),
+                    message: "Python 环境未就绪，正在自动配置...".to_string(),
+                    ..Default::default()
+                },
+            );
             python_env::setup_python_env(&app).await?;
         }
     }
@@ -524,13 +590,17 @@ pub async fn start_tagging(
 
     // 2. 如果未下载，先下载
     if !model_path.exists() || !tags_path.exists() {
-        let _ = app.emit("tagger-progress", ProgressEvent {
-            current: 0, total: 0,
-            filename: String::new(),
-            status: "info".to_string(),
-            message: format!("模型 {} 未下载，开始下载...", model_def.name),
-        ..Default::default()
-        });
+        let _ = app.emit(
+            "tagger-progress",
+            ProgressEvent {
+                current: 0,
+                total: 0,
+                filename: String::new(),
+                status: "info".to_string(),
+                message: format!("模型 {} 未下载，开始下载...", model_def.name),
+                ..Default::default()
+            },
+        );
 
         download::download_model(&app, &model_def).await?;
 
@@ -551,9 +621,15 @@ pub async fn start_tagging(
     let app_clone = app.clone();
     let opts = options.clone();
     tokio::task::spawn_blocking(move || {
-        inference::run_tagging(&app_clone, &opts, &model_path, &tag_defs, model_def.input_size, is_nchw)
+        inference::run_tagging(
+            &app_clone,
+            &opts,
+            &model_path,
+            &tag_defs,
+            model_def.input_size,
+            is_nchw,
+        )
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
 }
-

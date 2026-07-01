@@ -65,7 +65,10 @@ pub fn check_ort_runtime() -> OrtRuntimeStatus {
 
     #[cfg(target_os = "windows")]
     {
-        for extra in &["onnxruntime_providers_cuda.dll", "onnxruntime_providers_shared.dll"] {
+        for extra in &[
+            "onnxruntime_providers_cuda.dll",
+            "onnxruntime_providers_shared.dll",
+        ] {
             if dir.join(extra).exists() {
                 found_files.push(extra.to_string());
             }
@@ -114,8 +117,7 @@ pub async fn download_ort_runtime(app: &tauri::AppHandle) -> Result<(), String> 
 
     let dir = get_ort_dir();
     if !dir.exists() {
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("创建目录失败: {}", e))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
     }
 
     // 根据平台选择下载 URL（官方 Microsoft ONNX Runtime releases）
@@ -145,12 +147,17 @@ pub async fn download_ort_runtime(app: &tauri::AppHandle) -> Result<(), String> 
 
     let archive_path = dir.join(&archive_name);
 
-    let _ = app.emit("tagger-progress", ProgressEvent {
-        current: 0, total: 0, filename: String::new(),
-        status: "info".to_string(),
-        message: format!("开始下载 ONNX Runtime v{}...", ORT_VERSION),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "tagger-progress",
+        ProgressEvent {
+            current: 0,
+            total: 0,
+            filename: String::new(),
+            status: "info".to_string(),
+            message: format!("开始下载 ONNX Runtime v{}...", ORT_VERSION),
+            ..Default::default()
+        },
+    );
 
     download_with_progress(app, &url, &archive_path, &archive_name).await?;
 
@@ -159,12 +166,17 @@ pub async fn download_ort_runtime(app: &tauri::AppHandle) -> Result<(), String> 
         return Err("下载已取消".into());
     }
 
-    let _ = app.emit("tagger-progress", ProgressEvent {
-        current: 0, total: 0, filename: String::new(),
-        status: "info".to_string(),
-        message: "正在解压 ONNX Runtime...".to_string(),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "tagger-progress",
+        ProgressEvent {
+            current: 0,
+            total: 0,
+            filename: String::new(),
+            status: "info".to_string(),
+            message: "正在解压 ONNX Runtime...".to_string(),
+            ..Default::default()
+        },
+    );
 
     extract_runtime(&archive_path, &dir)?;
     let _ = std::fs::remove_file(&archive_path);
@@ -172,12 +184,17 @@ pub async fn download_ort_runtime(app: &tauri::AppHandle) -> Result<(), String> 
     let status = check_ort_runtime();
     if status.available {
         setup_ort_env();
-        let _ = app.emit("tagger-progress", ProgressEvent {
-            current: 0, total: 0, filename: String::new(),
-            status: "success".to_string(),
-            message: format!("ONNX Runtime v{} 安装成功！重启应用后生效", ORT_VERSION),
-        ..Default::default()
-        });
+        let _ = app.emit(
+            "tagger-progress",
+            ProgressEvent {
+                current: 0,
+                total: 0,
+                filename: String::new(),
+                status: "success".to_string(),
+                message: format!("ONNX Runtime v{} 安装成功！重启应用后生效", ORT_VERSION),
+                ..Default::default()
+            },
+        );
         Ok(())
     } else {
         Err("解压后未找到所需文件".into())
@@ -197,7 +214,10 @@ async fn download_with_progress(
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
-    let response = client.get(url).send().await
+    let response = client
+        .get(url)
+        .send()
+        .await
         .map_err(|e| format!("下载请求失败: {}", e))?;
 
     if !response.status().is_success() {
@@ -208,7 +228,8 @@ async fn download_with_progress(
     let mut stream = response.bytes_stream();
     // 先写入 .part 临时文件，校验完成后再原子替换到最终路径，避免中断残件
     let part_path = crate::commands::prepare_part_file(dest);
-    let mut file = tokio::fs::File::create(&part_path).await
+    let mut file = tokio::fs::File::create(&part_path)
+        .await
         .map_err(|e| format!("创建文件失败: {}", e))?;
 
     let mut downloaded: u64 = 0;
@@ -226,7 +247,10 @@ async fn download_with_progress(
 
         let chunk = match chunk {
             Ok(c) => c,
-            Err(e) => { result = Err(format!("下载数据失败: {}", e)); break; }
+            Err(e) => {
+                result = Err(format!("下载数据失败: {}", e));
+                break;
+            }
         };
         if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
             result = Err(format!("写入失败: {}", e));
@@ -235,27 +259,46 @@ async fn download_with_progress(
 
         downloaded += chunk.len() as u64;
 
-        if last_report.elapsed().as_millis() >= 500 || (total_size > 0 && downloaded >= total_size) {
+        if last_report.elapsed().as_millis() >= 500 || (total_size > 0 && downloaded >= total_size)
+        {
             last_report = std::time::Instant::now();
             let elapsed = start.elapsed().as_secs_f64();
-            let speed = if elapsed > 0.0 { downloaded as f64 / elapsed / 1_048_576.0 } else { 0.0 };
-            let pct = if total_size > 0 { (downloaded as f64 / total_size as f64 * 100.0) as u32 } else { 0 };
+            let speed = if elapsed > 0.0 {
+                downloaded as f64 / elapsed / 1_048_576.0
+            } else {
+                0.0
+            };
+            let pct = if total_size > 0 {
+                (downloaded as f64 / total_size as f64 * 100.0) as u32
+            } else {
+                0
+            };
             let mb_done = downloaded as f64 / 1_048_576.0;
             let msg = if total_size > 0 {
                 let mb_total = total_size as f64 / 1_048_576.0;
-                format!("[GPU Runtime] {} — {:.1}/{:.1} MB ({:.1} MB/s) {}%", label, mb_done, mb_total, speed, pct)
+                format!(
+                    "[GPU Runtime] {} — {:.1}/{:.1} MB ({:.1} MB/s) {}%",
+                    label, mb_done, mb_total, speed, pct
+                )
             } else {
-                format!("[GPU Runtime] {} — {:.1} MB ({:.1} MB/s)", label, mb_done, speed)
+                format!(
+                    "[GPU Runtime] {} — {:.1} MB ({:.1} MB/s)",
+                    label, mb_done, speed
+                )
             };
 
-            let _ = app.emit("tagger-download", super::download::DownloadProgress {
-                filename: label.to_string(),
-                downloaded, total: total_size,
-                percent: pct as f32,
-                speed_mbps: speed,
-                status: "downloading".to_string(),
-                message: msg,
-            });
+            let _ = app.emit(
+                "tagger-download",
+                super::download::DownloadProgress {
+                    filename: label.to_string(),
+                    downloaded,
+                    total: total_size,
+                    percent: pct as f32,
+                    speed_mbps: speed,
+                    status: "downloading".to_string(),
+                    message: msg,
+                },
+            );
         }
     }
 
@@ -276,14 +319,18 @@ async fn download_with_progress(
     // 校验字节数并原子替换到最终文件
     crate::commands::finalize_part_file(&part_path, dest, downloaded, total_size)?;
 
-    let _ = app.emit("tagger-download", super::download::DownloadProgress {
-        filename: label.to_string(),
-        downloaded, total: total_size,
-        percent: 100.0,
-        speed_mbps: 0.0,
-        status: "done".to_string(),
-        message: "下载完成".to_string(),
-    });
+    let _ = app.emit(
+        "tagger-download",
+        super::download::DownloadProgress {
+            filename: label.to_string(),
+            downloaded,
+            total: total_size,
+            percent: 100.0,
+            speed_mbps: 0.0,
+            status: "done".to_string(),
+            message: "下载完成".to_string(),
+        },
+    );
 
     Ok(())
 }
@@ -291,10 +338,8 @@ async fn download_with_progress(
 /// 解压运行时文件到目标目录
 #[cfg(target_os = "windows")]
 fn extract_runtime(archive: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
-    let file = std::fs::File::open(archive)
-        .map_err(|e| format!("打开压缩包失败: {}", e))?;
-    let mut zip = zip::ZipArchive::new(file)
-        .map_err(|e| format!("读取 ZIP 失败: {}", e))?;
+    let file = std::fs::File::open(archive).map_err(|e| format!("打开压缩包失败: {}", e))?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("读取 ZIP 失败: {}", e))?;
 
     // 需要提取的 DLL 文件
     let target_files = [
@@ -304,7 +349,8 @@ fn extract_runtime(archive: &std::path::Path, dest: &std::path::Path) -> Result<
     ];
 
     for i in 0..zip.len() {
-        let mut entry = zip.by_index(i)
+        let mut entry = zip
+            .by_index(i)
             .map_err(|e| format!("读取 ZIP 条目失败: {}", e))?;
 
         let name = entry.name().to_string();
@@ -315,10 +361,9 @@ fn extract_runtime(archive: &std::path::Path, dest: &std::path::Path) -> Result<
 
         if target_files.contains(&filename) {
             let out_path = dest.join(filename);
-            let mut out_file = std::fs::File::create(&out_path)
-                .map_err(|e| format!("创建文件失败: {}", e))?;
-            std::io::copy(&mut entry, &mut out_file)
-                .map_err(|e| format!("解压失败: {}", e))?;
+            let mut out_file =
+                std::fs::File::create(&out_path).map_err(|e| format!("创建文件失败: {}", e))?;
+            std::io::copy(&mut entry, &mut out_file).map_err(|e| format!("解压失败: {}", e))?;
         }
     }
 
@@ -330,7 +375,13 @@ fn extract_runtime(archive: &std::path::Path, dest: &std::path::Path) -> Result<
     use std::process::Command;
     // 先解压到 dest（--strip-components=1 去掉顶层目录名）
     let status = Command::new("tar")
-        .args(["xzf", &archive.to_string_lossy(), "-C", &dest.to_string_lossy(), "--strip-components=1"])
+        .args([
+            "xzf",
+            &archive.to_string_lossy(),
+            "-C",
+            &dest.to_string_lossy(),
+            "--strip-components=1",
+        ])
         .status()
         .map_err(|e| format!("解压失败: {}", e))?;
 

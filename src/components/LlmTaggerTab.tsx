@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
+import { listen } from '../utils/tauriRuntime';
 import {
-  FolderOpen, Play, Loader2, Globe, Key, MessageSquare, Bot,
+  Play, Loader2, Globe, Key, MessageSquare, Bot,
   RefreshCw, Thermometer, Hash, StopCircle, Save, ImageIcon, Timer, Layers,
   CheckCircle2, XCircle, Info, ScrollText, Trash2, Eye, EyeOff
 } from 'lucide-react';
@@ -11,6 +10,7 @@ import { LogEntry, getTimeStr } from './ProgressLog';
 import { useTaskQueue } from './TaskContext';
 import CustomSelect from './CustomSelect';
 import { useTranslation } from 'react-i18next';
+import InputPathPickerButton from './InputPathPickerButton';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -144,8 +144,12 @@ export default function LlmTaggerTab() {
     let cancelled = false;
     const listenPromise = listen<ProgressPayload>('llm-tagger-progress', (e) => {
       if (cancelled) return;
-      const p = e.payload; setPCur(p.current); setPTot(p.total);
-      if (p.total > 0) setProgress((p.current / p.total) * 100);
+      const p = e.payload;
+      setPTot(p.total);
+      if (p.status === 'success' || p.status === 'error' || p.status === 'done') {
+        setPCur(p.current);
+        if (p.total > 0) setProgress((p.current / p.total) * 100);
+      }
       if (p.status === 'done') { setIsDone(true); setProcessing(false); }
       if (p.status === 'error') {
         setHasErr(true);
@@ -277,7 +281,7 @@ export default function LlmTaggerTab() {
           </div>
           <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
             <input className="form-input" placeholder={t('llmTagger.selectFolder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
-            <button className="btn btn-secondary" onClick={async () => { const s = await open({ directory: true, multiple: false }); if (s) setInputPath(s as string); }}><FolderOpen style={{ width: 16, height: 16 }} /></button>
+            <InputPathPickerButton onSelect={setInputPath} />
           </div>
         </div>
 

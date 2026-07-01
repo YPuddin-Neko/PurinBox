@@ -6,17 +6,24 @@ use std::sync::mpsc;
 use std::sync::Mutex;
 use tauri::Emitter;
 
-use super::{TagCategory, TagDefinition, TaggerOptions, ProcessResult, ProgressEvent, OnnxModelInfo};
+use super::{
+    OnnxModelInfo, ProcessResult, ProgressEvent, TagCategory, TagDefinition, TaggerOptions,
+};
 use crate::commands::{collect_image_files, collect_image_files_recursive};
 
 /// 从 Windows 注册表读取系统环境变量（GUI 进程可能没有最新环境变量）
 #[cfg(target_os = "windows")]
 fn read_env_from_registry(name: &str) -> Option<String> {
-    use std::process::Command;
     use std::os::windows::process::CommandExt;
+    use std::process::Command;
     // 使用 reg query 读取系统环境变量
     let output = Command::new("reg")
-        .args(["query", r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "/v", name])
+        .args([
+            "query",
+            r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            "/v",
+            name,
+        ])
         .creation_flags(0x08000000)
         .output()
         .ok()?;
@@ -70,7 +77,9 @@ pub fn get_cuda_env_vars() -> Vec<(String, String)> {
         }
     }
     // 注册表中的 CUDA_PATH_V* 变量
-    for suffix in &["V12_9", "V12_8", "V12_6", "V12_4", "V12_2", "V12_1", "V12_0"] {
+    for suffix in &[
+        "V12_9", "V12_8", "V12_6", "V12_4", "V12_2", "V12_1", "V12_0",
+    ] {
         let key = format!("CUDA_PATH_{}", suffix);
         if !result.contains_key(&key) {
             if let Some(val) = read_env_from_registry(&key) {
@@ -110,7 +119,9 @@ fn strip_ansi_codes(s: &str) -> String {
                 chars.next();
                 while let Some(&next) = chars.peek() {
                     chars.next();
-                    if next.is_ascii_alphabetic() { break; }
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
                 }
             }
         } else if c == '[' {
@@ -203,8 +214,7 @@ fn get_nvidia_smi_path() -> String {
 /// 运行命令并隐藏 Windows 控制台窗口，返回 stdout 或错误信息
 fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new(program);
-    cmd.args(args)
-        .env("PYTHONIOENCODING", "utf-8");
+    cmd.args(args).env("PYTHONIOENCODING", "utf-8");
 
     #[cfg(target_os = "windows")]
     {
@@ -218,7 +228,11 @@ fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, String> {
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            Err(format!("exit code: {:?}, stderr: {}", output.status.code(), stderr))
+            Err(format!(
+                "exit code: {:?}, stderr: {}",
+                output.status.code(),
+                stderr
+            ))
         }
         Err(e) => Err(format!("{}", e)),
     }
@@ -242,7 +256,10 @@ pub fn detect_apple_gpu_pub(lines: &mut Vec<String>) {
 /// 检测 Apple Silicon GPU 信息 (macOS)
 fn detect_apple_gpu(lines: &mut Vec<String>) {
     // 获取芯片型号
-    if let Ok(output) = Command::new("sysctl").args(["-n", "machdep.cpu.brand_string"]).output() {
+    if let Ok(output) = Command::new("sysctl")
+        .args(["-n", "machdep.cpu.brand_string"])
+        .output()
+    {
         if output.status.success() {
             let chip = String::from_utf8_lossy(&output.stdout).trim().to_string();
             lines.push(format!("GPU: {} (Metal/MPS)", chip));
@@ -256,11 +273,19 @@ fn detect_apple_gpu(lines: &mut Vec<String>) {
 fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
     let smi_path = get_nvidia_smi_path();
 
-    match run_hidden_cmd(&smi_path, &["--query-gpu=name,driver_version", "--format=csv,noheader,nounits"]) {
+    match run_hidden_cmd(
+        &smi_path,
+        &[
+            "--query-gpu=name,driver_version",
+            "--format=csv,noheader,nounits",
+        ],
+    ) {
         Ok(stdout) => {
             for line in stdout.lines() {
                 let line = line.trim();
-                if line.is_empty() { continue; }
+                if line.is_empty() {
+                    continue;
+                }
                 let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
                 let gpu_name = parts.first().unwrap_or(&"Unknown");
                 let driver_ver = parts.get(1).unwrap_or(&"Unknown");
@@ -336,7 +361,8 @@ pub fn detect_model_info(model_path: &str) -> Result<OnnxModelInfo, String> {
         .spawn()
         .map_err(|e| format!("启动 Python 失败: {}", e))?;
 
-    let output = child.wait_with_output()
+    let output = child
+        .wait_with_output()
         .map_err(|e| format!("等待 Python 失败: {}", e))?;
 
     if !output.status.success() {
@@ -348,9 +374,17 @@ pub fn detect_model_info(model_path: &str) -> Result<OnnxModelInfo, String> {
     for line in stdout.lines() {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
             if val.get("type").and_then(|v| v.as_str()) == Some("model_info") {
-                let input_size = val.get("input_size").and_then(|v| v.as_u64()).unwrap_or(448) as u32;
-                let input_format = val.get("input_format").and_then(|v| v.as_str()).unwrap_or("NHWC").to_string();
-                let shape: Vec<i64> = val.get("input_shape")
+                let input_size = val
+                    .get("input_size")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(448) as u32;
+                let input_format = val
+                    .get("input_format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("NHWC")
+                    .to_string();
+                let shape: Vec<i64> = val
+                    .get("input_shape")
                     .and_then(|v| v.as_array())
                     .map(|a| a.iter().filter_map(|v| v.as_i64()).collect())
                     .unwrap_or_default();
@@ -371,8 +405,8 @@ pub fn detect_model_info(model_path: &str) -> Result<OnnxModelInfo, String> {
 
 /// 从 CSV 文件加载标签定义
 pub fn load_tags(csv_path: &Path) -> Result<Vec<TagDefinition>, String> {
-    let mut reader = csv::Reader::from_path(csv_path)
-        .map_err(|e| format!("无法读取标签文件: {}", e))?;
+    let mut reader =
+        csv::Reader::from_path(csv_path).map_err(|e| format!("无法读取标签文件: {}", e))?;
 
     let mut tags = Vec::new();
     for result in reader.records() {
@@ -390,18 +424,24 @@ pub fn load_tags(csv_path: &Path) -> Result<Vec<TagDefinition>, String> {
 
 /// 从 JSON 文件加载标签定义 (CL Tagger 格式)
 pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
-    let content = std::fs::read_to_string(json_path)
-        .map_err(|e| format!("无法读取标签文件: {}", e))?;
+    let content =
+        std::fs::read_to_string(json_path).map_err(|e| format!("无法读取标签文件: {}", e))?;
 
     let map: std::collections::BTreeMap<String, serde_json::Value> =
-        serde_json::from_str(&content)
-            .map_err(|e| format!("JSON 解析错误: {}", e))?;
+        serde_json::from_str(&content).map_err(|e| format!("JSON 解析错误: {}", e))?;
 
     let mut tags: Vec<(usize, TagDefinition)> = Vec::new();
     for (idx_str, val) in &map {
         let idx: usize = idx_str.parse().unwrap_or(0);
-        let tag_name = val.get("tag").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let cat_str = val.get("category").and_then(|v| v.as_str()).unwrap_or("General");
+        let tag_name = val
+            .get("tag")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let cat_str = val
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("General");
 
         let category = match cat_str {
             "General" => TagCategory::General,
@@ -415,7 +455,13 @@ pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
             _ => TagCategory::General,
         };
 
-        tags.push((idx, TagDefinition { name: tag_name, category }));
+        tags.push((
+            idx,
+            TagDefinition {
+                name: tag_name,
+                category,
+            },
+        ));
     }
 
     tags.sort_by_key(|(idx, _)| *idx);
@@ -433,9 +479,10 @@ fn find_python() -> Result<String, String> {
     for name in &["python3", "python"] {
         if let Ok(output) = run_hidden_cmd(name, &["--version"]) {
             if output.contains("Python 3")
-                && run_hidden_cmd(name, &["-c", "import onnxruntime"]).is_ok() {
-                    return Ok(name.to_string());
-                }
+                && run_hidden_cmd(name, &["-c", "import onnxruntime"]).is_ok()
+            {
+                return Ok(name.to_string());
+            }
         }
     }
 
@@ -481,7 +528,8 @@ fn get_script_path() -> Result<std::path::PathBuf, String> {
         }
     }
 
-    let paths_str = candidates.iter()
+    let paths_str = candidates
+        .iter()
         .enumerate()
         .map(|(i, p)| format!("  {}. {}", i + 1, p.display()))
         .collect::<Vec<_>>()
@@ -504,13 +552,11 @@ pub fn check_python_env() -> Result<(String, String), String> {
             let providers = lines.get(1).unwrap_or(&"CPUExecutionProvider").to_string();
             Ok((ort_version, providers))
         }
-        Err(_) => {
-            Err(format!(
-                "onnxruntime 未安装。请运行:\n  {} -m pip install onnxruntime\n\
+        Err(_) => Err(format!(
+            "onnxruntime 未安装。请运行:\n  {} -m pip install onnxruntime\n\
                  如需 GPU 加速:\n  {} -m pip install onnxruntime-gpu",
-                python, python
-            ))
-        }
+            python, python
+        )),
     }
 }
 
@@ -530,16 +576,15 @@ pub fn run_tagging(
     let python = find_python()?;
     let script = get_script_path()?;
 
-
     // 启动 Python 子进程
     let mut cmd = Command::new(&python);
     cmd.arg(script.to_string_lossy().as_ref())
-       .stdin(Stdio::piped())
-       .stdout(Stdio::piped())
-       .stderr(Stdio::piped())
-       .env("NO_COLOR", "1")
-       .env("PYTHONUNBUFFERED", "1")
-       .env("PYTHONIOENCODING", "utf-8");
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("NO_COLOR", "1")
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONIOENCODING", "utf-8");
 
     // Windows: 确保 CUDA/cuDNN DLL 路径在 PATH 中
     #[cfg(target_os = "windows")]
@@ -604,18 +649,20 @@ pub fn run_tagging(
         let _ = &options; // avoid unused warning
     }
 
-    let mut child = cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("启动 Python 进程失败: {}", e))?;
 
     // 取出管道句柄（take 出管道后 Child 仍可 kill/wait）
-    let (mut stdin, stdout, stderr) = match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
-        (Some(i), Some(o), Some(e)) => (i, o, e),
-        _ => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("无法获取 Python 进程管道".into());
-        }
-    };
+    let (mut stdin, stdout, stderr) =
+        match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
+            (Some(i), Some(o), Some(e)) => (i, o, e),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("无法获取 Python 进程管道".into());
+            }
+        };
 
     // 把 Child 句柄存入全局，这样 cancel_tagging() -> kill_python_process() 才能真正杀掉进程
     *PYTHON_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
@@ -633,12 +680,15 @@ pub fn run_tagging(
                 Ok(_) => {
                     if byte[0] == b'\n' {
                         let line = String::from_utf8(buf.clone()).unwrap_or_else(|_| {
-                            let (s, _, _) = encoding_rs::GBK.decode(&buf); s.to_string()
+                            let (s, _, _) = encoding_rs::GBK.decode(&buf);
+                            s.to_string()
                         });
                         buf.clear();
                         let clean = strip_ansi_codes(&line);
                         let clean = clean.trim();
-                        if clean.is_empty() { continue; }
+                        if clean.is_empty() {
+                            continue;
+                        }
                         let lower = clean.to_lowercase();
                         if lower.contains("context leak")
                             || lower.contains("msgtracer")
@@ -647,15 +697,21 @@ pub fn run_tagging(
                             || lower.contains("cuda_path")
                             || lower.contains("onnxruntime")
                             || lower.contains("could not load")
-                            || lower.contains("loaded library") {
+                            || lower.contains("loaded library")
+                        {
                             continue;
                         }
-                        let _ = app_err.emit("tagger-progress", ProgressEvent {
-                            current: 0, total: 0, filename: String::new(),
-                            status: "warning".to_string(),
-                            message: format!("[Python] {}", clean),
-                        ..Default::default()
-                        });
+                        let _ = app_err.emit(
+                            "tagger-progress",
+                            ProgressEvent {
+                                current: 0,
+                                total: 0,
+                                filename: String::new(),
+                                status: "warning".to_string(),
+                                message: format!("[Python] {}", clean),
+                                ..Default::default()
+                            },
+                        );
                     } else if byte[0] != b'\r' {
                         buf.push(byte[0]);
                     }
@@ -666,9 +722,12 @@ pub fn run_tagging(
     });
 
     // 发送 init 命令
-    let tags_path = model_path.parent()
+    let tags_path = model_path
+        .parent()
         .unwrap_or(Path::new("."))
-        .join(if tag_defs.is_empty() { "selected_tags.csv" } else {
+        .join(if tag_defs.is_empty() {
+            "selected_tags.csv"
+        } else {
             let dir = model_path.parent().unwrap_or(Path::new("."));
             if dir.join("tag_mapping.json").exists() {
                 "tag_mapping.json"
@@ -710,7 +769,12 @@ pub fn run_tagging(
     loop {
         if is_tagging_cancelled() {
             kill_python_process();
-            return Ok(ProcessResult { success_count: 0, fail_count: 0, total: 0, errors: vec![] });
+            return Ok(ProcessResult {
+                success_count: 0,
+                fail_count: 0,
+                total: 0,
+                errors: vec![],
+            });
         }
 
         let now = std::time::Instant::now();
@@ -733,25 +797,42 @@ pub fn run_tagging(
             let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
             match msg_type {
                 "log" => {
-                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let text = msg
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let i18n_key = msg
+                        .get("i18n_key")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     let i18n_params = msg.get("i18n_params").cloned();
-                    let _ = app.emit("tagger-progress", ProgressEvent {
-                        current: 0, total: 0, filename: String::new(),
-                        status: "info".to_string(),
-                        message: text,
-                        i18n_key,
-                        i18n_params,
-                    });
+                    let _ = app.emit(
+                        "tagger-progress",
+                        ProgressEvent {
+                            current: 0,
+                            total: 0,
+                            filename: String::new(),
+                            status: "info".to_string(),
+                            message: text,
+                            i18n_key,
+                            i18n_params,
+                        },
+                    );
                 }
                 "error" => {
                     let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                    let _ = app.emit("tagger-progress", ProgressEvent {
-                        current: 0, total: 0, filename: String::new(),
-                        status: "error".to_string(),
-                        message: text.to_string(),
-                    ..Default::default()
-                    });
+                    let _ = app.emit(
+                        "tagger-progress",
+                        ProgressEvent {
+                            current: 0,
+                            total: 0,
+                            filename: String::new(),
+                            status: "error".to_string(),
+                            message: text.to_string(),
+                            ..Default::default()
+                        },
+                    );
                     kill_python_process();
                     return Err(format!("Python 推理错误: {}", text));
                 }
@@ -767,7 +848,12 @@ pub fn run_tagging(
     if !ready {
         kill_python_process();
         if is_tagging_cancelled() {
-            return Ok(ProcessResult { success_count: 0, fail_count: 0, total: 0, errors: vec![] });
+            return Ok(ProcessResult {
+                success_count: 0,
+                fail_count: 0,
+                total: 0,
+                errors: vec![],
+            });
         }
         return Err("Python 进程未能成功初始化".into());
     }
@@ -791,36 +877,52 @@ pub fn run_tagging(
     let mut fail_count = 0u32;
     let mut errors = Vec::new();
 
-    let enabled_cats: Vec<&str> = options.enabled_categories.iter().map(|s| s.as_str()).collect();
+    let enabled_cats: Vec<&str> = options
+        .enabled_categories
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
 
     // 逐图片发送 tag 命令
-    let _ = app.emit("tagger-progress", ProgressEvent {
-        current: 0, total,
-        filename: String::new(),
-        status: "info".to_string(),
-        message: format!("读取到 {} 张图片", total),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "tagger-progress",
+        ProgressEvent {
+            current: 0,
+            total,
+            filename: String::new(),
+            status: "info".to_string(),
+            message: format!("读取到 {} 张图片", total),
+            ..Default::default()
+        },
+    );
 
     let batch_size = options.batch_size.max(1) as usize;
 
     let mut i = 0usize;
     while i < files.len() {
         if is_tagging_cancelled() {
-            let _ = app.emit("tagger-progress", ProgressEvent {
-                current: i as u32, total,
-                filename: String::new(),
-                status: "error".to_string(),
-                message: format!("打标已取消（已完成 {}/{}）", i, total),
-            ..Default::default()
-            });
-            let _ = app.emit("tagger-progress", ProgressEvent {
-                current: i as u32, total,
-                filename: String::new(),
-                status: "done".to_string(),
-                message: format!("打标已取消: 成功 {}, 失败 {}", success_count, fail_count),
-            ..Default::default()
-            });
+            let _ = app.emit(
+                "tagger-progress",
+                ProgressEvent {
+                    current: i as u32,
+                    total,
+                    filename: String::new(),
+                    status: "error".to_string(),
+                    message: format!("打标已取消（已完成 {}/{}）", i, total),
+                    ..Default::default()
+                },
+            );
+            let _ = app.emit(
+                "tagger-progress",
+                ProgressEvent {
+                    current: i as u32,
+                    total,
+                    filename: String::new(),
+                    status: "done".to_string(),
+                    message: format!("打标已取消: 成功 {}, 失败 {}", success_count, fail_count),
+                    ..Default::default()
+                },
+            );
             break;
         }
 
@@ -828,23 +930,41 @@ pub fn run_tagging(
         let batch_files = &files[i..end];
         let batch_len = batch_files.len();
 
-        let first_name = batch_files[0].file_name().unwrap_or_default().to_string_lossy().to_string();
-        let _ = app.emit("tagger-progress", ProgressEvent {
-            current: i as u32 + 1, total,
-            filename: first_name.clone(),
-            status: "processing".to_string(),
-            message: if batch_len > 1 {
-                format!("正在处理: {} 等 {} 张 ({}/{})", first_name, batch_len, i + 1, total)
-            } else {
-                format!("正在处理: {} ({}/{})", first_name, i + 1, total)
+        let first_name = batch_files[0]
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let _ = app.emit(
+            "tagger-progress",
+            ProgressEvent {
+                current: i as u32 + 1,
+                total,
+                filename: first_name.clone(),
+                status: "processing".to_string(),
+                message: if batch_len > 1 {
+                    format!(
+                        "正在处理: {} 等 {} 张 ({}/{})",
+                        first_name,
+                        batch_len,
+                        i + 1,
+                        total
+                    )
+                } else {
+                    format!("正在处理: {} ({}/{})", first_name, i + 1, total)
+                },
+                ..Default::default()
             },
-        ..Default::default()
-        });
+        );
 
         if batch_len == 1 {
             // 单张模式
             let file_path = &batch_files[0];
-            let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let filename = file_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             let tag_cmd = serde_json::json!({
                 "cmd": "tag",
                 "image_path": file_path.to_string_lossy(),
@@ -873,70 +993,109 @@ pub fn run_tagging(
                             let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
                             match msg_type {
                                 "result" => {
-                                    let tag_count = msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let tag_count =
+                                        msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
                                     success_count += 1;
-                                    let _ = app.emit("tagger-progress", ProgressEvent {
-                                        current: i as u32 + 1, total,
-                                        filename: filename.clone(),
-                                        status: "success".to_string(),
-                                        message: format!("[完成] {} → {} 个标签", filename, tag_count),
-                                    ..Default::default()
-                                    });
+                                    let _ = app.emit(
+                                        "tagger-progress",
+                                        ProgressEvent {
+                                            current: i as u32 + 1,
+                                            total,
+                                            filename: filename.clone(),
+                                            status: "success".to_string(),
+                                            message: format!(
+                                                "[完成] {} → {} 个标签",
+                                                filename, tag_count
+                                            ),
+                                            ..Default::default()
+                                        },
+                                    );
                                     break;
                                 }
                                 "error" => {
-                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                    let text = msg
+                                        .get("message")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("unknown");
                                     fail_count += 1;
                                     errors.push(format!("{}: {}", filename, text));
-                                    let _ = app.emit("tagger-progress", ProgressEvent {
-                                        current: i as u32 + 1, total,
-                                        filename: filename.clone(),
-                                        status: "error".to_string(),
-                                        message: format!("[错误] {}: {}", filename, text),
-                                    ..Default::default()
-                                    });
+                                    let _ = app.emit(
+                                        "tagger-progress",
+                                        ProgressEvent {
+                                            current: i as u32 + 1,
+                                            total,
+                                            filename: filename.clone(),
+                                            status: "error".to_string(),
+                                            message: format!("[错误] {}: {}", filename, text),
+                                            ..Default::default()
+                                        },
+                                    );
                                     break;
                                 }
                                 "log" => {
-                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                    let text = msg
+                                        .get("message")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let i18n_key = msg
+                                        .get("i18n_key")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
                                     let i18n_params = msg.get("i18n_params").cloned();
-                                    let _ = app.emit("tagger-progress", ProgressEvent {
-                                        current: i as u32 + 1, total,
-                                        filename: filename.clone(),
-                                        status: "info".to_string(),
-                                        message: text,
-                                        i18n_key,
-                                        i18n_params,
-                                    });
+                                    let _ = app.emit(
+                                        "tagger-progress",
+                                        ProgressEvent {
+                                            current: i as u32 + 1,
+                                            total,
+                                            filename: filename.clone(),
+                                            status: "info".to_string(),
+                                            message: text,
+                                            i18n_key,
+                                            i18n_params,
+                                        },
+                                    );
                                 }
-                                _ => { break; }
+                                _ => {
+                                    break;
+                                }
                             }
                         }
                     }
-                    Ok(Err(e)) => { fail_count += 1; errors.push(format!("{}: 读取失败: {}", filename, e)); break; }
-                    Err(_) => { fail_count += 1; errors.push(format!("{}: Python 进程退出", filename)); break; }
+                    Ok(Err(e)) => {
+                        fail_count += 1;
+                        errors.push(format!("{}: 读取失败: {}", filename, e));
+                        break;
+                    }
+                    Err(_) => {
+                        fail_count += 1;
+                        errors.push(format!("{}: Python 进程退出", filename));
+                        break;
+                    }
                 }
             }
         } else {
             // 批量模式
-            let images: Vec<serde_json::Value> = batch_files.iter().map(|fp| {
-                serde_json::json!({
-                    "image_path": fp.to_string_lossy(),
-                    "general_threshold": options.general_threshold,
-                    "character_threshold": options.character_threshold,
-                    "enabled_categories": enabled_cats,
-                    "exclude_tags": options.exclude_tags,
-                    "append_tags": options.append_tags,
-                    "append_position": options.append_position,
-                    "replace_underscore": options.replace_underscore,
-                    "output_format": options.output_format,
-                    "json_simplified": options.json_simplified,
-                    "escape_parentheses": options.escape_parentheses,
-                    "sort_by": options.sort_by,
-                    "existing_tags_action": options.existing_tags_action,
+            let images: Vec<serde_json::Value> = batch_files
+                .iter()
+                .map(|fp| {
+                    serde_json::json!({
+                        "image_path": fp.to_string_lossy(),
+                        "general_threshold": options.general_threshold,
+                        "character_threshold": options.character_threshold,
+                        "enabled_categories": enabled_cats,
+                        "exclude_tags": options.exclude_tags,
+                        "append_tags": options.append_tags,
+                        "append_position": options.append_position,
+                        "replace_underscore": options.replace_underscore,
+                        "output_format": options.output_format,
+                        "json_simplified": options.json_simplified,
+                        "escape_parentheses": options.escape_parentheses,
+                        "sort_by": options.sort_by,
+                        "existing_tags_action": options.existing_tags_action,
+                    })
                 })
-            }).collect();
+                .collect();
             let batch_cmd = serde_json::json!({ "cmd": "tag_batch", "images": images });
             if let Err(e) = writeln!(stdin, "{}", batch_cmd) {
                 fail_count += batch_len as u32;
@@ -951,58 +1110,108 @@ pub fn run_tagging(
                             let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
                             match msg_type {
                                 "result" => {
-                                    let img_path = msg.get("image_path").and_then(|v| v.as_str()).unwrap_or("");
-                                    let fname = std::path::Path::new(img_path).file_name().unwrap_or_default().to_string_lossy().to_string();
-                                    let tag_count = msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let img_path = msg
+                                        .get("image_path")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let fname = std::path::Path::new(img_path)
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                        .to_string();
+                                    let tag_count =
+                                        msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
                                     success_count += 1;
                                     results_read += 1;
-                                    let _ = app.emit("tagger-progress", ProgressEvent {
-                                        current: (i + results_read) as u32, total,
-                                        filename: fname.clone(),
-                                        status: "success".to_string(),
-                                        message: format!("[完成] {} → {} 个标签", fname, tag_count),
-                                    ..Default::default()
-                                    });
+                                    let _ = app.emit(
+                                        "tagger-progress",
+                                        ProgressEvent {
+                                            current: (i + results_read) as u32,
+                                            total,
+                                            filename: fname.clone(),
+                                            status: "success".to_string(),
+                                            message: format!(
+                                                "[完成] {} → {} 个标签",
+                                                fname, tag_count
+                                            ),
+                                            ..Default::default()
+                                        },
+                                    );
                                 }
                                 "error" => {
-                                    let img_path = msg.get("image_path").and_then(|v| v.as_str()).unwrap_or("");
-                                    let fname = std::path::Path::new(img_path).file_name().unwrap_or_default().to_string_lossy().to_string();
-                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                    let img_path = msg
+                                        .get("image_path")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("");
+                                    let fname = std::path::Path::new(img_path)
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy()
+                                        .to_string();
+                                    let text = msg
+                                        .get("message")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("unknown");
                                     fail_count += 1;
                                     results_read += 1;
                                     errors.push(format!("{}: {}", fname, text));
-                                    let _ = app.emit("tagger-progress", ProgressEvent {
-                                        current: (i + results_read) as u32, total,
-                                        filename: fname.clone(),
-                                        status: "error".to_string(),
-                                        message: format!("[错误] {}: {}", fname, text),
-                                    ..Default::default()
-                                    });
+                                    let _ = app.emit(
+                                        "tagger-progress",
+                                        ProgressEvent {
+                                            current: (i + results_read) as u32,
+                                            total,
+                                            filename: fname.clone(),
+                                            status: "error".to_string(),
+                                            message: format!("[错误] {}: {}", fname, text),
+                                            ..Default::default()
+                                        },
+                                    );
                                 }
                                 "log" => {
-                                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    let i18n_key = msg.get("i18n_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                    let text = msg
+                                        .get("message")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let i18n_key = msg
+                                        .get("i18n_key")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string());
                                     let i18n_params = msg.get("i18n_params").cloned();
-                                    let _ = app.emit("tagger-progress", ProgressEvent {
-                                        current: (i + results_read) as u32 + 1, total,
-                                        filename: String::new(),
-                                        status: "info".to_string(),
-                                        message: text, i18n_key, i18n_params,
-                                    });
+                                    let _ = app.emit(
+                                        "tagger-progress",
+                                        ProgressEvent {
+                                            current: (i + results_read) as u32 + 1,
+                                            total,
+                                            filename: String::new(),
+                                            status: "info".to_string(),
+                                            message: text,
+                                            i18n_key,
+                                            i18n_params,
+                                        },
+                                    );
                                 }
-                                _ => { results_read += 1; }
+                                _ => {
+                                    results_read += 1;
+                                }
                             }
                         }
                     }
-                    Ok(Err(e)) => { fail_count += (batch_len - results_read) as u32; errors.push(format!("批量读取失败: {}", e)); break; }
-                    Err(_) => { fail_count += (batch_len - results_read) as u32; errors.push("Python 进程退出".to_string()); break; }
+                    Ok(Err(e)) => {
+                        fail_count += (batch_len - results_read) as u32;
+                        errors.push(format!("批量读取失败: {}", e));
+                        break;
+                    }
+                    Err(_) => {
+                        fail_count += (batch_len - results_read) as u32;
+                        errors.push("Python 进程退出".to_string());
+                        break;
+                    }
                 }
             }
         }
         i = end;
     }
-
-
 
     // 发送 quit 命令
     let _ = writeln!(stdin, r#"{{"cmd":"quit"}}"#);
@@ -1011,12 +1220,25 @@ pub fn run_tagging(
         let _ = child.wait();
     }
 
-    let _ = app.emit("tagger-progress", ProgressEvent {
-        current: total, total, filename: String::new(),
-        status: "done".to_string(),
-        message: format!("打标完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "tagger-progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "done".to_string(),
+            message: format!(
+                "打标完成: 成功 {}, 失败 {}, 共 {}",
+                success_count, fail_count, total
+            ),
+            ..Default::default()
+        },
+    );
 
-    Ok(ProcessResult { success_count, fail_count, total, errors })
+    Ok(ProcessResult {
+        success_count,
+        fail_count,
+        total,
+        errors,
+    })
 }

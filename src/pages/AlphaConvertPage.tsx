@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
@@ -8,6 +8,7 @@ import { Layers, FolderOpen } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
+import InputPathPickerButton from '../components/InputPathPickerButton';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -47,11 +48,6 @@ export default function AlphaConvertPage() {
     });
     return () => { active = false; p.then(fn => fn()); };
   }, []);
-
-  const selectInputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
-    if (selected) setInputPath(selected as string);
-  };
 
   const selectOutputFolder = async () => {
     const selected = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') });
@@ -106,7 +102,7 @@ export default function AlphaConvertPage() {
                 </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
+                  <InputPathPickerButton onSelect={setInputPath} />
                 </div>
               </div>
               <div className="form-group">

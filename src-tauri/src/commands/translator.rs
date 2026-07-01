@@ -9,7 +9,10 @@ static DB_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// 获取软件根目录（exe 所在目录，macOS .app 则取 bundle 外层）
 fn get_exe_root() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    let exe_dir = exe.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+    let exe_dir = exe
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
     // macOS .app bundle: …/Foo.app/Contents/MacOS/exe → 取 Foo.app 所在目录
     if cfg!(target_os = "macos") {
         if let Some(contents) = exe_dir.parent() {
@@ -33,7 +36,9 @@ fn default_cache_dir() -> PathBuf {
 
 fn get_db_path() -> PathBuf {
     let guard = DB_PATH.lock().unwrap_or_else(|e| e.into_inner());
-    guard.clone().unwrap_or_else(|| default_cache_dir().join("tag_translations.db"))
+    guard
+        .clone()
+        .unwrap_or_else(|| default_cache_dir().join("tag_translations.db"))
 }
 
 pub fn open_db() -> Result<Connection, String> {
@@ -41,8 +46,7 @@ pub fn open_db() -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let conn = Connection::open(&path)
-        .map_err(|e| format!("打开翻译缓存数据库失败: {}", e))?;
+    let conn = Connection::open(&path).map_err(|e| format!("打开翻译缓存数据库失败: {}", e))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS translations (
             tag TEXT NOT NULL,
@@ -50,17 +54,20 @@ pub fn open_db() -> Result<Connection, String> {
             lang TEXT NOT NULL DEFAULT 'zh-CN',
             created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
             PRIMARY KEY (tag, lang)
-        );"
-    ).map_err(|e| {
+        );",
+    )
+    .map_err(|e| {
         // 旧表 schema 不兼容时重建（旧表 PRIMARY KEY 仅为 tag）
-        let _ = conn.execute_batch("DROP TABLE IF EXISTS translations;
+        let _ = conn.execute_batch(
+            "DROP TABLE IF EXISTS translations;
             CREATE TABLE translations (
                 tag TEXT NOT NULL,
                 translated TEXT NOT NULL,
                 lang TEXT NOT NULL DEFAULT 'zh-CN',
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
                 PRIMARY KEY (tag, lang)
-            );");
+            );",
+        );
         format!("创建翻译缓存表失败（已尝试重建）: {}", e)
     })?;
     // 检查旧表是否需要迁移：如果 PRIMARY KEY 不包含 lang，则重建
@@ -69,7 +76,14 @@ pub fn open_db() -> Result<Connection, String> {
         .and_then(|mut stmt| {
             let infos: Vec<(i32, String, String, bool, Option<String>, i32)> = stmt
                 .query_map([], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
                 })?
                 .filter_map(|r| r.ok())
                 .collect();
@@ -87,7 +101,7 @@ pub fn open_db() -> Result<Connection, String> {
                  lang TEXT NOT NULL DEFAULT 'zh-CN',
                  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
                  PRIMARY KEY (tag, lang)
-             );"
+             );",
         );
     }
     Ok(conn)
@@ -111,7 +125,10 @@ pub fn init_db_path(custom_dir: Option<String>) {
 #[tauri::command]
 pub fn get_cache_path() -> String {
     let path = get_db_path();
-    path.parent().unwrap_or(path.as_path()).to_string_lossy().to_string()
+    path.parent()
+        .unwrap_or(path.as_path())
+        .to_string_lossy()
+        .to_string()
 }
 
 /// 修改缓存路径（空字符串则重置为默认路径）
@@ -122,8 +139,7 @@ pub fn set_cache_path(path: String) -> Result<String, String> {
     } else {
         PathBuf::from(&path)
     };
-    std::fs::create_dir_all(&cache_dir)
-        .map_err(|e| format!("创建缓存目录失败: {}", e))?;
+    std::fs::create_dir_all(&cache_dir).map_err(|e| format!("创建缓存目录失败: {}", e))?;
     let db_path = cache_dir.join("tag_translations.db");
     let mut guard = DB_PATH.lock().unwrap_or_else(|e| e.into_inner());
     *guard = Some(db_path);
@@ -189,10 +205,13 @@ async fn translate_baidu(
     secret_key: &str,
 ) -> Result<Vec<String>, String> {
     let text = texts.join("\n");
-    let salt = format!("{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis());
+    let salt = format!(
+        "{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
 
     let sign_str = format!("{}{}{}{}", appid, &text, &salt, secret_key);
     let sign = baidu_sign(&sign_str);
@@ -213,11 +232,13 @@ async fn translate_baidu(
         .await
         .map_err(|e| format!("百度翻译请求失败: {}\n请检查网络连接", e))?;
 
-    let body = resp.text().await
+    let body = resp
+        .text()
+        .await
         .map_err(|e| format!("读取百度翻译响应失败: {}", e))?;
 
-    let baidu_resp: BaiduResponse = serde_json::from_str(&body)
-        .map_err(|e| format!("解析百度翻译响应失败: {}", e))?;
+    let baidu_resp: BaiduResponse =
+        serde_json::from_str(&body).map_err(|e| format!("解析百度翻译响应失败: {}", e))?;
 
     if let Some(code) = &baidu_resp.error_code {
         let msg = baidu_resp.error_msg.as_deref().unwrap_or("未知错误");
@@ -240,7 +261,10 @@ async fn translate_baidu(
     }
 
     match baidu_resp.trans_result {
-        Some(items) => Ok(items.iter().map(|item| item.dst.trim().to_string()).collect()),
+        Some(items) => Ok(items
+            .iter()
+            .map(|item| item.dst.trim().to_string())
+            .collect()),
         None => Err("百度翻译返回空结果".to_string()),
     }
 }
@@ -266,18 +290,32 @@ async fn translate_google(
         .header("User-Agent", "Mozilla/5.0")
         .send()
         .await
-        .map_err(|e| format!("Google 翻译请求失败: {}\n请检查网络是否能访问 Google 服务（可能需要代理/VPN）", e))?;
+        .map_err(|e| {
+            format!(
+                "Google 翻译请求失败: {}\n请检查网络是否能访问 Google 服务（可能需要代理/VPN）",
+                e
+            )
+        })?;
 
     let status = resp.status();
-    let body = resp.text().await
+    let body = resp
+        .text()
+        .await
         .map_err(|e| format!("读取 Google 翻译响应失败: {}", e))?;
 
     if !status.is_success() {
-        return Err(format!("Google 翻译返回错误状态 {}\n请检查网络是否能访问 Google 服务", status));
+        return Err(format!(
+            "Google 翻译返回错误状态 {}\n请检查网络是否能访问 Google 服务",
+            status
+        ));
     }
 
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("解析 Google 翻译响应失败: {}\n可能是请求被拦截，请稍后重试", e))?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+        format!(
+            "解析 Google 翻译响应失败: {}\n可能是请求被拦截，请稍后重试",
+            e
+        )
+    })?;
 
     let mut translated_text = String::new();
     if let Some(sentences) = json.get(0).and_then(|v| v.as_array()) {
@@ -288,7 +326,10 @@ async fn translate_google(
         }
     }
 
-    Ok(translated_text.split('\n').map(|s| s.trim().to_string()).collect())
+    Ok(translated_text
+        .split('\n')
+        .map(|s| s.trim().to_string())
+        .collect())
 }
 
 // ═══════════════════════════════════════
@@ -305,7 +346,7 @@ struct YoudaoResponse {
 }
 
 fn sha256_hex(input: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     let result = hasher.finalize();
@@ -332,14 +373,20 @@ async fn translate_youdao(
     app_secret: &str,
 ) -> Result<Vec<String>, String> {
     let text = texts.join("\n");
-    let salt = format!("{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis());
-    let curtime = format!("{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs());
+    let salt = format!(
+        "{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+    let curtime = format!(
+        "{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    );
 
     let input = youdao_truncate(&text);
     let sign_str = format!("{}{}{}{}{}", app_key, input, salt, curtime, app_secret);
@@ -363,11 +410,13 @@ async fn translate_youdao(
         .await
         .map_err(|e| format!("有道翻译请求失败: {}\n请检查网络连接", e))?;
 
-    let body = resp.text().await
+    let body = resp
+        .text()
+        .await
         .map_err(|e| format!("读取有道翻译响应失败: {}", e))?;
 
-    let youdao_resp: YoudaoResponse = serde_json::from_str(&body)
-        .map_err(|e| format!("解析有道翻译响应失败: {}", e))?;
+    let youdao_resp: YoudaoResponse =
+        serde_json::from_str(&body).map_err(|e| format!("解析有道翻译响应失败: {}", e))?;
 
     if youdao_resp.error_code != "0" {
         let hint = match youdao_resp.error_code.as_str() {
@@ -383,7 +432,10 @@ async fn translate_youdao(
             "411" => "访问频率受限，请稍后重试",
             _ => "请参考有道翻译错误码文档",
         };
-        return Err(format!("有道翻译错误 [{}]: {}", youdao_resp.error_code, hint));
+        return Err(format!(
+            "有道翻译错误 [{}]: {}",
+            youdao_resp.error_code, hint
+        ));
     }
 
     match youdao_resp.translation {
@@ -448,7 +500,9 @@ async fn translate_bing(
         .map_err(|e| format!("必应翻译请求失败: {}\n请检查网络连接", e))?;
 
     let status = resp.status();
-    let resp_body = resp.text().await
+    let resp_body = resp
+        .text()
+        .await
         .map_err(|e| format!("读取必应翻译响应失败: {}", e))?;
 
     if !status.is_success() {
@@ -462,7 +516,8 @@ async fn translate_bing(
                     429000..=429002 => "请求过于频繁，请稍后重试",
                     _ => "请参考微软翻译 API 文档",
                 };
-                return Err(format!("必应翻译错误 [{}]: {}\n{}", 
+                return Err(format!(
+                    "必应翻译错误 [{}]: {}\n{}",
                     err.code.unwrap_or(0),
                     err.message.unwrap_or_default(),
                     hint
@@ -472,12 +527,18 @@ async fn translate_bing(
         return Err(format!("必应翻译返回错误状态 {}", status));
     }
 
-    let results: Vec<BingTransResponse> = serde_json::from_str(&resp_body)
-        .map_err(|e| format!("解析必应翻译响应失败: {}", e))?;
+    let results: Vec<BingTransResponse> =
+        serde_json::from_str(&resp_body).map_err(|e| format!("解析必应翻译响应失败: {}", e))?;
 
-    Ok(results.iter().map(|r| {
-        r.translations.first().map(|t| t.text.trim().to_string()).unwrap_or_default()
-    }).collect())
+    Ok(results
+        .iter()
+        .map(|r| {
+            r.translations
+                .first()
+                .map(|t| t.text.trim().to_string())
+                .unwrap_or_default()
+        })
+        .collect())
 }
 
 // ═══════════════════════════════════════
@@ -501,13 +562,21 @@ pub async fn translate_tags(
     translate_mode: Option<String>,
 ) -> Result<TranslateResult, String> {
     if tags.is_empty() {
-        return Ok(TranslateResult { translations: vec![], cached_count: 0, translated_count: 0 });
+        return Ok(TranslateResult {
+            translations: vec![],
+            cached_count: 0,
+            translated_count: 0,
+        });
     }
 
     // "text" = 自然语言整段翻译，"tags" = Danbooru 标签批量翻译（默认）
     let is_text_mode = translate_mode.as_deref() == Some("text");
 
-    let conn = if skip_cache.unwrap_or(false) || is_text_mode { None } else { Some(open_db()?) };
+    let conn = if skip_cache.unwrap_or(false) || is_text_mode {
+        None
+    } else {
+        Some(open_db()?)
+    };
 
     // 1. 查缓存（text 模式跳过）
     let mut cached: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -515,12 +584,18 @@ pub async fn translate_tags(
 
     for tag in &tags {
         if let Some(ref db) = conn {
-            let mut stmt = db.prepare("SELECT translated FROM translations WHERE tag = ?1 AND lang = ?2")
+            let mut stmt = db
+                .prepare("SELECT translated FROM translations WHERE tag = ?1 AND lang = ?2")
                 .map_err(|e| format!("查询缓存失败: {}", e))?;
-            let result: Result<String, _> = stmt.query_row(rusqlite::params![tag, &target_lang], |row| row.get(0));
+            let result: Result<String, _> =
+                stmt.query_row(rusqlite::params![tag, &target_lang], |row| row.get(0));
             match result {
-                Ok(tr) => { cached.insert(tag.clone(), tr); },
-                Err(_) => { uncached.push(tag.clone()); },
+                Ok(tr) => {
+                    cached.insert(tag.clone(), tr);
+                }
+                Err(_) => {
+                    uncached.push(tag.clone());
+                }
             }
         } else {
             uncached.push(tag.clone());
@@ -534,10 +609,13 @@ pub async fn translate_tags(
     // 发送初始进度（已缓存的部分）
     {
         use tauri::Emitter;
-        let _ = app.emit("translate-progress", serde_json::json!({
-            "current": cached_count,
-            "total": total_count
-        }));
+        let _ = app.emit(
+            "translate-progress",
+            serde_json::json!({
+                "current": cached_count,
+                "total": total_count
+            }),
+        );
     }
 
     // 2. 翻译未缓存的
@@ -567,9 +645,14 @@ pub async fn translate_tags(
                         let appid = baidu_appid.as_deref().unwrap_or("");
                         let key = baidu_key.as_deref().unwrap_or("");
                         if appid.is_empty() || key.is_empty() {
-                            return Err("百度翻译需要配置 APP ID 和密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                            return Err(
+                                "百度翻译需要配置 APP ID 和密钥\n请在「设置 → 翻译设置」中填写"
+                                    .to_string(),
+                            );
                         }
-                        if idx > 0 { tokio::time::sleep(std::time::Duration::from_millis(1100)).await; }
+                        if idx > 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                        }
                         let results = translate_baidu(&client, single, appid, key).await?;
                         // 百度按换行拆分了结果，重新合并
                         results.join("\n")
@@ -578,16 +661,23 @@ pub async fn translate_tags(
                         let app_key = youdao_app_key.as_deref().unwrap_or("");
                         let app_secret = youdao_app_secret.as_deref().unwrap_or("");
                         if app_key.is_empty() || app_secret.is_empty() {
-                            return Err("有道翻译需要配置应用 ID 和应用密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                            return Err(
+                                "有道翻译需要配置应用 ID 和应用密钥\n请在「设置 → 翻译设置」中填写"
+                                    .to_string(),
+                            );
                         }
-                        if idx > 0 { tokio::time::sleep(std::time::Duration::from_millis(1100)).await; }
-                        let results = translate_youdao(&client, single, app_key, app_secret).await?;
+                        if idx > 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                        }
+                        let results =
+                            translate_youdao(&client, single, app_key, app_secret).await?;
                         results.join("\n")
                     }
                     "bing" => {
                         let key = bing_key.as_deref().unwrap_or("");
                         if key.is_empty() {
-                            return Err("必应翻译需要配置订阅密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                            return Err("必应翻译需要配置订阅密钥\n请在「设置 → 翻译设置」中填写"
+                                .to_string());
                         }
                         let region = bing_region.as_deref().unwrap_or("");
                         let results = translate_bing(&client, single, key, region).await?;
@@ -604,10 +694,13 @@ pub async fn translate_tags(
 
                 {
                     use tauri::Emitter;
-                    let _ = app.emit("translate-progress", serde_json::json!({
-                        "current": cached_count + translated_count,
-                        "total": total_count
-                    }));
+                    let _ = app.emit(
+                        "translate-progress",
+                        serde_json::json!({
+                            "current": cached_count + translated_count,
+                            "total": total_count
+                        }),
+                    );
                 }
             }
         } else {
@@ -633,7 +726,10 @@ pub async fn translate_tags(
                         let appid = baidu_appid.as_deref().unwrap_or("");
                         let key = baidu_key.as_deref().unwrap_or("");
                         if appid.is_empty() || key.is_empty() {
-                            return Err("百度翻译需要配置 APP ID 和密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                            return Err(
+                                "百度翻译需要配置 APP ID 和密钥\n请在「设置 → 翻译设置」中填写"
+                                    .to_string(),
+                            );
                         }
                         translate_baidu(&client, chunk, appid, key).await?
                     }
@@ -641,21 +737,23 @@ pub async fn translate_tags(
                         let app_key = youdao_app_key.as_deref().unwrap_or("");
                         let app_secret = youdao_app_secret.as_deref().unwrap_or("");
                         if app_key.is_empty() || app_secret.is_empty() {
-                            return Err("有道翻译需要配置应用 ID 和应用密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                            return Err(
+                                "有道翻译需要配置应用 ID 和应用密钥\n请在「设置 → 翻译设置」中填写"
+                                    .to_string(),
+                            );
                         }
                         translate_youdao(&client, chunk, app_key, app_secret).await?
                     }
                     "bing" => {
                         let key = bing_key.as_deref().unwrap_or("");
                         if key.is_empty() {
-                            return Err("必应翻译需要配置订阅密钥\n请在「设置 → 翻译设置」中填写".to_string());
+                            return Err("必应翻译需要配置订阅密钥\n请在「设置 → 翻译设置」中填写"
+                                .to_string());
                         }
                         let region = bing_region.as_deref().unwrap_or("");
                         translate_bing(&client, chunk, key, region).await?
                     }
-                    _ => {
-                        translate_google(&client, chunk, &target_lang).await?
-                    }
+                    _ => translate_google(&client, chunk, &target_lang).await?,
                 };
 
                 // 返回行数与请求行数不一致说明结果已错位，整批放弃，避免错误翻译写入缓存
@@ -673,7 +771,8 @@ pub async fn translate_tags(
                         .map(|s| s.trim().to_string())
                         .unwrap_or_default();
 
-                    let final_tr = if tr.to_lowercase() == original.replace('_', " ").to_lowercase() {
+                    let final_tr = if tr.to_lowercase() == original.replace('_', " ").to_lowercase()
+                    {
                         String::new()
                     } else {
                         tr
@@ -692,38 +791,49 @@ pub async fn translate_tags(
 
                 {
                     use tauri::Emitter;
-                    let _ = app.emit("translate-progress", serde_json::json!({
-                        "current": cached_count + translated_count,
-                        "total": total_count
-                    }));
+                    let _ = app.emit(
+                        "translate-progress",
+                        serde_json::json!({
+                            "current": cached_count + translated_count,
+                            "total": total_count
+                        }),
+                    );
                 }
             }
         }
     }
 
     // 3. 按原始顺序返回
-    let translations: Vec<TranslatedItem> = tags.iter().map(|tag| {
-        TranslatedItem {
+    let translations: Vec<TranslatedItem> = tags
+        .iter()
+        .map(|tag| TranslatedItem {
             source: tag.clone(),
             translated: cached.get(tag).cloned().unwrap_or_default(),
-        }
-    }).collect();
+        })
+        .collect();
 
-    Ok(TranslateResult { translations, cached_count, translated_count })
+    Ok(TranslateResult {
+        translations,
+        cached_count,
+        translated_count,
+    })
 }
 
 /// 获取翻译缓存统计
 #[tauri::command]
 pub fn get_translation_cache_stats() -> Result<CacheStats, String> {
     let conn = open_db()?;
-    let total: usize = conn.query_row("SELECT COUNT(*) FROM translations", [], |row| row.get(0))
+    let total: usize = conn
+        .query_row("SELECT COUNT(*) FROM translations", [], |row| row.get(0))
         .map_err(|e| format!("查询缓存统计失败: {}", e))?;
 
     let count_lang = |lang: &str| -> usize {
         conn.query_row(
             "SELECT COUNT(*) FROM translations WHERE lang = ?1",
-            [lang], |row| row.get(0)
-        ).unwrap_or(0)
+            [lang],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
     };
     let zh_cn = count_lang("zh-CN");
     let ja = count_lang("ja");
@@ -732,7 +842,13 @@ pub fn get_translation_cache_stats() -> Result<CacheStats, String> {
     let db_path = get_db_path();
     let db_size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
-    Ok(CacheStats { total, db_size_bytes, zh_cn, ja, ko })
+    Ok(CacheStats {
+        total,
+        db_size_bytes,
+        zh_cn,
+        ja,
+        ko,
+    })
 }
 
 /// 清空翻译缓存
@@ -789,9 +905,7 @@ pub async fn test_translation(
             let region = bing_region.as_deref().unwrap_or("");
             translate_bing(&client, &test_texts, key, region).await?
         }
-        _ => {
-            translate_google(&client, &test_texts, "zh-CN").await?
-        }
+        _ => translate_google(&client, &test_texts, "zh-CN").await?,
     };
 
     let translated = results.first().cloned().unwrap_or_default();
@@ -803,14 +917,20 @@ pub async fn test_translation(
 #[tauri::command]
 pub fn export_translation_csv(path: String) -> Result<u32, String> {
     let conn = open_db()?;
-    let mut stmt = conn.prepare(
-        "SELECT tag, translated, lang FROM translations ORDER BY lang, tag"
-    ).map_err(|e| format!("查询失败: {}", e))?;
+    let mut stmt = conn
+        .prepare("SELECT tag, translated, lang FROM translations ORDER BY lang, tag")
+        .map_err(|e| format!("查询失败: {}", e))?;
 
     let rows: Vec<(String, String, String)> = {
-        let mapped = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-        }).map_err(|e| format!("查询失败: {}", e))?;
+        let mapped = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| format!("查询失败: {}", e))?;
         mapped.filter_map(|r| r.ok()).collect()
     };
 
@@ -823,11 +943,15 @@ pub fn export_translation_csv(path: String) -> Result<u32, String> {
         }
     };
     for (tag, translated, lang) in &rows {
-        csv_content.push_str(&format!("{},{},{}\n", escape(tag), escape(translated), escape(lang)));
+        csv_content.push_str(&format!(
+            "{},{},{}\n",
+            escape(tag),
+            escape(translated),
+            escape(lang)
+        ));
     }
 
-    std::fs::write(&path, csv_content)
-        .map_err(|e| format!("写入文件失败: {}", e))?;
+    std::fs::write(&path, csv_content).map_err(|e| format!("写入文件失败: {}", e))?;
 
     Ok(rows.len() as u32)
 }
@@ -836,8 +960,7 @@ pub fn export_translation_csv(path: String) -> Result<u32, String> {
 /// 格式要求: 第一行必须是 tag,translated,lang
 #[tauri::command]
 pub fn import_translation_csv(path: String) -> Result<(u32, u32, String), String> {
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取文件失败: {}", e))?;
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
 
     let mut lines = content.lines();
     let header = lines.next().ok_or("CSV 文件为空")?;
@@ -851,10 +974,11 @@ pub fn import_translation_csv(path: String) -> Result<(u32, u32, String), String
 
     let valid_langs = ["zh-CN", "ja", "ko"];
     let conn = open_db()?;
-    conn.execute_batch("BEGIN").map_err(|e| format!("开始事务失败: {}", e))?;
-    let mut stmt = conn.prepare(
-        "INSERT OR REPLACE INTO translations (tag, translated, lang) VALUES (?1, ?2, ?3)"
-    ).map_err(|e| format!("准备语句失败: {}", e))?;
+    conn.execute_batch("BEGIN")
+        .map_err(|e| format!("开始事务失败: {}", e))?;
+    let mut stmt = conn
+        .prepare("INSERT OR REPLACE INTO translations (tag, translated, lang) VALUES (?1, ?2, ?3)")
+        .map_err(|e| format!("准备语句失败: {}", e))?;
 
     let mut imported = 0u32;
     let mut skipped = 0u32;
@@ -862,13 +986,19 @@ pub fn import_translation_csv(path: String) -> Result<(u32, u32, String), String
 
     for (line_num, line) in lines.enumerate() {
         let line = line.trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
 
         let parts = parse_csv_line(line);
         if parts.len() < 3 {
             skipped += 1;
             if errors.len() < 5 {
-                errors.push(format!("第 {} 行: 列数不足 ({}列，需要3列)", line_num + 2, parts.len()));
+                errors.push(format!(
+                    "第 {} 行: 列数不足 ({}列，需要3列)",
+                    line_num + 2,
+                    parts.len()
+                ));
             }
             continue;
         }
@@ -885,12 +1015,19 @@ pub fn import_translation_csv(path: String) -> Result<(u32, u32, String), String
         if !valid_langs.contains(&lang) {
             skipped += 1;
             if errors.len() < 5 {
-                errors.push(format!("第 {} 行: 不支持的语言 '{}'（支持: zh-CN, ja, ko）", line_num + 2, lang));
+                errors.push(format!(
+                    "第 {} 行: 不支持的语言 '{}'（支持: zh-CN, ja, ko）",
+                    line_num + 2,
+                    lang
+                ));
             }
             continue;
         }
 
-        if stmt.execute(rusqlite::params![tag, translated, lang]).is_ok() {
+        if stmt
+            .execute(rusqlite::params![tag, translated, lang])
+            .is_ok()
+        {
             imported += 1;
         } else {
             skipped += 1;
@@ -898,8 +1035,13 @@ pub fn import_translation_csv(path: String) -> Result<(u32, u32, String), String
     }
 
     drop(stmt);
-    conn.execute_batch("COMMIT").map_err(|e| format!("提交事务失败: {}", e))?;
-    let msg = if errors.is_empty() { String::new() } else { errors.join("\n") };
+    conn.execute_batch("COMMIT")
+        .map_err(|e| format!("提交事务失败: {}", e))?;
+    let msg = if errors.is_empty() {
+        String::new()
+    } else {
+        errors.join("\n")
+    };
     Ok((imported, skipped, msg))
 }
 
@@ -911,14 +1053,27 @@ fn parse_csv_line(line: &str) -> Vec<String> {
     while let Some(c) = chars.next() {
         if in_quotes {
             if c == '"' {
-                if chars.peek() == Some(&'"') { current.push('"'); chars.next(); }
-                else { in_quotes = false; }
-            } else { current.push(c); }
+                if chars.peek() == Some(&'"') {
+                    current.push('"');
+                    chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                current.push(c);
+            }
         } else {
             match c {
-                ',' => { result.push(current.clone()); current.clear(); }
-                '"' => { in_quotes = true; }
-                _ => { current.push(c); }
+                ',' => {
+                    result.push(current.clone());
+                    current.clear();
+                }
+                '"' => {
+                    in_quotes = true;
+                }
+                _ => {
+                    current.push(c);
+                }
             }
         }
     }

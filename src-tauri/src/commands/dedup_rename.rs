@@ -98,7 +98,11 @@ pub async fn export_unmatched_files(
                 }
             }
         }
-        Ok(DedupRenameResult { success_count, fail_count, errors })
+        Ok(DedupRenameResult {
+            success_count,
+            fail_count,
+            errors,
+        })
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
@@ -130,8 +134,15 @@ pub async fn execute_dedup_rename(
             if let Some(conflict) = &action.conflict_path {
                 let conflict_p = Path::new(conflict);
                 // 给冲突文件加 _rename 后缀，若该名已被占用则追加序号直到唯一
-                let stem = conflict_p.file_stem().unwrap_or_default().to_string_lossy().to_string();
-                let ext = conflict_p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+                let stem = conflict_p
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let ext = conflict_p
+                    .extension()
+                    .map(|e| format!(".{}", e.to_string_lossy()))
+                    .unwrap_or_default();
                 let parent = conflict_p.parent().unwrap_or(Path::new("."));
                 let mut rename_path = parent.join(format!("{}_rename{}", stem, ext));
                 let mut suffix = 1u32;
@@ -153,7 +164,10 @@ pub async fn execute_dedup_rename(
             // 后端自查：冲突未被避让（前端未传 conflict_path 或避让后目标仍存在），拒绝覆盖
             if target_path.exists() {
                 fail_count += 1;
-                errors.push(format!("目标文件已存在，跳过以免覆盖: {}", target_path.display()));
+                errors.push(format!(
+                    "目标文件已存在，跳过以免覆盖: {}",
+                    target_path.display()
+                ));
                 continue;
             }
         }
@@ -167,30 +181,43 @@ pub async fn execute_dedup_rename(
             }
             Err(e) => {
                 fail_count += 1;
-                errors.push(format!("{} → {}: {}", action.src_path, action.target_name, e));
+                errors.push(format!(
+                    "{} → {}: {}",
+                    action.src_path, action.target_name, e
+                ));
             }
         }
 
-        let _ = app.emit("dedup-rename-progress", ProgressEvent {
-            current: i as u32 + 1,
-            total,
-            filename: action.target_name.clone(),
-            status: "processing".to_string(),
-            message: format!("[{}/{}] {}", i + 1, total, action.target_name),
-        ..Default::default()
-        });
+        let _ = app.emit(
+            "dedup-rename-progress",
+            ProgressEvent {
+                current: i as u32 + 1,
+                total,
+                filename: action.target_name.clone(),
+                status: "processing".to_string(),
+                message: format!("[{}/{}] {}", i + 1, total, action.target_name),
+                ..Default::default()
+            },
+        );
     }
 
-    let _ = app.emit("dedup-rename-progress", ProgressEvent {
-        current: total,
-        total,
-        filename: String::new(),
-        status: "done".to_string(),
-        message: format!("完成: 成功 {}, 失败 {}", success_count, fail_count),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "dedup-rename-progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "done".to_string(),
+            message: format!("完成: 成功 {}, 失败 {}", success_count, fail_count),
+            ..Default::default()
+        },
+    );
 
-    Ok(DedupRenameResult { success_count, fail_count, errors })
+    Ok(DedupRenameResult {
+        success_count,
+        fail_count,
+        errors,
+    })
 }
 
 /// 重命名关联文件（.txt, .json, .caption），返回错误信息列表（目标已存在则跳过并记录，绝不覆盖）
@@ -206,7 +233,11 @@ fn rename_associated_files(old_path: &Path, new_path: &Path) -> Vec<String> {
         if old_assoc.exists() {
             let new_assoc = new_dir.join(format!("{}.{}", new_stem.to_string_lossy(), ext));
             if new_assoc.exists() {
-                errors.push(format!("关联文件目标已存在，跳过以免覆盖: {} → {}", old_assoc.display(), new_assoc.display()));
+                errors.push(format!(
+                    "关联文件目标已存在，跳过以免覆盖: {} → {}",
+                    old_assoc.display(),
+                    new_assoc.display()
+                ));
                 continue;
             }
             if let Err(e) = std::fs::rename(&old_assoc, &new_assoc) {
@@ -226,7 +257,10 @@ struct ImageFingerprint {
     color_hist: [f64; 48],
 }
 
-fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<DedupRenameScanResult, String> {
+fn scan_sync(
+    app: &tauri::AppHandle,
+    options: &DedupRenameOptions,
+) -> Result<DedupRenameScanResult, String> {
     let start = std::time::Instant::now();
 
     let folder_a = Path::new(&options.folder_a);
@@ -250,42 +284,79 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
             pairs: vec![],
             total_a,
             total_b,
-            unmatched_a: files_a.iter().map(|f| f.file_name().unwrap_or_default().to_string_lossy().to_string()).collect(),
-            unmatched_b: files_b.iter().map(|f| f.file_name().unwrap_or_default().to_string_lossy().to_string()).collect(),
+            unmatched_a: files_a
+                .iter()
+                .map(|f| {
+                    f.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                })
+                .collect(),
+            unmatched_b: files_b
+                .iter()
+                .map(|f| {
+                    f.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                })
+                .collect(),
             scan_time_ms: 0,
             failed_files: vec![],
         });
     }
 
     // Phase 1: compute fingerprints
-    let _ = app.emit("dedup-rename-progress", ProgressEvent {
-        current: 0, total: total_all, filename: String::new(),
-        status: "processing".into(),
-        message: "正在计算图片指纹...".into(),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "dedup-rename-progress",
+        ProgressEvent {
+            current: 0,
+            total: total_all,
+            filename: String::new(),
+            status: "processing".into(),
+            message: "正在计算图片指纹...".into(),
+            ..Default::default()
+        },
+    );
 
-    let num_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(16);
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(16);
     let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
 
-    let compute_batch = |files: &[PathBuf], app: &tauri::AppHandle, counter: &std::sync::Arc<std::sync::atomic::AtomicU32>, total: u32| -> (Vec<ImageFingerprint>, Vec<String>) {
+    let compute_batch = |files: &[PathBuf],
+                         app: &tauri::AppHandle,
+                         counter: &std::sync::Arc<std::sync::atomic::AtomicU32>,
+                         total: u32|
+     -> (Vec<ImageFingerprint>, Vec<String>) {
         let mut fps = Vec::with_capacity(files.len());
         let mut failed: Vec<String> = Vec::new();
         for chunk in files.chunks(num_threads) {
-            if CANCEL_FLAG.load(Ordering::SeqCst) { break; }
-            let handles: Vec<_> = chunk.iter().map(|file| {
-                let path = file.clone();
-                std::thread::spawn(move || compute_fingerprint(&path))
-            }).collect();
+            if CANCEL_FLAG.load(Ordering::SeqCst) {
+                break;
+            }
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|file| {
+                    let path = file.clone();
+                    std::thread::spawn(move || compute_fingerprint(&path))
+                })
+                .collect();
             for (file, handle) in chunk.iter().zip(handles) {
                 let cnt = counter.fetch_add(1, Ordering::SeqCst) + 1;
-                let _ = app.emit("dedup-rename-progress", ProgressEvent {
-                    current: cnt, total,
-                    filename: String::new(),
-                    status: "processing".into(),
-                    message: format!("计算指纹 {}/{}", cnt, total),
-                ..Default::default()
-                });
+                let _ = app.emit(
+                    "dedup-rename-progress",
+                    ProgressEvent {
+                        current: cnt,
+                        total,
+                        filename: String::new(),
+                        status: "processing".into(),
+                        message: format!("计算指纹 {}/{}", cnt, total),
+                        ..Default::default()
+                    },
+                );
                 match handle.join() {
                     Ok(Ok(fp)) => fps.push(fp),
                     Ok(Err(e)) => failed.push(format!("{}: {}", file.display(), e)),
@@ -297,34 +368,48 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
     };
 
     let (fps_a, mut failed_files) = compute_batch(&files_a, app, &counter, total_all);
-    if CANCEL_FLAG.load(Ordering::SeqCst) { return Err("已取消".into()); }
+    if CANCEL_FLAG.load(Ordering::SeqCst) {
+        return Err("已取消".into());
+    }
     let (fps_b, failed_b) = compute_batch(&files_b, app, &counter, total_all);
     failed_files.extend(failed_b);
-    if CANCEL_FLAG.load(Ordering::SeqCst) { return Err("已取消".into()); }
+    if CANCEL_FLAG.load(Ordering::SeqCst) {
+        return Err("已取消".into());
+    }
 
     // Phase 2: cross-compare A vs B
-    let _ = app.emit("dedup-rename-progress", ProgressEvent {
-        current: total_all, total: total_all, filename: String::new(),
-        status: "processing".into(),
-        message: "正在比对图片...".into(),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "dedup-rename-progress",
+        ProgressEvent {
+            current: total_all,
+            total: total_all,
+            filename: String::new(),
+            status: "processing".into(),
+            message: "正在比对图片...".into(),
+            ..Default::default()
+        },
+    );
 
     let mut pairs: Vec<DedupPair> = Vec::new();
     let mut used_b: Vec<bool> = vec![false; fps_b.len()];
 
     for fp_a in &fps_a {
-        if CANCEL_FLAG.load(Ordering::SeqCst) { return Err("已取消".into()); }
+        if CANCEL_FLAG.load(Ordering::SeqCst) {
+            return Err("已取消".into());
+        }
 
         let mut best_j: Option<usize> = None;
         let mut best_sim = 0.0_f64;
         let mut best_method = String::new();
 
         for (j, fp_b) in fps_b.iter().enumerate() {
-            if used_b[j] { continue; }
+            if used_b[j] {
+                continue;
+            }
 
             let (is_dup, sim, method) = is_duplicate(
-                fp_a, fp_b,
+                fp_a,
+                fp_b,
                 options.dhash_threshold,
                 options.phash_threshold,
                 options.color_threshold,
@@ -339,8 +424,18 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
 
         if let Some(j) = best_j {
             used_b[j] = true;
-            let name_a = fp_a.path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            let name_b = fps_b[j].path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name_a = fp_a
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let name_b = fps_b[j]
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             pairs.push(DedupPair {
                 path_a: fp_a.path.to_string_lossy().to_string(),
                 name_a,
@@ -353,24 +448,45 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
     }
 
     // Collect unmatched
-    let matched_a_paths: std::collections::HashSet<String> = pairs.iter().map(|p| p.path_a.clone()).collect();
-    let unmatched_a: Vec<String> = fps_a.iter()
+    let matched_a_paths: std::collections::HashSet<String> =
+        pairs.iter().map(|p| p.path_a.clone()).collect();
+    let unmatched_a: Vec<String> = fps_a
+        .iter()
         .filter(|fp| !matched_a_paths.contains(&fp.path.to_string_lossy().to_string()))
-        .map(|fp| fp.path.file_name().unwrap_or_default().to_string_lossy().to_string())
+        .map(|fp| {
+            fp.path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        })
         .collect();
-    let unmatched_b: Vec<String> = fps_b.iter().enumerate()
+    let unmatched_b: Vec<String> = fps_b
+        .iter()
+        .enumerate()
         .filter(|(j, _)| !used_b[*j])
-        .map(|(_, fp)| fp.path.file_name().unwrap_or_default().to_string_lossy().to_string())
+        .map(|(_, fp)| {
+            fp.path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        })
         .collect();
 
     let elapsed = start.elapsed().as_millis() as u64;
 
-    let _ = app.emit("dedup-rename-progress", ProgressEvent {
-        current: total_all, total: total_all, filename: String::new(),
-        status: "done".into(),
-        message: format!("完成，找到 {} 对匹配", pairs.len()),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "dedup-rename-progress",
+        ProgressEvent {
+            current: total_all,
+            total: total_all,
+            filename: String::new(),
+            status: "done".into(),
+            message: format!("完成，找到 {} 对匹配", pairs.len()),
+            ..Default::default()
+        },
+    );
 
     Ok(DedupRenameScanResult {
         pairs,
@@ -384,9 +500,12 @@ fn scan_sync(app: &tauri::AppHandle, options: &DedupRenameOptions) -> Result<Ded
 }
 
 fn compute_fingerprint(path: &Path) -> Result<ImageFingerprint, String> {
-    let img = image::ImageReader::open(path).map_err(|e| e.to_string())?
-        .with_guessed_format().map_err(|e| e.to_string())?
-        .decode().map_err(|e| e.to_string())?;
+    let img = image::ImageReader::open(path)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?
+        .decode()
+        .map_err(|e| e.to_string())?;
     let gray = img.to_luma8();
     let rgb = img.to_rgb8();
 
@@ -414,7 +533,12 @@ fn compute_dhash(gray: &image::GrayImage) -> u64 {
 #[allow(clippy::needless_range_loop)]
 fn compute_phash(gray: &image::GrayImage) -> u64 {
     let size = 32usize;
-    let resized = image::imageops::resize(gray, size as u32, size as u32, image::imageops::FilterType::Lanczos3);
+    let resized = image::imageops::resize(
+        gray,
+        size as u32,
+        size as u32,
+        image::imageops::FilterType::Lanczos3,
+    );
     let pi = std::f64::consts::PI;
     let n = size as f64;
 
@@ -450,7 +574,9 @@ fn compute_phash(gray: &image::GrayImage) -> u64 {
     let mut low_freq: Vec<f64> = Vec::with_capacity(63);
     for v in 0..8 {
         for u in 0..8 {
-            if u == 0 && v == 0 { continue; }
+            if u == 0 && v == 0 {
+                continue;
+            }
             low_freq.push(dct_8x8[v][u]);
         }
     }
@@ -489,20 +615,28 @@ fn hamming_distance(a: u64, b: u64) -> u32 {
 
 fn color_similarity(a: &[f64; 48], b: &[f64; 48]) -> f64 {
     let mut bc = 0.0;
-    for i in 0..48 { bc += (a[i] * b[i]).sqrt(); }
+    for i in 0..48 {
+        bc += (a[i] * b[i]).sqrt();
+    }
     bc
 }
 
 fn is_duplicate(
-    a: &ImageFingerprint, b: &ImageFingerprint,
-    dhash_thresh: u32, phash_thresh: u32, color_thresh: f64,
+    a: &ImageFingerprint,
+    b: &ImageFingerprint,
+    dhash_thresh: u32,
+    phash_thresh: u32,
+    color_thresh: f64,
 ) -> (bool, f64, String) {
     let dhash_dist = hamming_distance(a.dhash, b.dhash);
     let phash_dist = hamming_distance(a.phash, b.phash);
     let color_sim = color_similarity(&a.color_hist, &b.color_hist);
 
     if dhash_dist <= dhash_thresh && phash_dist <= phash_thresh && color_sim >= color_thresh {
-        let method = format!("dHash:{} pHash:{} color:{:.2}", dhash_dist, phash_dist, color_sim);
+        let method = format!(
+            "dHash:{} pHash:{} color:{:.2}",
+            dhash_dist, phash_dist, color_sim
+        );
         (true, color_sim, method)
     } else {
         (false, 0.0, String::new())

@@ -14,13 +14,14 @@ pub struct FileKeeperOptions {
 }
 
 #[tauri::command]
-pub async fn keep_specified_files(app: tauri::AppHandle, options: FileKeeperOptions) -> Result<ProcessResult, String> {
+pub async fn keep_specified_files(
+    app: tauri::AppHandle,
+    options: FileKeeperOptions,
+) -> Result<ProcessResult, String> {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
-    tokio::task::spawn_blocking(move || {
-        keep_files_sync(&app, &options)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {}", e))?
+    tokio::task::spawn_blocking(move || keep_files_sync(&app, &options))
+        .await
+        .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 #[tauri::command]
@@ -28,7 +29,10 @@ pub fn cancel_keeper() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
-fn keep_files_sync(app: &tauri::AppHandle, options: &FileKeeperOptions) -> Result<ProcessResult, String> {
+fn keep_files_sync(
+    app: &tauri::AppHandle,
+    options: &FileKeeperOptions,
+) -> Result<ProcessResult, String> {
     let folder = Path::new(&options.folder_path);
     if !folder.exists() || !folder.is_dir() {
         return Err(format!("文件夹不存在: {}", options.folder_path));
@@ -54,29 +58,50 @@ fn keep_files_sync(app: &tauri::AppHandle, options: &FileKeeperOptions) -> Resul
     let mut kept_count = 0u32;
     let mut errors = Vec::new();
 
-    let keep_exts: Vec<String> = options.keep_extensions.iter().map(|e| e.to_lowercase()).collect();
+    let keep_exts: Vec<String> = options
+        .keep_extensions
+        .iter()
+        .map(|e| e.to_lowercase())
+        .collect();
 
-    let _ = app.emit("keeper-progress", ProgressEvent {
-        current: 0,
-        total,
-        filename: String::new(),
-        status: "processing".to_string(),
-        message: format!("开始处理: 共 {} 个文件, 保留后缀: {}", total, keep_exts.join(", ")),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "keeper-progress",
+        ProgressEvent {
+            current: 0,
+            total,
+            filename: String::new(),
+            status: "processing".to_string(),
+            message: format!(
+                "开始处理: 共 {} 个文件, 保留后缀: {}",
+                total,
+                keep_exts.join(", ")
+            ),
+            ..Default::default()
+        },
+    );
 
     for (i, file_path) in all_files.iter().enumerate() {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
-            let _ = app.emit("keeper-progress", ProgressEvent {
-                current: i as u32, total, filename: String::new(),
-                status: "done".to_string(),
-                message: format!("已取消: 已处理 {}, 共 {}", i, total),
-            ..Default::default()
-            });
+            let _ = app.emit(
+                "keeper-progress",
+                ProgressEvent {
+                    current: i as u32,
+                    total,
+                    filename: String::new(),
+                    status: "done".to_string(),
+                    message: format!("已取消: 已处理 {}, 共 {}", i, total),
+                    ..Default::default()
+                },
+            );
             break;
         }
-        let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let ext = file_path.extension()
+        let filename = file_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let ext = file_path
+            .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
 
@@ -84,52 +109,72 @@ fn keep_files_sync(app: &tauri::AppHandle, options: &FileKeeperOptions) -> Resul
 
         if should_keep {
             kept_count += 1;
-            let _ = app.emit("keeper-progress", ProgressEvent {
-                current: i as u32 + 1,
-                total,
-                filename: filename.clone(),
-                status: "success".to_string(),
-                message: format!("[保留] {} (.{})", filename, ext),
-            ..Default::default()
-            });
+            let _ = app.emit(
+                "keeper-progress",
+                ProgressEvent {
+                    current: i as u32 + 1,
+                    total,
+                    filename: filename.clone(),
+                    status: "success".to_string(),
+                    message: format!("[保留] {} (.{})", filename, ext),
+                    ..Default::default()
+                },
+            );
         } else {
             match std::fs::remove_file(file_path) {
                 Ok(_) => {
                     success_count += 1;
-                    let _ = app.emit("keeper-progress", ProgressEvent {
-                        current: i as u32 + 1,
-                        total,
-                        filename: filename.clone(),
-                        status: "success".to_string(),
-                        message: format!("[删除] {} (.{})", filename, ext),
-                    ..Default::default()
-                    });
+                    let _ = app.emit(
+                        "keeper-progress",
+                        ProgressEvent {
+                            current: i as u32 + 1,
+                            total,
+                            filename: filename.clone(),
+                            status: "success".to_string(),
+                            message: format!("[删除] {} (.{})", filename, ext),
+                            ..Default::default()
+                        },
+                    );
                 }
                 Err(e) => {
                     fail_count += 1;
                     let err_msg = format!("{}: {}", filename, e);
                     errors.push(err_msg.clone());
-                    let _ = app.emit("keeper-progress", ProgressEvent {
-                        current: i as u32 + 1,
-                        total,
-                        filename: filename.clone(),
-                        status: "error".to_string(),
-                        message: format!("[错误] {}", err_msg),
-                    ..Default::default()
-                    });
+                    let _ = app.emit(
+                        "keeper-progress",
+                        ProgressEvent {
+                            current: i as u32 + 1,
+                            total,
+                            filename: filename.clone(),
+                            status: "error".to_string(),
+                            message: format!("[错误] {}", err_msg),
+                            ..Default::default()
+                        },
+                    );
                 }
             }
         }
     }
 
-    let _ = app.emit("keeper-progress", ProgressEvent {
-        current: total,
-        total,
-        filename: String::new(),
-        status: "done".to_string(),
-        message: format!("完成: 保留 {} 个, 删除 {} 个, 失败 {} 个, 共 {} 个文件", kept_count, success_count, fail_count, total),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "keeper-progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "done".to_string(),
+            message: format!(
+                "完成: 保留 {} 个, 删除 {} 个, 失败 {} 个, 共 {} 个文件",
+                kept_count, success_count, fail_count, total
+            ),
+            ..Default::default()
+        },
+    );
 
-    Ok(ProcessResult { success_count, fail_count, total, errors })
+    Ok(ProcessResult {
+        success_count,
+        fail_count,
+        total,
+        errors,
+    })
 }

@@ -2,9 +2,9 @@
 //! 全局共享模块 — 供 tagger、upscale、person_crop 等功能共用
 //! 首次使用时自动下载 standalone Python + 安装基础依赖
 
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use serde::{Serialize, Deserialize};
 use tauri::Emitter;
 
 use super::ProgressEvent;
@@ -114,13 +114,19 @@ fn get_venv_dir() -> PathBuf {
 /// 获取 venv 中的 python 可执行文件路径
 fn get_venv_python() -> PathBuf {
     #[cfg(target_os = "windows")]
-    { get_venv_dir().join("Scripts").join("python.exe") }
+    {
+        get_venv_dir().join("Scripts").join("python.exe")
+    }
     #[cfg(not(target_os = "windows"))]
     {
         let p3 = get_venv_dir().join("bin").join("python3");
-        if p3.exists() { return p3; }
+        if p3.exists() {
+            return p3;
+        }
         let p = get_venv_dir().join("bin").join("python");
-        if p.exists() { return p; }
+        if p.exists() {
+            return p;
+        }
         p3 // 默认返回 python3 路径
     }
 }
@@ -128,9 +134,13 @@ fn get_venv_python() -> PathBuf {
 /// 获取 standalone Python 可执行文件路径
 fn get_standalone_python() -> PathBuf {
     #[cfg(target_os = "windows")]
-    { get_python_dir().join("python.exe") }
+    {
+        get_python_dir().join("python.exe")
+    }
     #[cfg(not(target_os = "windows"))]
-    { get_python_dir().join("bin").join("python3") }
+    {
+        get_python_dir().join("bin").join("python3")
+    }
 }
 
 /// 检查 Python 环境是否就绪（venv 存在且有 onnxruntime）
@@ -181,11 +191,13 @@ pub async fn deploy_python_env(app: tauri::AppHandle) -> Result<String, String> 
 pub fn get_python_env_info() -> Result<PythonEnvInfo, String> {
     let python = match get_python_exe() {
         Some(p) => p,
-        None => return Ok(PythonEnvInfo {
-            available: false,
-            version: String::new(),
-            path: String::new(),
-        }),
+        None => {
+            return Ok(PythonEnvInfo {
+                available: false,
+                version: String::new(),
+                path: String::new(),
+            })
+        }
     };
 
     // 获取版本
@@ -220,13 +232,17 @@ pub struct PythonEnvInfo {
 
 /// 发送进度事件
 fn emit_progress(app: &tauri::AppHandle, message: &str, status: &str) {
-    let _ = app.emit(PROGRESS_EVENT, ProgressEvent {
-        current: 0, total: 0,
-        filename: String::new(),
-        status: status.to_string(),
-        message: message.to_string(),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        PROGRESS_EVENT,
+        ProgressEvent {
+            current: 0,
+            total: 0,
+            filename: String::new(),
+            status: status.to_string(),
+            message: message.to_string(),
+            ..Default::default()
+        },
+    );
 }
 
 /// 最低要求的 Python 次版本号（3.10+）
@@ -302,7 +318,8 @@ fn detect_system_python() -> Option<(String, String)> {
                 cmd.args(["--version"]);
                 use std::os::windows::process::CommandExt;
                 cmd.creation_flags(0x08000000);
-                let version = cmd.output()
+                let version = cmd
+                    .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                     .unwrap_or_else(|_| "Python 3".to_string());
                 if let Some(minor) = parse_python_minor(&version) {
@@ -377,7 +394,6 @@ async fn setup_python_env_inner(app: &tauri::AppHandle) -> Result<String, String
         .await
         .map_err(|e| format!("检测线程异常: {}", e))?;
     if let Some((sys_python, _sys_version)) = detected {
-
         // 步骤 1 已确认环境未就绪，这里总是（重）建 venv
         {
             let venv_dir = get_venv_dir();
@@ -387,8 +403,7 @@ async fn setup_python_env_inner(app: &tauri::AppHandle) -> Result<String, String
             }
             // 确保父目录存在
             let python_parent = get_env_dir().join("python");
-            std::fs::create_dir_all(&python_parent)
-                .map_err(|e| format!("创建目录失败: {}", e))?;
+            std::fs::create_dir_all(&python_parent).map_err(|e| format!("创建目录失败: {}", e))?;
 
             // venv 创建可能耗时较久，cmd.output() 放入 blocking 线程
             let sys_python_clone = sys_python.clone();
@@ -403,31 +418,42 @@ async fn setup_python_env_inner(app: &tauri::AppHandle) -> Result<String, String
                     cmd.creation_flags(0x08000000);
                 }
                 cmd.output()
-            }).await
+            })
+            .await
             .map_err(|e| format!("创建 venv 线程异常: {}", e))?
             .map_err(|e| format!("创建 venv 失败: {}", e))?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                emit_progress(app, &format!("@pythonEnv.venvFailed|{}", stderr.to_string().chars().take(100).collect::<String>()), "info");
+                emit_progress(
+                    app,
+                    &format!(
+                        "@pythonEnv.venvFailed|{}",
+                        stderr.to_string().chars().take(100).collect::<String>()
+                    ),
+                    "info",
+                );
                 // 失败则回退到下载 standalone
                 return setup_with_standalone(app).await;
             }
-
         }
 
-        if is_cancelled() { return Err("已取消".into()); }
+        if is_cancelled() {
+            return Err("已取消".into());
+        }
 
         // 安装依赖（pip install 可阻塞数分钟，放入 blocking 线程）
         let app2 = app.clone();
-        tokio::task::spawn_blocking(move || install_deps(&app2)).await
+        tokio::task::spawn_blocking(move || install_deps(&app2))
+            .await
             .map_err(|e| format!("安装线程异常: {}", e))??;
 
-        if is_cancelled() { return Err("已取消".into()); }
+        if is_cancelled() {
+            return Err("已取消".into());
+        }
 
         if !tokio::task::spawn_blocking(is_ready).await.unwrap_or(false) {
             return Err("Python 环境安装后验证失败".into());
         }
-
 
         emit_progress(app, "@pythonEnv.ready", "success");
         return Ok(venv_python.to_string_lossy().to_string());
@@ -447,29 +473,36 @@ async fn setup_with_standalone(app: &tauri::AppHandle) -> Result<String, String>
         download_python(app).await?;
     }
 
-    if is_cancelled() { return Err("已取消".into()); }
+    if is_cancelled() {
+        return Err("已取消".into());
+    }
 
     // 创建 venv（内部 cmd.output() 可能耗时，放入 blocking 线程）
     if !venv_python.exists() {
         let app2 = app.clone();
-        tokio::task::spawn_blocking(move || create_venv(&app2)).await
+        tokio::task::spawn_blocking(move || create_venv(&app2))
+            .await
             .map_err(|e| format!("创建 venv 线程异常: {}", e))??;
     }
 
-    if is_cancelled() { return Err("已取消".into()); }
+    if is_cancelled() {
+        return Err("已取消".into());
+    }
 
     // 安装依赖（pip install 可阻塞数分钟，放入 blocking 线程）
     let app2 = app.clone();
-    tokio::task::spawn_blocking(move || install_deps(&app2)).await
+    tokio::task::spawn_blocking(move || install_deps(&app2))
+        .await
         .map_err(|e| format!("安装线程异常: {}", e))??;
 
-    if is_cancelled() { return Err("已取消".into()); }
+    if is_cancelled() {
+        return Err("已取消".into());
+    }
 
     // 验证
     if !tokio::task::spawn_blocking(is_ready).await.unwrap_or(false) {
         return Err("Python 环境安装后验证失败".into());
     }
-
 
     emit_progress(app, "@pythonEnv.ready", "success");
     Ok(venv_python.to_string_lossy().to_string())
@@ -482,18 +515,26 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
     let env_dir = get_env_dir();
 
     if !env_dir.exists() {
-        std::fs::create_dir_all(&env_dir)
-            .map_err(|e| format!("创建 env 目录失败: {}", e))?;
+        std::fs::create_dir_all(&env_dir).map_err(|e| format!("创建 env 目录失败: {}", e))?;
     }
 
-    emit_progress(app, &format!("@pythonEnv.downloading|{}", info.url.split('/').next_back().unwrap_or("python")), "info");
+    emit_progress(
+        app,
+        &format!(
+            "@pythonEnv.downloading|{}",
+            info.url.split('/').next_back().unwrap_or("python")
+        ),
+        "info",
+    );
 
     // 下载
     let client = crate::commands::proxy_config::build_http_client()
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
-    let resp = client.get(info.url)
-        .send().await
+    let resp = client
+        .get(info.url)
+        .send()
+        .await
         .map_err(|e| format!("下载失败: {}", e))?;
 
     if !resp.status().is_success() {
@@ -509,7 +550,8 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
     // 流式写入
     use futures_util::StreamExt;
     let mut stream = resp.bytes_stream();
-    let mut file = tokio::fs::File::create(&part_path).await
+    let mut file = tokio::fs::File::create(&part_path)
+        .await
         .map_err(|e| format!("创建文件失败: {}", e))?;
 
     let mut downloaded: u64 = 0;
@@ -527,7 +569,10 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
 
         let bytes = match chunk {
             Ok(b) => b,
-            Err(e) => { result = Err(format!("下载错误: {}", e)); break; }
+            Err(e) => {
+                result = Err(format!("下载错误: {}", e));
+                break;
+            }
         };
         use tokio::io::AsyncWriteExt;
         if let Err(e) = file.write_all(&bytes).await {
@@ -536,22 +581,36 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
         }
 
         downloaded += bytes.len() as u64;
-        let pct = if total_size > 0 { downloaded * 100 / total_size } else { 0 };
+        let pct = if total_size > 0 {
+            downloaded * 100 / total_size
+        } else {
+            0
+        };
         if pct != last_pct {
             last_pct = pct;
             let mb = downloaded as f64 / 1024.0 / 1024.0;
             let total_mb = total_size as f64 / 1024.0 / 1024.0;
             let elapsed = start_time.elapsed().as_secs_f64();
-            let avg_speed = if elapsed > 0.0 { downloaded as f64 / elapsed / 1_048_576.0 } else { 0.0 };
-            let _ = app.emit(DOWNLOAD_EVENT, PythonDownloadProgress {
-                filename: "python".into(),
-                downloaded,
-                total: total_size,
-                percent: pct as f32,
-                speed_mbps: avg_speed,
-                status: "downloading".to_string(),
-                message: format!("Python — {:.1}/{:.1} MB ({:.1} MB/s)", mb, total_mb, avg_speed),
-            });
+            let avg_speed = if elapsed > 0.0 {
+                downloaded as f64 / elapsed / 1_048_576.0
+            } else {
+                0.0
+            };
+            let _ = app.emit(
+                DOWNLOAD_EVENT,
+                PythonDownloadProgress {
+                    filename: "python".into(),
+                    downloaded,
+                    total: total_size,
+                    percent: pct as f32,
+                    speed_mbps: avg_speed,
+                    status: "downloading".to_string(),
+                    message: format!(
+                        "Python — {:.1}/{:.1} MB ({:.1} MB/s)",
+                        mb, total_mb, avg_speed
+                    ),
+                },
+            );
         }
     }
 
@@ -574,12 +633,18 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
     super::finalize_part_file(&part_path, &archive_path, downloaded, total_size)?;
 
     // 通知前端下载完成，清除日志中的进度条
-    let _ = app.emit(DOWNLOAD_EVENT, PythonDownloadProgress {
-        filename: "python".into(),
-        downloaded: total_size, total: total_size, percent: 100.0, speed_mbps: 0.0,
-        status: "done".to_string(),
-        message: "Python 下载完成".to_string(),
-    });
+    let _ = app.emit(
+        DOWNLOAD_EVENT,
+        PythonDownloadProgress {
+            filename: "python".into(),
+            downloaded: total_size,
+            total: total_size,
+            percent: 100.0,
+            speed_mbps: 0.0,
+            status: "done".to_string(),
+            message: "Python 下载完成".to_string(),
+        },
+    );
     emit_progress(app, "@pythonEnv.extracting", "info");
 
     // 解压到临时目录
@@ -587,15 +652,13 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
     if extract_tmp.exists() {
         let _ = std::fs::remove_dir_all(&extract_tmp);
     }
-    std::fs::create_dir_all(&extract_tmp)
-        .map_err(|e| format!("创建临时目录失败: {}", e))?;
+    std::fs::create_dir_all(&extract_tmp).map_err(|e| format!("创建临时目录失败: {}", e))?;
 
     let archive_path_clone = archive_path.clone();
     let extract_tmp_clone = extract_tmp.clone();
-    tokio::task::spawn_blocking(move || {
-        extract_tar_gz(&archive_path_clone, &extract_tmp_clone)
-    }).await
-    .map_err(|e| format!("解压任务失败: {}", e))??;
+    tokio::task::spawn_blocking(move || extract_tar_gz(&archive_path_clone, &extract_tmp_clone))
+        .await
+        .map_err(|e| format!("解压任务失败: {}", e))??;
 
     // 清理下载文件
     let _ = tokio::fs::remove_file(&archive_path).await;
@@ -610,8 +673,7 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
 
     // 确保目标父目录存在
     let python_parent = get_env_dir().join("python");
-    std::fs::create_dir_all(&python_parent)
-        .map_err(|e| format!("创建 python 目录失败: {}", e))?;
+    std::fs::create_dir_all(&python_parent).map_err(|e| format!("创建 python 目录失败: {}", e))?;
 
     // 如果 base/ 已存在，先删除
     if python_dir.exists() {
@@ -639,7 +701,12 @@ fn extract_tar_gz(archive: &std::path::Path, dest: &std::path::Path) -> Result<(
     use std::process::Command;
 
     let mut cmd = Command::new("tar");
-    cmd.args(["xzf", &archive.to_string_lossy(), "-C", &dest.to_string_lossy()]);
+    cmd.args([
+        "xzf",
+        &archive.to_string_lossy(),
+        "-C",
+        &dest.to_string_lossy(),
+    ]);
 
     #[cfg(target_os = "windows")]
     {
@@ -684,7 +751,11 @@ fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
     let python = get_venv_python();
     let python_str = python.to_string_lossy().to_string();
     // 固定版本，避免供应链风险（onnxruntime 与 install_gpu_deps 的 onnxruntime-gpu==1.25.1 保持一致）
-    pip_install_with_python(app, &python_str, &["onnxruntime==1.25.1", "numpy==2.2.6", "pillow==11.3.0"])
+    pip_install_with_python(
+        app,
+        &python_str,
+        &["onnxruntime==1.25.1", "numpy==2.2.6", "pillow==11.3.0"],
+    )
 }
 
 /// 安装 GPU 版 onnxruntime（替换 CPU 版）
@@ -743,7 +814,11 @@ fn get_active_python() -> Result<String, String> {
 }
 
 /// 使用指定 Python 执行 pip install（公开供其他模块调用）
-pub fn pip_install_with_python(app: &tauri::AppHandle, python: &str, deps: &[&str]) -> Result<(), String> {
+pub fn pip_install_with_python(
+    app: &tauri::AppHandle,
+    python: &str,
+    deps: &[&str],
+) -> Result<(), String> {
     let total = deps.len();
     for (i, dep) in deps.iter().enumerate() {
         if is_cancelled() {
@@ -753,19 +828,29 @@ pub fn pip_install_with_python(app: &tauri::AppHandle, python: &str, deps: &[&st
         let msg = format!("@pythonEnv.installingDep|{}|{}|{}", dep, i + 1, total);
 
         // Emit download-style progress bar (single inline entry, no log spam)
-        let _ = app.emit(DOWNLOAD_EVENT, PythonDownloadProgress {
-            filename: dep.to_string(),
-            downloaded: i as u64,
-            total: total as u64,
-            percent: (i as f32 / total as f32) * 100.0,
-            speed_mbps: 0.0,
-            status: "downloading".into(),
-            message: msg,
-        });
+        let _ = app.emit(
+            DOWNLOAD_EVENT,
+            PythonDownloadProgress {
+                filename: dep.to_string(),
+                downloaded: i as u64,
+                total: total as u64,
+                percent: (i as f32 / total as f32) * 100.0,
+                speed_mbps: 0.0,
+                status: "downloading".into(),
+                message: msg,
+            },
+        );
 
         let mut cmd = std::process::Command::new(python);
-        cmd.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir", dep])
-            .env("PYTHONIOENCODING", "utf-8");
+        cmd.args([
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-cache-dir",
+            dep,
+        ])
+        .env("PYTHONIOENCODING", "utf-8");
 
         #[cfg(target_os = "windows")]
         {
@@ -773,7 +858,9 @@ pub fn pip_install_with_python(app: &tauri::AppHandle, python: &str, deps: &[&st
             cmd.creation_flags(0x08000000);
         }
 
-        let output = cmd.output().map_err(|e| format!("安装 {} 失败: {}", dep, e))?;
+        let output = cmd
+            .output()
+            .map_err(|e| format!("安装 {} 失败: {}", dep, e))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!("安装 {} 失败: {}", dep, stderr));
@@ -781,15 +868,18 @@ pub fn pip_install_with_python(app: &tauri::AppHandle, python: &str, deps: &[&st
     }
 
     // Emit done to clear progress bar
-    let _ = app.emit(DOWNLOAD_EVENT, PythonDownloadProgress {
-        filename: String::new(),
-        downloaded: total as u64,
-        total: total as u64,
-        percent: 100.0,
-        speed_mbps: 0.0,
-        status: "done".into(),
-        message: "@pythonEnv.depsInstalled".into(),
-    });
+    let _ = app.emit(
+        DOWNLOAD_EVENT,
+        PythonDownloadProgress {
+            filename: String::new(),
+            downloaded: total as u64,
+            total: total as u64,
+            percent: 100.0,
+            speed_mbps: 0.0,
+            status: "done".into(),
+            message: "@pythonEnv.depsInstalled".into(),
+        },
+    );
 
     Ok(())
 }

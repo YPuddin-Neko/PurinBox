@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
-import { FolderOpen, Loader2, Cpu, Gpu, Download, Plus, Check, Trash2, Search, FileUp, Save, ChevronDown, X } from 'lucide-react';
+import { Loader2, Cpu, Gpu, Download, Plus, Check, Trash2, Search, FileUp, Save, ChevronDown, X } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
 import ProcessButton from './ProcessButton';
 import { useTaskQueue } from './TaskContext';
 import { ConfirmModal } from './Modal';
 import CustomSelect from './CustomSelect';
+import InputPathPickerButton from './InputPathPickerButton';
 import { useTranslation } from 'react-i18next';
 import i18n from '../i18n';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
@@ -332,7 +333,7 @@ export default function AiTaggerTab() {
           </div>
           <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
             <input className="form-input" placeholder={t('aiTagger.selectFolder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
-            <button className="btn btn-secondary" onClick={async () => { const s = await open({ directory: true, multiple: false }); if (s) setInputPath(s as string); }}><FolderOpen style={{ width: 16, height: 16 }} /></button>
+            <InputPathPickerButton onSelect={setInputPath} />
           </div>
         </div>
 

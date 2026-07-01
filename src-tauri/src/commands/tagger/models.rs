@@ -1,9 +1,8 @@
-use serde::{Deserialize, Serialize};
 use super::get_models_dir;
+use serde::{Deserialize, Serialize};
 
 /// 输入数据格式
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum InputFormat {
     /// [Batch, Height, Width, Channels] — TensorFlow 风格
@@ -12,7 +11,6 @@ pub enum InputFormat {
     /// [Batch, Channels, Height, Width] — PyTorch 风格
     NCHW,
 }
-
 
 /// 模型定义
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,10 +110,9 @@ pub fn load_custom_models() -> Result<Vec<ModelDefinition>, String> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取自定义模型配置失败: {}", e))?;
-    serde_json::from_str(&content)
-        .map_err(|e| format!("解析自定义模型配置失败: {}", e))
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("读取自定义模型配置失败: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| format!("解析自定义模型配置失败: {}", e))
 }
 
 /// 保存自定义模型列表
@@ -124,10 +121,8 @@ fn save_custom_models(models: &[ModelDefinition]) -> Result<(), String> {
     if !dir.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
     }
-    let json = serde_json::to_string_pretty(models)
-        .map_err(|e| format!("序列化失败: {}", e))?;
-    std::fs::write(custom_models_path(), json)
-        .map_err(|e| format!("写入配置失败: {}", e))?;
+    let json = serde_json::to_string_pretty(models).map_err(|e| format!("序列化失败: {}", e))?;
+    std::fs::write(custom_models_path(), json).map_err(|e| format!("写入配置失败: {}", e))?;
     Ok(())
 }
 
@@ -140,10 +135,13 @@ pub fn add_local_model(
     input_format: InputFormat,
 ) -> Result<String, String> {
     // 生成 ID
-    let id = format!("custom-{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis());
+    let id = format!(
+        "custom-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
 
     let mut models = load_custom_models().unwrap_or_default();
     if models.iter().any(|m| m.name == name) {
@@ -159,18 +157,17 @@ pub fn add_local_model(
     // 复制 model.onnx
     let src_model = std::path::Path::new(&model_path);
     let dest_model = model_dir.join("model.onnx");
-    std::fs::copy(src_model, &dest_model)
-        .map_err(|e| format!("复制模型文件失败: {}", e))?;
+    std::fs::copy(src_model, &dest_model).map_err(|e| format!("复制模型文件失败: {}", e))?;
 
     // 复制标签文件（保留原始扩展名）
     let src_tags = std::path::Path::new(&tags_path);
-    let tags_ext = src_tags.extension()
+    let tags_ext = src_tags
+        .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("csv");
     let tags_dest_name = format!("tags.{}", tags_ext);
     let dest_tags = model_dir.join(&tags_dest_name);
-    std::fs::copy(src_tags, &dest_tags)
-        .map_err(|e| format!("复制标签文件失败: {}", e))?;
+    std::fs::copy(src_tags, &dest_tags).map_err(|e| format!("复制标签文件失败: {}", e))?;
 
     models.push(ModelDefinition {
         id: id.clone(),

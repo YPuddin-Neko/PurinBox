@@ -1,3 +1,4 @@
+use image::imageops::FilterType;
 use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -15,8 +16,11 @@ static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 pub struct CropOptions {
     pub input_path: String,
     pub output_path: String,
-    /// "center" | "aspect" | "edges"
+    /// "center" | "cover" | "aspect" | "edges"
     pub mode: String,
+    /// 填满裁切保留方向: "center" | "top" | "bottom" | "left" | "right"
+    #[serde(default = "default_crop_anchor")]
+    pub crop_anchor: String,
     /// 中心裁切: 目标宽度
     pub target_width: u32,
     /// 中心裁切: 目标高度
@@ -30,6 +34,40 @@ pub struct CropOptions {
     pub crop_right: u32,
     #[serde(default)]
     pub recursive: bool,
+}
+
+fn default_crop_anchor() -> String {
+    "center".to_string()
+}
+
+fn anchored_offset(
+    outer: u32,
+    inner: u32,
+    anchor: &str,
+    start_anchor: &str,
+    end_anchor: &str,
+) -> u32 {
+    if outer <= inner {
+        return 0;
+    }
+
+    if anchor == start_anchor {
+        0
+    } else if anchor == end_anchor {
+        outer - inner
+    } else {
+        (outer - inner) / 2
+    }
+}
+
+fn crop_anchor_label(anchor: &str) -> &'static str {
+    match anchor {
+        "top" => "上方",
+        "bottom" => "下方",
+        "left" => "左侧",
+        "right" => "右侧",
+        _ => "居中",
+    }
 }
 
 #[tauri::command]
@@ -205,6 +243,36 @@ fn process_crop(
             Ok(format!(
                 "[中心裁切] {} ({}x{} → {}x{})",
                 filename, orig_w, orig_h, tw, th
+            ))
+        }
+        "cover" => {
+            let tw = options.target_width;
+            let th = options.target_height;
+            if tw == 0 || th == 0 {
+                return Err("目标尺寸必须大于 0".to_string());
+            }
+
+            let scale = (tw as f64 / orig_w as f64).max(th as f64 / orig_h as f64);
+            let scaled_w = ((orig_w as f64 * scale).ceil() as u32).max(tw);
+            let scaled_h = ((orig_h as f64 * scale).ceil() as u32).max(th);
+            let resized = img.resize_exact(scaled_w, scaled_h, FilterType::Lanczos3);
+            let anchor = options.crop_anchor.as_str();
+            let x = anchored_offset(scaled_w, tw, anchor, "left", "right");
+            let y = anchored_offset(scaled_h, th, anchor, "top", "bottom");
+            let cropped = resized.crop_imm(x, y, tw, th);
+            cropped
+                .save(&output_path)
+                .map_err(|e| format!("无法保存图片: {}", e))?;
+            Ok(format!(
+                "[填满裁切] {} ({}x{} → 缩放 {}x{} → 裁切 {}x{}, 保留 {})",
+                filename,
+                orig_w,
+                orig_h,
+                scaled_w,
+                scaled_h,
+                tw,
+                th,
+                crop_anchor_label(anchor)
             ))
         }
         "aspect" => {

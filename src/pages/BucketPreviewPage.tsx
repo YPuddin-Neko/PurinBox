@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, type WheelEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import {
@@ -12,15 +12,23 @@ import {
   ImageIcon,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  Check,
+  SlidersHorizontal,
+  Sparkles,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
+
+type BucketEngine = 'sd' | 'diffusion_pipe';
+type SdBucketMode = 'legacy' | 'nearest_only';
 
 interface BucketImageInfo {
   path: string;
   name: string;
   orig_width: number;
   orig_height: number;
+  repeats: number;
 }
 
 interface BucketGroup {
@@ -29,17 +37,77 @@ interface BucketGroup {
   bucket_height: number;
   image_count: number;
   total_count: number;
+  effective_count: number;
+  dropped_count: number;
+  batch_count: number;
+  short_batch_count: number;
   aspect_ratio: number;
+  mean_ar_error: number;
   images: BucketImageInfo[];
 }
 
 interface BucketAnalysis {
   total_images: number;
   total_count: number;
+  effective_count: number;
+  dropped_count: number;
+  batch_count: number;
+  short_batch_count: number;
+  usable_rate: number;
+  batch_size: number;
+  drop_last: boolean;
   bucket_count: number;
   skipped: [string, string][];
   buckets: BucketGroup[];
   mean_ar_error: number;
+  ar_error_metric: 'linear' | 'log';
+}
+
+interface BucketParamCandidate {
+  res_width: number;
+  res_height: number;
+  steps: number;
+  dp_min_ar: number;
+  dp_max_ar: number;
+  dp_num_ar_buckets: number;
+  batch_size: number;
+  active_bucket_count: number;
+  total_count: number;
+  effective_count: number;
+  dropped_count: number;
+  usable_rate: number;
+  mean_ar_error: number;
+}
+
+interface BucketParamRecommendation {
+  total_images: number;
+  skipped_count: number;
+  unique_sizes: number;
+  unique_aspect_ratios: number;
+  res_width: number;
+  res_height: number;
+  steps: number;
+  dp_min_ar: number;
+  dp_max_ar: number;
+  dp_num_ar_buckets: number;
+  min_bucket_reso: number;
+  max_bucket_reso: number;
+  batch_size: number;
+  active_bucket_count: number;
+  total_count: number;
+  effective_count: number;
+  dropped_count: number;
+  usable_rate: number;
+  candidates: BucketParamCandidate[];
+}
+
+interface DroppedMaterialItem extends BucketImageInfo {
+  dropped_repeats: number;
+}
+
+interface DroppedBucketPreview {
+  bucket: BucketGroup;
+  items: DroppedMaterialItem[];
 }
 
 interface ScanProgress {
@@ -54,6 +122,22 @@ function bucketColor(ratio: number): string {
   return `hsl(${Math.round(hue % 360)}, 65%, 55%)`;
 }
 
+function containWheelScroll(event: WheelEvent<HTMLElement>) {
+  const element = event.currentTarget;
+  const canScrollY = element.scrollHeight > element.clientHeight + 1;
+  if (!canScrollY) return;
+
+  const atTop = element.scrollTop <= 0;
+  const atBottom = element.scrollTop + element.clientHeight >= element.scrollHeight - 1;
+  const scrollingUp = event.deltaY < 0;
+  const scrollingDown = event.deltaY > 0;
+
+  event.stopPropagation();
+  if ((scrollingUp && atTop) || (scrollingDown && atBottom)) {
+    event.preventDefault();
+  }
+}
+
 export default function BucketPreviewPage() {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
@@ -61,8 +145,15 @@ export default function BucketPreviewPage() {
   const [bucketRange, setBucketRange] = useState('256,2048');
   const [steps, setSteps] = useState(32);
   const [noUpscale, setNoUpscale] = useState(true);
-  const [bucketMode, setBucketMode] = useState('legacy');
+  const [bucketEngine, setBucketEngine] = useState<BucketEngine>('sd');
+  const [bucketMode, setBucketMode] = useState<SdBucketMode>('legacy');
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [dpMinArInput, setDpMinArInput] = useState('0.5');
+  const [dpMaxArInput, setDpMaxArInput] = useState('2.0');
+  const [dpArBucketCount, setDpArBucketCount] = useState(7);
+  const [batchSize, setBatchSize] = useState(1);
   const [recursive, setRecursive] = useState(false);
+  const modeMenuRef = useRef<HTMLDivElement | null>(null);
 
   // 解析分辨率
   const parsePair = (s: string): [number, number] | null => {
@@ -72,19 +163,49 @@ export default function BucketPreviewPage() {
   };
   const resPair = parsePair(resolution);
   const rangePair = parsePair(bucketRange);
+  const isDpMode = bucketEngine === 'diffusion_pipe';
   const resWidth = resPair?.[0] ?? 1024;
   const resHeight = resPair?.[1] ?? 1024;
   const minBucketReso = rangePair?.[0] ?? 256;
   const maxBucketReso = rangePair?.[1] ?? 2048;
+  const dpMinAr = Number.parseFloat(dpMinArInput);
+  const dpMaxAr = Number.parseFloat(dpMaxArInput);
 
   const stepsError = steps < 32 || (steps > 32 && steps % 64 !== 0);
   const resError = !resPair;
+  const dpArError = isDpMode && (!Number.isFinite(dpMinAr) || !Number.isFinite(dpMaxAr) || dpMinAr <= 0 || dpMaxAr <= dpMinAr);
+  const dpBucketError = isDpMode && (!Number.isFinite(dpArBucketCount) || dpArBucketCount < 1);
+  const batchSizeError = !Number.isFinite(batchSize) || batchSize < 1;
 
 
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<BucketAnalysis | null>(null);
+  const analysisIsDpMode = analysis?.ar_error_metric === 'log';
+  const droppedMaterialPreview = useMemo<DroppedBucketPreview[]>(() => {
+    if (!analysis || !analysis.drop_last || analysis.dropped_count <= 0) return [];
+    return analysis.buckets
+      .filter(bucket => bucket.dropped_count > 0)
+      .map(bucket => {
+        let remaining = bucket.dropped_count;
+        const items: DroppedMaterialItem[] = [];
+
+        for (let i = bucket.images.length - 1; i >= 0 && remaining > 0; i -= 1) {
+          const image = bucket.images[i];
+          const droppedRepeats = Math.min(image.repeats, remaining);
+          if (droppedRepeats > 0) {
+            items.unshift({ ...image, dropped_repeats: droppedRepeats });
+            remaining -= droppedRepeats;
+          }
+        }
+
+        return { bucket, items };
+      });
+  }, [analysis]);
   const [scanMsg, setScanMsg] = useState('');
   const [scanProgress, setScanProgress] = useState(0);
+  const [recommending, setRecommending] = useState(false);
+  const [recommendation, setRecommendation] = useState<BucketParamRecommendation | null>(null);
+  const [recommendPage, setRecommendPage] = useState(0);
 
   const [enableExport, setEnableExport] = useState(false);
   const [exportPath, setExportPath] = useState('');
@@ -96,9 +217,37 @@ export default function BucketPreviewPage() {
   const [expandedBuckets, setExpandedBuckets] = useState<Set<number>>(new Set());
   const [bucketPage, setBucketPage] = useState(0);
   const BUCKETS_PER_PAGE = 3;
+  const RECOMMENDATIONS_PER_PAGE = 4;
   // 展开桶的图片分批渲染（每批 60 张）
   const IMAGES_PER_BATCH = 60;
   const [bucketImgLimits, setBucketImgLimits] = useState<Record<number, number>>({});
+  const bucketEngineOptions: { value: BucketEngine; label: string }[] = [
+    { value: 'sd', label: t('bucketPreview.modeSd') },
+    { value: 'diffusion_pipe', label: t('bucketPreview.modeDiffusionPipe') },
+  ];
+  const currentBucketEngineLabel = bucketEngineOptions.find(option => option.value === bucketEngine)?.label ?? t('bucketPreview.modeSd');
+
+  useEffect(() => {
+    if (!modeMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!modeMenuRef.current?.contains(event.target as Node)) {
+        setModeMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [modeMenuOpen]);
+
+  useEffect(() => {
+    setRecommendation(null);
+    setRecommendPage(0);
+    setAnalysis(null);
+    setScanMsg('');
+    setScanProgress(0);
+    setExpandedBuckets(new Set());
+    setBucketPage(0);
+    setBucketImgLimits({});
+  }, [inputPath, recursive, bucketEngine]);
 
   useEffect(() => {
     let active = true;
@@ -131,9 +280,14 @@ export default function BucketPreviewPage() {
 
   const handleAnalyze = async () => {
     if (!inputPath) return;
+    if (resError || stepsError || dpArError || dpBucketError || batchSizeError) return;
     // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
     const stepsVal = Number.isFinite(steps) && steps >= 32 ? steps : 32;
+    const dpArBucketCountVal = Number.isFinite(dpArBucketCount) && dpArBucketCount >= 1 ? Math.floor(dpArBucketCount) : 7;
+    const batchSizeVal = Number.isFinite(batchSize) && batchSize >= 1 ? Math.floor(batchSize) : 1;
     if (stepsVal !== steps) setSteps(stepsVal);
+    if (isDpMode && dpArBucketCountVal !== dpArBucketCount) setDpArBucketCount(dpArBucketCountVal);
+    if (batchSizeVal !== batchSize) setBatchSize(batchSizeVal);
     setAnalyzing(true);
     setAnalysis(null);
     setScanProgress(0);
@@ -148,11 +302,15 @@ export default function BucketPreviewPage() {
           res_width: resWidth,
           res_height: resHeight,
           steps: stepsVal,
-          no_upscale: noUpscale,
-          min_bucket_reso: noUpscale ? null : minBucketReso,
-          max_bucket_reso: noUpscale ? null : maxBucketReso,
-          bucket_mode: bucketMode,
+          no_upscale: isDpMode ? true : noUpscale,
+          min_bucket_reso: noUpscale || isDpMode ? null : minBucketReso,
+          max_bucket_reso: noUpscale || isDpMode ? null : maxBucketReso,
+          bucket_mode: isDpMode ? 'diffusion_pipe' : bucketMode,
           recursive,
+          dp_min_ar: isDpMode ? dpMinAr : null,
+          dp_max_ar: isDpMode ? dpMaxAr : null,
+          dp_num_ar_buckets: isDpMode ? dpArBucketCountVal : null,
+          batch_size: batchSizeVal,
         },
       });
       setAnalysis(result);
@@ -167,6 +325,57 @@ export default function BucketPreviewPage() {
     setToast({ msg, type });
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     toastTimerRef.current = setTimeout(() => setToast(null), 3000);
+  };
+
+  const formatRecommendedAr = (value: number) => {
+    const fixed = value.toFixed(3);
+    return fixed.replace(/0+$/, '').replace(/\.$/, '');
+  };
+
+  const formatPercent = (value: number) => `${(value * 100).toFixed(1)}%`;
+
+  const clearAnalysisResult = () => {
+    setAnalysis(null);
+    setScanMsg('');
+    setScanProgress(0);
+    setExpandedBuckets(new Set());
+    setBucketPage(0);
+    setBucketImgLimits({});
+  };
+
+  const applyRecommendation = (candidate: BucketParamCandidate | BucketParamRecommendation) => {
+    setResolution(`${candidate.res_width},${candidate.res_height}`);
+    setSteps(candidate.steps);
+    setDpMinArInput(formatRecommendedAr(candidate.dp_min_ar));
+    setDpMaxArInput(formatRecommendedAr(candidate.dp_max_ar));
+    setDpArBucketCount(candidate.dp_num_ar_buckets);
+    setBatchSize(candidate.batch_size);
+    clearAnalysisResult();
+  };
+
+  const handleRecommend = async () => {
+    if (!inputPath) return;
+    setRecommending(true);
+    try {
+      const recommendation = await invoke<BucketParamRecommendation>('recommend_bucket_params', {
+        options: {
+          input_path: inputPath,
+          recursive,
+        },
+      });
+      setRecommendation(recommendation);
+      setRecommendPage(0);
+      applyRecommendation(recommendation);
+      setBucketRange(`${recommendation.min_bucket_reso},${recommendation.max_bucket_reso}`);
+      showToast(t('bucketPreview.recommendApplied', {
+        n: recommendation.total_images,
+        sizes: recommendation.unique_sizes,
+      }), 'success');
+    } catch (e: any) {
+      showToast(`${t('bucketPreview.recommendFailed')}: ${String(e)}`, 'error');
+    } finally {
+      setRecommending(false);
+    }
   };
 
   const handleExport = async () => {
@@ -198,7 +407,7 @@ export default function BucketPreviewPage() {
   };
 
   return (
-    <div className="page" style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+    <div className="page" style={{ minHeight: '100%', display: 'flex', flexDirection: 'column', overflow: 'visible', position: 'relative', paddingBottom: 'var(--space-6)' }}>
       {/* Toast */}
       {toast && (
         <div style={{
@@ -225,8 +434,75 @@ export default function BucketPreviewPage() {
 
       {/* Params */}
       <div className="tool-panel" style={{ flexShrink: 0 }}>
-        <div className="tool-panel-header">
-          <span className="tool-panel-title">{t('bucketPreview.paramSettings')}</span>
+        <div className="tool-panel-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span className="tool-panel-title" style={{ minHeight: 30, display: 'flex', alignItems: 'center' }}>{t('bucketPreview.paramSettings')}</span>
+          <div ref={modeMenuRef} style={{ position: 'relative', flexShrink: 0 }}>
+            <button
+              className="btn btn-secondary"
+              title={t('bucketPreview.engineMode')}
+              onClick={() => setModeMenuOpen(open => !open)}
+              style={{
+                height: 30,
+                padding: '0 10px',
+                gap: 6,
+                fontSize: 11,
+                fontWeight: 700,
+                borderColor: modeMenuOpen ? 'var(--color-border-active)' : 'var(--color-border)',
+                background: modeMenuOpen ? 'rgba(124,92,252,0.08)' : undefined,
+                color: modeMenuOpen ? 'var(--color-accent-primary)' : undefined,
+              }}
+            >
+              <SlidersHorizontal style={{ width: 14, height: 14 }} />
+              <span style={{ whiteSpace: 'nowrap' }}>{currentBucketEngineLabel}</span>
+              <ChevronDown style={{ width: 13, height: 13, transform: modeMenuOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s ease' }} />
+            </button>
+            {modeMenuOpen && (
+              <div style={{
+                position: 'absolute',
+                right: 0,
+                top: 36,
+                width: 190,
+                padding: 6,
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--color-border)',
+                background: 'var(--color-bg-card)',
+                boxShadow: '0 10px 28px rgba(15,23,42,0.16)',
+                zIndex: 20,
+              }}>
+                {bucketEngineOptions.map(option => {
+                  const selected = bucketEngine === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      onClick={() => {
+                        setBucketEngine(option.value);
+                        setModeMenuOpen(false);
+                      }}
+                      style={{
+                        width: '100%',
+                        height: 30,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 8,
+                        padding: '0 8px',
+                        borderRadius: 'var(--radius-sm)',
+                        border: 'none',
+                        background: selected ? 'rgba(124,92,252,0.10)' : 'transparent',
+                        color: selected ? 'var(--color-accent-primary)' : 'var(--color-text-secondary)',
+                        fontSize: 12,
+                        fontWeight: selected ? 700 : 600,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <span>{option.label}</span>
+                      {selected && <Check style={{ width: 13, height: 13 }} />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           <div className="form-group">
@@ -251,11 +527,33 @@ export default function BucketPreviewPage() {
               }} />
             </div>
 
+            {isDpMode && (
+              <>
+                <div style={{ position: 'relative', width: 92 }}>
+                  <label className="form-label" style={{ fontSize: 10, color: dpArError ? '#ef4444' : undefined }}>{t('bucketPreview.dpMinAr')}</label>
+                  <input className="form-input" type="number" step="0.01" min="0.01" value={dpMinArInput} onChange={e => setDpMinArInput(e.target.value)} style={{
+                    height: 32,
+                    borderColor: dpArError ? '#ef4444' : undefined,
+                    boxShadow: dpArError ? '0 0 0 1px #ef4444' : undefined,
+                  }} />
+                </div>
+
+                <div style={{ position: 'relative', width: 92 }}>
+                  <label className="form-label" style={{ fontSize: 10, color: dpArError ? '#ef4444' : undefined }}>{t('bucketPreview.dpMaxAr')}</label>
+                  <input className="form-input" type="number" step="0.01" min="0.01" value={dpMaxArInput} onChange={e => setDpMaxArInput(e.target.value)} style={{
+                    height: 32,
+                    borderColor: dpArError ? '#ef4444' : undefined,
+                    boxShadow: dpArError ? '0 0 0 1px #ef4444' : undefined,
+                  }} />
+                </div>
+              </>
+            )}
+
             {/* 桶分辨率范围 (仅 no_upscale=false 时可用) */}
-            <div style={{ flex: '1 1 120px', minWidth: 100, opacity: noUpscale ? 0.35 : 1, pointerEvents: noUpscale ? 'none' : 'auto', transition: 'opacity 0.2s' }}>
+            {!isDpMode && <div style={{ flex: '1 1 120px', minWidth: 100, opacity: noUpscale ? 0.35 : 1, pointerEvents: noUpscale ? 'none' : 'auto', transition: 'opacity 0.2s' }}>
               <label className="form-label" style={{ fontSize: 10 }}>{t('bucketPreview.bucketRange')}</label>
               <input className="form-input" placeholder={t('bucketPreview.bucketRangePlaceholder')} value={bucketRange} onChange={e => setBucketRange(e.target.value)} style={{ height: 32 }} />
-            </div>
+            </div>}
 
             {/* 桶分辨率划分单位 */}
             <div style={{ position: 'relative', width: 90 }}>
@@ -271,24 +569,72 @@ export default function BucketPreviewPage() {
               }}>{t('bucketPreview.stepsError')}</div>}
             </div>
 
-            {/* 分桶策略 pill buttons */}
-            <div>
-              <label className="form-label" style={{ fontSize: 10 }}>{t('bucketPreview.bucketMode')}</label>
-              <div style={{ display: 'flex', gap: 2, height: 32, alignItems: 'center' }}>
-                {([['legacy', t('bucketPreview.modeLegacy')], ['nearest_only', t('bucketPreview.modeNearest')]] as const).map(([val, label]) => (
-                  <button key={val} onClick={() => setBucketMode(val)} style={{
-                    padding: '4px 10px', borderRadius: 'var(--radius-sm)',
-                    border: `1px solid ${bucketMode === val ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                    background: bucketMode === val ? 'rgba(124,92,252,0.08)' : 'transparent',
-                    color: bucketMode === val ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
-                    fontSize: 11, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 0.15s',
-                  }}>{label}</button>
-                ))}
-              </div>
+            <div style={{ position: 'relative', width: 82 }}>
+              <label className="form-label" style={{ fontSize: 10, color: batchSizeError ? '#ef4444' : undefined }}>{t('bucketPreview.batchSize')}</label>
+              <input className="form-input" type="number" value={batchSize} onChange={e => setBatchSize(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setBatchSize(1); }} min={1} step={1} style={{
+                height: 32,
+                borderColor: batchSizeError ? '#ef4444' : undefined,
+                boxShadow: batchSizeError ? '0 0 0 1px #ef4444' : undefined,
+              }} />
             </div>
 
+            {isDpMode && (
+              <div title={t('bucketPreview.dpDropLastTip')} style={{
+                display: 'flex', alignItems: 'center', gap: 8, height: 32,
+                padding: '0 10px', borderRadius: 'var(--radius-md)',
+                border: '1px solid rgba(248,113,113,0.55)',
+                background: 'rgba(248,113,113,0.08)',
+                userSelect: 'none', flexShrink: 0,
+                transition: 'all 0.2s',
+              }}>
+                <span style={{ fontSize: 10, color: '#ef4444', whiteSpace: 'nowrap', fontWeight: 700 }}>
+                  {t('bucketPreview.dropLast')}
+                </span>
+                <div style={{
+                  width: 30, height: 16, borderRadius: 8, transition: 'all 0.2s',
+                  background: '#ef4444',
+                  position: 'relative', flexShrink: 0,
+                }}>
+                  <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: 16, transition: 'left 0.2s' }} />
+                </div>
+              </div>
+            )}
+
+            {!isDpMode && (
+              <div>
+                <label className="form-label" style={{ fontSize: 10 }}>{t('bucketPreview.sdBucketMode')}</label>
+                <div style={{ display: 'flex', gap: 2, height: 32, alignItems: 'center' }}>
+                  {([['legacy', t('bucketPreview.modeLegacy')], ['nearest_only', t('bucketPreview.modeNearest')]] as const).map(([val, label]) => (
+                    <button key={val} onClick={() => setBucketMode(val)} style={{
+                      padding: '4px 10px',
+                      borderRadius: 'var(--radius-sm)',
+                      border: `1px solid ${bucketMode === val ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                      background: bucketMode === val ? 'rgba(124,92,252,0.08)' : 'transparent',
+                      color: bucketMode === val ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                      transition: 'all 0.15s',
+                    }}>{label}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {isDpMode && (
+              <div style={{ position: 'relative', width: 84 }}>
+                <label className="form-label" style={{ fontSize: 10, color: dpBucketError ? '#ef4444' : undefined }}>{t('bucketPreview.dpArBuckets')}</label>
+                <input className="form-input" type="number" value={dpArBucketCount} min={1} step={1} onChange={e => setDpArBucketCount(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setDpArBucketCount(7); }} style={{
+                  height: 32,
+                  borderColor: dpBucketError ? '#ef4444' : undefined,
+                  boxShadow: dpBucketError ? '0 0 0 1px #ef4444' : undefined,
+                }} />
+              </div>
+            )}
+
             {/* 桶不放大图片 */}
-            <div onClick={() => setNoUpscale(!noUpscale)} style={{
+            {!isDpMode && <div onClick={() => setNoUpscale(!noUpscale)} style={{
               display: 'flex', alignItems: 'center', gap: 8, height: 32,
               padding: '0 10px', borderRadius: 'var(--radius-md)',
               border: `1px solid ${noUpscale ? 'var(--color-accent-primary)' : 'var(--color-border)'}`,
@@ -304,7 +650,7 @@ export default function BucketPreviewPage() {
               }}>
                 <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: noUpscale ? 16 : 2, transition: 'left 0.2s' }} />
               </div>
-            </div>
+            </div>}
           </div>
 
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -313,16 +659,113 @@ export default function BucketPreviewPage() {
               <div style={{ height: '100%', width: `${scanProgress}%`, background: 'var(--color-accent-primary)', borderRadius: 2, transition: 'width 0.3s' }} />
             </div>}
             {!analyzing && <div style={{ flex: 1 }} />}
-            <button className="btn btn-primary" style={{ height: 34, padding: '0 20px', flexShrink: 0 }} onClick={handleAnalyze} disabled={analyzing || !inputPath || stepsError}>
+            {isDpMode && (
+              <button className="btn btn-secondary" style={{ height: 34, padding: '0 16px', flexShrink: 0, gap: 6 }} onClick={handleRecommend} disabled={recommending || analyzing || !inputPath}>
+                {recommending ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('bucketPreview.recommending')}</> : <><Sparkles style={{ width: 14, height: 14 }} /> {t('bucketPreview.recommendParams')}</>}
+              </button>
+            )}
+            <button className="btn btn-primary" style={{ height: 34, padding: '0 20px', flexShrink: 0 }} onClick={handleAnalyze} disabled={analyzing || !inputPath || resError || stepsError || dpArError || dpBucketError || batchSizeError}>
               {analyzing ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('bucketPreview.previewing')}</> : <><Play style={{ width: 14, height: 14 }} /> {t('bucketPreview.startPreview')}</>}
             </button>
           </div>
+
+          {isDpMode && recommendation && recommendation.candidates.length > 0 && (
+            (() => {
+              const totalRecommendPages = Math.ceil(recommendation.candidates.length / RECOMMENDATIONS_PER_PAGE);
+              const currentRecommendPage = Math.min(recommendPage, Math.max(0, totalRecommendPages - 1));
+              const pageCandidates = recommendation.candidates.slice(
+                currentRecommendPage * RECOMMENDATIONS_PER_PAGE,
+                (currentRecommendPage + 1) * RECOMMENDATIONS_PER_PAGE,
+              );
+
+              return (
+                <div style={{
+                  borderTop: '1px solid var(--color-border)',
+                  paddingTop: 10,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--color-text-primary)' }}>{t('bucketPreview.recommendCandidates')}</span>
+                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.recommendBatch', { n: recommendation.batch_size })}</span>
+                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.activeBuckets', { n: recommendation.active_bucket_count })}</span>
+                    <span style={{ fontSize: 11, color: recommendation.usable_rate >= 0.97 ? '#22c55e' : '#f59e0b', fontWeight: 700 }}>{t('bucketPreview.usableRate', { rate: formatPercent(recommendation.usable_rate) })}</span>
+                    {totalRecommendPages > 1 && (
+                      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <button className="btn btn-ghost" style={{ width: 26, height: 24, padding: 0 }}
+                          disabled={currentRecommendPage === 0}
+                          onClick={() => setRecommendPage(page => Math.max(0, page - 1))}
+                          title={t('bucketPreview.previousRecommendPage')}>
+                          <ChevronLeft style={{ width: 13, height: 13 }} />
+                        </button>
+                        <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', minWidth: 42, textAlign: 'center' }}>
+                          {t('bucketPreview.recommendPage', { current: currentRecommendPage + 1, total: totalRecommendPages })}
+                        </span>
+                        <button className="btn btn-ghost" style={{ width: 26, height: 24, padding: 0 }}
+                          disabled={currentRecommendPage >= totalRecommendPages - 1}
+                          onClick={() => setRecommendPage(page => Math.min(totalRecommendPages - 1, page + 1))}
+                          title={t('bucketPreview.nextRecommendPage')}>
+                          <ChevronRight style={{ width: 13, height: 13 }} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <div style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 6,
+                  }}>
+                    {pageCandidates.map((candidate, idx) => {
+                      const candidateNumber = currentRecommendPage * RECOMMENDATIONS_PER_PAGE + idx + 1;
+                      return (
+                        <button
+                          key={`${candidate.res_width}-${candidate.steps}-${candidate.dp_min_ar}-${candidate.dp_max_ar}-${candidate.dp_num_ar_buckets}-${candidate.batch_size}`}
+                          onClick={() => applyRecommendation(candidate)}
+                          style={{
+                            minHeight: 44,
+                            width: 270,
+                            maxWidth: '100%',
+                            flex: '0 0 270px',
+                            padding: '7px 9px',
+                            borderRadius: 'var(--radius-sm)',
+                            border: '1px solid var(--color-border)',
+                            background: candidate.batch_size === batchSize
+                              && candidate.dp_num_ar_buckets === dpArBucketCount
+                              && candidate.res_width === resWidth
+                              && formatRecommendedAr(candidate.dp_min_ar) === formatRecommendedAr(dpMinAr)
+                              && formatRecommendedAr(candidate.dp_max_ar) === formatRecommendedAr(dpMaxAr)
+                              ? 'rgba(124,92,252,0.08)'
+                              : 'var(--color-bg-input)',
+                            color: 'var(--color-text-secondary)',
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 4,
+                          }}
+                        >
+                          <span style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, fontWeight: 800, color: 'var(--color-text-primary)' }}>
+                            <span>{t('bucketPreview.candidateLabel', { n: candidateNumber })} · BS {candidate.batch_size}</span>
+                            <span style={{ color: candidate.usable_rate >= 0.97 ? '#22c55e' : '#f59e0b' }}>{formatPercent(candidate.usable_rate)}</span>
+                          </span>
+                          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {candidate.res_width} · AR {formatRecommendedAr(candidate.dp_min_ar)}-{formatRecommendedAr(candidate.dp_max_ar)} · {candidate.dp_num_ar_buckets} / {candidate.active_bucket_count} · {t('bucketPreview.droppedCount', { n: candidate.dropped_count })}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()
+          )}
         </div>
       </div>
 
       {/* Results */}
       {analysis && (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', marginTop: 'var(--space-4)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', overflow: 'visible', marginTop: 'var(--space-4)' }}>
           {/* Stats */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0, marginBottom: 'var(--space-3)' }}>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -331,12 +774,109 @@ export default function BucketPreviewPage() {
             </div>
             <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.nImages', { n: analysis.total_images })}</span>
             <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.totalCount', { n: analysis.total_count })}</span>
+            {analysisIsDpMode && (
+              <span style={{ fontSize: 12, color: analysis.dropped_count > 0 ? '#f59e0b' : '#22c55e', fontWeight: 700 }}>
+                {t('bucketPreview.effectiveCount', { n: analysis.effective_count })} · {t('bucketPreview.usableRate', { rate: formatPercent(analysis.usable_rate) })}
+              </span>
+            )}
+            <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.batchCount', { n: analysis.batch_count })}</span>
+            {analysis.short_batch_count > 0 && <span style={{ fontSize: 11, color: '#60a5fa' }}>{t('bucketPreview.shortBatchCount', { n: analysis.short_batch_count })}</span>}
+            {analysisIsDpMode && analysis.dropped_count > 0 && <span style={{ fontSize: 11, color: '#ef4444', fontWeight: 700 }}>{t('bucketPreview.droppedCount', { n: analysis.dropped_count })}</span>}
             {analysis.skipped.length > 0 && <span style={{ fontSize: 11, color: '#f87171' }}>{t('bucketPreview.readFail', { n: analysis.skipped.length })}</span>}
-            <span style={{ fontSize: 11, fontWeight: 600, fontFamily: '"SF Mono","Fira Code",Menlo,monospace', color: analysis.mean_ar_error < 0.01 ? '#4ade80' : analysis.mean_ar_error < 0.05 ? '#fbbf24' : '#f87171' }} title={`Mean AR Error (without repeats): ${analysis.mean_ar_error}`}>
-              AR Error: {analysis.mean_ar_error.toFixed(16)}
+            <span style={{ fontSize: 11, fontWeight: 600, fontFamily: '"SF Mono","Fira Code",Menlo,monospace', color: analysis.mean_ar_error < 0.01 ? '#4ade80' : analysis.mean_ar_error < 0.05 ? '#fbbf24' : '#f87171' }} title={`Mean ${analysis.ar_error_metric === 'log' ? 'log ' : ''}AR Error (without repeats): ${analysis.mean_ar_error}`}>
+              {analysis.ar_error_metric === 'log' ? 'Log AR Error' : 'AR Error'}: {analysis.mean_ar_error.toFixed(16)}
             </span>
 
           </div>
+
+          {droppedMaterialPreview.length > 0 && (
+            <div style={{
+              flexShrink: 0,
+              marginBottom: 'var(--space-3)',
+              padding: '10px 12px',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid rgba(239,68,68,0.22)',
+              background: 'rgba(239,68,68,0.045)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <ImageIcon style={{ width: 14, height: 14, color: '#ef4444' }} />
+                  <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--color-text-primary)' }}>
+                    {t('bucketPreview.droppedMaterialsPreview')}
+                  </span>
+                  <span style={{ fontSize: 11, color: '#ef4444', fontWeight: 700 }}>
+                    {t('bucketPreview.droppedCount', { n: analysis.dropped_count })}
+                  </span>
+                </div>
+                <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+                  {t('bucketPreview.droppedMaterialsHint')}
+                </span>
+              </div>
+              <div onWheel={containWheelScroll} style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
+                gap: 8,
+                maxHeight: 142,
+                overflowY: 'auto',
+                overscrollBehavior: 'contain',
+                paddingRight: 2,
+              }}>
+                {droppedMaterialPreview.map(({ bucket, items }) => (
+                  <div key={bucket.index} style={{
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--color-border)',
+                    background: 'var(--color-bg-input)',
+                    padding: 8,
+                    minWidth: 0,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--color-text-primary)' }}>
+                        #{bucket.index} · {bucket.bucket_width}×{bucket.bucket_height}
+                      </span>
+                      <span style={{ fontSize: 10, color: '#ef4444', fontWeight: 700 }}>
+                        {t('bucketPreview.droppedShort', { n: bucket.dropped_count })}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                      {items.map(item => (
+                        <div key={`${bucket.index}-${item.path}`} style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+                          <div style={{
+                            width: 26,
+                            height: 26,
+                            borderRadius: 5,
+                            overflow: 'hidden',
+                            border: '1px solid var(--color-border)',
+                            background: '#0a0a0a',
+                            flexShrink: 0,
+                          }}>
+                            <img src={convertFileSrc(item.path)} alt={item.name} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                          </div>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div title={item.name} style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              color: 'var(--color-text-secondary)',
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}>
+                              {item.name}
+                            </div>
+                            <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>
+                              {t('bucketPreview.droppedFromRepeats', { drop: item.dropped_repeats, repeats: item.repeats })}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Bucket grid — fixed 3 columns, paginated */}
           {(() => {
@@ -344,7 +884,7 @@ export default function BucketPreviewPage() {
             const pageBuckets = analysis.buckets.slice(bucketPage * BUCKETS_PER_PAGE, (bucketPage + 1) * BUCKETS_PER_PAGE);
             return (
               <>
-          <div className="image-grid-perf" style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+          <div className="image-grid-perf" style={{ overflow: 'visible' }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, alignItems: 'start' }}>
               {pageBuckets.map(bucket => {
                 const color = bucketColor(bucket.aspect_ratio);
@@ -417,6 +957,38 @@ export default function BucketPreviewPage() {
                       }}>
                         {bucket.image_count} {t('bucketPreview.nImagesShort', { n: '' }).trim()} · count {bucket.total_count}
                       </div>
+                      <div style={{
+                        fontSize: isExpanded ? 8 : 9,
+                        color: analysisIsDpMode
+                          ? (bucket.dropped_count > 0 ? '#f59e0b' : '#22c55e')
+                          : (bucket.short_batch_count > 0 ? '#60a5fa' : 'var(--color-text-tertiary)'),
+                        textAlign: 'center',
+                        lineHeight: 1.25,
+                        fontWeight: 700,
+                        transition: 'font-size 0.3s ease',
+                      }}>
+                        {analysisIsDpMode ? (
+                          <>
+                            {t('bucketPreview.effectiveShort', { n: bucket.effective_count })}
+                            {bucket.dropped_count > 0 ? ` · ${t('bucketPreview.droppedShort', { n: bucket.dropped_count })}` : ''}
+                          </>
+                        ) : (
+                          <>
+                            {t('bucketPreview.batchCount', { n: bucket.batch_count })}
+                            {bucket.short_batch_count > 0 ? ` · ${t('bucketPreview.shortBatchShort', { n: bucket.short_batch_count })}` : ''}
+                          </>
+                        )}
+                      </div>
+                      <div style={{
+                        fontSize: isExpanded ? 8 : 9,
+                        fontWeight: 700,
+                        color: bucket.mean_ar_error < 0.01 ? '#22c55e' : bucket.mean_ar_error < 0.05 ? '#f59e0b' : '#ef4444',
+                        fontFamily: '"SF Mono","Fira Code",Menlo,monospace',
+                        lineHeight: 1.25,
+                        transition: 'font-size 0.3s ease',
+                      }}>
+                        {analysis.ar_error_metric === 'log' ? 'LogErr' : 'Err'} {bucket.mean_ar_error.toFixed(6)}
+                      </div>
                       {/* Mini bar — hides when expanded */}
                       <div style={{
                         width: '65%',
@@ -441,7 +1013,7 @@ export default function BucketPreviewPage() {
                       padding: isExpanded ? '4px 6px 6px' : '0 6px',
                       minHeight: 0,
                     }}>
-                      <div style={{
+                      <div onWheel={containWheelScroll} style={{
                         display: 'grid',
                         gridTemplateColumns: 'repeat(3, 1fr)',
                         gridAutoRows: 'calc((100% - 8px) / 3)',
@@ -449,6 +1021,7 @@ export default function BucketPreviewPage() {
                         height: '100%',
                         overflowY: 'auto',
                         overflowX: 'hidden',
+                        overscrollBehavior: 'contain',
                         alignContent: 'start',
                       }}>
                         {(() => {

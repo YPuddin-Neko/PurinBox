@@ -3,7 +3,7 @@ import TagAutocomplete from './TagAutocomplete';
 import ImageLightbox from './ImageLightbox';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../utils/tauriRuntime';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import {
   FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,

@@ -103,8 +103,13 @@ enum FileResult {
         /// 耗时（毫秒）
         elapsed_ms: u128,
     },
-    Skipped { filename: String },
-    Error { filename: String, message: String },
+    Skipped {
+        filename: String,
+    },
+    Error {
+        filename: String,
+        message: String,
+    },
 }
 
 #[tauri::command]
@@ -124,8 +129,7 @@ pub async fn start_tag_sorting(
         return Err("输入目录中没有找到 .txt 标签文件".to_string());
     }
 
-    std::fs::create_dir_all(&output_dir_path)
-        .map_err(|e| format!("创建输出目录失败: {}", e))?;
+    std::fs::create_dir_all(&output_dir_path).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
     let client = super::proxy_config::build_http_client_for_llm()
         .build()
@@ -133,23 +137,30 @@ pub async fn start_tag_sorting(
 
     let concurrency = std::cmp::max(1, options.concurrency) as usize;
 
-    let _ = app.emit("tag-sort-progress", ProgressEvent {
-        current: 0, total,
-        filename: String::new(),
-        status: "info".to_string(),
-        message: format!("找到 {} 个标签文件，{} 线程开始排序...", total, concurrency),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "tag-sort-progress",
+        ProgressEvent {
+            current: 0,
+            total,
+            filename: String::new(),
+            status: "info".to_string(),
+            message: format!("找到 {} 个标签文件，{} 线程开始排序...", total, concurrency),
+            ..Default::default()
+        },
+    );
 
     let success_count = Arc::new(AtomicU32::new(0));
     let fail_count = Arc::new(AtomicU32::new(0));
     let processed = Arc::new(AtomicU32::new(0));
-    let errors: Arc<tokio::sync::Mutex<Vec<String>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let errors: Arc<tokio::sync::Mutex<Vec<String>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let cancelled = Arc::new(AtomicBool::new(false));
 
     // 收集出错和有警告的源文件路径
-    let error_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-    let warning_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let error_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let warning_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
     let last_req_time = Arc::new(tokio::sync::Mutex::new(None));
@@ -219,7 +230,14 @@ pub async fn start_tag_sorting(
             let cur = processed.fetch_add(1, Ordering::SeqCst) + 1;
 
             match result {
-                FileResult::Success { filename, original_count, sorted_count, changed, warnings, elapsed_ms } => {
+                FileResult::Success {
+                    filename,
+                    original_count,
+                    sorted_count,
+                    changed,
+                    warnings,
+                    elapsed_ms,
+                } => {
                     success_count.fetch_add(1, Ordering::SeqCst);
                     let has_warn = !warnings.is_empty();
                     if has_warn {
@@ -235,37 +253,62 @@ pub async fn start_tag_sorting(
                     } else {
                         String::new()
                     };
-                    let _ = app.emit("tag-sort-progress", ProgressEvent {
-                        current: cur, total,
-                        filename: filename.clone(),
-                        status: "success".to_string(),
-                        message: format!("[完成] {} | 原TAG数 {} → 排序后TAG数 {} | {}{}{}",
-                            filename, original_count, sorted_count, elapsed_str, warn_str,
-                            if !changed && !has_warn { " (顺序未变)" } else { "" }),
-                    ..Default::default()
-                    });
+                    let _ = app.emit(
+                        "tag-sort-progress",
+                        ProgressEvent {
+                            current: cur,
+                            total,
+                            filename: filename.clone(),
+                            status: "success".to_string(),
+                            message: format!(
+                                "[完成] {} | 原TAG数 {} → 排序后TAG数 {} | {}{}{}",
+                                filename,
+                                original_count,
+                                sorted_count,
+                                elapsed_str,
+                                warn_str,
+                                if !changed && !has_warn {
+                                    " (顺序未变)"
+                                } else {
+                                    ""
+                                }
+                            ),
+                            ..Default::default()
+                        },
+                    );
                 }
                 FileResult::Skipped { filename } => {
                     success_count.fetch_add(1, Ordering::SeqCst);
-                    let _ = app.emit("tag-sort-progress", ProgressEvent {
-                        current: cur, total,
-                        filename: filename.clone(),
-                        status: "success".to_string(),
-                        message: format!("[跳过] {} (空文件)", filename),
-                    ..Default::default()
-                    });
+                    let _ = app.emit(
+                        "tag-sort-progress",
+                        ProgressEvent {
+                            current: cur,
+                            total,
+                            filename: filename.clone(),
+                            status: "success".to_string(),
+                            message: format!("[跳过] {} (空文件)", filename),
+                            ..Default::default()
+                        },
+                    );
                 }
                 FileResult::Error { filename, message } => {
                     fail_count.fetch_add(1, Ordering::SeqCst);
                     error_files.lock().await.push(file_path.clone());
-                    errors.lock().await.push(format!("{}: {}", filename, message));
-                    let _ = app.emit("tag-sort-progress", ProgressEvent {
-                        current: cur, total,
-                        filename: filename.clone(),
-                        status: "error".to_string(),
-                        message: format!("[错误] {}: {}", filename, message),
-                    ..Default::default()
-                    });
+                    errors
+                        .lock()
+                        .await
+                        .push(format!("{}: {}", filename, message));
+                    let _ = app.emit(
+                        "tag-sort-progress",
+                        ProgressEvent {
+                            current: cur,
+                            total,
+                            filename: filename.clone(),
+                            status: "error".to_string(),
+                            message: format!("[错误] {}: {}", filename, message),
+                            ..Default::default()
+                        },
+                    );
                 }
             }
         });
@@ -281,7 +324,8 @@ pub async fn start_tag_sorting(
     let sc = success_count.load(Ordering::SeqCst);
     let fc = fail_count.load(Ordering::SeqCst);
     let errs = errors.lock().await.clone();
-    let was_cancelled = cancelled.load(Ordering::SeqCst) || TAG_SORT_CANCELLED.load(Ordering::SeqCst);
+    let was_cancelled =
+        cancelled.load(Ordering::SeqCst) || TAG_SORT_CANCELLED.load(Ordering::SeqCst);
 
     // 将出错和有警告的源文件复制到对应子文件夹
     let err_files = error_files.lock().await.clone();
@@ -313,19 +357,38 @@ pub async fn start_tag_sorting(
         }
     }
 
-    let _ = app.emit("tag-sort-progress", ProgressEvent {
-        current: total, total,
-        filename: String::new(),
-        status: "done".to_string(),
-        message: if was_cancelled {
-            format!("已取消: 成功 {}, 失败 {}, 共处理 {}/{}{}", sc, fc, sc + fc, total, copy_msg)
-        } else {
-            format!("标签排序完成: 成功 {}, 失败 {}, 共 {}{}", sc, fc, total, copy_msg)
+    let _ = app.emit(
+        "tag-sort-progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "done".to_string(),
+            message: if was_cancelled {
+                format!(
+                    "已取消: 成功 {}, 失败 {}, 共处理 {}/{}{}",
+                    sc,
+                    fc,
+                    sc + fc,
+                    total,
+                    copy_msg
+                )
+            } else {
+                format!(
+                    "标签排序完成: 成功 {}, 失败 {}, 共 {}{}",
+                    sc, fc, total, copy_msg
+                )
+            },
+            ..Default::default()
         },
-    ..Default::default()
-    });
+    );
 
-    Ok(ProcessResult { success_count: sc, fail_count: fc, total, errors: errs })
+    Ok(ProcessResult {
+        success_count: sc,
+        fail_count: fc,
+        total,
+        errors: errs,
+    })
 }
 
 /// 处理单个文件
@@ -337,18 +400,28 @@ async fn process_single_file(
     last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
 ) -> FileResult {
     let start = std::time::Instant::now();
-    let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let filename = file_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
 
     let content = match std::fs::read_to_string(file_path) {
         Ok(c) => c.trim().to_string(),
-        Err(e) => return FileResult::Error { filename, message: format!("读取失败: {}", e) },
+        Err(e) => {
+            return FileResult::Error {
+                filename,
+                message: format!("读取失败: {}", e),
+            }
+        }
     };
 
     if content.is_empty() {
         return FileResult::Skipped { filename };
     }
 
-    let original_tags: Vec<String> = content.split(',')
+    let original_tags: Vec<String> = content
+        .split(',')
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .collect();
@@ -381,25 +454,44 @@ async fn process_single_file(
             }
             if !missing.is_empty() {
                 let display: Vec<&str> = missing.iter().take(5).copied().collect();
-                let suffix = if missing.len() > 5 { format!("等{}个", missing.len()) } else { String::new() };
+                let suffix = if missing.len() > 5 {
+                    format!("等{}个", missing.len())
+                } else {
+                    String::new()
+                };
                 warnings.push(format!("缺失: {}{}", display.join(", "), suffix));
             }
             if !added.is_empty() {
                 let display: Vec<&str> = added.iter().take(5).copied().collect();
-                let suffix = if added.len() > 5 { format!("等{}个", added.len()) } else { String::new() };
+                let suffix = if added.len() > 5 {
+                    format!("等{}个", added.len())
+                } else {
+                    String::new()
+                };
                 warnings.push(format!("新增: {}{}", display.join(", "), suffix));
             }
 
             let output_path = output_dir.join(&filename);
             let output_content = sorted_tags.join(", ");
             match std::fs::write(&output_path, &output_content) {
-                Ok(_) => {
-                    FileResult::Success { filename, original_count, sorted_count, changed, warnings, elapsed_ms }
-                }
-                Err(e) => FileResult::Error { filename, message: format!("写入失败: {}", e) },
+                Ok(_) => FileResult::Success {
+                    filename,
+                    original_count,
+                    sorted_count,
+                    changed,
+                    warnings,
+                    elapsed_ms,
+                },
+                Err(e) => FileResult::Error {
+                    filename,
+                    message: format!("写入失败: {}", e),
+                },
             }
         }
-        Err(e) => FileResult::Error { filename, message: e },
+        Err(e) => FileResult::Error {
+            filename,
+            message: e,
+        },
     }
 }
 
@@ -415,22 +507,31 @@ async fn sort_tags_with_llm(
     let user_content = if options.prompt.contains("{tags}") {
         options.prompt.replace("{tags}", &tag_list)
     } else {
-        format!("{}\n\n需要排序的tags: {}\n\n排序后的tags:", options.prompt, tag_list)
+        format!(
+            "{}\n\n需要排序的tags: {}\n\n排序后的tags:",
+            options.prompt, tag_list
+        )
     };
 
-    let messages = vec![
-        ChatMessage {
-            role: "user".to_string(),
-            content: user_content,
-        },
-    ];
+    let messages = vec![ChatMessage {
+        role: "user".to_string(),
+        content: user_content,
+    }];
 
     let request_body = ChatRequest {
         model: options.model_name.clone(),
         messages,
-        max_tokens: if options.max_tokens > 0 { Some(options.max_tokens as u32) } else { None },
+        max_tokens: if options.max_tokens > 0 {
+            Some(options.max_tokens as u32)
+        } else {
+            None
+        },
         temperature: options.temperature,
-        top_p: if options.top_p > 0.0 && options.top_p <= 1.0 { Some(options.top_p) } else { None },
+        top_p: if options.top_p > 0.0 && options.top_p <= 1.0 {
+            Some(options.top_p)
+        } else {
+            None
+        },
     };
 
     let endpoint = if options.api_endpoint.ends_with('/') {
@@ -439,7 +540,8 @@ async fn sort_tags_with_llm(
         format!("{}/chat/completions", options.api_endpoint)
     };
 
-    let mut req = client.post(&endpoint)
+    let mut req = client
+        .post(&endpoint)
         .header("Content-Type", "application/json")
         .json(&request_body);
 
@@ -447,11 +549,19 @@ async fn sort_tags_with_llm(
         req = req.header("Authorization", format!("Bearer {}", options.api_key));
     }
 
-    if !wait_for_global_llm_slot(last_req_time, options.request_interval_ms, &TAG_SORT_CANCELLED).await {
+    if !wait_for_global_llm_slot(
+        last_req_time,
+        options.request_interval_ms,
+        &TAG_SORT_CANCELLED,
+    )
+    .await
+    {
         return Err("已取消".to_string());
     }
 
-    let response = req.send().await
+    let response = req
+        .send()
+        .await
         .map_err(|e| format!("API 请求失败: {}", e))?;
 
     if !response.status().is_success() {
@@ -460,14 +570,30 @@ async fn sort_tags_with_llm(
         return Err(format!("API 错误 ({}): {}", status, body));
     }
 
-    let chat_resp: ChatResponse = response.json().await
+    let chat_resp: ChatResponse = response
+        .json()
+        .await
         .map_err(|e| format!("解析响应失败: {}", e))?;
 
-    let choice = chat_resp.choices.first()
+    let choice = chat_resp
+        .choices
+        .first()
         .ok_or_else(|| "API 未返回任何结果".to_string())?;
 
-    let content = choice.message.content.as_deref().unwrap_or("").trim().to_string();
-    let reasoning = choice.message.reasoning_content.as_deref().unwrap_or("").trim().to_string();
+    let content = choice
+        .message
+        .content
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let reasoning = choice
+        .message
+        .reasoning_content
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
 
     let final_content = if !content.is_empty() {
         content
@@ -478,7 +604,8 @@ async fn sort_tags_with_llm(
     };
 
     let cleaned = if final_content.contains('\n') {
-        final_content.lines()
+        final_content
+            .lines()
             .filter(|l| l.contains(','))
             .max_by_key(|l| l.len())
             .unwrap_or(&final_content)
@@ -487,7 +614,8 @@ async fn sort_tags_with_llm(
         final_content
     };
 
-    let sorted_tags: Vec<String> = cleaned.split(',')
+    let sorted_tags: Vec<String> = cleaned
+        .split(',')
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .collect();

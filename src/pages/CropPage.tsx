@@ -1,20 +1,27 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
 import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Crosshair,
   Crop,
   FolderOpen,
   Maximize2,
   RatioIcon,
+  Scaling,
   Scissors,
   Info,
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
+import InputPathPickerButton from '../components/InputPathPickerButton';
 
 interface ProcessResult {
   success_count: number;
@@ -40,12 +47,15 @@ const PRESETS = [
   { label: '2:3', w: 2, h: 3 },
 ];
 
+type CropAnchor = 'center' | 'top' | 'bottom' | 'left' | 'right';
+
 export default function CropPage() {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
-  const [mode, setMode] = useState<'center' | 'aspect' | 'edges'>('center');
+  const [mode, setMode] = useState<'center' | 'cover' | 'aspect' | 'edges'>('center');
+  const [cropAnchor, setCropAnchor] = useState<CropAnchor>('center');
   // center crop
   const [centerW, setCenterW] = useState(1024);
   const [centerH, setCenterH] = useState(1024);
@@ -87,11 +97,6 @@ export default function CropPage() {
     return () => { active = false; p.then(fn => fn()); };
   }, []);
 
-  const selectInputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
-    if (selected) setInputPath(selected as string);
-  };
-
   const selectOutputFolder = async () => {
     const selected = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') });
     if (selected) setOutputPath(selected as string);
@@ -122,7 +127,13 @@ export default function CropPage() {
     setIsDone(false);
     setHasError(false);
 
-    const modeLabel = mode === 'center' ? t('crop.center') : mode === 'aspect' ? t('crop.aspect') : t('crop.edges');
+    const modeLabel = mode === 'center'
+      ? t('crop.center')
+      : mode === 'cover'
+        ? t('crop.cover')
+        : mode === 'aspect'
+          ? t('crop.aspect')
+          : t('crop.edges');
     setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${modeLabel}${t('pages.process')}`, status: 'info' }]);
 
     try {
@@ -133,6 +144,7 @@ export default function CropPage() {
           mode,
           target_width: cw,
           target_height: ch,
+          crop_anchor: cropAnchor,
           aspect_ratio: rw / rh,
           crop_top: cTop,
           crop_bottom: cBottom,
@@ -154,10 +166,18 @@ export default function CropPage() {
   const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
   const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
-  const modeCards: { key: 'center' | 'aspect' | 'edges'; icon: React.ReactNode; label: string; desc: string; color: string; colorAlpha: string }[] = [
+  const modeCards: { key: 'center' | 'cover' | 'aspect' | 'edges'; icon: React.ReactNode; label: string; desc: string; color: string; colorAlpha: string }[] = [
     { key: 'center', icon: <Maximize2 style={{ width: 18, height: 18 }} />, label: t('crop.center'), desc: t('crop.centerDesc'), color: '#4ade80', colorAlpha: 'rgba(74, 222, 128, ' },
+    { key: 'cover', icon: <Scaling style={{ width: 18, height: 18 }} />, label: t('crop.cover'), desc: t('crop.coverDesc'), color: '#06b6d4', colorAlpha: 'rgba(6, 182, 212, ' },
     { key: 'aspect', icon: <RatioIcon style={{ width: 18, height: 18 }} />, label: t('crop.aspect'), desc: t('crop.aspectDesc'), color: '#818cf8', colorAlpha: 'rgba(129, 140, 248, ' },
     { key: 'edges', icon: <Scissors style={{ width: 18, height: 18 }} />, label: t('crop.edges'), desc: t('crop.edgesDesc'), color: '#f59e0b', colorAlpha: 'rgba(245, 158, 11, ' },
+  ];
+  const cropAnchors: { key: CropAnchor; icon: React.ReactNode; label: string }[] = [
+    { key: 'center', icon: <Crosshair style={{ width: 14, height: 14 }} />, label: t('crop.anchorCenter') },
+    { key: 'top', icon: <ArrowUp style={{ width: 14, height: 14 }} />, label: t('crop.anchorTop') },
+    { key: 'bottom', icon: <ArrowDown style={{ width: 14, height: 14 }} />, label: t('crop.anchorBottom') },
+    { key: 'left', icon: <ArrowLeft style={{ width: 14, height: 14 }} />, label: t('crop.anchorLeft') },
+    { key: 'right', icon: <ArrowRight style={{ width: 14, height: 14 }} />, label: t('crop.anchorRight') },
   ];
 
   return (
@@ -183,8 +203,8 @@ export default function CropPage() {
                   <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
                 </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
+                  <input className="form-input" placeholder={t('pages.selectInputPath')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <InputPathPickerButton onSelect={setInputPath} />
                 </div>
               </div>
               <div className="form-group">
@@ -217,7 +237,7 @@ export default function CropPage() {
                   </div>
 
                   {/* Mode-specific options */}
-                  {mc.key === 'center' && mode === 'center' && (
+                  {(mc.key === 'center' || mc.key === 'cover') && mode === mc.key && (
                     <div style={{ marginBottom: 'var(--space-3)' }}>
                       <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
                         <div className="form-group" style={{ flex: 1 }}>
@@ -229,6 +249,42 @@ export default function CropPage() {
                           <input className="form-input" type="number" value={centerH} onChange={e => setCenterH(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCenterH(1); }} onClick={(e) => e.stopPropagation()} min={1} />
                         </div>
                       </div>
+                      {mc.key === 'cover' && (
+                        <div className="form-group" onClick={(e) => e.stopPropagation()}>
+                          <label className="form-label">{t('crop.cropAnchor')}</label>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 6 }}>
+                            {cropAnchors.map((anchor) => {
+                              const active = cropAnchor === anchor.key;
+                              return (
+                                <button
+                                  key={anchor.key}
+                                  type="button"
+                                  onClick={() => setCropAnchor(anchor.key)}
+                                  title={anchor.label}
+                                  style={{
+                                    height: 34,
+                                    borderRadius: 'var(--radius-sm)',
+                                    border: `1px solid ${active ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                                    background: active ? 'rgba(6, 182, 212, 0.10)' : 'var(--color-bg-secondary)',
+                                    color: active ? '#06b6d4' : 'var(--color-text-secondary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 5,
+                                    cursor: 'pointer',
+                                    fontSize: 'var(--font-size-xs)',
+                                    fontWeight: 700,
+                                    fontFamily: 'inherit',
+                                  }}
+                                >
+                                  {anchor.icon}
+                                  <span>{anchor.label}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 

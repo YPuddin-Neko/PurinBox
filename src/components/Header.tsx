@@ -6,6 +6,7 @@ import { Sun, Moon, Monitor, ListTodo, Cpu, MemoryStick, MonitorDot, Trash2 } fr
 import { useTheme } from './ThemeProvider';
 import { useTaskQueue } from './TaskContext';
 import { changeLanguage, availableLanguages } from '../i18n';
+import { hasTauriRuntime } from '../utils/tauriRuntime';
 import '../styles/layout.css';
 
 // 路由路径 → 侧边栏翻译 key 映射（复用 sidebar 的翻译 key）
@@ -108,6 +109,7 @@ export default function Header() {
 
   // 轮询系统状态
   useEffect(() => {
+    if (!hasTauriRuntime()) { setStats(null); return; }
     if (monitorInterval <= 0) { setStats(null); return; }
     let alive = true;
     const poll = async () => {

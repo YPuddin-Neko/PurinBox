@@ -2,12 +2,13 @@ import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, Extern
 import { useTheme } from '../components/ThemeProvider';
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../utils/tauriRuntime';
 import { ConfirmModal, AlertModal } from '../components/Modal';
 import CustomSelect from '../components/CustomSelect';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { getVersion } from '@tauri-apps/api/app';
+import { getAppVersion, packageAppVersion } from '../utils/appVersion';
+import { hasTauriRuntime } from '../utils/tauriRuntime';
 
 import SystemMonitor from '../components/SystemMonitor';
 
@@ -38,6 +39,8 @@ const LinkButton = ({ href, text }: { href: string; text: string }) => (
 export default function SettingsPage() {
   const { t } = useTranslation();
   const { monitorInterval, setMonitorInterval } = useTheme();
+  const isDesktopRuntime = hasTauriRuntime();
+  const desktopOnlyText = t('settings.desktopOnly');
 
   const intervalOptions = [
     { value: 1000, label: t('settings.monitorSec', { n: 1 }), desc: t('settings.monitorRealtime') },
@@ -75,7 +78,7 @@ export default function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [cachePath, setCachePath] = useState<string>('');
-  const [appVersion, setAppVersion] = useState('');
+  const [appVersion, setAppVersion] = useState(packageAppVersion);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [resetPythonConfirmOpen, setResetPythonConfirmOpen] = useState(false);
   const [resettingPython, setResettingPython] = useState(false);
@@ -115,6 +118,10 @@ export default function SettingsPage() {
   const saveLS = (key: string, val: string, setter: (v: string) => void) => { setter(val); localStorage.setItem(key, val); };
 
   const handleTestTranslation = async () => {
+    if (!isDesktopRuntime) {
+      setTestResult({ ok: false, msg: desktopOnlyText });
+      return;
+    }
     setTesting(true); setTestResult(null);
     try {
       const result = await invoke<string>('test_translation', {
@@ -135,6 +142,7 @@ export default function SettingsPage() {
   };
 
   const loadCacheStats = async () => {
+    if (!hasTauriRuntime()) return;
     try { setCacheStats(await invoke<{ total: number; db_size_bytes: number; zh_cn: number; ja: number; ko: number }>('get_translation_cache_stats')); } catch (e) { console.error(e); }
   };
 
@@ -147,10 +155,12 @@ export default function SettingsPage() {
   };
 
   const loadPythonInfo = async () => {
+    if (!hasTauriRuntime()) return;
     try { setPythonInfo(await invoke<{ available: boolean; version: string; path: string }>('get_python_env_info')); } catch { setPythonInfo(null); }
   };
 
   const loadTagDbStats = useCallback(async () => {
+    if (!hasTauriRuntime()) return;
     try {
       const targetLang = localStorage.getItem('translate_target_lang') || 'zh-CN';
       setTagDbStats(await invoke<{ total_tags: number; translated_tags: number; db_size_bytes: number; has_data: boolean; source_file: string; import_date: string }>('get_tag_db_stats', { targetLang }));
@@ -159,6 +169,7 @@ export default function SettingsPage() {
   }, []);
 
   const handleDownloadTagDb = async () => {
+    if (!isDesktopRuntime) return;
     // 如果已有数据，先检查是否有新版本
     if (tagDbStats?.has_data) {
       setTagDbDownloading(true); setTagDbProgress(t('settings.checkingUpdate'));
@@ -184,18 +195,23 @@ export default function SettingsPage() {
   };
 
   const handleTranslateTagDb = async () => {
+    if (!isDesktopRuntime) return;
     setTagDbTranslating(true); setTagDbProgress(t('settings.translating'));
     try { await invoke('translate_tag_db', { targetLang: localStorage.getItem('translate_target_lang') || 'zh-CN' }); await loadTagDbStats(); } catch (e: any) { setTagDbProgress(`${t('common.failed')}: ${e?.message || e}`); }
     finally { setTagDbTranslating(false); }
   };
 
   const handleClearTagDb = async () => {
+    if (!isDesktopRuntime) return;
     try { await invoke('clear_tag_db'); await loadTagDbStats(); setTagDbProgress(''); } catch (e: any) { console.error(e); }
   };
 
   useEffect(() => {
+    getAppVersion().then(setAppVersion);
+
+    if (!hasTauriRuntime()) return;
+
     loadCacheStats(); loadCachePath(); loadTagDbStats();
-    getVersion().then(v => setAppVersion(v)).catch(() => {});
     loadProxySettings(); loadPythonInfo();
     // 恢复后端忙碌状态
     invoke<[boolean, boolean]>('is_tag_db_busy').then(([downloading, translating]) => {
@@ -221,6 +237,7 @@ export default function SettingsPage() {
   }, []);
 
   const loadProxySettings = async () => {
+    if (!hasTauriRuntime()) return;
     try {
       const [enabled, llm, ptype, host, port, user, pass] = await invoke<[boolean, boolean, string, string, number, string, string]>('load_proxy_config');
       setProxyEnabled(enabled); setLlmProxy(llm); setProxyType(ptype); setProxyHost(host); setProxyPort(port); setProxyUser(user); setProxyPass(pass);
@@ -228,6 +245,7 @@ export default function SettingsPage() {
   };
 
   const handleSaveProxy = async () => {
+    if (!isDesktopRuntime) return;
     setProxySaving(true); setProxySaveMsg(null);
     // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法端口
     const port = Number.isFinite(proxyPort) && proxyPort > 0 ? Math.floor(proxyPort) : 0;
@@ -240,10 +258,12 @@ export default function SettingsPage() {
   };
 
   const loadCachePath = async () => {
+    if (!hasTauriRuntime()) return;
     try { setCachePath(await invoke<string>('get_cache_path')); } catch (e) { console.error(e); }
   };
 
   const handleChangeCachePath = async () => {
+    if (!isDesktopRuntime) return;
     const selected = await open({ directory: true, title: t('settings.selectCacheDir') });
     if (selected && typeof selected === 'string') {
       try {
@@ -255,6 +275,7 @@ export default function SettingsPage() {
   };
 
   const handleResetCachePath = async () => {
+    if (!isDesktopRuntime) return;
     try {
       await invoke<string>('set_cache_path', { path: '' });
       setCachePath(await invoke<string>('get_cache_path'));
@@ -282,7 +303,7 @@ export default function SettingsPage() {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* System Monitor - 仅在监控开启时显示 */}
-          {monitorInterval > 0 && <SystemMonitor />}
+          {monitorInterval > 0 && isDesktopRuntime && <SystemMonitor />}
 
 
 
@@ -332,7 +353,7 @@ export default function SettingsPage() {
               </div>
               <div style={{ display: 'flex', gap: 6 }}>
                 {proxySaveMsg && <span style={{ fontSize: 10, color: proxySaveMsg.ok ? '#4ade80' : '#f87171' }}>{proxySaveMsg.text}</span>}
-                <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }} onClick={handleSaveProxy} disabled={proxySaving}>
+                <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }} onClick={handleSaveProxy} disabled={proxySaving || !isDesktopRuntime}>
                   <Save style={{ width: 12, height: 12 }} /> {proxySaving ? t('settings.proxySaving') : t('common.save')}
                 </button>
               </div>
@@ -456,7 +477,7 @@ export default function SettingsPage() {
                 <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6, padding: '12px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.translationProvider')}</label>
-                    <button onClick={handleTestTranslation} disabled={testing}
+                    <button onClick={handleTestTranslation} disabled={testing || !isDesktopRuntime}
                       style={{ fontSize: 10, color: testResult ? (testResult.ok ? '#4ade80' : '#f87171') : '#60a5fa', background: 'none', border: 'none', cursor: testing ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', gap: 3, padding: 0 }}>
                       {testing ? <Loader2 style={{ width: 10, height: 10, animation: 'spin 1s linear infinite' }} /> : <Zap style={{ width: 10, height: 10 }} />}
                       {testing ? t('settings.testing') : testResult ? (testResult.ok ? testResult.msg : t('common.failed')) : t('settings.testTranslation')}
@@ -474,7 +495,7 @@ export default function SettingsPage() {
                     <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>{t('settings.targetLanguageDesc')}</div>
                   </div>
                   <CustomSelect value={targetLang}
-                    onChange={v => { setTargetLang(v); localStorage.setItem('translate_target_lang', v); loadTagDbStats(); }}
+                    onChange={v => { setTargetLang(v); localStorage.setItem('translate_target_lang', v); if (isDesktopRuntime) loadTagDbStats(); }}
                     options={[
                       { value: 'zh-CN', label: t('settings.langZhCN') },
                       { value: 'ja', label: t('settings.langJa') },
@@ -549,18 +570,18 @@ export default function SettingsPage() {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.cachePath')}</div>
                   <div style={{ display: 'flex', gap: 4 }}>
-                    <button className="btn btn-secondary" onClick={handleChangeCachePath}
+                    <button className="btn btn-secondary" onClick={handleChangeCachePath} disabled={!isDesktopRuntime}
                       style={{ fontSize: 10, height: 24, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3 }}>
                       <FolderOpen style={{ width: 10, height: 10 }} />{t('settings.cacheModify')}
                     </button>
-                    <button className="btn btn-secondary" onClick={handleResetCachePath} title={t('settings.cacheReset')}
+                    <button className="btn btn-secondary" onClick={handleResetCachePath} disabled={!isDesktopRuntime} title={t('settings.cacheReset')}
                       style={{ fontSize: 10, height: 24, padding: '0 6px', display: 'flex', alignItems: 'center' }}>
                       <RotateCcw style={{ width: 10, height: 10 }} />
                     </button>
                   </div>
                 </div>
                 <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', wordBreak: 'break-all', lineHeight: 1.5, background: 'var(--color-bg-secondary)', padding: '6px 8px', borderRadius: 4 }}>
-                  {cachePath || t('common.loading')}
+                  {cachePath || (isDesktopRuntime ? t('common.loading') : desktopOnlyText)}
                 </div>
               </div>
 
@@ -569,11 +590,11 @@ export default function SettingsPage() {
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.translationCache')}</div>
                     <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                      {cacheStats ? `${t('settings.cacheRecords', { count: cacheStats.total })} · ${formatSize(cacheStats.db_size_bytes)}` : t('common.loading')}
+                      {cacheStats ? `${t('settings.cacheRecords', { count: cacheStats.total })} · ${formatSize(cacheStats.db_size_bytes)}` : (isDesktopRuntime ? t('common.loading') : desktopOnlyText)}
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <button className="btn btn-ghost btn-sm" title={t('settings.exportCsv')} onClick={async () => {
+                    <button className="btn btn-ghost btn-sm" title={t('settings.exportCsv')} disabled={!isDesktopRuntime} onClick={async () => {
                       try {
                         // save is statically imported at top
                         const path = await save({ title: t('settings.exportCsv'), defaultPath: 'translations.csv', filters: [{ name: 'CSV', extensions: ['csv'] }] });
@@ -585,7 +606,7 @@ export default function SettingsPage() {
                     }} style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3 }}>
                       <Download style={{ width: 11, height: 11 }} /> {t('common.export')}
                     </button>
-                    <button className="btn btn-ghost btn-sm" title={t('settings.importCsv')} onClick={async () => {
+                    <button className="btn btn-ghost btn-sm" title={t('settings.importCsv')} disabled={!isDesktopRuntime} onClick={async () => {
                       try {
                         const dialogOpen = open;
                         const path = await dialogOpen({ title: t('settings.importCsv'), filters: [{ name: 'CSV', extensions: ['csv'] }] });
@@ -601,7 +622,7 @@ export default function SettingsPage() {
                     }} style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3 }}>
                       <Upload style={{ width: 11, height: 11 }} /> {t('common.import')}
                     </button>
-                    <button className="btn btn-secondary" onClick={handleClearCache} disabled={clearing || !cacheStats || cacheStats.total === 0}
+                    <button className="btn btn-secondary" onClick={handleClearCache} disabled={clearing || !cacheStats || cacheStats.total === 0 || !isDesktopRuntime}
                       style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3, color: '#f87171' }}>
                       <Trash2 style={{ width: 11, height: 11 }} />
                       {clearing ? t('settings.clearing') : t('settings.clearCache')}
@@ -643,7 +664,7 @@ export default function SettingsPage() {
                   <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
                     {tagDbStats ? (tagDbStats.has_data
                       ? `${t('settings.tagCount', { count: tagDbStats.total_tags.toLocaleString() })} · ${t('settings.translatedCount', { count: tagDbStats.translated_tags.toLocaleString() })} · ${formatSize(tagDbStats.db_size_bytes)}`
-                      : t('settings.notDownloaded')) : t('common.loading')}
+                      : t('settings.notDownloaded')) : (isDesktopRuntime ? t('common.loading') : desktopOnlyText)}
                   </div>
                   {tagDbStats?.has_data && tagDbStats.source_file && (
                     <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -668,7 +689,7 @@ export default function SettingsPage() {
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                   {tagDbStats?.has_data && (
-                    <button className="btn btn-ghost btn-sm" title={t('settings.checkUpdate')} disabled={tagDbDownloading || tagDbTranslating || tagDbChecking}
+                    <button className="btn btn-ghost btn-sm" title={t('settings.checkUpdate')} disabled={tagDbDownloading || tagDbTranslating || tagDbChecking || !isDesktopRuntime}
                       onClick={async () => {
                         setTagDbChecking(true);
                         try { setTagDbLatest(await invoke<string>('check_tag_db_update')); } catch (e: any) { setTagDbProgress(`${t('settings.checkFailed')}: ${e?.message || e}`); }
@@ -679,7 +700,7 @@ export default function SettingsPage() {
                     </button>
                   )}
                   <button className="btn btn-primary" onClick={handleDownloadTagDb}
-                    disabled={tagDbDownloading || tagDbTranslating || (!!tagDbLatest && tagDbLatest === tagDbStats?.source_file)}
+                    disabled={tagDbDownloading || tagDbTranslating || (!!tagDbLatest && tagDbLatest === tagDbStats?.source_file) || !isDesktopRuntime}
                     style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4 }}>
                     {tagDbDownloading ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 12, height: 12 }} />}
                     {tagDbDownloading ? t('settings.downloading') : (tagDbStats?.has_data ? t('common.update') : t('common.download'))}
@@ -687,7 +708,7 @@ export default function SettingsPage() {
                   {tagDbStats?.has_data && (
                     <button className="btn btn-secondary"
                       onClick={tagDbTranslating ? async () => { await invoke('cancel_tag_db_download'); } : handleTranslateTagDb}
-                      disabled={tagDbDownloading}
+                      disabled={tagDbDownloading || !isDesktopRuntime}
                       onMouseEnter={() => setTranslateHover(true)}
                       onMouseLeave={() => setTranslateHover(false)}
                       style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4,
@@ -701,7 +722,7 @@ export default function SettingsPage() {
                     </button>
                   )}
                   {tagDbStats?.has_data && (
-                    <button className="btn btn-secondary" onClick={() => setTagDbClearConfirm(true)} disabled={tagDbDownloading || tagDbTranslating}
+                    <button className="btn btn-secondary" onClick={() => setTagDbClearConfirm(true)} disabled={tagDbDownloading || tagDbTranslating || !isDesktopRuntime}
                       style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4, color: '#f87171' }}>
                       <Trash2 style={{ width: 12, height: 12 }} /> {t('settings.clearData')}
                     </button>
@@ -731,7 +752,7 @@ export default function SettingsPage() {
                   <div>
                     <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{t('settings.pythonEnv')}</div>
                     <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                      {pythonInfo === null ? t('common.loading') : pythonInfo.available
+                      {!isDesktopRuntime ? desktopOnlyText : pythonInfo === null ? t('common.loading') : pythonInfo.available
                         ? <><span style={{ color: '#4ade80' }}>✓</span> {pythonInfo.version}</>
                         : <span style={{ color: '#f87171' }}>{t('settings.pythonNotInstalled')}</span>
                       }
@@ -759,6 +780,7 @@ export default function SettingsPage() {
                   </button>
                 ) : (
                   <button className="btn" onClick={async () => {
+                    if (!isDesktopRuntime) return;
                     setResettingPython(true);
                     try {
                       await invoke('deploy_python_env');
@@ -769,10 +791,10 @@ export default function SettingsPage() {
                     } finally {
                       setResettingPython(false);
                     }
-                  }} disabled={resettingPython}
+                  }} disabled={resettingPython || !isDesktopRuntime}
                     style={{ background: 'rgba(74,222,128,0.1)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)', fontSize: 12, padding: '6px 14px', gap: 6 }}>
                     {resettingPython ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Play style={{ width: 14, height: 14 }} />}
-                    {t('settings.deployEnv')}
+                    {isDesktopRuntime ? t('settings.deployEnv') : desktopOnlyText}
                   </button>
                 )}
               </div>
@@ -801,7 +823,8 @@ export default function SettingsPage() {
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.checkForUpdate')}</div>
                   <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                    {updateChecking ? t('settings.checkingForUpdate')
+                    {!isDesktopRuntime ? desktopOnlyText
+                      : updateChecking ? t('settings.checkingForUpdate')
                       : updateError ? `${t('settings.updateCheckFailed')}: ${updateError}`
                       : updateResult
                         ? updateResult.has_update
@@ -817,7 +840,7 @@ export default function SettingsPage() {
                       <ExternalLink style={{ width: 11, height: 11 }} /> {t('settings.goToDownload')}
                     </a>
                   )}
-                  <button className="btn btn-secondary" disabled={updateChecking}
+                  <button className="btn btn-secondary" disabled={updateChecking || !isDesktopRuntime}
                     onClick={async () => {
                       setUpdateChecking(true); setUpdateError(''); setUpdateResult(null);
                       try {

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +13,7 @@ import {
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
+import InputPathPickerButton from '../components/InputPathPickerButton';
 
 interface ProcessResult {
   success_count: number;
@@ -73,11 +74,6 @@ export default function FlipPage() {
     return () => { active = false; p.then(fn => fn()); };
   }, []);
 
-  const selectInputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
-    if (selected) setInputPath(selected as string);
-  };
-
   const selectOutputFolder = async () => {
     const selected = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') });
     if (selected) setOutputPath(selected as string);
@@ -136,8 +132,8 @@ export default function FlipPage() {
                   <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
                 </div>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
+                  <input className="form-input" placeholder={t('pages.selectInputPath')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
+                  <InputPathPickerButton onSelect={setInputPath} />
                 </div>
               </div>
               <div className="form-group">

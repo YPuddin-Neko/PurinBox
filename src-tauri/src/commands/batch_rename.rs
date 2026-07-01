@@ -1,7 +1,7 @@
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tauri::Emitter;
-use rand::seq::SliceRandom;
 
 use super::{collect_image_files, ProcessResult, ProgressEvent};
 
@@ -33,11 +33,9 @@ pub struct RenamePreviewItem {
 /// 生成重命名预览（不实际执行）
 #[tauri::command]
 pub async fn preview_rename(options: RenameOptions) -> Result<Vec<RenamePreviewItem>, String> {
-    tokio::task::spawn_blocking(move || {
-        preview_rename_sync(&options)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {}", e))?
+    tokio::task::spawn_blocking(move || preview_rename_sync(&options))
+        .await
+        .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
 fn preview_rename_sync(options: &RenameOptions) -> Result<Vec<RenamePreviewItem>, String> {
@@ -51,21 +49,32 @@ fn preview_rename_sync(options: &RenameOptions) -> Result<Vec<RenamePreviewItem>
 
     let mut previews = Vec::new();
     for (i, file_path) in files.iter().enumerate() {
-        let original = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let ext = file_path.extension()
+        let original = file_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let ext = file_path
+            .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_else(|| "png".into());
         let number = options.start_number + i as u32;
         let formatted_num = format!("{:0>width$}", number, width = options.digit_count as usize);
         let renamed = format!("{}{}.{}", options.prefix, formatted_num, ext);
-        previews.push(RenamePreviewItem { original: original.clone(), renamed: renamed.clone() });
+        previews.push(RenamePreviewItem {
+            original: original.clone(),
+            renamed: renamed.clone(),
+        });
 
         // 同步预览标签文件
         if options.rename_tags {
             let stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
             let new_stem = format!("{}{}", options.prefix, formatted_num);
             for tag_ext in TAG_EXTS {
-                let tag_file = file_path.parent().unwrap_or(Path::new(".")).join(format!("{}.{}", stem, tag_ext));
+                let tag_file = file_path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(format!("{}.{}", stem, tag_ext));
                 if tag_file.exists() {
                     previews.push(RenamePreviewItem {
                         original: format!("{}.{}", stem, tag_ext),
@@ -81,15 +90,19 @@ fn preview_rename_sync(options: &RenameOptions) -> Result<Vec<RenamePreviewItem>
 
 /// 执行批量重命名
 #[tauri::command]
-pub async fn execute_rename(app: tauri::AppHandle, options: RenameOptions) -> Result<ProcessResult, String> {
-    tokio::task::spawn_blocking(move || {
-        execute_rename_sync(&app, &options)
-    })
-    .await
-    .map_err(|e| format!("任务执行失败: {}", e))?
+pub async fn execute_rename(
+    app: tauri::AppHandle,
+    options: RenameOptions,
+) -> Result<ProcessResult, String> {
+    tokio::task::spawn_blocking(move || execute_rename_sync(&app, &options))
+        .await
+        .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
-fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Result<ProcessResult, String> {
+fn execute_rename_sync(
+    app: &tauri::AppHandle,
+    options: &RenameOptions,
+) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);
     let mut files = collect_image_files(input)?;
 
@@ -109,7 +122,8 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
     let mut temp_mappings: Vec<(std::path::PathBuf, std::path::PathBuf, String)> = Vec::new();
 
     for (i, file_path) in files.iter().enumerate() {
-        let ext = file_path.extension()
+        let ext = file_path
+            .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_else(|| "png".into());
         let number = options.start_number + i as u32;
@@ -129,7 +143,12 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
             for tag_ext in TAG_EXTS {
                 let tag_path = parent.join(format!("{}.{}", stem, tag_ext));
                 if tag_path.exists() {
-                    let tag_temp = parent.join(format!("__rename_temp_{}_tag_{}_{}", i, tag_ext, uuid_simple()));
+                    let tag_temp = parent.join(format!(
+                        "__rename_temp_{}_tag_{}_{}",
+                        i,
+                        tag_ext,
+                        uuid_simple()
+                    ));
                     let tag_final = format!("{}.{}", new_stem, tag_ext);
                     temp_mappings.push((tag_path, tag_temp, tag_final));
                 }
@@ -167,18 +186,25 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
     // Step 3: Rename to final names
     let total_mappings = temp_mappings.len() as u32;
     for (i, (original, temp, final_name)) in temp_mappings.iter().enumerate() {
-        let original_name = original.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let original_name = original
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let parent = temp.parent().unwrap_or(Path::new("."));
         let final_path = parent.join(final_name);
 
-        let _ = app.emit("rename-progress", ProgressEvent {
-            current: i as u32 + 1,
-            total: total_mappings,
-            filename: original_name.clone(),
-            status: "processing".to_string(),
-            message: format!("正在重命名: {} → {}", original_name, final_name),
-        ..Default::default()
-        });
+        let _ = app.emit(
+            "rename-progress",
+            ProgressEvent {
+                current: i as u32 + 1,
+                total: total_mappings,
+                filename: original_name.clone(),
+                status: "processing".to_string(),
+                message: format!("正在重命名: {} → {}", original_name, final_name),
+                ..Default::default()
+            },
+        );
 
         // 最终名被批外文件占用时拒绝覆盖（批内文件此时都已移到临时名）
         let rename_result = if final_path.exists() {
@@ -190,45 +216,66 @@ fn execute_rename_sync(app: &tauri::AppHandle, options: &RenameOptions) -> Resul
         match rename_result {
             Ok(_) => {
                 success_count += 1;
-                let _ = app.emit("rename-progress", ProgressEvent {
-                    current: i as u32 + 1,
-                    total: total_mappings,
-                    filename: original_name.clone(),
-                    status: "success".to_string(),
-                    message: format!("[重命名] {} → {}", original_name, final_name),
-                ..Default::default()
-                });
+                let _ = app.emit(
+                    "rename-progress",
+                    ProgressEvent {
+                        current: i as u32 + 1,
+                        total: total_mappings,
+                        filename: original_name.clone(),
+                        status: "success".to_string(),
+                        message: format!("[重命名] {} → {}", original_name, final_name),
+                        ..Default::default()
+                    },
+                );
             }
             Err(e) => {
                 fail_count += 1;
                 // 把临时名滚回原名，避免文件滞留无扩展名的临时名
                 let mut err_msg = format!("{} → {}: {}", original_name, final_name, e);
                 if let Err(re) = std::fs::rename(temp, original) {
-                    err_msg.push_str(&format!("（且回滚原名失败，文件滞留临时名 {}: {}）", temp.display(), re));
+                    err_msg.push_str(&format!(
+                        "（且回滚原名失败，文件滞留临时名 {}: {}）",
+                        temp.display(),
+                        re
+                    ));
                 }
                 errors.push(err_msg.clone());
-                let _ = app.emit("rename-progress", ProgressEvent {
-                    current: i as u32 + 1,
-                    total,
-                    filename: original_name.clone(),
-                    status: "error".to_string(),
-                    message: format!("[错误] {}", err_msg),
-                ..Default::default()
-                });
+                let _ = app.emit(
+                    "rename-progress",
+                    ProgressEvent {
+                        current: i as u32 + 1,
+                        total,
+                        filename: original_name.clone(),
+                        status: "error".to_string(),
+                        message: format!("[错误] {}", err_msg),
+                        ..Default::default()
+                    },
+                );
             }
         }
     }
 
-    let _ = app.emit("rename-progress", ProgressEvent {
-        current: total_mappings,
-        total: total_mappings,
-        filename: String::new(),
-        status: "done".to_string(),
-        message: format!("重命名完成: 图片 {} 张, 共处理 {} 个文件, 失败 {}", image_count, total_mappings, fail_count),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "rename-progress",
+        ProgressEvent {
+            current: total_mappings,
+            total: total_mappings,
+            filename: String::new(),
+            status: "done".to_string(),
+            message: format!(
+                "重命名完成: 图片 {} 张, 共处理 {} 个文件, 失败 {}",
+                image_count, total_mappings, fail_count
+            ),
+            ..Default::default()
+        },
+    );
 
-    Ok(ProcessResult { success_count, fail_count, total, errors })
+    Ok(ProcessResult {
+        success_count,
+        fail_count,
+        total,
+        errors,
+    })
 }
 
 /// 生成简易唯一 ID（避免引入 uuid 库）

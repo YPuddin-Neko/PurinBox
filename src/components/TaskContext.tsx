@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { listen } from '../utils/tauriRuntime';
 import i18next from 'i18next';
 
 export interface TaskInfo {
@@ -117,4 +117,3 @@ export function TaskProvider({ children }: { children: ReactNode }) {
     </TaskContext.Provider>
   );
 }
-

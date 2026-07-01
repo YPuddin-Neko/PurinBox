@@ -49,9 +49,12 @@ fn encode(s: &str) -> String {
 
 fn decode(s: &str) -> String {
     use base64::Engine;
-    if s.is_empty() { return String::new(); }
+    if s.is_empty() {
+        return String::new();
+    }
     base64::engine::general_purpose::STANDARD
-        .decode(s).ok()
+        .decode(s)
+        .ok()
         .and_then(|b| String::from_utf8(b).ok())
         .unwrap_or_default()
 }
@@ -78,10 +81,8 @@ pub fn save_proxy_config(
         username,
         password_encoded: encode(&password),
     };
-    let json = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("序列化失败: {}", e))?;
-    std::fs::write(dir.join(CONFIG_FILE), json)
-        .map_err(|e| format!("写入代理配置失败: {}", e))?;
+    let json = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {}", e))?;
+    std::fs::write(dir.join(CONFIG_FILE), json).map_err(|e| format!("写入代理配置失败: {}", e))?;
     Ok(())
 }
 
@@ -92,13 +93,28 @@ pub fn load_proxy_config() -> Result<(bool, bool, String, String, u16, String, S
     let path = config_path();
     if !path.exists() {
         let d = ProxyConfig::default();
-        return Ok((d.enabled, d.llm_proxy, d.proxy_type, d.host, d.port, d.username, String::new()));
+        return Ok((
+            d.enabled,
+            d.llm_proxy,
+            d.proxy_type,
+            d.host,
+            d.port,
+            d.username,
+            String::new(),
+        ));
     }
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取代理配置失败: {}", e))?;
-    let config: ProxyConfig = serde_json::from_str(&content)
-        .map_err(|e| format!("解析代理配置失败: {}", e))?;
-    Ok((config.enabled, config.llm_proxy, config.proxy_type, config.host, config.port, config.username, decode(&config.password_encoded)))
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取代理配置失败: {}", e))?;
+    let config: ProxyConfig =
+        serde_json::from_str(&content).map_err(|e| format!("解析代理配置失败: {}", e))?;
+    Ok((
+        config.enabled,
+        config.llm_proxy,
+        config.proxy_type,
+        config.host,
+        config.port,
+        config.username,
+        decode(&config.password_encoded),
+    ))
 }
 
 /// 加载代理配置（内部使用，不是 tauri 命令）

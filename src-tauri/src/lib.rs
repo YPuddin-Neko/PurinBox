@@ -1,40 +1,61 @@
 mod commands;
 
-use commands::image_scale::{scale_images, cancel_scale};
-use commands::image_crop::{crop_images, cancel_crop};
-use commands::image_flip::{flip_images, cancel_flip};
-use commands::person_crop::{start_person_crop, cancel_person_crop, get_person_crop_models, download_person_crop_model, cancel_person_crop_download};
-use commands::resolution_filter::{filter_by_resolution, cancel_filter};
-use commands::file_keeper::{keep_specified_files, cancel_keeper};
-use commands::format_convert::{convert_format, cancel_convert};
-use commands::alpha_convert::{convert_alpha, cancel_alpha};
-use commands::batch_rename::{preview_rename, execute_rename};
-use commands::tagger::{
-    get_tagger_models, detect_onnx_model_info,
-    import_local_tagger_model, remove_custom_tagger_model,
-    check_cuda_available, start_tagging, cancel_tagger_download,
-    get_gpu_runtime_status, download_gpu_runtime, cancel_gpu_runtime_download,
-    cancel_tagging,
-};
-use commands::python_env::{reset_python_env, deploy_python_env, get_python_env_info};
-use commands::tagger::llm_tagger::{start_llm_tagging, fetch_llm_models, cancel_llm_tagging};
-use commands::tag_manager::{load_tag_dataset, save_single_tag_file, save_all_tag_files, save_caption_file, save_all_caption_files, load_caption_dataset, load_json_dataset, save_single_json_file, save_all_json_files};
-use commands::translator::{translate_tags, get_translation_cache_stats, clear_translation_cache, test_translation, get_cache_path, set_cache_path, export_translation_csv, import_translation_csv};
-use commands::tag_sort::{start_tag_sorting, cancel_tag_sorting};
-use commands::tag_refine::{start_tag_refining, cancel_tag_refining};
-use commands::api_config::{save_api_config, load_api_config};
-use commands::proxy_config::{save_proxy_config, load_proxy_config};
-use commands::bucket_preview::{analyze_buckets, export_buckets};
-use commands::perspective::{perspective_transform, cancel_perspective};
+use commands::aesthetic::{cancel_aesthetic_scoring, start_aesthetic_scoring};
+use commands::alpha_convert::{cancel_alpha, convert_alpha};
+use commands::api_config::{load_api_config, save_api_config};
+use commands::batch_rename::{execute_rename, preview_rename};
 use commands::blur_noise::{blur_noise_images, cancel_blur_noise};
-use commands::upscale::{get_upscale_engines, download_upscale_engine, cancel_upscale_download, start_upscale, cancel_upscale, force_cancel_upscale};
-use commands::image_cluster::{start_image_cluster, cancel_image_cluster, force_cancel_image_cluster};
-use commands::image_dedup::{start_image_dedup, cancel_image_dedup, delete_dedup_files};
-use commands::dedup_rename::{scan_dedup_rename, cancel_dedup_rename, execute_dedup_rename, export_unmatched_files};
-use commands::sd_metadata::{scan_sd_metadata, export_sd_tags, read_single_sd_metadata};
-use commands::tag_db::{get_tag_db_stats, download_danbooru_tags, cancel_tag_db_download, clear_tag_db, search_tags, translate_tag_db, is_tag_db_busy, check_tag_db_update};
-use commands::aesthetic::{start_aesthetic_scoring, cancel_aesthetic_scoring};
-use commands::{scan_images, scan_concept_folders, apply_concept_repeats, get_system_stats, check_for_updates, frontend_ready};
+use commands::bucket_preview::{analyze_buckets, export_buckets, recommend_bucket_params};
+use commands::dedup_rename::{
+    cancel_dedup_rename, execute_dedup_rename, export_unmatched_files, scan_dedup_rename,
+};
+use commands::file_keeper::{cancel_keeper, keep_specified_files};
+use commands::format_convert::{cancel_convert, convert_format};
+use commands::image_cluster::{
+    cancel_image_cluster, force_cancel_image_cluster, start_image_cluster,
+};
+use commands::image_crop::{cancel_crop, crop_images};
+use commands::image_dedup::{cancel_image_dedup, delete_dedup_files, start_image_dedup};
+use commands::image_flip::{cancel_flip, flip_images};
+use commands::image_scale::{cancel_scale, scale_images};
+use commands::person_crop::{
+    cancel_person_crop, cancel_person_crop_download, download_person_crop_model,
+    get_person_crop_models, start_person_crop,
+};
+use commands::perspective::{cancel_perspective, perspective_transform};
+use commands::proxy_config::{load_proxy_config, save_proxy_config};
+use commands::python_env::{deploy_python_env, get_python_env_info, reset_python_env};
+use commands::resolution_filter::{cancel_filter, filter_by_resolution};
+use commands::sd_metadata::{export_sd_tags, read_single_sd_metadata, scan_sd_metadata};
+use commands::tag_db::{
+    cancel_tag_db_download, check_tag_db_update, clear_tag_db, download_danbooru_tags,
+    get_tag_db_stats, is_tag_db_busy, search_tags, translate_tag_db,
+};
+use commands::tag_manager::{
+    load_caption_dataset, load_json_dataset, load_tag_dataset, save_all_caption_files,
+    save_all_json_files, save_all_tag_files, save_caption_file, save_single_json_file,
+    save_single_tag_file,
+};
+use commands::tag_refine::{cancel_tag_refining, start_tag_refining};
+use commands::tag_sort::{cancel_tag_sorting, start_tag_sorting};
+use commands::tagger::llm_tagger::{cancel_llm_tagging, fetch_llm_models, start_llm_tagging};
+use commands::tagger::{
+    cancel_gpu_runtime_download, cancel_tagger_download, cancel_tagging, check_cuda_available,
+    detect_onnx_model_info, download_gpu_runtime, get_gpu_runtime_status, get_tagger_models,
+    import_local_tagger_model, remove_custom_tagger_model, start_tagging,
+};
+use commands::translator::{
+    clear_translation_cache, export_translation_csv, get_cache_path, get_translation_cache_stats,
+    import_translation_csv, set_cache_path, test_translation, translate_tags,
+};
+use commands::upscale::{
+    cancel_upscale, cancel_upscale_download, download_upscale_engine, force_cancel_upscale,
+    get_upscale_engines, start_upscale,
+};
+use commands::{
+    apply_concept_repeats, check_for_updates, frontend_ready, get_system_stats,
+    scan_concept_folders, scan_images,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -114,6 +135,7 @@ pub fn run() {
             load_proxy_config,
             analyze_buckets,
             export_buckets,
+            recommend_bucket_params,
             perspective_transform,
             cancel_perspective,
             blur_noise_images,

@@ -30,7 +30,7 @@ import {
   Wand2,
 } from 'lucide-react';
 import '../styles/sidebar.css';
-import { getVersion } from '@tauri-apps/api/app';
+import { getAppVersion, packageAppVersion } from '../utils/appVersion';
 
 interface NavItem { id: string; labelKey: string; icon: React.ReactNode; path: string; }
 interface NavSection { titleKey: string; items: NavItem[]; }
@@ -79,13 +79,13 @@ const navSections: NavSection[] = [
 export default function Sidebar() {
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
-  const [appVersion, setAppVersion] = useState('');
+  const [appVersion, setAppVersion] = useState(packageAppVersion);
   // update status: 'checking' | 'latest' | 'update' | 'error'
   const [updateStatus, setUpdateStatus] = useState<'checking' | 'latest' | 'update' | 'error'>('latest');
   const [latestVersion, setLatestVersion] = useState('');
   const [releaseUrl, setReleaseUrl] = useState('');
 
-  useEffect(() => { getVersion().then(v => setAppVersion(v)).catch(() => {}); }, []);
+  useEffect(() => { getAppVersion().then(setAppVersion); }, []);
 
   // Delay version check so startup isn't affected
   useEffect(() => {

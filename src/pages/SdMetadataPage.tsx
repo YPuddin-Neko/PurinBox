@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { hasTauriRuntime, listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import {
@@ -75,6 +75,7 @@ export default function SdMetadataPage() {
 
   // Tauri native drag-drop (gives real file paths)
   useEffect(() => {
+    if (!hasTauriRuntime()) return;
     let active = true;
     const unlisten = getCurrentWebview().onDragDropEvent(async (e) => {
       if (!active) return;
@@ -105,7 +106,10 @@ export default function SdMetadataPage() {
         }
       }
     });
-    return () => { active = false; unlisten.then(u => u()); };
+    return () => {
+      active = false;
+      unlisten.then(u => u()).catch(() => {});
+    };
   }, [t]);
 
   const pickFolder = useCallback(async (setter: (v: string) => void) => {

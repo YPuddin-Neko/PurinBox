@@ -1,8 +1,8 @@
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 /// 标签数据库路径
 static TAG_DB_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -13,7 +13,10 @@ static IS_TRANSLATING: AtomicBool = AtomicBool::new(false);
 /// 获取软件根目录
 fn get_exe_root() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    let exe_dir = exe.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+    let exe_dir = exe
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
     if cfg!(target_os = "macos") {
         if let Some(contents) = exe_dir.parent() {
             if let Some(app_bundle) = contents.parent() {
@@ -36,7 +39,9 @@ fn default_db_dir() -> PathBuf {
 
 fn get_tag_db_path() -> PathBuf {
     let guard = TAG_DB_PATH.lock().unwrap_or_else(|e| e.into_inner());
-    guard.clone().unwrap_or_else(|| default_db_dir().join("danbooru_tags.db"))
+    guard
+        .clone()
+        .unwrap_or_else(|| default_db_dir().join("danbooru_tags.db"))
 }
 
 fn open_tag_db() -> Result<Connection, String> {
@@ -44,8 +49,7 @@ fn open_tag_db() -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let conn = Connection::open(&path)
-        .map_err(|e| format!("打开标签数据库失败: {}", e))?;
+    let conn = Connection::open(&path).map_err(|e| format!("打开标签数据库失败: {}", e))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS danbooru_tags (
             name TEXT PRIMARY KEY,
@@ -59,16 +63,20 @@ fn open_tag_db() -> Result<Connection, String> {
         );
         CREATE INDEX IF NOT EXISTS idx_tags_post_count ON danbooru_tags(post_count DESC);
         CREATE INDEX IF NOT EXISTS idx_tags_name ON danbooru_tags(name);
-        "
-    ).map_err(|e| format!("创建标签表失败: {}", e))?;
+        ",
+    )
+    .map_err(|e| format!("创建标签表失败: {}", e))?;
     // 旧表有 translated 列则删除（通过重建表迁移）
     let has_translated: bool = conn
         .prepare("PRAGMA table_info(danbooru_tags)")
         .and_then(|mut stmt| {
-            let cols: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(1))?
-                .filter_map(|r| r.ok()).collect();
+            let cols: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
             Ok(cols.iter().any(|c| c == "translated"))
-        }).unwrap_or(false);
+        })
+        .unwrap_or(false);
     if has_translated {
         let _ = conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS danbooru_tags_new (
@@ -82,7 +90,7 @@ fn open_tag_db() -> Result<Connection, String> {
             DROP TABLE danbooru_tags;
             ALTER TABLE danbooru_tags_new RENAME TO danbooru_tags;
             CREATE INDEX IF NOT EXISTS idx_tags_post_count ON danbooru_tags(post_count DESC);
-            CREATE INDEX IF NOT EXISTS idx_tags_name ON danbooru_tags(name);"
+            CREATE INDEX IF NOT EXISTS idx_tags_name ON danbooru_tags(name);",
         );
     }
     Ok(conn)
@@ -99,11 +107,18 @@ pub struct TagDbStats {
 }
 
 fn get_meta(conn: &Connection, key: &str) -> String {
-    conn.query_row("SELECT value FROM tag_db_meta WHERE key = ?1", [key], |r| r.get::<_, String>(0)).unwrap_or_default()
+    conn.query_row("SELECT value FROM tag_db_meta WHERE key = ?1", [key], |r| {
+        r.get::<_, String>(0)
+    })
+    .unwrap_or_default()
 }
 
 fn set_meta(conn: &Connection, key: &str, value: &str) {
-    conn.execute("INSERT OR REPLACE INTO tag_db_meta (key, value) VALUES (?1, ?2)", rusqlite::params![key, value]).ok();
+    conn.execute(
+        "INSERT OR REPLACE INTO tag_db_meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![key, value],
+    )
+    .ok();
 }
 
 /// 获取标签数据库状态
@@ -112,36 +127,51 @@ pub fn get_tag_db_stats(target_lang: Option<String>) -> Result<TagDbStats, Strin
     let path = get_tag_db_path();
     if !path.exists() {
         return Ok(TagDbStats {
-            total_tags: 0, translated_tags: 0, db_size_bytes: 0, has_data: false,
-            source_file: String::new(), import_date: String::new(),
+            total_tags: 0,
+            translated_tags: 0,
+            db_size_bytes: 0,
+            has_data: false,
+            source_file: String::new(),
+            import_date: String::new(),
         });
     }
     let conn = open_tag_db()?;
-    let total: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM danbooru_tags", [], |r| r.get(0)
-    ).unwrap_or(0);
+    let total: u32 = conn
+        .query_row("SELECT COUNT(*) FROM danbooru_tags", [], |r| r.get(0))
+        .unwrap_or(0);
     // 从翻译缓存统计已翻译数量（按目标语言过滤）
     let lang = target_lang.unwrap_or_else(|| "zh-CN".to_string());
     let translated: u32 = if let Ok(cache_conn) = super::translator::open_db() {
-        cache_conn.query_row(
-            "SELECT COUNT(*) FROM translations WHERE lang = ?1",
-            rusqlite::params![&lang], |r| r.get(0)
-        ).unwrap_or(0)
-    } else { 0 };
+        cache_conn
+            .query_row(
+                "SELECT COUNT(*) FROM translations WHERE lang = ?1",
+                rusqlite::params![&lang],
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+    } else {
+        0
+    };
     let db_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     let source_file = get_meta(&conn, "source_file");
     let import_date = get_meta(&conn, "import_date");
     Ok(TagDbStats {
-        total_tags: total, translated_tags: translated,
-        db_size_bytes: db_size, has_data: total > 0,
-        source_file, import_date,
+        total_tags: total,
+        translated_tags: translated,
+        db_size_bytes: db_size,
+        has_data: total > 0,
+        source_file,
+        import_date,
     })
 }
 
 /// 查询标签数据库是否正在忙（下载或翻译中）
 #[tauri::command]
 pub fn is_tag_db_busy() -> (bool, bool) {
-    (IS_DOWNLOADING.load(Ordering::SeqCst), IS_TRANSLATING.load(Ordering::SeqCst))
+    (
+        IS_DOWNLOADING.load(Ordering::SeqCst),
+        IS_TRANSLATING.load(Ordering::SeqCst),
+    )
 }
 
 /// 下载并导入 Danbooru 标签数据
@@ -176,18 +206,25 @@ async fn fetch_latest_tag_filename() -> Result<String, String> {
 
     // 优先尝试 GitHub API
     let api_url = "https://api.github.com/repos/DraconicDragon/dbr-e621-lists-archive/contents/tag-lists/danbooru";
-    let resp = client.get(api_url)
+    let resp = client
+        .get(api_url)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
-        .send().await;
+        .send()
+        .await;
 
     if let Ok(resp) = resp {
         if resp.status().is_success() {
             if let Ok(body) = resp.text().await {
                 if let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(&body) {
-                    let mut candidates: Vec<String> = items.iter()
+                    let mut candidates: Vec<String> = items
+                        .iter()
                         .filter_map(|item| item["name"].as_str())
-                        .filter(|name| name.starts_with("danbooru_") && name.contains("_pt20") && name.ends_with(".csv"))
+                        .filter(|name| {
+                            name.starts_with("danbooru_")
+                                && name.contains("_pt20")
+                                && name.ends_with(".csv")
+                        })
                         .map(|s| s.to_string())
                         .collect();
                     candidates.sort();
@@ -207,38 +244,52 @@ async fn download_danbooru_tags_inner(app: tauri::AppHandle) -> Result<u32, Stri
     use tauri::Emitter;
 
     // 动态获取最新文件名
-    let _ = app.emit("tag-db-progress", serde_json::json!({
-        "status": "checking", "message": "正在检查最新版本...", "current": 0, "total": 0
-    }));
+    let _ = app.emit(
+        "tag-db-progress",
+        serde_json::json!({
+            "status": "checking", "message": "正在检查最新版本...", "current": 0, "total": 0
+        }),
+    );
 
     let filename = fetch_latest_tag_filename().await?;
     let url = format!("https://raw.githubusercontent.com/DraconicDragon/dbr-e621-lists-archive/main/tag-lists/danbooru/{}", filename);
 
-    let _ = app.emit("tag-db-progress", serde_json::json!({
-        "status": "downloading", "message": "正在下载标签数据...", "current": 0, "total": 0
-    }));
+    let _ = app.emit(
+        "tag-db-progress",
+        serde_json::json!({
+            "status": "downloading", "message": "正在下载标签数据...", "current": 0, "total": 0
+        }),
+    );
 
     let client = crate::commands::proxy_config::build_http_client()
         .build()
         .map_err(|e| format!("HTTP 客户端创建失败: {}", e))?;
 
-    let resp = client.get(url).send().await
+    let resp = client
+        .get(url)
+        .send()
+        .await
         .map_err(|e| format!("下载失败: {}", e))?;
 
     if !resp.status().is_success() {
         return Err(format!("下载失败: HTTP {}", resp.status()));
     }
 
-    let csv_text = resp.text().await
+    let csv_text = resp
+        .text()
+        .await
         .map_err(|e| format!("读取响应失败: {}", e))?;
 
     if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
         return Err("下载已取消".into());
     }
 
-    let _ = app.emit("tag-db-progress", serde_json::json!({
-        "status": "importing", "message": "正在导入标签数据库...", "current": 0, "total": 0
-    }));
+    let _ = app.emit(
+        "tag-db-progress",
+        serde_json::json!({
+            "status": "importing", "message": "正在导入标签数据库...", "current": 0, "total": 0
+        }),
+    );
 
     let lines: Vec<String> = csv_text.lines().map(|s| s.to_string()).collect();
     let total = lines.len() as u32;
@@ -287,10 +338,13 @@ async fn download_danbooru_tags_inner(app: tauri::AppHandle) -> Result<u32, Stri
         Ok(count)
     }).await.map_err(|e| format!("导入任务失败: {}", e))??;
 
-    let _ = app.emit("tag-db-progress", serde_json::json!({
-        "status": "done", "message": format!("导入完成，共 {} 个标签 ({})", count, filename),
-        "current": count, "total": total
-    }));
+    let _ = app.emit(
+        "tag-db-progress",
+        serde_json::json!({
+            "status": "done", "message": format!("导入完成，共 {} 个标签 ({})", count, filename),
+            "current": count, "total": total
+        }),
+    );
 
     Ok(count)
 }
@@ -307,7 +361,7 @@ fn parse_csv_line(line: &str) -> (String, i32, i64, String) {
             ',' if !in_quotes => {
                 fields.push(current.clone());
                 current.clear();
-            },
+            }
             _ => current.push(ch),
         }
     }
@@ -347,10 +401,13 @@ pub struct TagSuggestion {
     pub translated: Option<String>,
 }
 
-
 /// 标签自动补全搜索
 #[tauri::command]
-pub fn search_tags(query: String, limit: Option<u32>, target_lang: Option<String>) -> Result<Vec<TagSuggestion>, String> {
+pub fn search_tags(
+    query: String,
+    limit: Option<u32>,
+    target_lang: Option<String>,
+) -> Result<Vec<TagSuggestion>, String> {
     let path = get_tag_db_path();
     if !path.exists() {
         return Ok(vec![]);
@@ -370,20 +427,24 @@ pub fn search_tags(query: String, limit: Option<u32>, target_lang: Option<String
 
     // 1. 前缀匹配（优先）
     let prefix_pattern = format!("{}%", query_lower);
-    let mut stmt = conn.prepare(
-        "SELECT name, category, post_count, aliases FROM danbooru_tags
-         WHERE name LIKE ?1 ORDER BY post_count DESC LIMIT ?2"
-    ).map_err(|e| format!("查询失败: {}", e))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, category, post_count, aliases FROM danbooru_tags
+         WHERE name LIKE ?1 ORDER BY post_count DESC LIMIT ?2",
+        )
+        .map_err(|e| format!("查询失败: {}", e))?;
 
-    let rows = stmt.query_map(rusqlite::params![prefix_pattern, limit], |row| {
-        Ok(TagSuggestion {
-            name: row.get(0)?,
-            category: row.get(1)?,
-            post_count: row.get(2)?,
-            aliases: row.get(3)?,
-            translated: None,
+    let rows = stmt
+        .query_map(rusqlite::params![prefix_pattern, limit], |row| {
+            Ok(TagSuggestion {
+                name: row.get(0)?,
+                category: row.get(1)?,
+                post_count: row.get(2)?,
+                aliases: row.get(3)?,
+                translated: None,
+            })
         })
-    }).map_err(|e| format!("查询失败: {}", e))?;
+        .map_err(|e| format!("查询失败: {}", e))?;
 
     for tag in rows.flatten() {
         seen.insert(tag.name.clone());
@@ -394,23 +455,29 @@ pub fn search_tags(query: String, limit: Option<u32>, target_lang: Option<String
     if results.len() < limit as usize {
         let remaining = limit as usize - results.len();
         let contain_pattern = format!("%{}%", query_lower);
-        let mut stmt2 = conn.prepare(
-            "SELECT name, category, post_count, aliases FROM danbooru_tags
-             WHERE name LIKE ?1 ORDER BY post_count DESC LIMIT ?2"
-        ).map_err(|e| format!("查询失败: {}", e))?;
+        let mut stmt2 = conn
+            .prepare(
+                "SELECT name, category, post_count, aliases FROM danbooru_tags
+             WHERE name LIKE ?1 ORDER BY post_count DESC LIMIT ?2",
+            )
+            .map_err(|e| format!("查询失败: {}", e))?;
 
-        let rows2 = stmt2.query_map(rusqlite::params![contain_pattern, remaining + 20], |row| {
-            Ok(TagSuggestion {
-                name: row.get(0)?,
-                category: row.get(1)?,
-                post_count: row.get(2)?,
-                aliases: row.get(3)?,
-                translated: None,
+        let rows2 = stmt2
+            .query_map(rusqlite::params![contain_pattern, remaining + 20], |row| {
+                Ok(TagSuggestion {
+                    name: row.get(0)?,
+                    category: row.get(1)?,
+                    post_count: row.get(2)?,
+                    aliases: row.get(3)?,
+                    translated: None,
+                })
             })
-        }).map_err(|e| format!("查询失败: {}", e))?;
+            .map_err(|e| format!("查询失败: {}", e))?;
 
         for row in rows2 {
-            if results.len() >= limit as usize { break; }
+            if results.len() >= limit as usize {
+                break;
+            }
             if let Ok(tag) = row {
                 if !seen.contains(&tag.name) {
                     seen.insert(tag.name.clone());
@@ -424,23 +491,29 @@ pub fn search_tags(query: String, limit: Option<u32>, target_lang: Option<String
     if results.len() < limit as usize {
         let remaining = limit as usize - results.len();
         let alias_pattern = format!("%{}%", query_lower);
-        let mut stmt3 = conn.prepare(
-            "SELECT name, category, post_count, aliases FROM danbooru_tags
-             WHERE aliases LIKE ?1 ORDER BY post_count DESC LIMIT ?2"
-        ).map_err(|e| format!("查询失败: {}", e))?;
+        let mut stmt3 = conn
+            .prepare(
+                "SELECT name, category, post_count, aliases FROM danbooru_tags
+             WHERE aliases LIKE ?1 ORDER BY post_count DESC LIMIT ?2",
+            )
+            .map_err(|e| format!("查询失败: {}", e))?;
 
-        let rows3 = stmt3.query_map(rusqlite::params![alias_pattern, remaining + 20], |row| {
-            Ok(TagSuggestion {
-                name: row.get(0)?,
-                category: row.get(1)?,
-                post_count: row.get(2)?,
-                aliases: row.get(3)?,
-                translated: None,
+        let rows3 = stmt3
+            .query_map(rusqlite::params![alias_pattern, remaining + 20], |row| {
+                Ok(TagSuggestion {
+                    name: row.get(0)?,
+                    category: row.get(1)?,
+                    post_count: row.get(2)?,
+                    aliases: row.get(3)?,
+                    translated: None,
+                })
             })
-        }).map_err(|e| format!("查询失败: {}", e))?;
+            .map_err(|e| format!("查询失败: {}", e))?;
 
         for row in rows3 {
-            if results.len() >= limit as usize { break; }
+            if results.len() >= limit as usize {
+                break;
+            }
             if let Ok(tag) = row {
                 if !seen.contains(&tag.name) {
                     seen.insert(tag.name.clone());
@@ -500,46 +573,61 @@ async fn translate_tag_db_inner(
     let batch = batch_size.unwrap_or(80).min(200) as usize;
 
     let tl = target_lang.clone();
-    let untranslated: Vec<String> = tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
-        let conn = open_tag_db()?;
-        // 获取所有标签名
-        let all_tags: Vec<String> = {
-            let mut stmt = conn.prepare(
-                "SELECT name FROM danbooru_tags ORDER BY post_count DESC"
-            ).map_err(|e| format!("查询失败: {}", e))?;
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0))
-                .map_err(|e| format!("查询失败: {}", e))?;
-            rows.filter_map(|r| r.ok()).collect()
-        };
-        // 从翻译缓存中查找已有翻译的标签
-        let already: std::collections::HashSet<String> = if let Ok(cache_conn) = super::translator::open_db() {
-            let result: Vec<String> = {
-                let mut stmt = cache_conn.prepare(
-                    "SELECT tag FROM translations WHERE lang = ?1"
-                ).map_err(|e| format!("查询翻译缓存失败: {}", e))?;
-                let rows = stmt.query_map(rusqlite::params![&tl], |row| row.get::<_, String>(0))
-                    .map_err(|e| format!("查询翻译缓存失败: {}", e))?;
+    let untranslated: Vec<String> =
+        tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
+            let conn = open_tag_db()?;
+            // 获取所有标签名
+            let all_tags: Vec<String> = {
+                let mut stmt = conn
+                    .prepare("SELECT name FROM danbooru_tags ORDER BY post_count DESC")
+                    .map_err(|e| format!("查询失败: {}", e))?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|e| format!("查询失败: {}", e))?;
                 rows.filter_map(|r| r.ok()).collect()
             };
-            result.into_iter().collect()
-        } else {
-            std::collections::HashSet::new()
-        };
-        Ok(all_tags.into_iter().filter(|t| !already.contains(t)).collect())
-    }).await.map_err(|e| format!("获取未翻译标签失败: {}", e))??;
+            // 从翻译缓存中查找已有翻译的标签
+            let already: std::collections::HashSet<String> =
+                if let Ok(cache_conn) = super::translator::open_db() {
+                    let result: Vec<String> = {
+                        let mut stmt = cache_conn
+                            .prepare("SELECT tag FROM translations WHERE lang = ?1")
+                            .map_err(|e| format!("查询翻译缓存失败: {}", e))?;
+                        let rows = stmt
+                            .query_map(rusqlite::params![&tl], |row| row.get::<_, String>(0))
+                            .map_err(|e| format!("查询翻译缓存失败: {}", e))?;
+                        rows.filter_map(|r| r.ok()).collect()
+                    };
+                    result.into_iter().collect()
+                } else {
+                    std::collections::HashSet::new()
+                };
+            Ok(all_tags
+                .into_iter()
+                .filter(|t| !already.contains(t))
+                .collect())
+        })
+        .await
+        .map_err(|e| format!("获取未翻译标签失败: {}", e))??;
 
     let total = untranslated.len() as u32;
     if total == 0 {
-        let _ = app.emit("tag-db-progress", serde_json::json!({
-            "status": "done", "message": "所有标签已翻译", "current": 0, "total": 0
-        }));
+        let _ = app.emit(
+            "tag-db-progress",
+            serde_json::json!({
+                "status": "done", "message": "所有标签已翻译", "current": 0, "total": 0
+            }),
+        );
         return Ok(0);
     }
 
-    let _ = app.emit("tag-db-progress", serde_json::json!({
-        "status": "translating", "message": format!("开始翻译 {} 个标签...", total),
-        "current": 0, "total": total
-    }));
+    let _ = app.emit(
+        "tag-db-progress",
+        serde_json::json!({
+            "status": "translating", "message": format!("开始翻译 {} 个标签...", total),
+            "current": 0, "total": total
+        }),
+    );
 
     let client = crate::commands::proxy_config::build_http_client()
         .build()
@@ -585,7 +673,8 @@ async fn translate_tag_db_inner(
                             "current": translated_count, "total": total
                         }));
                     } else {
-                        let pairs: Vec<(String, String)> = tags.iter()
+                        let pairs: Vec<(String, String)> = tags
+                            .iter()
                             .zip(translated_parts.iter())
                             .map(|(src, tr)| (src.clone(), tr.trim().to_string()))
                             .filter(|(_, tr)| !tr.is_empty())
@@ -613,13 +702,13 @@ async fn translate_tag_db_inner(
                         translated_count += batch_count;
                     }
                 }
-            },
+            }
             Ok(r) => {
                 let _ = app.emit("tag-db-progress", serde_json::json!({
                     "status": "warning", "message": format!("翻译请求返回 {}, 跳过当前批次", r.status()),
                     "current": translated_count, "total": total
                 }));
-            },
+            }
             Err(e) => {
                 let _ = app.emit("tag-db-progress", serde_json::json!({
                     "status": "warning", "message": format!("翻译请求失败: {}, 跳过当前批次", e),
@@ -628,20 +717,25 @@ async fn translate_tag_db_inner(
             }
         }
 
-        let _ = app.emit("tag-db-progress", serde_json::json!({
-            "status": "translating",
-            "message": format!("已翻译 {}/{}", translated_count, total),
-            "current": translated_count, "total": total
-        }));
+        let _ = app.emit(
+            "tag-db-progress",
+            serde_json::json!({
+                "status": "translating",
+                "message": format!("已翻译 {}/{}", translated_count, total),
+                "current": translated_count, "total": total
+            }),
+        );
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    let _ = app.emit("tag-db-progress", serde_json::json!({
-        "status": "done", "message": format!("翻译完成，共翻译 {} 个标签", translated_count),
-        "current": translated_count, "total": total
-    }));
+    let _ = app.emit(
+        "tag-db-progress",
+        serde_json::json!({
+            "status": "done", "message": format!("翻译完成，共翻译 {} 个标签", translated_count),
+            "current": translated_count, "total": total
+        }),
+    );
 
     Ok(translated_count)
 }
-

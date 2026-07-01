@@ -1,11 +1,13 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tauri::Emitter;
 
 use super::{ProcessResult, ProgressEvent};
-use crate::commands::{collect_image_files, collect_image_files_recursive, wait_for_global_llm_slot};
+use crate::commands::{
+    collect_image_files, collect_image_files_recursive, wait_for_global_llm_slot,
+};
 
 static LLM_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -44,10 +46,18 @@ pub struct LlmTaggerOptions {
     pub recursive: bool,
 }
 
-fn default_image_size() -> u32 { 1024 }
-fn default_llm_output_format() -> String { "txt".into() }
-fn default_interval() -> i64 { -1 }
-fn default_concurrency() -> u32 { 1 }
+fn default_image_size() -> u32 {
+    1024
+}
+fn default_llm_output_format() -> String {
+    "txt".into()
+}
+fn default_interval() -> i64 {
+    -1
+}
+fn default_concurrency() -> u32 {
+    1
+}
 
 #[derive(Serialize)]
 struct ChatMessage {
@@ -104,6 +114,7 @@ pub async fn start_llm_tagging(
     };
     let total = files.len() as u32;
     let mut success_count = 0u32;
+    let mut processed_count = 0u32;
     let fail_count = 0u32;
     let errors: Vec<String> = Vec::new();
     let failed_files: Vec<std::path::PathBuf> = Vec::new();
@@ -112,13 +123,17 @@ pub async fn start_llm_tagging(
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
-    let _ = app.emit("llm-tagger-progress", ProgressEvent {
-        current: 0, total,
-        filename: String::new(),
-        status: "info".to_string(),
-        message: format!("读取到 {} 张图片", total),
-    ..Default::default()
-    });
+    let _ = app.emit(
+        "llm-tagger-progress",
+        ProgressEvent {
+            current: 0,
+            total,
+            filename: String::new(),
+            status: "info".to_string(),
+            message: format!("读取到 {} 张图片", total),
+            ..Default::default()
+        },
+    );
 
     let concurrency = options.concurrency.max(1) as usize;
     let interval_ms = options.request_interval_ms;
@@ -141,14 +156,23 @@ pub async fn start_llm_tagging(
             if let Some(content) = existing {
                 if !content.trim().is_empty() {
                     success_count += 1;
-                    let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                    let _ = app.emit("llm-tagger-progress", ProgressEvent {
-                        current: i as u32 + 1, total,
-                        filename: filename.clone(),
-                        status: "success".to_string(),
-                        message: format!("[跳过] {} (已有描述)", filename),
-                    ..Default::default()
-                    });
+                    processed_count += 1;
+                    let filename = file_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let _ = app.emit(
+                        "llm-tagger-progress",
+                        ProgressEvent {
+                            current: processed_count,
+                            total,
+                            filename: filename.clone(),
+                            status: "success".to_string(),
+                            message: format!("[跳过] {} (已有描述)", filename),
+                            ..Default::default()
+                        },
+                    );
                     continue;
                 }
             }
@@ -163,6 +187,7 @@ pub async fn start_llm_tagging(
     let client_arc = std::sync::Arc::new(client);
     let success_cnt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(success_count));
     let fail_cnt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(fail_count));
+    let processed_cnt = std::sync::Arc::new(AtomicU32::new(processed_count));
     let errors_arc = std::sync::Arc::new(tokio::sync::Mutex::new(errors));
     let failed_arc = std::sync::Arc::new(tokio::sync::Mutex::new(failed_files));
 
@@ -171,7 +196,9 @@ pub async fn start_llm_tagging(
     let mut handles = Vec::new();
 
     for (_idx, (i, file_path)) in work_items.into_iter().enumerate() {
-        if LLM_CANCELLED.load(Ordering::SeqCst) { break; }
+        if LLM_CANCELLED.load(Ordering::SeqCst) {
+            break;
+        }
 
         let permit = sem.clone().acquire_owned().await.unwrap();
         let app_c = app_arc.clone();
@@ -179,22 +206,33 @@ pub async fn start_llm_tagging(
         let cli = client_arc.clone();
         let s_cnt = success_cnt.clone();
         let f_cnt = fail_cnt.clone();
+        let p_cnt = processed_cnt.clone();
         let errs = errors_arc.clone();
         let fails = failed_arc.clone();
         let last_req = last_req_time.clone();
 
         let handle = tokio::spawn(async move {
             let _permit = permit;
-            if LLM_CANCELLED.load(Ordering::SeqCst) { return; }
+            if LLM_CANCELLED.load(Ordering::SeqCst) {
+                return;
+            }
 
-            let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            let _ = app_c.emit("llm-tagger-progress", ProgressEvent {
-                current: i as u32 + 1, total,
-                filename: filename.clone(),
-                status: "processing".to_string(),
-                message: format!("正在处理: {} ({}/{})", filename, i + 1, total),
-            ..Default::default()
-            });
+            let filename = file_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let _ = app_c.emit(
+                "llm-tagger-progress",
+                ProgressEvent {
+                    current: i as u32 + 1,
+                    total,
+                    filename: filename.clone(),
+                    status: "processing".to_string(),
+                    message: format!("正在处理: {} ({}/{})", filename, i + 1, total),
+                    ..Default::default()
+                },
+            );
 
             let file_start = std::time::Instant::now();
 
@@ -217,11 +255,18 @@ pub async fn start_llm_tagging(
                 format!("{}ms", elapsed_ms)
             };
 
-            if LLM_CANCELLED.load(Ordering::SeqCst) { return; }
+            if LLM_CANCELLED.load(Ordering::SeqCst) {
+                return;
+            }
 
+            let current = p_cnt.fetch_add(1, Ordering::SeqCst) + 1;
             match tag_result {
                 Ok(tag_text) => {
-                    let stem = file_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                    let stem = file_path
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     let parent = file_path.parent().unwrap_or(Path::new("."));
                     let out_path = if opts.output_format == "json" {
                         parent.join(format!("{}.json", stem))
@@ -231,12 +276,18 @@ pub async fn start_llm_tagging(
                     let content = if opts.output_format == "json" {
                         let cleaned = tag_text.trim();
                         let cleaned = if cleaned.starts_with("```json") {
-                            cleaned.strip_prefix("```json").unwrap_or(cleaned)
-                                .strip_suffix("```").unwrap_or(cleaned)
+                            cleaned
+                                .strip_prefix("```json")
+                                .unwrap_or(cleaned)
+                                .strip_suffix("```")
+                                .unwrap_or(cleaned)
                                 .trim()
                         } else if cleaned.starts_with("```") {
-                            cleaned.strip_prefix("```").unwrap_or(cleaned)
-                                .strip_suffix("```").unwrap_or(cleaned)
+                            cleaned
+                                .strip_prefix("```")
+                                .unwrap_or(cleaned)
+                                .strip_suffix("```")
+                                .unwrap_or(cleaned)
                                 .trim()
                         } else {
                             cleaned
@@ -244,36 +295,48 @@ pub async fn start_llm_tagging(
                         if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(cleaned) {
                             serde_json::to_string_pretty(&json_val).unwrap_or_default()
                         } else if opts.json_simplified {
-                                serde_json::to_string_pretty(&serde_json::json!({ "nl": tag_text })).unwrap_or_default()
-                            } else {
-                                serde_json::to_string_pretty(&serde_json::json!({ "ai_output": { "nl": tag_text } })).unwrap_or_default()
-                            }
+                            serde_json::to_string_pretty(&serde_json::json!({ "nl": tag_text }))
+                                .unwrap_or_default()
+                        } else {
+                            serde_json::to_string_pretty(
+                                &serde_json::json!({ "ai_output": { "nl": tag_text } }),
+                            )
+                            .unwrap_or_default()
+                        }
                     } else {
                         tag_text
                     };
                     match std::fs::write(&out_path, &content) {
                         Ok(_) => {
                             s_cnt.fetch_add(1, Ordering::SeqCst);
-                            let _ = app_c.emit("llm-tagger-progress", ProgressEvent {
-                                current: i as u32 + 1, total,
-                                filename: filename.clone(),
-                                status: "success".to_string(),
-                                message: format!("[完成] {} ({})", filename, elapsed_str),
-                            ..Default::default()
-                            });
+                            let _ = app_c.emit(
+                                "llm-tagger-progress",
+                                ProgressEvent {
+                                    current,
+                                    total,
+                                    filename: filename.clone(),
+                                    status: "success".to_string(),
+                                    message: format!("[完成] {} ({})", filename, elapsed_str),
+                                    ..Default::default()
+                                },
+                            );
                         }
                         Err(e) => {
                             f_cnt.fetch_add(1, Ordering::SeqCst);
                             let err_msg = format!("{}: 写入失败 {}", filename, e);
                             errs.lock().await.push(err_msg.clone());
                             fails.lock().await.push(file_path.clone());
-                            let _ = app_c.emit("llm-tagger-progress", ProgressEvent {
-                                current: i as u32 + 1, total,
-                                filename: filename.clone(),
-                                status: "error".to_string(),
-                                message: format!("[错误] {} ({})", err_msg, elapsed_str),
-                            ..Default::default()
-                            });
+                            let _ = app_c.emit(
+                                "llm-tagger-progress",
+                                ProgressEvent {
+                                    current,
+                                    total,
+                                    filename: filename.clone(),
+                                    status: "error".to_string(),
+                                    message: format!("[错误] {} ({})", err_msg, elapsed_str),
+                                    ..Default::default()
+                                },
+                            );
                         }
                     }
                 }
@@ -282,13 +345,17 @@ pub async fn start_llm_tagging(
                     let err_msg = format!("{}: {}", filename, e);
                     errs.lock().await.push(err_msg.clone());
                     fails.lock().await.push(file_path.clone());
-                    let _ = app_c.emit("llm-tagger-progress", ProgressEvent {
-                        current: i as u32 + 1, total,
-                        filename: filename.clone(),
-                        status: "error".to_string(),
-                        message: format!("[错误] {} ({})", err_msg, elapsed_str),
-                    ..Default::default()
-                    });
+                    let _ = app_c.emit(
+                        "llm-tagger-progress",
+                        ProgressEvent {
+                            current,
+                            total,
+                            filename: filename.clone(),
+                            status: "error".to_string(),
+                            message: format!("[错误] {} ({})", err_msg, elapsed_str),
+                            ..Default::default()
+                        },
+                    );
                 }
             }
         });
@@ -312,13 +379,17 @@ pub async fn start_llm_tagging(
             let parent = f.parent().unwrap_or(input_dir);
             let fail_dir = parent.join("Fail");
             if let Err(e) = std::fs::create_dir_all(&fail_dir) {
-                let _ = app_arc.emit("llm-tagger-progress", ProgressEvent {
-                    current: total, total,
-                    filename: String::new(),
-                    status: "error".to_string(),
-                    message: format!("创建 Fail 文件夹失败: {}", e),
-                ..Default::default()
-                });
+                let _ = app_arc.emit(
+                    "llm-tagger-progress",
+                    ProgressEvent {
+                        current: total,
+                        total,
+                        filename: String::new(),
+                        status: "error".to_string(),
+                        message: format!("创建 Fail 文件夹失败: {}", e),
+                        ..Default::default()
+                    },
+                );
                 continue;
             }
             let fname = f.file_name().unwrap_or_default();
@@ -328,25 +399,41 @@ pub async fn start_llm_tagging(
             }
         }
         if copy_count > 0 {
-            let _ = app_arc.emit("llm-tagger-progress", ProgressEvent {
-                current: total, total,
-                filename: String::new(),
-                status: "info".to_string(),
-                message: format!("已将 {} 张失败图片复制到对应 Fail 文件夹", copy_count),
-            ..Default::default()
-            });
+            let _ = app_arc.emit(
+                "llm-tagger-progress",
+                ProgressEvent {
+                    current: total,
+                    total,
+                    filename: String::new(),
+                    status: "info".to_string(),
+                    message: format!("已将 {} 张失败图片复制到对应 Fail 文件夹", copy_count),
+                    ..Default::default()
+                },
+            );
         }
     }
 
-    let _ = app_arc.emit("llm-tagger-progress", ProgressEvent {
-        current: total, total,
-        filename: String::new(),
-        status: "done".to_string(),
-        message: format!("LLM 打标完成: 成功 {}, 失败 {}, 共 {}", success_count, fail_count, total),
-    ..Default::default()
-    });
+    let _ = app_arc.emit(
+        "llm-tagger-progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "done".to_string(),
+            message: format!(
+                "LLM 打标完成: 成功 {}, 失败 {}, 共 {}",
+                success_count, fail_count, total
+            ),
+            ..Default::default()
+        },
+    );
 
-    Ok(ProcessResult { success_count, fail_count, total, errors })
+    Ok(ProcessResult {
+        success_count,
+        fail_count,
+        total,
+        errors,
+    })
 }
 
 async fn tag_with_llm(
@@ -357,9 +444,12 @@ async fn tag_with_llm(
     request_interval_ms: i64,
 ) -> Result<String, String> {
     // 读取并缩放图片
-    let max_side = if options.image_size > 0 { options.image_size } else { 1024 };
-    let img = image::open(img_path)
-        .map_err(|e| format!("读取图片失败: {}", e))?;
+    let max_side = if options.image_size > 0 {
+        options.image_size
+    } else {
+        1024
+    };
+    let img = image::open(img_path).map_err(|e| format!("读取图片失败: {}", e))?;
 
     let img = if img.width() > max_side || img.height() > max_side {
         img.resize(max_side, max_side, image::imageops::FilterType::Lanczos3)
@@ -392,9 +482,17 @@ async fn tag_with_llm(
     let request_body = ChatRequest {
         model: options.model_name.clone(),
         messages,
-        max_tokens: if options.max_tokens > 0 { Some(options.max_tokens as u32) } else { None },
+        max_tokens: if options.max_tokens > 0 {
+            Some(options.max_tokens as u32)
+        } else {
+            None
+        },
         temperature: options.temperature,
-        top_p: if options.top_p > 0.0 && options.top_p <= 1.0 { Some(options.top_p) } else { None },
+        top_p: if options.top_p > 0.0 && options.top_p <= 1.0 {
+            Some(options.top_p)
+        } else {
+            None
+        },
     };
 
     let endpoint = if options.api_endpoint.ends_with('/') {
@@ -403,7 +501,8 @@ async fn tag_with_llm(
         format!("{}/chat/completions", options.api_endpoint)
     };
 
-    let mut req = client.post(&endpoint)
+    let mut req = client
+        .post(&endpoint)
         .header("Content-Type", "application/json")
         .json(&request_body);
 
@@ -415,7 +514,9 @@ async fn tag_with_llm(
         return Err("已取消".to_string());
     }
 
-    let response = req.send().await
+    let response = req
+        .send()
+        .await
         .map_err(|e| format!("API 请求失败: {}", e))?;
 
     if !response.status().is_success() {
@@ -424,15 +525,31 @@ async fn tag_with_llm(
         return Err(format!("API 错误 ({}): {}", status, body));
     }
 
-    let chat_resp: ChatResponse = response.json().await
+    let chat_resp: ChatResponse = response
+        .json()
+        .await
         .map_err(|e| format!("解析响应失败: {}", e))?;
 
-    let choice = chat_resp.choices.first()
+    let choice = chat_resp
+        .choices
+        .first()
         .ok_or_else(|| "API 未返回任何结果".to_string())?;
 
     // 优先使用 content，为空时 fallback 到 reasoning_content（支持 Qwen3 等思维模型）
-    let content = choice.message.content.as_deref().unwrap_or("").trim().to_string();
-    let reasoning = choice.message.reasoning_content.as_deref().unwrap_or("").trim().to_string();
+    let content = choice
+        .message
+        .content
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let reasoning = choice
+        .message
+        .reasoning_content
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
 
     let final_content = if !content.is_empty() {
         content
@@ -470,14 +587,17 @@ pub async fn fetch_llm_models(
         format!("{}/models", api_endpoint)
     };
 
-    let mut req = client.get(&endpoint)
+    let mut req = client
+        .get(&endpoint)
         .header("Content-Type", "application/json");
 
     if !api_key.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", api_key));
     }
 
-    let response = req.send().await
+    let response = req
+        .send()
+        .await
         .map_err(|e| format!("请求模型列表失败: {:?}", e))?;
 
     if !response.status().is_success() {
@@ -486,7 +606,9 @@ pub async fn fetch_llm_models(
         return Err(format!("API 错误 ({}): {}", status, body));
     }
 
-    let models_resp: ModelsResponse = response.json().await
+    let models_resp: ModelsResponse = response
+        .json()
+        .await
         .map_err(|e| format!("解析模型列表失败: {}", e))?;
 
     let mut model_ids: Vec<String> = models_resp.data.iter().map(|m| m.id.clone()).collect();
