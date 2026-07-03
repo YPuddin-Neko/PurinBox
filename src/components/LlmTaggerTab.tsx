@@ -11,6 +11,7 @@ import { useTaskQueue } from './TaskContext';
 import CustomSelect from './CustomSelect';
 import { useTranslation } from 'react-i18next';
 import InputPathPickerButton from './InputPathPickerButton';
+import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -111,6 +112,7 @@ export default function LlmTaggerTab() {
   const [intervalSec, setIntervalSec] = useState('-1');
   const [concurrency, setConcurrency] = useState('1');
   const [recursive, setRecursive] = useState(false);
+  const taskLogs = useUnifiedTaskLogs(setLogs);
 
   const PRESETS: Record<string, { label: string; url: string }> = {
     openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
@@ -158,10 +160,10 @@ export default function LlmTaggerTab() {
         if (m) setErrorFiles(prev => [...prev, m[1].trim()]);
       }
       if (p.status === 'success') setSuccessCnt(c => c + 1);
-      setLogs(prev => [...prev, { time: getTimeStr(), message: p.message, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }]);
+      taskLogs.appendProgressLog(p);
     });
     return () => { cancelled = true; listenPromise.then(fn => fn()); };
-  }, []);
+  }, [taskLogs]);
 
   const handleFetchModels = async () => {
     if (!endpoint) return;
@@ -191,7 +193,7 @@ export default function LlmTaggerTab() {
     const sec = parseFloat(intervalSec);
     const intervalMs = sec < 0 ? -1 : Math.round(sec * 1000);
     const threads = Math.max(1, parseInt(concurrency) || 1);
-    setLogs([{ time: getTimeStr(), message: t('llmTagger.startMsg', { model: modelName, api: endpoint }), status: 'info' }]);
+    taskLogs.setInitialLog(t('llmTagger.startMsg', { model: modelName, api: endpoint }));
     try {
       await invoke<ProcessResult>('start_llm_tagging', {
         options: {
@@ -209,8 +211,8 @@ export default function LlmTaggerTab() {
         },
       });
     } catch (e: any) {
-      setLogs(p => [...p, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('llm-tagger', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
+      const errorText = taskLogs.appendCatchError(e, t('pages.errorPrefix'));
+      updateTask('llm-tagger', { status: /已取消|cancel/i.test(errorText) ? 'cancelled' : 'error', message: errorText });
       setHasErr(true); setIsDone(true);
     } finally { setProcessing(false); }
   };

@@ -21,10 +21,43 @@ pub struct ModelDefinition {
     pub repo_id: String,
     pub model_filename: String,
     pub tags_filename: String,
+    #[serde(default)]
+    pub extra_files: Vec<String>,
     pub input_size: u32,
     pub is_builtin: bool,
     #[serde(default)]
     pub input_format: InputFormat,
+    #[serde(default = "default_preprocess_mode")]
+    pub preprocess_mode: String,
+}
+
+fn default_preprocess_mode() -> String {
+    "auto".to_string()
+}
+
+fn basename(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string()
+}
+
+impl ModelDefinition {
+    pub fn tags_basename(&self) -> String {
+        basename(&self.tags_filename)
+    }
+
+    pub fn required_local_files(&self) -> Vec<String> {
+        let mut files = vec!["model.onnx".to_string(), self.tags_basename()];
+        for extra in &self.extra_files {
+            let name = basename(extra);
+            if !name.is_empty() && !files.contains(&name) {
+                files.push(name);
+            }
+        }
+        files
+    }
 }
 
 /// 获取内置模型列表
@@ -37,9 +70,11 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             repo_id: "SmilingWolf/wd-swinv2-tagger-v3".into(),
             model_filename: "model.onnx".into(),
             tags_filename: "selected_tags.csv".into(),
+            extra_files: vec![],
             input_size: 448,
             is_builtin: true,
             input_format: InputFormat::NHWC,
+            preprocess_mode: "wd".into(),
         },
         ModelDefinition {
             id: "wd-vit-tagger-v3".into(),
@@ -48,9 +83,11 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             repo_id: "SmilingWolf/wd-vit-tagger-v3".into(),
             model_filename: "model.onnx".into(),
             tags_filename: "selected_tags.csv".into(),
+            extra_files: vec![],
             input_size: 448,
             is_builtin: true,
             input_format: InputFormat::NHWC,
+            preprocess_mode: "wd".into(),
         },
         ModelDefinition {
             id: "wd-convnext-tagger-v3".into(),
@@ -59,9 +96,11 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             repo_id: "SmilingWolf/wd-convnext-tagger-v3".into(),
             model_filename: "model.onnx".into(),
             tags_filename: "selected_tags.csv".into(),
+            extra_files: vec![],
             input_size: 448,
             is_builtin: true,
             input_format: InputFormat::NHWC,
+            preprocess_mode: "wd".into(),
         },
         ModelDefinition {
             id: "wd-eva02-large-tagger-v3".into(),
@@ -70,9 +109,11 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             repo_id: "SmilingWolf/wd-eva02-large-tagger-v3".into(),
             model_filename: "model.onnx".into(),
             tags_filename: "selected_tags.csv".into(),
+            extra_files: vec![],
             input_size: 448,
             is_builtin: true,
             input_format: InputFormat::NHWC,
+            preprocess_mode: "wd".into(),
         },
         ModelDefinition {
             id: "wd-v1-4-moat-tagger-v2".into(),
@@ -81,9 +122,24 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             repo_id: "SmilingWolf/wd-v1-4-moat-tagger-v2".into(),
             model_filename: "model.onnx".into(),
             tags_filename: "selected_tags.csv".into(),
+            extra_files: vec![],
             input_size: 448,
             is_builtin: true,
             input_format: InputFormat::NHWC,
+            preprocess_mode: "wd".into(),
+        },
+        ModelDefinition {
+            id: "cl-tagger-v2-01a".into(),
+            name: "CL Tagger v2.01a".into(),
+            description: "CL Tagger v2 最新预览版，需要 Hugging Face Token 下载".into(),
+            repo_id: "cella110n/cl_tagger_v2".into(),
+            model_filename: "v2_01a/model.onnx".into(),
+            tags_filename: "v2_01a/model_vocabulary.json".into(),
+            extra_files: vec!["v2_01a/model.onnx.data".into()],
+            input_size: 384,
+            is_builtin: true,
+            input_format: InputFormat::NCHW,
+            preprocess_mode: "siglip2".into(),
         },
         ModelDefinition {
             id: "cl-tagger-1-02".into(),
@@ -92,9 +148,11 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             repo_id: "cella110n/cl_tagger".into(),
             model_filename: "cl_tagger_1_02/model.onnx".into(),
             tags_filename: "cl_tagger_1_02/tag_mapping.json".into(),
+            extra_files: vec![],
             input_size: 448,
             is_builtin: true,
             input_format: InputFormat::NHWC,
+            preprocess_mode: "wd".into(),
         },
     ]
 }
@@ -176,9 +234,11 @@ pub fn add_local_model(
         repo_id: String::new(),
         model_filename: "model.onnx".into(),
         tags_filename: tags_dest_name,
+        extra_files: vec![],
         input_size,
         is_builtin: false,
         input_format,
+        preprocess_mode: "auto".into(),
     });
 
     save_custom_models(&models)?;

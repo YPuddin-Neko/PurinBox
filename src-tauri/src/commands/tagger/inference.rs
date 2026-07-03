@@ -427,34 +427,29 @@ pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
     let content =
         std::fs::read_to_string(json_path).map_err(|e| format!("无法读取标签文件: {}", e))?;
 
-    let map: std::collections::BTreeMap<String, serde_json::Value> =
+    let value: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("JSON 解析错误: {}", e))?;
 
+    if let Some(idx_to_tag) = value.get("idx_to_tag") {
+        return load_vocabulary_json_tags(idx_to_tag, &value);
+    }
+
+    load_legacy_json_tags(&value)
+}
+
+fn load_legacy_json_tags(value: &serde_json::Value) -> Result<Vec<TagDefinition>, String> {
+    let map = value
+        .as_object()
+        .ok_or_else(|| "JSON 标签文件格式不支持".to_string())?;
     let mut tags: Vec<(usize, TagDefinition)> = Vec::new();
-    for (idx_str, val) in &map {
+    for (idx_str, val) in map {
         let idx: usize = idx_str.parse().unwrap_or(0);
         let tag_name = val
             .get("tag")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let cat_str = val
-            .get("category")
-            .and_then(|v| v.as_str())
-            .unwrap_or("General");
-
-        let category = match cat_str {
-            "General" => TagCategory::General,
-            "Artist" => TagCategory::Artist,
-            "Copyright" => TagCategory::Copyright,
-            "Character" => TagCategory::Character,
-            "Meta" => TagCategory::Meta,
-            "Rating" => TagCategory::Rating,
-            "Quality" => TagCategory::Quality,
-            "Model" => TagCategory::Model,
-            _ => TagCategory::General,
-        };
-
+        let category = category_from_value(val.get("category"), None);
         tags.push((
             idx,
             TagDefinition {
@@ -463,9 +458,99 @@ pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
             },
         ));
     }
-
     tags.sort_by_key(|(idx, _)| *idx);
-    Ok(tags.into_iter().map(|(_, td)| td).collect())
+    Ok(tags.into_iter().map(|(_, tag)| tag).collect())
+}
+
+fn load_vocabulary_json_tags(
+    idx_to_tag: &serde_json::Value,
+    root: &serde_json::Value,
+) -> Result<Vec<TagDefinition>, String> {
+    let mut indexed_tags: Vec<(usize, String)> = Vec::new();
+
+    if let Some(arr) = idx_to_tag.as_array() {
+        for (idx, tag) in arr.iter().enumerate() {
+            if let Some(name) = tag.as_str() {
+                indexed_tags.push((idx, name.to_string()));
+            }
+        }
+    } else if let Some(map) = idx_to_tag.as_object() {
+        for (idx_str, tag) in map {
+            if let Some(name) = tag.as_str() {
+                let idx = idx_str.parse::<usize>().unwrap_or(indexed_tags.len());
+                indexed_tags.push((idx, name.to_string()));
+            }
+        }
+    } else {
+        return Err("model_vocabulary.json 缺少 idx_to_tag".into());
+    }
+
+    indexed_tags.sort_by_key(|(idx, _)| *idx);
+    let tag_to_category = root.get("tag_to_category").and_then(|v| v.as_object());
+    let idx_to_category = root.get("idx_to_category").and_then(|v| v.as_object());
+    let categories = root.get("categories");
+
+    Ok(indexed_tags
+        .into_iter()
+        .map(|(idx, name)| {
+            let category_value = tag_to_category
+                .and_then(|map| map.get(&name))
+                .or_else(|| idx_to_category.and_then(|map| map.get(&idx.to_string())));
+            TagDefinition {
+                name,
+                category: category_from_value(category_value, categories),
+            }
+        })
+        .collect())
+}
+
+fn category_from_value(
+    value: Option<&serde_json::Value>,
+    categories: Option<&serde_json::Value>,
+) -> TagCategory {
+    let raw = match value {
+        Some(v) if v.is_string() => {
+            let s = v.as_str().unwrap_or_default();
+            if let Ok(idx) = s.parse::<usize>() {
+                resolve_category_index(idx, categories).unwrap_or_else(|| s.to_string())
+            } else {
+                s.to_string()
+            }
+        }
+        Some(v) if v.is_u64() => {
+            resolve_category_index(v.as_u64().unwrap_or(0) as usize, categories)
+                .unwrap_or_else(|| "General".to_string())
+        }
+        _ => "General".to_string(),
+    };
+
+    match raw.to_lowercase().replace('-', "_").as_str() {
+        "artist" => TagCategory::Artist,
+        "copyright" | "copyrights" => TagCategory::Copyright,
+        "character" | "characters" => TagCategory::Character,
+        "meta" => TagCategory::Meta,
+        "rating" => TagCategory::Rating,
+        "quality" => TagCategory::Quality,
+        "model" => TagCategory::Model,
+        _ => TagCategory::General,
+    }
+}
+
+fn resolve_category_index(index: usize, categories: Option<&serde_json::Value>) -> Option<String> {
+    let categories = categories?;
+    if let Some(arr) = categories.as_array() {
+        return arr
+            .get(index)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+    if let Some(obj) = categories.as_object() {
+        return obj
+            .get(&index.to_string())
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+    None
 }
 
 /// 查找 Python 可执行文件
@@ -565,9 +650,11 @@ pub fn run_tagging(
     app: &tauri::AppHandle,
     options: &TaggerOptions,
     model_path: &Path,
-    tag_defs: &[TagDefinition],
+    tags_path: &Path,
+    _tag_defs: &[TagDefinition],
     _input_size: u32,
     _is_nchw: bool,
+    preprocess_mode: &str,
 ) -> Result<ProcessResult, String> {
     // 杀死之前的进程（如果有）
     kill_python_process();
@@ -721,27 +808,13 @@ pub fn run_tagging(
         }
     });
 
-    // 发送 init 命令
-    let tags_path = model_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join(if tag_defs.is_empty() {
-            "selected_tags.csv"
-        } else {
-            let dir = model_path.parent().unwrap_or(Path::new("."));
-            if dir.join("tag_mapping.json").exists() {
-                "tag_mapping.json"
-            } else {
-                "selected_tags.csv"
-            }
-        });
-
     let init_cmd = serde_json::json!({
         "cmd": "init",
         "model_path": model_path.to_string_lossy(),
         "tags_path": tags_path.to_string_lossy(),
         "use_gpu": options.use_gpu,
         "input_size": _input_size,
+        "preprocess_mode": preprocess_mode,
     });
 
     if let Err(e) = writeln!(stdin, "{}", init_cmd) {

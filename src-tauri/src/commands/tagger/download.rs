@@ -6,6 +6,9 @@ use tauri::Emitter;
 use super::models::ModelDefinition;
 use super::{get_model_dir, ProgressEvent};
 
+const DOWNLOAD_CONNECT_TIMEOUT_SECS: u64 = 30;
+const DOWNLOAD_STALL_TIMEOUT_SECS: u64 = 120;
+
 /// 全局下载取消标志
 static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -25,6 +28,21 @@ pub struct DownloadProgress {
 /// 取消下载
 pub fn cancel_download() {
     DOWNLOAD_CANCELLED.store(true, Ordering::SeqCst);
+}
+
+fn emit_download_error(app: &tauri::AppHandle, label: &str, message: &str) {
+    let _ = app.emit(
+        "tagger-download",
+        DownloadProgress {
+            filename: label.into(),
+            downloaded: 0,
+            total: 0,
+            percent: 0.0,
+            speed_mbps: 0.0,
+            status: "error".to_string(),
+            message: message.to_string(),
+        },
+    );
 }
 
 /// 从 HuggingFace 下载模型文件
@@ -63,6 +81,26 @@ pub async fn download_model(app: &tauri::AppHandle, model: &ModelDefinition) -> 
         // 清理已下载的不完整文件
         let _ = std::fs::remove_file(&model_dest);
         return Err("下载已取消".into());
+    }
+
+    // 下载额外文件（例如 ONNX external data: model.onnx.data）
+    for extra_file in &model.extra_files {
+        let extra_url = format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            model.repo_id, extra_file
+        );
+        let extra_basename = std::path::Path::new(extra_file)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let extra_dest = model_dir.join(&extra_basename);
+        download_file(app, &extra_url, &extra_dest, &extra_basename).await?;
+
+        if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_file(&extra_dest);
+            return Err("下载已取消".into());
+        }
     }
 
     // 下载 tags file
@@ -115,30 +153,31 @@ async fn download_file(
 ) -> Result<(), String> {
     let client = crate::commands::proxy_config::build_http_client()
         .user_agent("PurinBox/0.1.5")
-        .timeout(std::time::Duration::from_secs(600))
+        .connect_timeout(std::time::Duration::from_secs(DOWNLOAD_CONNECT_TIMEOUT_SECS))
+        .read_timeout(std::time::Duration::from_secs(DOWNLOAD_STALL_TIMEOUT_SECS))
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
 
-    let response = client
-        .get(url)
+    let response = crate::commands::huggingface_config::apply_huggingface_auth(client.get(url))
         .send()
         .await
-        .map_err(|e| format!("下载请求失败 ({}): {}", url, e))?;
+        .map_err(|e| {
+            let message = format!("下载请求失败 ({}): {}", url, e);
+            emit_download_error(app, label, &message);
+            message
+        })?;
 
     if !response.status().is_success() {
-        let _ = app.emit(
-            "tagger-download",
-            DownloadProgress {
-                filename: label.into(),
-                downloaded: 0,
-                total: 0,
-                percent: 0.0,
-                speed_mbps: 0.0,
-                status: "error".to_string(),
-                message: format!("HTTP {}: {}", response.status(), url),
-            },
-        );
-        return Err(format!("下载失败 (HTTP {}): {}", response.status(), url));
+        let status = response.status();
+        let message = if url.contains("huggingface.co")
+            && (status.as_u16() == 401 || status.as_u16() == 403)
+        {
+            "Hugging Face 访问被拒绝，请先在设置中保存 Access Token，并确认已在模型页面同意协议。".to_string()
+        } else {
+            format!("HTTP {}: {}", status, url)
+        };
+        emit_download_error(app, label, &message);
+        return Err(message);
     }
 
     let total_size = response.content_length().unwrap_or(0);
@@ -146,9 +185,11 @@ async fn download_file(
 
     // 先写入 .part 临时文件，校验完成后再原子替换到最终路径，避免中断残件被当作完整文件
     let part_path = crate::commands::prepare_part_file(dest);
-    let mut file = tokio::fs::File::create(&part_path)
-        .await
-        .map_err(|e| format!("创建文件失败: {}", e))?;
+    let mut file = tokio::fs::File::create(&part_path).await.map_err(|e| {
+        let message = format!("创建文件失败: {}", e);
+        emit_download_error(app, label, &message);
+        message
+    })?;
 
     let mut downloaded: u64 = 0;
     let mut last_report_time = std::time::Instant::now();
@@ -270,11 +311,17 @@ async fn download_file(
     // 任何错误路径（包括取消）都删除 .part 残件
     if let Err(e) = result {
         let _ = tokio::fs::remove_file(&part_path).await;
+        if e != "下载已取消" {
+            emit_download_error(app, label, &e);
+        }
         return Err(e);
     }
 
     // 校验字节数并原子替换到最终文件
-    crate::commands::finalize_part_file(&part_path, dest, downloaded, total_size)?;
+    if let Err(e) = crate::commands::finalize_part_file(&part_path, dest, downloaded, total_size) {
+        emit_download_error(app, label, &e);
+        return Err(e);
+    }
 
     Ok(())
 }

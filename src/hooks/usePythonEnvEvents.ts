@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react';
 import { listen } from '../utils/tauriRuntime';
 import { useTranslation } from 'react-i18next';
-import { LogEntry, getTimeStr } from '../components/ProgressLog';
+import { LogEntry } from '../components/ProgressLog';
+import { SetLogs, UnifiedTaskLogger, useUnifiedTaskLogs } from './useUnifiedTaskLogs';
 
 /**
  * 统一监听 Python 环境事件的 Hook
@@ -58,9 +59,12 @@ function translateMessage(t: (key: string, opts?: Record<string, unknown>) => st
 
 export function usePythonEnvEvents(
   processing: boolean,
-  setLogs: React.Dispatch<React.SetStateAction<LogEntry[]>>,
+  setLogs: SetLogs,
+  logger?: UnifiedTaskLogger,
 ) {
   const { t } = useTranslation();
+  const fallbackLogger = useUnifiedTaskLogs(setLogs);
+  const activeLogger = logger ?? fallbackLogger;
   const processingRef = useRef(false);
   useEffect(() => { processingRef.current = processing; }, [processing]);
 
@@ -71,11 +75,9 @@ export function usePythonEnvEvents(
     const u1 = listen<ProgressPayload>('python-env-progress', (e) => {
       if (!active || !processingRef.current) return;
       const d = e.payload;
-      setLogs(prev => [...prev, {
-        time: getTimeStr(),
-        message: translateMessage(t, d.message),
-        status: d.status as LogEntry['status'],
-      }]);
+      const message = translateMessage(t, d.message);
+      if (d.status === 'error') activeLogger.markBackendError(message);
+      activeLogger.appendLog(message, d.status as LogEntry['status']);
     });
 
     // 内联进度条（pip 安装依赖）
@@ -84,31 +86,11 @@ export function usePythonEnvEvents(
       const d = e.payload;
       const msg = translateMessage(t, d.message);
       if (d.status === 'done' || d.status === 'cancelled') {
-        // 下载/安装结束，移除进度条
-        setLogs(prev => prev.filter(l => l.status !== 'download'));
+        activeLogger.appendDownloadLog({ ...d, message: msg }, { appendDone: false });
       } else if (d.status === 'error') {
-        setLogs(prev => [...prev.filter(l => l.status !== 'download'), {
-          time: getTimeStr(), message: msg, status: 'error',
-        }]);
+        activeLogger.appendDownloadLog({ ...d, message: msg });
       } else {
-        // 更新或插入内联进度条
-        const avgSpeed = d.speed_mbps > 0 ? `${d.speed_mbps.toFixed(1)} MB/s` : '';
-        setLogs(prev => {
-          const idx = prev.findIndex(l => l.status === 'download');
-          const entry: LogEntry = {
-            time: getTimeStr(),
-            message: msg,
-            status: 'download',
-            dlPercent: d.percent,
-            dlSpeed: avgSpeed,
-          };
-          if (idx >= 0) {
-            const next = [...prev];
-            next[idx] = entry;
-            return next;
-          }
-          return [...prev, entry];
-        });
+        activeLogger.appendDownloadLog({ ...d, message: msg });
       }
     });
 
@@ -117,5 +99,5 @@ export function usePythonEnvEvents(
       u1.then(fn => fn());
       u2.then(fn => fn());
     };
-  }, [setLogs, t]);
+  }, [activeLogger, t]);
 }

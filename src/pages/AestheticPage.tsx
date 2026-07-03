@@ -4,13 +4,13 @@ import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
-import i18n from '../i18n';
 import { Star, FolderOpen, Cpu, Gpu } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
 import InputPathPickerButton from '../components/InputPathPickerButton';
+import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
@@ -33,6 +33,7 @@ export default function AestheticPage() {
   const [progressTotal, setProgressTotal] = useState(0);
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const taskLogs = useUnifiedTaskLogs(setLogs);
   const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
   const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
@@ -45,7 +46,7 @@ export default function AestheticPage() {
         setProgress(100); setIsDone(true); setProcessing(false);
         setProgressCurrent(d.total); setProgressTotal(d.total);
         if (d.message) { const m = d.message.match(/(\d+)/g); if (m && m.length >= 2 && parseInt(m[1]) > 0) setHasError(true); }
-        setLogs(p => [...p, { time: getTimeStr(), message: d.message, status: 'success' }]);
+        taskLogs.appendLog(d.message, 'success');
         updateTask('aesthetic', { status: 'done', message: d.message });
       } else if (d.status === 'processing') {
         setProgressCurrent(d.current); setProgressTotal(d.total);
@@ -55,13 +56,12 @@ export default function AestheticPage() {
         const pct = d.total > 0 ? Math.round((d.current / d.total) * 100) : 0;
         setProgress(pct); setProgressCurrent(d.current); setProgressTotal(d.total);
         if (d.status === 'error') setHasError(true);
-        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (i18n.t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? i18n.t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
-        setLogs(p => [...p, { time: getTimeStr(), message: resolveMsg(d), status: d.status as any }]);
+        taskLogs.appendProgressLog(d);
         updateTask('aesthetic', { status: 'running', message: `${d.current}/${d.total}`, progress: pct, current: d.current, total: d.total });
       }
     });
     return () => { active = false; unlisten.then(fn => fn()); };
-  }, []);
+  }, [taskLogs, updateTask]);
 
   useEffect(() => {
     let active = true;
@@ -69,23 +69,15 @@ export default function AestheticPage() {
       if (!active) return;
       const d = e.payload;
       if (d.status === 'done' || d.status === 'cancelled') {
-        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: d.message, status: 'success' }]);
-      } else if (d.status === 'error') {
-        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: d.message, status: 'error' }]);
+        taskLogs.appendDownloadLog(d, { doneStatus: 'success' });
       } else {
-        const avgSpeed = d.speed_mbps > 0 ? `${d.speed_mbps.toFixed(1)} MB/s` : '';
-        setLogs(p => {
-          const idx = p.findIndex(l => l.status === 'download');
-          const entry: LogEntry = { time: getTimeStr(), message: d.message, status: 'download', dlPercent: d.percent, dlSpeed: avgSpeed };
-          if (idx >= 0) { const next = [...p]; next[idx] = entry; return next; }
-          return [...p, entry];
-        });
+        taskLogs.appendDownloadLog(d);
       }
     });
     return () => { active = false; unlisten.then(fn => fn()); };
-  }, []);
+  }, [taskLogs]);
 
-  usePythonEnvEvents(processing, setLogs);
+  usePythonEnvEvents(processing, setLogs, taskLogs);
 
   const selectOutputFolder = async () => {
     const p = await open({ directory: true, title: t('pages.selectOutputTitle') });
@@ -99,7 +91,7 @@ export default function AestheticPage() {
     if (bs !== batchSize) setBatchSize(bs);
     setProcessing(true); setIsDone(false); setHasError(false); setProgress(0);
     setProgressCurrent(0); setProgressTotal(0);
-    setLogs([{ time: getTimeStr(), message: t('aesthetic.starting'), status: 'info' }]);
+    taskLogs.setInitialLog(t('aesthetic.starting'));
     addTask('aesthetic', t('aesthetic.taskName'));
     try {
       await invoke<ProcessResult>('start_aesthetic_scoring', {
@@ -114,8 +106,8 @@ export default function AestheticPage() {
       });
     } catch (e: any) {
       setProcessing(false); setHasError(true);
-      setLogs(p => [...p, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('aesthetic', { status: 'error', message: String(e) });
+      const errorText = taskLogs.appendCatchError(e, t('pages.errorPrefix'));
+      updateTask('aesthetic', { status: 'error', message: errorText });
     }
   };
 

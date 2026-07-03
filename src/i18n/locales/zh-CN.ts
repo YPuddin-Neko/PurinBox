@@ -1038,6 +1038,16 @@ const zhCN = {
     proxyDesc: '代理将应用于所有网络请求，包括翻译 API、LLM 接口、模型下载等。修改后请点击“保存”，新任务将自动使用新配置。',
     proxySaved: '代理设置已保存',
     proxySaveFailed: '保存失败',
+    // Hugging Face
+    tokenSettings: '令牌设置',
+    huggingFace: 'Hugging Face',
+    huggingFaceToken: '访问令牌',
+    huggingFaceTokenDesc: '用于下载需要登录或同意协议的 Hugging Face 模型',
+    huggingFaceTokenPlaceholder: '填写 hf_ 开头的 Access Token',
+    huggingFaceSaved: 'Hugging Face 设置已保存',
+    huggingFaceDesc: '用于访问需要授权的 Hugging Face 资源。',
+    huggingFaceTokenLink: '创建 Token',
+    huggingFaceModelAgreement: 'CL Tagger v2 协议',
     // 翻译补充
     baiduAppId: 'APP ID',
     baiduKey: '密钥',

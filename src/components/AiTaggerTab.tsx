@@ -12,6 +12,7 @@ import InputPathPickerButton from './InputPathPickerButton';
 import { useTranslation } from 'react-i18next';
 import i18n from '../i18n';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
+import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
 
 interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; supported_categories: string[]; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
@@ -95,6 +96,7 @@ export default function AiTaggerTab() {
   const [presetInput, setPresetInput] = useState('');
   const [showPresetSave, setShowPresetSave] = useState(false);
   const presetRef = useRef<HTMLDivElement>(null);
+  const taskLogs = useUnifiedTaskLogs(setLogs);
 
   // 点击外部关闭预设下拉
   useEffect(() => {
@@ -192,14 +194,11 @@ export default function AiTaggerTab() {
       if (p.total > 0) setProgress((p.current / p.total) * 100);
       if (p.status === 'done') setIsDone(true);
       if (p.status === 'error') setHasErr(true);
-      setLogs(prev => {
-        const msg = p.i18n_key ? (i18n.t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? i18n.t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
-        return [...prev, { time: getTimeStr(), message: msg, status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'] }];
-      });
+      taskLogs.appendProgressLog(p);
     };
     const u1 = listen<ProgressPayload>('tagger-progress', handler);
     return () => { active = false; u1.then(fn => fn()); };
-  }, []);
+  }, [taskLogs]);
 
   // 下载进度事件（tagger 模型下载）
   useEffect(() => {
@@ -208,25 +207,19 @@ export default function AiTaggerTab() {
       if (!active) return;
       const d = e.payload;
       if (d.status === 'done' || d.status === 'cancelled') {
-        setLogs(p => p.filter(l => l.status !== 'download'));
+        taskLogs.appendDownloadLog(d, { appendDone: false });
       } else if (d.status === 'error') {
-        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: `${i18n.t('aiTagger.downloadFail')}: ${d.message}`, status: 'error' }]);
+        taskLogs.appendDownloadLog(d, { errorPrefix: i18n.t('aiTagger.downloadFail') });
       } else {
-        const avgSpeed = d.speed_mbps > 0 ? `${d.speed_mbps.toFixed(1)} MB/s` : '';
-        setLogs(p => {
-          const idx = p.findIndex(l => l.status === 'download');
-          const entry: LogEntry = { time: getTimeStr(), message: d.message, status: 'download', dlPercent: d.percent, dlSpeed: avgSpeed };
-          if (idx >= 0) { const next = [...p]; next[idx] = entry; return next; }
-          return [...p, entry];
-        });
+        taskLogs.appendDownloadLog(d);
       }
     };
     const u1 = listen<DownloadPayload>('tagger-download', handler);
     return () => { active = false; u1.then(fn => fn()); };
-  }, []);
+  }, [taskLogs]);
 
   // Python 环境事件（统一 hook）
-  usePythonEnvEvents(processing, setLogs);
+  usePythonEnvEvents(processing, setLogs, taskLogs);
 
   const { addTask, updateTask } = useTaskQueue();
   const cur = models.find(m => m.id === selectedModel);
@@ -250,16 +243,16 @@ export default function AiTaggerTab() {
       await new Promise(r => setTimeout(r, 300));
     }
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
-    setLogs([{ time: getTimeStr(), message: t('aiTagger.startMsg', { model: cur?.name, hw: useGpu ? 'GPU' : 'CPU' }), status: 'info' }]);
+    taskLogs.setInitialLog(t('aiTagger.startMsg', { model: cur?.name, hw: useGpu ? 'GPU' : 'CPU' }));
     addTask('tagger', `${t('aiTagger.taskName')} - ${cur?.name || '?'}`);
     try {
       await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, batch_size: useGpu ? bs : 1, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, sort_by: sortBy, existing_tags_action: existingTagsAction, output_format: outputFormat, json_simplified: jsonSimplified, recursive } });
       updateTask('tagger', { status: 'done' });
       await load();
     } catch (e: any) {
-      setLogs(p => [...p, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
+      const errorText = taskLogs.appendCatchError(e, t('pages.errorPrefix'));
       setHasErr(true); setIsDone(true);
-      updateTask('tagger', { status: 'error', message: String(e) });
+      updateTask('tagger', { status: 'error', message: errorText });
     }
     finally { setProcessing(false); }
   };

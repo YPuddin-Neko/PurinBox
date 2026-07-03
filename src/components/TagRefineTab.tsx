@@ -15,6 +15,7 @@ import CustomSelect from '../components/CustomSelect';
 import ProcessButton from '../components/ProcessButton';
 import RecursiveScanToggle from './RecursiveScanToggle';
 import InputPathPickerButton from './InputPathPickerButton';
+import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -72,6 +73,7 @@ export default function TagRefineTab() {
   const [errorFiles, setErrorFiles] = useState<string[]>([]);
   const [warnFiles, setWarnFiles] = useState<string[]>([]);
   const [showKey, setShowKey] = useState(false);
+  const taskLogs = useUnifiedTaskLogs(setLogs);
 
   const PRESETS: Record<string, { label: string; url: string }> = {
     openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
@@ -121,13 +123,10 @@ export default function TagRefineTab() {
           if (m) setWarnFiles(prev => [...prev, m[1]]);
         }
       }
-      setLogs(prev => [...prev, {
-        time: getTimeStr(), message: p.message,
-        status: p.status === 'done' ? 'info' : p.status === 'processing' ? 'info' : p.status as LogEntry['status'],
-      }]);
+      taskLogs.appendProgressLog(p);
     });
     return () => { cancelled = true; listenPromise.then(fn => fn()); };
-  }, []);
+  }, [taskLogs]);
 
   const handleFetchModels = async () => {
     if (!endpoint) return;
@@ -156,7 +155,7 @@ export default function TagRefineTab() {
     const sec = parseFloat(intervalSec);
     const intervalMs = sec < 0 ? -1 : Math.round(sec * 1000);
     const threads = Math.max(1, parseInt(concurrency) || 1);
-    setLogs([{ time: getTimeStr(), message: t('tagRefine.startMsg', { model: modelName, threads, interval: sec < 0 ? t('tagSort.noInterval') : intervalSec + 's' }), status: 'info' }]);
+    taskLogs.setInitialLog(t('tagRefine.startMsg', { model: modelName, threads, interval: sec < 0 ? t('tagSort.noInterval') : intervalSec + 's' }));
     try {
       await invoke<ProcessResult>('start_tag_refining', {
         options: {
@@ -176,8 +175,8 @@ export default function TagRefineTab() {
         },
       });
     } catch (e: any) {
-      setLogs(p => [...p, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('tag-refine', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
+      const errorText = taskLogs.appendCatchError(e, t('pages.errorPrefix'));
+      updateTask('tag-refine', { status: /已取消|cancel/i.test(errorText) ? 'cancelled' : 'error', message: errorText });
       setHasErr(true); setIsDone(true);
     } finally { setProcessing(false); }
   };

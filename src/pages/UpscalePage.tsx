@@ -4,7 +4,6 @@ import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
-import i18n from '../i18n';
 import {
   ZoomIn,
   FolderOpen,
@@ -18,6 +17,7 @@ import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
 import InputPathPickerButton from '../components/InputPathPickerButton';
+import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 
@@ -56,6 +56,7 @@ export default function UpscalePage() {
   const [progressTotal, setProgressTotal] = useState(0);
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const taskLogs = useUnifiedTaskLogs(setLogs);
   const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
   const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
@@ -87,17 +88,16 @@ export default function UpscalePage() {
     const unlisten = listen<any>('upscale-progress', (e) => {
       if (!active) return;
       const d = e.payload;
-      const resolveMsg = (p: any) => p.i18n_key ? (i18n.t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? i18n.t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
       if (d.status === 'done') {
         setProgress(100); setIsDone(true); setProcessing(false);
         setProgressCurrent(d.total); setProgressTotal(d.total);
         if (d.message) { const m = d.message.match(/(\d+)/g); if (m && m.length >= 2 && parseInt(m[1]) > 0) setHasError(true); }
-        setLogs(p => [...p, { time: getTimeStr(), message: d.message, status: 'success' }]);
+        taskLogs.appendLog(d.message, 'success');
         updateTask('upscale', { status: 'done', message: d.message });
       } else if (d.status === 'processing') {
         // Show the first processing event ("开始超分") as info log, then just update progress
         if (d.current === 0) {
-          setLogs(p => [...p, { time: getTimeStr(), message: d.message, status: 'info' }]);
+          taskLogs.appendLog(d.message, 'info');
         }
         setProgressCurrent(d.current); setProgressTotal(d.total);
         if (d.total > 0) setProgress(Math.round((d.current / d.total) * 100));
@@ -106,12 +106,12 @@ export default function UpscalePage() {
         const pct = d.total > 0 ? Math.round(((d.current) / d.total) * 100) : 0;
         setProgress(pct); setProgressCurrent(d.current); setProgressTotal(d.total);
         if (d.status === 'error') setHasError(true);
-        setLogs(p => [...p, { time: getTimeStr(), message: resolveMsg(d), status: d.status }]);
+        taskLogs.appendProgressLog(d);
         updateTask('upscale', { status: 'running', message: `${d.current}/${d.total}` });
       }
     });
     return () => { active = false; unlisten.then(fn => fn()); };
-  }, []);
+  }, [taskLogs, updateTask]);
 
   // Listen to download events — inline progress in ProgressLog (same as tagger)
   useEffect(() => {
@@ -120,25 +120,17 @@ export default function UpscalePage() {
       if (!active) return;
       const d = e.payload;
       if (d.status === 'done' || d.status === 'cancelled') {
-        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: d.message, status: 'success' }]);
+        taskLogs.appendDownloadLog(d, { doneStatus: 'success' });
         invoke<UpscaleEngineInfo[]>('get_upscale_engines').then(setEngines).catch(() => {});
-      } else if (d.status === 'error') {
-        setLogs(p => [...p.filter(l => l.status !== 'download'), { time: getTimeStr(), message: d.message, status: 'error' }]);
       } else {
-        const avgSpeed = d.speed_mbps > 0 ? `${d.speed_mbps.toFixed(1)} MB/s` : '';
-        setLogs(p => {
-          const idx = p.findIndex(l => l.status === 'download');
-          const entry: LogEntry = { time: getTimeStr(), message: d.message, status: 'download', dlPercent: d.percent, dlSpeed: avgSpeed };
-          if (idx >= 0) { const next = [...p]; next[idx] = entry; return next; }
-          return [...p, entry];
-        });
+        taskLogs.appendDownloadLog(d);
       }
     });
     return () => { active = false; unlisten.then(fn => fn()); };
-  }, []);
+  }, [taskLogs]);
 
   // Python 环境事件（统一 hook）
-  usePythonEnvEvents(processing, setLogs);
+  usePythonEnvEvents(processing, setLogs, taskLogs);
 
   const selectOutputFolder = async () => {
     const p = await open({ directory: true, title: t('pages.selectOutputTitle') });
@@ -153,7 +145,7 @@ export default function UpscalePage() {
       // If engine not downloaded, download first
       // For Python engines, always run setup to ensure deps + weights are ready
       if (!engine.downloaded || engine.use_python) {
-        setLogs([{ time: getTimeStr(), message: t('upscale.downloadingEngine', { name: engine.name }), status: 'info' }]);
+        taskLogs.setInitialLog(t('upscale.downloadingEngine', { name: engine.name }));
         await invoke('download_upscale_engine', { engineId: engine.id });
         // Refresh engines list
         const updated = await invoke<UpscaleEngineInfo[]>('get_upscale_engines');
@@ -175,8 +167,8 @@ export default function UpscalePage() {
       });
     } catch (e: any) {
       setProcessing(false); setHasError(true);
-      setLogs(p => [...p, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('upscale', { status: 'error', message: String(e) });
+      const errorText = taskLogs.appendCatchError(e, t('pages.errorPrefix'));
+      updateTask('upscale', { status: 'error', message: errorText });
     }
   };
 

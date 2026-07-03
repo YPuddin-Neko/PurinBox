@@ -159,13 +159,34 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
         if ext == "json" {
             // JSON 格式 (CL Tagger)
             if let Ok(content) = std::fs::read_to_string(tags_path) {
-                if let Ok(map) = serde_json::from_str::<
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(tag_to_category) =
+                        value.get("tag_to_category").and_then(|v| v.as_object())
+                    {
+                        let categories = value.get("categories");
+                        for cat in tag_to_category.values() {
+                            if let Some(name) = normalize_category_value(cat, categories) {
+                                cats.insert(name);
+                            }
+                        }
+                    } else if let Some(map) = value.as_object() {
+                        for val in map.values() {
+                            if let Some(cat) = val.get("category") {
+                                if let Some(name) = normalize_category_value(cat, None) {
+                                    cats.insert(name);
+                                }
+                            }
+                        }
+                    }
+                } else if let Ok(map) = serde_json::from_str::<
                     std::collections::BTreeMap<String, serde_json::Value>,
                 >(&content)
                 {
                     for val in map.values() {
-                        if let Some(cat) = val.get("category").and_then(|v| v.as_str()) {
-                            cats.insert(cat.to_lowercase());
+                        if let Some(cat) = val.get("category") {
+                            if let Some(name) = normalize_category_value(cat, None) {
+                                cats.insert(name);
+                            }
                         }
                     }
                 }
@@ -200,6 +221,52 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
     }
 
     cats.into_iter().collect()
+}
+
+fn normalize_category_value(
+    value: &serde_json::Value,
+    categories: Option<&serde_json::Value>,
+) -> Option<String> {
+    let raw = if let Some(s) = value.as_str() {
+        if let Ok(idx) = s.parse::<usize>() {
+            resolve_category_index(idx, categories).unwrap_or_else(|| s.to_string())
+        } else {
+            s.to_string()
+        }
+    } else if let Some(idx) = value.as_u64() {
+        resolve_category_index(idx as usize, categories)?
+    } else {
+        return None;
+    };
+
+    match raw.to_lowercase().replace('-', "_").as_str() {
+        "general" => Some("general".into()),
+        "artist" => Some("artist".into()),
+        "copyright" | "copyrights" => Some("copyright".into()),
+        "character" | "characters" => Some("character".into()),
+        "meta" => Some("meta".into()),
+        "rating" => Some("rating".into()),
+        "quality" => Some("quality".into()),
+        "model" => Some("model".into()),
+        _ => None,
+    }
+}
+
+fn resolve_category_index(index: usize, categories: Option<&serde_json::Value>) -> Option<String> {
+    let categories = categories?;
+    if let Some(arr) = categories.as_array() {
+        return arr
+            .get(index)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+    if let Some(obj) = categories.as_object() {
+        return obj
+            .get(&index.to_string())
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+    None
 }
 
 /// 根据 tags_filename 推断默认支持分类（未下载时使用）
@@ -240,13 +307,11 @@ pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
     let mut result = Vec::new();
     for m in &all {
         let model_dir = get_model_dir(&m.id);
-        let tags_basename = std::path::Path::new(&m.tags_filename)
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let is_downloaded =
-            model_dir.join("model.onnx").exists() && model_dir.join(&tags_basename).exists();
+        let tags_basename = m.tags_basename();
+        let is_downloaded = m
+            .required_local_files()
+            .iter()
+            .all(|filename| model_dir.join(filename).exists());
         let fmt_str = match m.input_format {
             models::InputFormat::NHWC => "NHWC",
             models::InputFormat::NCHW => "NCHW",
@@ -581,15 +646,15 @@ pub async fn start_tagging(
 
     let model_dir = get_model_dir(&model_def.id);
     let model_path = model_dir.join("model.onnx");
-    let tags_basename = std::path::Path::new(&model_def.tags_filename)
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
+    let tags_basename = model_def.tags_basename();
     let tags_path = model_dir.join(&tags_basename);
 
     // 2. 如果未下载，先下载
-    if !model_path.exists() || !tags_path.exists() {
+    let is_model_ready = model_def
+        .required_local_files()
+        .iter()
+        .all(|filename| model_dir.join(filename).exists());
+    if !is_model_ready {
         let _ = app.emit(
             "tagger-progress",
             ProgressEvent {
@@ -618,16 +683,20 @@ pub async fn start_tagging(
 
     // 4. 通过 Python 子进程执行推理
     let is_nchw = model_def.input_format == models::InputFormat::NCHW;
+    let preprocess_mode = model_def.preprocess_mode.clone();
     let app_clone = app.clone();
     let opts = options.clone();
+    let tags_path_for_python = tags_path.clone();
     tokio::task::spawn_blocking(move || {
         inference::run_tagging(
             &app_clone,
             &opts,
             &model_path,
+            &tags_path_for_python,
             &tag_defs,
             model_def.input_size,
             is_nchw,
+            &preprocess_mode,
         )
     })
     .await

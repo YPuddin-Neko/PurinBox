@@ -11,6 +11,7 @@ use commands::dedup_rename::{
 };
 use commands::file_keeper::{cancel_keeper, keep_specified_files};
 use commands::format_convert::{cancel_convert, convert_format};
+use commands::huggingface_config::{load_huggingface_config, save_huggingface_config};
 use commands::image_cluster::{
     cancel_image_cluster, force_cancel_image_cluster, start_image_cluster,
 };
@@ -133,6 +134,8 @@ pub fn run() {
             load_api_config,
             save_proxy_config,
             load_proxy_config,
+            save_huggingface_config,
+            load_huggingface_config,
             analyze_buckets,
             export_buckets,
             recommend_bucket_params,

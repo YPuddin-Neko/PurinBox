@@ -4,7 +4,6 @@ import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
-import i18n from '../i18n';
 import {
   ScanFace, FolderOpen, Loader2, Info, User,
   PersonStanding, CircleUser, Eye, Download,
@@ -15,6 +14,8 @@ import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
 import InputPathPickerButton from '../components/InputPathPickerButton';
+import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
+import { hasTauriRuntime } from '../utils/tauriRuntime';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
@@ -50,8 +51,13 @@ export default function PersonCropPage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
+  const taskLogs = useUnifiedTaskLogs(setLogs);
 
   const loadModels = useCallback(async () => {
+    if (!hasTauriRuntime()) {
+      setModels([]);
+      return;
+    }
     try { setModels(await invoke<CropModelInfo[]>('get_person_crop_models')); } catch (e) { console.error(e); }
   }, []);
 
@@ -60,12 +66,12 @@ export default function PersonCropPage() {
 
   const downloadAll = async () => {
     setDownloading(true);
-    setLogs(prev => [...prev, { time: getTimeStr(), message: t('personCrop.downloadStart'), status: 'info' }]);
+    taskLogs.appendLog(t('personCrop.downloadStart'), 'info');
     try {
       await invoke('download_person_crop_model', { modelId: 'all' });
       loadModels();
     } catch (e: any) {
-      setLogs(prev => [...prev, { time: getTimeStr(), message: `${t('personCrop.downloadFailed')}: ${String(e)}`, status: 'error' }]);
+      taskLogs.appendCatchError(e, t('personCrop.downloadFailed'));
     } finally { setDownloading(false); }
   };
 
@@ -75,22 +81,17 @@ export default function PersonCropPage() {
       if (!active) return;
       const d = e.payload;
       if (d.status === 'done' || d.status === 'cancelled') {
-        setLogs(prev => [...prev.filter(l => l.status !== 'download'), { time: getTimeStr(), message: d.message, status: d.status === 'done' ? 'success' : 'info' }]);
+        taskLogs.appendDownloadLog(d, { doneStatus: payload => payload.status === 'done' ? 'success' : 'info' });
         if (d.status === 'done') loadModels();
       } else if (d.status === 'error') {
         setDownloading(false);
-        setLogs(prev => [...prev.filter(l => l.status !== 'download'), { time: getTimeStr(), message: d.message, status: 'error' }]);
+        taskLogs.appendDownloadLog(d);
       } else {
-        setLogs(prev => {
-          const idx = prev.findIndex(l => l.status === 'download');
-          const entry: LogEntry = { time: getTimeStr(), message: d.message, status: 'download', dlPercent: d.percent, dlSpeed: d.speed_mbps > 0 ? `${d.speed_mbps.toFixed(1)} MB/s` : '' };
-          if (idx >= 0) { const n = [...prev]; n[idx] = entry; return n; }
-          return [...prev, entry];
-        });
+        taskLogs.appendDownloadLog(d);
       }
     });
     return () => { active = false; p.then(fn => fn()); };
-  }, [loadModels]);
+  }, [loadModels, taskLogs]);
 
   useEffect(() => {
     let active = true;
@@ -102,15 +103,14 @@ export default function PersonCropPage() {
       if (d.status === 'done') setIsDone(true);
       if (d.status === 'error') setHasError(true);
       if (d.status !== 'processing') {
-        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (i18n.t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? i18n.t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
-        setLogs((prev) => [...prev, { time: getTimeStr(), message: resolveMsg(d), status: d.status === 'done' ? 'info' : d.status as LogEntry['status'] }]);
+        taskLogs.appendProgressLog(d);
       }
     });
     return () => { active = false; p.then(fn => fn()); };
-  }, []);
+  }, [taskLogs]);
 
   // Python 环境事件（统一 hook）
-  usePythonEnvEvents(processing, setLogs);
+  usePythonEnvEvents(processing, setLogs, taskLogs);
 
   const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') }); if (s) setOutputPath(s as string); };
 
@@ -131,7 +131,7 @@ export default function PersonCropPage() {
     if (eScale !== eyesScale) setEyesScale(eScale);
     setProcessing(true); addTask('person-crop', t('personCrop.taskName'));
     setProgress(0); setProgressCurrent(0); setProgressTotal(0); setIsDone(false); setHasError(false);
-    setLogs([{ time: getTimeStr(), message: t('personCrop.startMsg'), status: 'info' }]);
+    taskLogs.setInitialLog(t('personCrop.startMsg'));
     try {
       await invoke<ProcessResult>('start_person_crop', {
         options: {
@@ -145,8 +145,8 @@ export default function PersonCropPage() {
         },
       });
     } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('person-crop', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
+      const errorText = taskLogs.appendCatchError(e, t('pages.errorPrefix'));
+      updateTask('person-crop', { status: /已取消|cancel/i.test(errorText) ? 'cancelled' : 'error', message: errorText });
       setHasError(true); setIsDone(true);
     } finally { setProcessing(false); }
   };

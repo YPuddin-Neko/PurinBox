@@ -12,6 +12,7 @@ pub mod config_paths;
 pub mod dedup_rename;
 pub mod file_keeper;
 pub mod format_convert;
+pub mod huggingface_config;
 pub mod image_cluster;
 pub mod image_crop;
 pub mod image_dedup;

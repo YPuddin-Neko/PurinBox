@@ -1,4 +1,4 @@
-import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, Terminal, RefreshCw as RefreshIcon, Database, Download, Upload, X, Play } from 'lucide-react';
+import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, Terminal, RefreshCw as RefreshIcon, Database, Download, Upload, X, Play, KeyRound } from 'lucide-react';
 import { useTheme } from '../components/ThemeProvider';
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -112,6 +112,12 @@ export default function SettingsPage() {
   const [proxySaving, setProxySaving] = useState(false);
   const [proxySaveMsg, setProxySaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
+  // Hugging Face
+  const [huggingFaceToken, setHuggingFaceToken] = useState('');
+  const [showHuggingFaceToken, setShowHuggingFaceToken] = useState(false);
+  const [huggingFaceSaving, setHuggingFaceSaving] = useState(false);
+  const [huggingFaceSaveMsg, setHuggingFaceSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
   const toggleTranslate = (val: boolean) => { setTranslateEnabled(val); localStorage.setItem('translate_enabled', String(val)); };
   const changeProvider = (val: string) => { setProvider(val); localStorage.setItem('translate_provider', val); };
 
@@ -212,7 +218,7 @@ export default function SettingsPage() {
     if (!hasTauriRuntime()) return;
 
     loadCacheStats(); loadCachePath(); loadTagDbStats();
-    loadProxySettings(); loadPythonInfo();
+    loadProxySettings(); loadHuggingFaceSettings(); loadPythonInfo();
     // 恢复后端忙碌状态
     invoke<[boolean, boolean]>('is_tag_db_busy').then(([downloading, translating]) => {
       setTagDbDownloading(downloading);
@@ -255,6 +261,27 @@ export default function SettingsPage() {
       setProxySaveMsg({ text: t('settings.proxySaved'), ok: true });
     } catch (e: any) { setProxySaveMsg({ text: e?.message || String(e), ok: false }); }
     finally { setProxySaving(false); setTimeout(() => setProxySaveMsg(null), 3000); }
+  };
+
+  const loadHuggingFaceSettings = async () => {
+    if (!hasTauriRuntime()) return;
+    try {
+      setHuggingFaceToken(await invoke<string>('load_huggingface_config'));
+    } catch {}
+  };
+
+  const handleSaveHuggingFace = async () => {
+    if (!isDesktopRuntime) return;
+    setHuggingFaceSaving(true); setHuggingFaceSaveMsg(null);
+    try {
+      await invoke('save_huggingface_config', { token: huggingFaceToken });
+      setHuggingFaceSaveMsg({ text: t('settings.huggingFaceSaved'), ok: true });
+    } catch (e: any) {
+      setHuggingFaceSaveMsg({ text: e?.message || String(e), ok: false });
+    } finally {
+      setHuggingFaceSaving(false);
+      setTimeout(() => setHuggingFaceSaveMsg(null), 3000);
+    }
   };
 
   const loadCachePath = async () => {
@@ -441,6 +468,42 @@ export default function SettingsPage() {
 
               <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.6, margin: 0 }}>
                 {t('settings.proxyDesc')}
+              </p>
+            </div>
+          </div>
+
+          {/* Tokens */}
+          <div className="tool-panel">
+            <div className="tool-panel-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                <KeyRound style={{ width: 16, height: 16, color: '#f97316' }} />
+                <span className="tool-panel-title">{t('settings.tokenSettings')}</span>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {huggingFaceSaveMsg && <span style={{ fontSize: 10, color: huggingFaceSaveMsg.ok ? '#4ade80' : '#f87171' }}>{huggingFaceSaveMsg.text}</span>}
+                <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }} onClick={handleSaveHuggingFace} disabled={huggingFaceSaving || !isDesktopRuntime}>
+                  <Save style={{ width: 12, height: 12 }} /> {huggingFaceSaving ? t('settings.proxySaving') : t('common.save')}
+                </button>
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+              <div style={{ padding: '12px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.huggingFace')}</div>
+                </div>
+                <SecretInput
+                  value={huggingFaceToken}
+                  onChange={setHuggingFaceToken}
+                  placeholder={isDesktopRuntime ? t('settings.huggingFaceTokenPlaceholder') : desktopOnlyText}
+                  show={showHuggingFaceToken}
+                  onToggle={() => setShowHuggingFaceToken(!showHuggingFaceToken)}
+                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <LinkButton href="https://huggingface.co/settings/tokens" text={t('settings.huggingFaceTokenLink')} />
+                </div>
+              </div>
+              <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.6, margin: 0 }}>
+                {t('settings.huggingFaceDesc')}
               </p>
             </div>
           </div>

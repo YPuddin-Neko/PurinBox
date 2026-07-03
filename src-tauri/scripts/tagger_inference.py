@@ -45,7 +45,7 @@ def result(data):
     """输出结果到 stdout (JSON line)"""
     _emit(data)
 
-def preprocess_image(image_path, target_size, input_format):
+def preprocess_image(image_path, target_size, input_format, preprocess_mode="auto"):
     """预处理图片"""
     from PIL import Image
 
@@ -58,6 +58,15 @@ def preprocess_image(image_path, target_size, input_format):
         background = Image.new("RGB", image.size, (255, 255, 255))
         background.paste(image, mask=image.split()[3])
         image = background
+
+    if preprocess_mode == "siglip2":
+        image = image.resize((target_size, target_size), Image.BICUBIC)
+        img_array = np.array(image, dtype=np.float32) / 255.0
+        img_array = img_array.transpose(2, 0, 1)
+        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
+        std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
+        img_array = (img_array - mean) / std
+        return img_array[np.newaxis, ...].astype(np.float32)
 
     if input_format == "NCHW":
         # CL Tagger 预处理 (参考官方 HuggingFace Space)
@@ -125,6 +134,9 @@ def load_tags_json(json_path):
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    if isinstance(data, dict) and "idx_to_tag" in data:
+        return load_vocabulary_json(data)
+
     tags = []
     for idx_str in sorted(data.keys(), key=int):
         info = data[idx_str]
@@ -132,6 +144,65 @@ def load_tags_json(json_path):
         category = info.get("category", "General").lower()
         count = info.get("count", 0)
         tags.append({"name": tag_name, "category": category, "count": count})
+    return tags
+
+def _resolve_category_index(index, categories):
+    if categories is None:
+        return None
+    if isinstance(categories, list) and 0 <= index < len(categories):
+        return categories[index]
+    if isinstance(categories, dict):
+        return categories.get(str(index)) or categories.get(index)
+    return None
+
+def _normalize_category(raw, categories=None):
+    if isinstance(raw, int):
+        raw = _resolve_category_index(raw, categories)
+    elif isinstance(raw, str) and raw.isdigit():
+        raw = _resolve_category_index(int(raw), categories) or raw
+    if raw is None:
+        raw = "general"
+    key = str(raw).strip().lower().replace("-", "_")
+    if key == "copyrights":
+        key = "copyright"
+    elif key == "characters":
+        key = "character"
+    allowed = {"general", "artist", "copyright", "character", "meta", "rating", "quality", "model"}
+    return key if key in allowed else "general"
+
+def load_vocabulary_json(data):
+    """加载 CL Tagger v2 model_vocabulary.json"""
+    idx_to_tag = data.get("idx_to_tag", {})
+    tag_to_category = data.get("tag_to_category", {})
+    idx_to_category = data.get("idx_to_category", {})
+    tag_to_count = data.get("tag_to_count", {})
+    categories = data.get("categories")
+
+    indexed_tags = []
+    if isinstance(idx_to_tag, list):
+        indexed_tags = list(enumerate(idx_to_tag))
+    elif isinstance(idx_to_tag, dict):
+        indexed_tags = []
+        for idx_str, tag_name in idx_to_tag.items():
+            try:
+                idx = int(idx_str)
+            except Exception:
+                idx = len(indexed_tags)
+            indexed_tags.append((idx, tag_name))
+        indexed_tags.sort(key=lambda item: item[0])
+
+    tags = []
+    for idx, tag_name in indexed_tags:
+        tag_name = str(tag_name)
+        category_raw = tag_to_category.get(tag_name)
+        if category_raw is None:
+            category_raw = idx_to_category.get(str(idx)) if isinstance(idx_to_category, dict) else None
+        count = tag_to_count.get(tag_name, 0) if isinstance(tag_to_count, dict) else 0
+        tags.append({
+            "name": tag_name,
+            "category": _normalize_category(category_raw, categories),
+            "count": int(count) if isinstance(count, (int, float)) else 0,
+        })
     return tags
 
 def detect_model_format(session):
@@ -400,6 +471,7 @@ def main():
     input_format = "NHWC"
     input_size = 448
     input_name = None
+    preprocess_mode = "auto"
 
     # Windows 上 sys.stdin 默认用 GBK 编码，但 Rust 发送的是 UTF-8
     # 必须用 buffer 以二进制读取再手动 UTF-8 解码
@@ -422,6 +494,7 @@ def main():
                 model_path = cmd["model_path"]
                 tags_path = cmd["tags_path"]
                 use_gpu = cmd.get("use_gpu", False)
+                preprocess_mode = cmd.get("preprocess_mode", "auto")
 
                 # === ONNX Runtime 后端 ===
                 available = ort.get_available_providers()
@@ -540,7 +613,7 @@ def main():
                             append_list.append(t)
 
                 # 预处理
-                img_data = preprocess_image(image_path, input_size, input_format)
+                img_data = preprocess_image(image_path, input_size, input_format, preprocess_mode)
 
                 # 推理
                 outputs = session.run(None, {input_name: img_data})
@@ -778,7 +851,7 @@ def main():
                 for idx, img_cmd in enumerate(images):
                     img_path = img_cmd.get("image_path", "")
                     try:
-                        img_data = preprocess_image(img_path, input_size, input_format)
+                        img_data = preprocess_image(img_path, input_size, input_format, preprocess_mode)
                         batch_data.append(img_data)
                         valid_indices.append(idx)
                     except Exception as e:
