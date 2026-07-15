@@ -35,9 +35,17 @@ fn collect_convertible_files(
     if input.is_file() {
         files.push(input.to_path_buf());
     } else if input.is_dir() {
+        let input_canonical = std::fs::canonicalize(input).ok();
         let excluded = excluded_dir
             .filter(|dir| dir.exists())
             .and_then(|dir| std::fs::canonicalize(dir).ok());
+        // 只在输出目录是输入目录的子目录时才排除，两者相同则不排除
+        let should_exclude_output = match (input_canonical.as_ref(), excluded.as_ref()) {
+            (Some(input_c), Some(excluded_c)) => {
+                excluded_c != input_c && excluded_c.starts_with(input_c)
+            }
+            _ => false,
+        };
         let walker = if recursive {
             walkdir::WalkDir::new(input)
         } else {
@@ -46,8 +54,10 @@ fn collect_convertible_files(
         for entry in walker.into_iter().filter_map(|e| e.ok()) {
             let p = entry.path();
             if p.is_file() {
-                if let Some(excluded) = excluded.as_ref() {
-                    let normalized = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                if should_exclude_output {
+                    let excluded = excluded.as_ref().expect("checked by should_exclude_output");
+                    let normalized =
+                        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
                     if normalized.starts_with(excluded) {
                         continue;
                     }

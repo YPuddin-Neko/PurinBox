@@ -523,7 +523,8 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
 
   const handleChipPointerDown=(e:React.PointerEvent,idx:number,cat:string)=>{
     if((e.target as HTMLElement).closest('button'))return;
-    e.preventDefault();
+    // 不调用 preventDefault()，否则会阻止 dblclick 事件触发（双击编辑失效）
+    // 文字选中已由 chip 上的 userSelect:'none' 防止
     dragState.current={active:false,fromIdx:idx,cat,startX:e.clientX,startY:e.clientY};
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
@@ -572,7 +573,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
         const isOverAfter=dragCat===cat&&dragOverIdx===ti&&dropSide==='after';
         if(editingChip?.cat===cat&&editingChip.idx===ti&&onReplace){
           return(
-            <div key={ti} style={{flex:'1 0 120px',minWidth:120,maxWidth:240}}>
+            <div key={ti} style={{width:Math.max(60,Math.min(200,tag.length*7+24))}}>
               <TagAutocomplete
                 autoFocus
                 initialValue={tag}
@@ -744,7 +745,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
                         const isOverAfter=dragCat===fieldKey&&dragOverIdx===pi&&dropSide==='after';
                         if(editingChip?.cat===fieldKey&&editingChip.idx===pi){
                           return(
-                            <div key={pi} style={{flex:'1 0 120px',minWidth:120,maxWidth:240}}>
+                            <div key={pi} style={{width:Math.max(60,Math.min(200,p.length*7+24))}}>
                               <TagAutocomplete
                                 autoFocus
                                 initialValue={p}

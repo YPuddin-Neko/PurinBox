@@ -31,6 +31,8 @@ pub struct BucketOptions {
     pub dp_num_ar_buckets: Option<u32>,
     /// 训练 batch size，用于估算有效样本
     pub batch_size: Option<u32>,
+    /// 是否丢弃不足一个 batch 的桶尾样本
+    pub drop_last: Option<bool>,
 }
 
 /// 分桶推荐参数
@@ -527,7 +529,7 @@ pub async fn analyze_buckets(
     let steps = options.steps.max(1);
     let recursive = options.recursive.unwrap_or(false);
     let batch_size = options.batch_size.unwrap_or(1).max(1);
-    let drop_last = bucket_mode == "diffusion_pipe";
+    let drop_last = options.drop_last.unwrap_or(bucket_mode == "diffusion_pipe");
 
     // min/max bucket reso（仅 no_upscale=false 且 legacy 模式时有效）
     let min_size = options.min_bucket_reso.unwrap_or(256).max(steps);

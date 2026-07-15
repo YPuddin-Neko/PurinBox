@@ -152,6 +152,7 @@ export default function BucketPreviewPage() {
   const [dpMaxArInput, setDpMaxArInput] = useState('2.0');
   const [dpArBucketCount, setDpArBucketCount] = useState(7);
   const [batchSize, setBatchSize] = useState(1);
+  const [dropLast, setDropLast] = useState(true);
   const [recursive, setRecursive] = useState(false);
   const modeMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -311,6 +312,7 @@ export default function BucketPreviewPage() {
           dp_max_ar: isDpMode ? dpMaxAr : null,
           dp_num_ar_buckets: isDpMode ? dpArBucketCountVal : null,
           batch_size: batchSizeVal,
+          drop_last: isDpMode ? dropLast : false,
         },
       });
       setAnalysis(result);
@@ -579,25 +581,26 @@ export default function BucketPreviewPage() {
             </div>
 
             {isDpMode && (
-              <div title={t('bucketPreview.dpDropLastTip')} style={{
+              <button type="button" onClick={() => { setDropLast(v => !v); clearAnalysisResult(); }} title={dropLast ? t('bucketPreview.dpDropLastTip') : t('bucketPreview.dpKeepShortBatchTip')} style={{
                 display: 'flex', alignItems: 'center', gap: 8, height: 32,
                 padding: '0 10px', borderRadius: 'var(--radius-md)',
-                border: '1px solid rgba(248,113,113,0.55)',
-                background: 'rgba(248,113,113,0.08)',
-                userSelect: 'none', flexShrink: 0,
+                border: dropLast ? '1px solid rgba(248,113,113,0.55)' : '1px solid rgba(96,165,250,0.45)',
+                background: dropLast ? 'rgba(248,113,113,0.08)' : 'rgba(96,165,250,0.08)',
+                userSelect: 'none', flexShrink: 0, cursor: 'pointer',
                 transition: 'all 0.2s',
+                color: 'inherit', font: 'inherit',
               }}>
-                <span style={{ fontSize: 10, color: '#ef4444', whiteSpace: 'nowrap', fontWeight: 700 }}>
-                  {t('bucketPreview.dropLast')}
+                <span style={{ fontSize: 10, color: dropLast ? '#ef4444' : '#60a5fa', whiteSpace: 'nowrap', fontWeight: 700 }}>
+                  {dropLast ? t('bucketPreview.dropLast') : t('bucketPreview.keepShortBatch')}
                 </span>
                 <div style={{
                   width: 30, height: 16, borderRadius: 8, transition: 'all 0.2s',
-                  background: '#ef4444',
+                  background: dropLast ? '#ef4444' : 'rgba(96,165,250,0.65)',
                   position: 'relative', flexShrink: 0,
                 }}>
-                  <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: 16, transition: 'left 0.2s' }} />
+                  <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: dropLast ? 16 : 2, transition: 'left 0.2s' }} />
                 </div>
-              </div>
+              </button>
             )}
 
             {!isDpMode && (

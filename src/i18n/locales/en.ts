@@ -593,6 +593,7 @@ const en = {
     dropLast: 'Drop short batches',
     dpDropLastTip: 'Diffusion Pipe training drops bucket tails smaller than one batch',
     keepShortBatch: 'Keep short batches',
+    dpKeepShortBatchTip: 'Preview estimate only; short bucket tails are counted as effective samples when disabled',
     previewing: 'Previewing...',
     recommendParams: 'Recommend',
     recommending: 'Recommending...',

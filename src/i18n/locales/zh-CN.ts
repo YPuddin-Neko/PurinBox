@@ -618,6 +618,7 @@ const zhCN = {
     dropLast: '丢弃不足批次',
     dpDropLastTip: 'Diffusion Pipe 训练会丢弃不足一个批次的桶尾样本',
     keepShortBatch: '保留不足批次',
+    dpKeepShortBatchTip: '仅用于预览估算；关闭后不足一个批次的桶尾样本会计入有效样本',
     previewing: '预览中...',
     recommendParams: '推荐参数',
     recommending: '推荐中...',

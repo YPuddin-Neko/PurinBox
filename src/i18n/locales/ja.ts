@@ -593,6 +593,7 @@ const ja = {
     dropLast: '短いバッチを破棄',
     dpDropLastTip: 'Diffusion Pipe の学習では 1 バッチ未満のバケット末尾サンプルが破棄されます',
     keepShortBatch: '不足バッチを保持',
+    dpKeepShortBatchTip: 'プレビュー推定用です。無効時は 1 バッチ未満の末尾サンプルも有効数に含めます',
     previewing: 'プレビュー中...',
     recommendParams: '推奨',
     recommending: '推奨中...',
