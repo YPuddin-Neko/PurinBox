@@ -440,7 +440,7 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
     // 2. Python onnxruntime 检测
     emit_line("正在检测推理环境...", "info");
 
-    let python_check = tokio::task::spawn_blocking(|| inference::check_python_env())
+    let python_check = tokio::task::spawn_blocking(inference::check_python_env)
         .await
         .unwrap_or_else(|_| Err("检测线程异常".into()));
 
@@ -475,7 +475,7 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
             match python_env::setup_python_env(&app).await {
                 Ok(_) => {
                     // 配置成功，重新检测
-                    let recheck = tokio::task::spawn_blocking(|| inference::check_python_env())
+                    let recheck = tokio::task::spawn_blocking(inference::check_python_env)
                         .await
                         .unwrap_or_else(|_| Err("检测线程异常".into()));
                     match recheck {
@@ -615,7 +615,7 @@ pub async fn start_tagging(
     inference::reset_tagging_cancel();
 
     // 检查 Python 环境，没有则自动安装
-    let python_check = tokio::task::spawn_blocking(|| inference::check_python_env())
+    let python_check = tokio::task::spawn_blocking(inference::check_python_env)
         .await
         .map_err(|e| format!("检测线程异常: {}", e))?;
 

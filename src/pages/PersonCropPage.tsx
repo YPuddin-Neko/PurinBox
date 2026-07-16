@@ -14,6 +14,7 @@ import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
 import InputPathPickerButton from '../components/InputPathPickerButton';
+import Checkbox from '../components/Checkbox';
 import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
 import { hasTauriRuntime } from '../utils/tauriRuntime';
 
@@ -164,7 +165,7 @@ export default function PersonCropPage() {
       <div style={{ padding: 'var(--space-4)', borderRadius: 'var(--radius-md)', border: `1px solid ${enabled ? `${alphaBase}0.35)` : 'var(--color-border)'}`, background: enabled ? `${alphaBase}0.04)` : 'var(--color-bg-input)', transition: 'all 0.2s' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: enabled ? 'var(--space-3)' : 0 }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', flex: 1 }}>
-            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} style={{ accentColor: color, width: 16, height: 16 }} />
+            <Checkbox checked={enabled} onChange={setEnabled} color={color} size={16} />
             <span style={{ color: enabled ? color : 'var(--color-text-tertiary)' }}>{icon}</span>
             <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{label}</span>
           </label>
@@ -343,7 +344,7 @@ export default function PersonCropPage() {
             <div className="tool-panel-header"><span className="tool-panel-title">{t('personCrop.otherOptions')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                <input type="checkbox" checked={keepOriginalTags} onChange={(e) => setKeepOriginalTags(e.target.checked)} style={{ accentColor: '#7c5cfc', width: 16, height: 16 }} />
+                <Checkbox checked={keepOriginalTags} onChange={setKeepOriginalTags} color="#7c5cfc" size={16} />
                 <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-sm)' }}>{t('personCrop.keepTags')}</span>
               </label>
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(124, 92, 252, 0.06)', border: '1px solid rgba(124, 92, 252, 0.1)' }}>

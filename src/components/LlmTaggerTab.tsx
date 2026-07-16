@@ -11,6 +11,7 @@ import { useTaskQueue } from './TaskContext';
 import CustomSelect from './CustomSelect';
 import { useTranslation } from 'react-i18next';
 import InputPathPickerButton from './InputPathPickerButton';
+import Checkbox from './Checkbox';
 import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
@@ -108,7 +109,7 @@ export default function LlmTaggerTab() {
   const [failCnt, setFailCnt] = useState(0);
   const [startTime, setStartTime] = useState<number>(0);
   const [elapsed, setElapsed] = useState('');
-  const [errorFiles, setErrorFiles] = useState<string[]>([]);
+  const errorFilesRef = useRef<string[]>([]);
   const [intervalSec, setIntervalSec] = useState('-1');
   const [concurrency, setConcurrency] = useState('1');
   const [recursive, setRecursive] = useState(false);
@@ -157,7 +158,7 @@ export default function LlmTaggerTab() {
         setHasErr(true);
         setFailCnt(c => c + 1);
         const m = p.message.match(/\[错误\] ([^:(]+)/);
-        if (m) setErrorFiles(prev => [...prev, m[1].trim()]);
+        if (m) { errorFilesRef.current = [...errorFilesRef.current, m[1].trim()]; }
       }
       if (p.status === 'success') setSuccessCnt(c => c + 1);
       taskLogs.appendProgressLog(p);
@@ -188,7 +189,7 @@ export default function LlmTaggerTab() {
   const handleStart = async () => {
     if (!inputPath || !endpoint || !modelName) return;
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
-    setSuccessCnt(0); setFailCnt(0); setErrorFiles([]); setStartTime(Date.now()); setElapsed('');
+    setSuccessCnt(0); setFailCnt(0); errorFilesRef.current = []; setStartTime(Date.now()); setElapsed('');
     addTask('llm-tagger', t('llmTagger.taskName'));
     const sec = parseFloat(intervalSec);
     const intervalMs = sec < 0 ? -1 : Math.round(sec * 1000);
@@ -217,7 +218,7 @@ export default function LlmTaggerTab() {
     } finally { setProcessing(false); }
   };
 
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); setSuccessCnt(0); setFailCnt(0); setErrorFiles([]); setElapsed(''); }, []);
+  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); setSuccessCnt(0); setFailCnt(0); errorFilesRef.current = []; setElapsed(''); }, []);
 
   // 耗时计时器
   useEffect(() => {
@@ -240,10 +241,11 @@ export default function LlmTaggerTab() {
       const s = sec % 60;
       setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
     }
-    if (errorFiles.length > 0) {
-      setLogs(p => [...p, { time: getTimeStr(), message: `${t('llmTagger.failedFiles')}: ${errorFiles.join(', ')}`, status: 'error' }]);
+    const errs = errorFilesRef.current;
+    if (errs.length > 0) {
+      setLogs(p => [...p, { time: getTimeStr(), message: `${t('llmTagger.failedFiles')}: ${errs.join(', ')}`, status: 'error' }]);
     }
-  }, [isDone]);
+  }, [isDone, t]);
 
   // 日志自动滚动
   const logContainerRef = useRef<HTMLDivElement>(null);
@@ -277,7 +279,7 @@ export default function LlmTaggerTab() {
           <div className="tool-panel-header">
             <span className="tool-panel-title">{t('llmTagger.datasetPath')}</span>
             <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: 'var(--color-text-secondary)' }}>
-              <input type="checkbox" checked={recursive} onChange={e => setRecursive(e.target.checked)} style={{ accentColor: 'var(--color-accent-primary)' }} />
+              <Checkbox checked={recursive} onChange={setRecursive} size={14} />
               {t('llmTagger.recursiveScan')}
             </label>
           </div>

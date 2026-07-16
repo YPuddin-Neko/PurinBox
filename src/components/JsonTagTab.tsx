@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, forwardRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
 import TagAutocomplete from './TagAutocomplete';
 import ImageLightbox from './ImageLightbox';
 import { invoke } from '@tauri-apps/api/core';
@@ -61,6 +62,119 @@ export interface JsonTagTabHandle {
 // 'translate-progress' 事件，互相串扰。翻译前置上所有者，非所有者忽略事件。
 export const translateOwner = { current: '' };
 
+interface TagSugg { name:string; category:number; post_count:number; translated:string|null; }
+const CAT_COLORS: Record<number,string> = { 0:'#60a5fa', 1:'#f87171', 3:'#a78bfa', 4:'#34d399', 5:'#fbbf24' };
+const CAT_LABELS: Record<number,string> = { 0:'general', 1:'artist', 3:'copyright', 4:'character', 5:'meta' };
+const fmtCnt = (n:number) => n>=1e6?`${(n/1e6).toFixed(1)}M`:n>=1e3?`${(n/1e3).toFixed(0)}K`:String(n);
+
+function BatchTagInput({ value, onChange }: { value:string; onChange:(v:string)=>void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dropRef = useRef<HTMLDivElement>(null);
+  const debRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const seqRef = useRef(0);
+  const [suggs, setSuggs] = useState<TagSugg[]>([]);
+  const [showDrop, setShowDrop] = useState(false);
+  const [active, setActive] = useState(-1);
+  const [dropPos, setDropPos] = useState({ top:0, left:0, width:0 });
+
+  const updateDropPos = useCallback(() => {
+    if (!inputRef.current) return;
+    const r = inputRef.current.getBoundingClientRect();
+    setDropPos({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 360) });
+  }, []);
+
+  const search = useCallback(async (q:string) => {
+    const seq = ++seqRef.current;
+    if (q.length < 1) { setSuggs([]); setShowDrop(false); return; }
+    try {
+      const lang = localStorage.getItem('translate_target_lang') || 'zh-CN';
+      const r = await invoke<TagSugg[]>('search_tags', { query:q, limit:10, targetLang:lang });
+      if (seq !== seqRef.current) return;
+      setSuggs(r); setShowDrop(r.length > 0); setActive(-1);
+      if (r.length > 0) setTimeout(updateDropPos, 0);
+    } catch { if (seq === seqRef.current) { setSuggs([]); setShowDrop(false); } }
+  }, [updateDropPos]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onChange(e.target.value);
+    if (debRef.current) clearTimeout(debRef.current);
+    debRef.current = setTimeout(() => {
+      const pos = e.target.selectionStart ?? e.target.value.length;
+      const before = e.target.value.slice(0, pos);
+      const lastComma = before.lastIndexOf(',');
+      const token = before.slice(lastComma + 1).trim();
+      search(token);
+    }, 120);
+  };
+
+  const selectTag = useCallback((tag: TagSugg) => {
+    const name = tag.name.replace(/_/g, ' ');
+    const pos = inputRef.current?.selectionStart ?? value.length;
+    const before = value.slice(0, pos);
+    const after = value.slice(pos);
+    const lastComma = before.lastIndexOf(',');
+    const prefix = lastComma >= 0 ? before.slice(0, lastComma + 1) + ' ' : '';
+    const afterTrimmed = after.replace(/^\s*,?\s*/, '');
+    const newVal = prefix + name + (afterTrimmed ? ', ' + afterTrimmed : '');
+    onChange(newVal);
+    setSuggs([]); setShowDrop(false);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }, [value, onChange]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (showDrop && suggs.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setActive(p => Math.min(p+1, suggs.length-1)); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setActive(p => Math.max(p-1, -1)); return; }
+      if (e.key === 'Enter' && active >= 0) { e.preventDefault(); selectTag(suggs[active]); return; }
+      if (e.key === 'Tab' && active >= 0) { e.preventDefault(); selectTag(suggs[active]); return; }
+    }
+    if (e.key === 'Enter') { e.preventDefault(); return; }
+    if (e.key === 'Escape') setShowDrop(false);
+  };
+
+  useEffect(() => { return () => { if (debRef.current) clearTimeout(debRef.current); }; }, []);
+  useEffect(() => {
+    if (active >= 0 && dropRef.current?.children[active]) {
+      (dropRef.current.children[active] as HTMLElement).scrollIntoView({ block:'nearest' });
+    }
+  }, [active]);
+
+  const dropdown = showDrop && suggs.length > 0 && createPortal(
+    <div ref={dropRef} style={{position:'fixed', top:dropPos.top, left:dropPos.left, width:dropPos.width,
+      minWidth:360, zIndex:99999, background:'var(--color-bg-secondary)', border:'1px solid var(--color-border)',
+      borderRadius:8, boxShadow:'0 8px 32px rgba(0,0,0,0.35)', maxHeight:240, overflowY:'auto', padding:4}}>
+      {suggs.map((tag,i) => {
+        const c = CAT_COLORS[tag.category]||'#60a5fa';
+        return (
+          <div key={tag.name} onMouseDown={(e)=>{e.preventDefault();selectTag(tag);}} onMouseEnter={()=>setActive(i)}
+            style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',borderRadius:6,cursor:'pointer',
+              background:i===active?'rgba(124,92,252,0.1)':'transparent',transition:'background 0.1s'}}>
+            <div style={{width:6,height:6,borderRadius:'50%',background:c,flexShrink:0}} />
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:11,fontWeight:500,color:'var(--color-text-primary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{tag.name.replace(/_/g,' ')}</div>
+              {tag.translated && <div style={{fontSize:9,color:'var(--color-text-tertiary)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginTop:1}}>{tag.translated}</div>}
+            </div>
+            <span style={{fontSize:8,padding:'1px 5px',borderRadius:4,background:`${c}15`,color:c,fontWeight:600,flexShrink:0,textTransform:'uppercase'}}>{CAT_LABELS[tag.category]||'other'}</span>
+            <span style={{fontSize:9,color:'var(--color-text-tertiary)',flexShrink:0,minWidth:30,textAlign:'right'}}>{fmtCnt(tag.post_count)}</span>
+          </div>
+        );
+      })}
+    </div>,
+    document.body
+  );
+
+  return (
+    <div style={{position:'relative',width:'100%'}}>
+      <input ref={inputRef} autoFocus className="form-input" value={value} onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        onFocus={() => { updateDropPos(); if (suggs.length > 0) setShowDrop(true); }}
+        onBlur={() => setTimeout(() => { if (!dropRef.current?.contains(document.activeElement)) setShowDrop(false); }, 200)}
+        placeholder="tag1, tag2, tag3" style={{fontSize:12,height:34,width:'100%'}} autoComplete="off" />
+      {dropdown}
+    </div>
+  );
+}
+
 const TAG_STATS_BATCH = 300;
 
 const JsonTagTab = forwardRef<JsonTagTabHandle, {
@@ -103,9 +217,9 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   // Batch operations state (modal-based)
   const [showBatchAddModal,setShowBatchAddModal]=useState(false);
   const [showBatchDeleteModal,setShowBatchDeleteModal]=useState(false);
-  const [batchField,setBatchField]=useState('ai_output.tags');
+  const [batchField,setBatchField]=useState('fixed.quality');
   const [batchTags,setBatchTags]=useState('');
-  const [batchPosition,setBatchPosition]=useState<'prepend'|'append'>('append');
+  const [batchPosition,setBatchPosition]=useState<'prepend'|'append'>('prepend');
 
   const BATCH_FIELD_OPTIONS = [
     { value: 'fixed.quality', label: 'quality — ' + t('jsonTag.fieldQuality') },
@@ -1019,7 +1133,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
         {col3Mode==='stats'&&<div style={{display:'flex',flexDirection:'column',gap:2,padding:'8px 4px',borderLeft:'1px solid var(--color-border)',alignItems:'center'}}>
           {[
             {icon:<Filter style={{width:14,height:14}} />,tip:t('jsonTag.filterByTag'),onClick:()=>setTagFilterActive(v=>!v),disabled:images.length===0,color:tagFilterActive?'#7c5cfc':undefined},
-            {icon:<ListPlus style={{width:14,height:14}} />,tip:t('jsonTag.batchAdd'),onClick:()=>{setBatchField('ai_output.tags');setBatchTags('');setBatchPosition('append');setShowBatchAddModal(true);},disabled:images.length===0},
+            {icon:<ListPlus style={{width:14,height:14}} />,tip:t('jsonTag.batchAdd'),onClick:()=>{setBatchField('fixed.quality');setBatchTags('');setBatchPosition('prepend');setShowBatchAddModal(true);},disabled:images.length===0},
             {icon:<ListX style={{width:14,height:14}} />,tip:t('jsonTag.batchDelete'),onClick:()=>{setBatchField('all');setBatchTags('');setShowBatchDeleteModal(true);},disabled:images.length===0},
             {icon:<CopyX style={{width:14,height:14}} />,tip:t('jsonTag.dedupeTags'),onClick:handleDeduplicateTags,disabled:images.length===0,color:'#f59e0b'},
             {icon:<Trash2 style={{width:14,height:14}} />,tip:t('jsonTag.deleteSelected'),onClick:handleSidebarBatchDelete,disabled:selectedTags.size===0,color:selectedTags.size>0?'#f87171':undefined},
@@ -1036,7 +1150,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
       {showLargePreview&&cur&&<ImageLightbox src={imgSrc} filename={cur.filename} onClose={()=>setShowLargePreview(false)} />}
 
       {/* Batch Add Modal */}
-      {showBatchAddModal&&<div style={{position:'fixed',inset:0,zIndex:999,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.5)',backdropFilter:'blur(4px)'}} onClick={()=>setShowBatchAddModal(false)}>
+      {showBatchAddModal&&<div style={{position:'fixed',inset:0,zIndex:999,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.5)',backdropFilter:'blur(4px)'}}>
         <div onClick={e=>e.stopPropagation()} style={{width:440,background:'var(--color-bg-card)',borderRadius:16,border:'1px solid var(--color-border)',boxShadow:'0 20px 60px rgba(0,0,0,0.3)',overflow:'hidden'}}>
           <div style={{padding:'16px 20px',borderBottom:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:8}}>
             <ListPlus style={{width:16,height:16,color:'#4ade80'}} />
@@ -1073,9 +1187,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
             </div>
             <div>
               <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:4}}>{t('jsonTag.batchTagsPlaceholder')}</span>
-              <input autoFocus className="form-input" value={batchTags} onChange={e=>setBatchTags(e.target.value)}
-                onKeyDown={e=>{if(e.key==='Enter'&&batchTags.trim())handleBatchAdd();}}
-                placeholder="tag1, tag2, tag3" style={{fontSize:12,height:34,width:'100%'}} />
+              <BatchTagInput value={batchTags} onChange={setBatchTags} />
             </div>
           </div>
           <div style={{padding:'12px 20px',borderTop:'1px solid var(--color-border)',display:'flex',justifyContent:'flex-end',gap:8}}>
@@ -1088,7 +1200,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
       </div>}
 
       {/* Batch Delete Modal */}
-      {showBatchDeleteModal&&<div style={{position:'fixed',inset:0,zIndex:999,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.5)',backdropFilter:'blur(4px)'}} onClick={()=>setShowBatchDeleteModal(false)}>
+      {showBatchDeleteModal&&<div style={{position:'fixed',inset:0,zIndex:999,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.5)',backdropFilter:'blur(4px)'}}>
         <div onClick={e=>e.stopPropagation()} style={{width:440,background:'var(--color-bg-card)',borderRadius:16,border:'1px solid var(--color-border)',boxShadow:'0 20px 60px rgba(0,0,0,0.3)',overflow:'hidden'}}>
           <div style={{padding:'16px 20px',borderBottom:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:8}}>
             <ListX style={{width:16,height:16,color:'#f87171'}} />

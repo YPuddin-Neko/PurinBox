@@ -646,6 +646,7 @@ pub fn check_python_env() -> Result<(String, String), String> {
 }
 
 /// 执行批量打标（通过 Python 子进程）
+#[allow(clippy::too_many_arguments)]
 pub fn run_tagging(
     app: &tauri::AppHandle,
     options: &TaggerOptions,

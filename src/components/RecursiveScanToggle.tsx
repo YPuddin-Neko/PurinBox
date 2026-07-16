@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
+import Checkbox from './Checkbox';
 
 interface Props {
   checked: boolean;
@@ -12,28 +13,19 @@ export default function RecursiveScanToggle({ checked, onChange, disabled = fals
   const { t } = useTranslation();
 
   return (
-    <label
+    <Checkbox
+      checked={checked}
+      onChange={onChange}
+      disabled={disabled}
+      label={t('pages.recursiveScan')}
+      size={14}
       style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
         fontSize: 12,
         color: 'var(--color-text-secondary)',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        userSelect: 'none',
         whiteSpace: 'nowrap',
         flexShrink: 0,
         ...style,
       }}
-    >
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
-        style={{ accentColor: 'var(--color-accent-primary)' }}
-      />
-      {t('pages.recursiveScan')}
-    </label>
+    />
   );
 }

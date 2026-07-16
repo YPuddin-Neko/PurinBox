@@ -18,6 +18,7 @@ import {
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import DedupRenameTab from '../components/DedupRenameTab';
 import InputPathPickerButton from '../components/InputPathPickerButton';
+import Checkbox from '../components/Checkbox';
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -211,12 +212,10 @@ export default function BatchRenamePage() {
                 </div>
 
                 {/* 同步重命名标签文件 */}
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>
-                  <input type="checkbox" checked={renameTags} onChange={e => setRenameTags(e.target.checked)}
-                    style={{ accentColor: '#38bdf8', width: 16, height: 16 }} />
-                  {t('batchRename.renameTags')}
+                <Checkbox checked={renameTags} onChange={setRenameTags} color="#38bdf8" size={14}
+                  label={t('batchRename.renameTags')}
+                  style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }} />
                   <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>(.txt, .json)</span>
-                </label>
 
                 {/* 命名示例 */}
                 <div style={{

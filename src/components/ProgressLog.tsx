@@ -42,7 +42,6 @@ const MAX_LOGS = 500;
 
 export default function ProgressLog({ progress, current, total, logs, isDone, hasError, onClearLogs, externalStartTime }: ProgressLogProps) {
   const { t } = useTranslation();
-  const logEndRef = useRef<HTMLDivElement>(null);
   const [startTime, setStartTime] = useState<number>(0);
   const [elapsed, setElapsed] = useState('');
 
@@ -210,7 +209,6 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
               )
             ))}
             </>)}
-            <div ref={logEndRef} />
           </div>
         </div>
     </div>

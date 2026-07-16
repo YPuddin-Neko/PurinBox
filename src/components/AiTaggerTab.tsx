@@ -9,6 +9,7 @@ import { useTaskQueue } from './TaskContext';
 import { ConfirmModal } from './Modal';
 import CustomSelect from './CustomSelect';
 import InputPathPickerButton from './InputPathPickerButton';
+import Checkbox from './Checkbox';
 import { useTranslation } from 'react-i18next';
 import i18n from '../i18n';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
@@ -66,13 +67,15 @@ export default function AiTaggerTab() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
+  const DEFAULT_MODEL_SIZE = 448;
+  const DEFAULT_MODEL_FORMAT = 'NHWC';
   // 导入模型
   const [showAdd, setShowAdd] = useState(false);
   const [nName, setNName] = useState('');
   const [nModelPath, setNModelPath] = useState('');
   const [nTagsPath, setNTagsPath] = useState('');
-  const [nSize, setNSize] = useState(448);
-  const [nFormat, setNFormat] = useState('NHWC');
+  const [nSize, setNSize] = useState(DEFAULT_MODEL_SIZE);
+  const [nFormat, setNFormat] = useState(DEFAULT_MODEL_FORMAT);
   const [detecting, setDetecting] = useState(false);
   const [importing, setImporting] = useState(false);
   // 其他设置
@@ -286,13 +289,13 @@ export default function AiTaggerTab() {
       return;
     }
     // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
-    const size = Number.isFinite(nSize) && nSize >= 1 ? nSize : 448;
+    const size = Number.isFinite(nSize) && nSize >= 1 ? nSize : DEFAULT_MODEL_SIZE;
     if (size !== nSize) setNSize(size);
     setImporting(true);
     try {
       await invoke<string>('import_local_tagger_model', { name: nName, modelPath: nModelPath, tagsPath: nTagsPath, inputSize: size, inputFormat: nFormat });
       setLogs(p => [...p, { time: getTimeStr(), message: t('aiTagger.importOk', { name: nName }), status: 'success' }]);
-      setShowAdd(false); setNName(''); setNModelPath(''); setNTagsPath(''); setNSize(448); setNFormat('NHWC');
+      setShowAdd(false); setNName(''); setNModelPath(''); setNTagsPath(''); setNSize(DEFAULT_MODEL_SIZE); setNFormat(DEFAULT_MODEL_FORMAT);
       await load();
     } catch (e: any) {
       setLogs(p => [...p, { time: getTimeStr(), message: `${t('aiTagger.importFail')}: ${String(e)}`, status: 'error' }]);
@@ -320,7 +323,7 @@ export default function AiTaggerTab() {
           <div className="tool-panel-header">
             <span className="tool-panel-title">{t('aiTagger.datasetPath')}</span>
             <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: 'var(--color-text-secondary)' }}>
-              <input type="checkbox" checked={recursive} onChange={e => setRecursive(e.target.checked)} style={{ accentColor: 'var(--color-accent-primary)' }} />
+              <Checkbox checked={recursive} onChange={setRecursive} size={14} />
               {t('llmTagger.recursiveScan')}
             </label>
           </div>
@@ -384,7 +387,7 @@ export default function AiTaggerTab() {
               <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.tagMapping')}</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder={t('aiTagger.tagFilePlaceholder')} value={nTagsPath} onChange={e => setNTagsPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseTags}><FileUp style={{ width: 14, height: 14 }} /> {t('aiTagger.browse')}</button></div></div>
               <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
                 <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.inputChannel')}</label><CustomSelect value={nFormat} onChange={v => setNFormat(v)} options={[{ value: 'NHWC', label: 'NHWC' }, { value: 'NCHW', label: 'NCHW' }]} compact style={{ width: 90 }} /></div>
-                <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.inputSize')}</label><input className="form-input" type="number" value={nSize} onChange={e => setNSize(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setNSize(448); }} style={{ width: 80 }} /></div>
+                <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.inputSize')}</label><input className="form-input" type="number" value={nSize} onChange={e => setNSize(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setNSize(DEFAULT_MODEL_SIZE); }} style={{ width: 80 }} /></div>
                 <button className="btn btn-secondary btn-sm" onClick={autoDetect} disabled={detecting || !nModelPath} style={{ height: 34, whiteSpace: 'nowrap' }}>{detecting ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Search style={{ width: 14, height: 14 }} />} {t('aiTagger.autoDetect')}</button>
                 <button className="btn btn-primary btn-sm" onClick={handleImport} disabled={importing || !nName || !nModelPath || !nTagsPath} style={{ height: 34 }}>{importing ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Plus style={{ width: 14, height: 14 }} />} {t('aiTagger.add')}</button>
               </div>

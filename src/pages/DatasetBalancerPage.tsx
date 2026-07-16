@@ -63,6 +63,7 @@ export default function DatasetBalancerPage() {
   // 应用到数据集: 重命名文件夹
   const [applying, setApplying] = useState(false);
   const [applyMsg, setApplyMsg] = useState('');
+  const [applyOk, setApplyOk] = useState(true);
   const applyToDataset = async () => {
     if (!localPath || applying) return;
     const hasChanges = folders.some(f => f.folderName);
@@ -77,10 +78,12 @@ export default function DatasetBalancerPage() {
         concept_name: f.name,
       }));
       const result = await invoke<string[]>('apply_concept_repeats', { dir: localPath, items });
+      setApplyOk(true);
       setApplyMsg(t('datasetBalancer.applySuccess', { count: result.length }));
       // 重新扫描以刷新状态
       await scanLocalFolder();
     } catch (e: any) {
+      setApplyOk(false);
       setApplyMsg(t('datasetBalancer.applyFailed') + ': ' + (e?.message || e));
     }
     setApplying(false);
@@ -386,7 +389,7 @@ export default function DatasetBalancerPage() {
             </div>
           )}
           {applyMsg && (
-            <div style={{ marginTop: 'var(--space-1)', fontSize: 10, color: applyMsg.includes('失败') || applyMsg.includes('Failed') ? '#f87171' : '#4ade80' }}>
+            <div style={{ marginTop: 'var(--space-1)', fontSize: 10, color: applyOk ? '#4ade80' : '#f87171' }}>
               {applyMsg}
             </div>
           )}
@@ -407,21 +410,21 @@ export default function DatasetBalancerPage() {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
             <div>
-              <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>Batch Size</label>
+              <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>{t('datasetBalancer.batchSize')}</label>
               <input className="form-input" type="number" min={1} value={batchSize} onChange={e => setBatchSize(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setBatchSize(1); }} style={{ width: '100%' }} />
             </div>
             <div>
-              <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>Grad Accum</label>
+              <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>{t('datasetBalancer.gradAccum')}</label>
               <input className="form-input" type="number" min={1} value={gradAccum} onChange={e => setGradAccum(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setGradAccum(1); }} style={{ width: '100%' }} />
             </div>
             {mode === 'by_epoch' ? (
               <div>
-                <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>Epochs</label>
+                <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>{t('datasetBalancer.epochs')}</label>
                 <input className="form-input" type="number" min={1} value={epochs} onChange={e => setEpochs(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setEpochs(10); }} style={{ width: '100%' }} />
               </div>
             ) : (
               <div>
-                <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>Max Steps</label>
+                <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>{t('datasetBalancer.maxSteps')}</label>
                 <input className="form-input" type="number" min={1} value={maxSteps} onChange={e => setMaxSteps(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setMaxSteps(2000); }} style={{ width: '100%' }} />
               </div>
             )}
@@ -443,7 +446,7 @@ export default function DatasetBalancerPage() {
               { label: t('datasetBalancer.stepsPerEpoch'), value: calc.stepsPerEpoch, color: '#a78bfa' },
               { label: t('datasetBalancer.totalSteps'), value: calc.totalSteps, color: '#f59e0b' },
               { label: t('datasetBalancer.totalSamples'), value: calc.totalSamples, color: '#4ade80' },
-              { label: mode === 'by_steps' ? t('datasetBalancer.computedEpochs') : 'Epochs', value: calc.epochs, color: '#38bdf8' },
+              { label: mode === 'by_steps' ? t('datasetBalancer.computedEpochs') : t('datasetBalancer.epochs'), value: calc.epochs, color: '#38bdf8' },
             ].map((m, i) => (
               <div key={i} style={{ padding: 'var(--space-2)', borderRadius: 'var(--radius-md)',
                 background: `${m.color}08`, border: `1px solid ${m.color}20`, textAlign: 'center' }}>

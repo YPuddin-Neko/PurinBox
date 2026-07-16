@@ -70,8 +70,8 @@ export default function TagRefineTab() {
   const [saveMsg, setSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [startTime, setStartTime] = useState<number>(0);
   const [elapsed, setElapsed] = useState('');
-  const [errorFiles, setErrorFiles] = useState<string[]>([]);
-  const [warnFiles, setWarnFiles] = useState<string[]>([]);
+  const errorFilesRef = useRef<string[]>([]);
+  const warnFilesRef = useRef<string[]>([]);
   const [showKey, setShowKey] = useState(false);
   const taskLogs = useUnifiedTaskLogs(setLogs);
 
@@ -113,14 +113,14 @@ export default function TagRefineTab() {
       if (p.status === 'error') {
         setHasErr(true); setFailCnt(c => c + 1);
         const m = p.message.match(/\[错误\] ([^:]+)/);
-        if (m) setErrorFiles(prev => [...prev, m[1]]);
+        if (m) errorFilesRef.current = [...errorFilesRef.current, m[1]];
       }
       if (p.status === 'success') {
         setSuccessCnt(c => c + 1);
         if (p.message.includes('⚠')) {
           setWarnCnt(c => c + 1);
           const m = p.message.match(/\[完成\] ([^ ]+)/);
-          if (m) setWarnFiles(prev => [...prev, m[1]]);
+          if (m) warnFilesRef.current = [...warnFilesRef.current, m[1]];
         }
       }
       taskLogs.appendProgressLog(p);
@@ -149,7 +149,7 @@ export default function TagRefineTab() {
   const handleStart = async () => {
     if (!inputPath || !outputPath || !endpoint || !modelName) return;
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
-    setSuccessCnt(0); setFailCnt(0); setWarnCnt(0); setErrorFiles([]); setWarnFiles([]);
+    setSuccessCnt(0); setFailCnt(0); setWarnCnt(0); errorFilesRef.current = []; warnFilesRef.current = [];
     setStartTime(Date.now()); setElapsed('');
     addTask('tag-refine', t('tagRefine.taskName'));
     const sec = parseFloat(intervalSec);
@@ -181,7 +181,7 @@ export default function TagRefineTab() {
     } finally { setProcessing(false); }
   };
 
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); setSuccessCnt(0); setFailCnt(0); setWarnCnt(0); setErrorFiles([]); setWarnFiles([]); setElapsed(''); }, []);
+  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); setSuccessCnt(0); setFailCnt(0); setWarnCnt(0); errorFilesRef.current = []; warnFilesRef.current = []; setElapsed(''); }, []);
   const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   useEffect(() => {
@@ -201,9 +201,11 @@ export default function TagRefineTab() {
       const m = Math.floor(sec / 60); const s = sec % 60;
       setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
     }
-    if (errorFiles.length > 0) setLogs(p => [...p, { time: getTimeStr(), message: `${t('tagSort.failedFiles')}: ${errorFiles.join(', ')}`, status: 'error' }]);
-    if (warnFiles.length > 0) setLogs(p => [...p, { time: getTimeStr(), message: `${t('tagSort.warnFiles')}: ${warnFiles.join(', ')}`, status: 'info' }]);
-  }, [isDone]);
+    const errs = errorFilesRef.current;
+    const warns = warnFilesRef.current;
+    if (errs.length > 0) setLogs(p => [...p, { time: getTimeStr(), message: `${t('tagSort.failedFiles')}: ${errs.join(', ')}`, status: 'error' }]);
+    if (warns.length > 0) setLogs(p => [...p, { time: getTimeStr(), message: `${t('tagSort.warnFiles')}: ${warns.join(', ')}`, status: 'info' }]);
+  }, [isDone, t]);
 
   const logContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);

@@ -15,6 +15,7 @@ import JsonTagTab, { translateOwner, type JsonTagTabHandle } from '../components
 import TagAutocomplete from '../components/TagAutocomplete';
 import ImageLightbox from '../components/ImageLightbox';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
+import Checkbox from '../components/Checkbox';
 import { useTranslation } from 'react-i18next';
 
 type ImageItem = { filename: string; path: string; tags: string[]; dirty: boolean; };
@@ -155,7 +156,7 @@ export default function TagManagerPage() {
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [showAddModal, setShowAddModal] = useState(false);
   const [addTagInput, setAddTagInput] = useState('');
-  const [addPosition, setAddPosition] = useState<'start'|'end'>('end');
+  const [addPosition, setAddPosition] = useState<'start'|'end'>('start');
   const [addOverwrite, setAddOverwrite] = useState(false);
   const [showReplaceModal, setShowReplaceModal] = useState(false);
   const [replaceFrom, setReplaceFrom] = useState('');
@@ -917,8 +918,8 @@ export default function TagManagerPage() {
           <div style={{display:'flex',flexDirection:'column',gap:2,padding:'8px 4px',borderLeft:'1px solid var(--color-border)',alignItems:'center'}}>
             {[
               {icon:<Filter style={{width:14,height:14}} />,tip:t('tagManager.filterByTag'),onClick:()=>setTagFilterActive(v=>!v),disabled:images.length===0,color:tagFilterActive?'#7c5cfc':undefined},
-              {icon:<Replace style={{width:14,height:14}} />,tip:t('tagManager.replaceTag'),onClick:()=>{setShowReplaceModal(true);if(selectedTags.size===1)setReplaceFrom([...selectedTags][0]);},disabled:images.length===0},
-              {icon:<ListPlus style={{width:14,height:14}} />,tip:t('tagManager.batchAdd'),onClick:()=>setShowAddModal(true),disabled:images.length===0},
+              {icon:<Replace style={{width:14,height:14}} />,tip:t('tagManager.replaceTag'),onClick:()=>{setReplaceTo('');if(selectedTags.size===1){setReplaceFrom([...selectedTags][0]);}else{setReplaceFrom('');}setShowReplaceModal(true);},disabled:images.length===0},
+              {icon:<ListPlus style={{width:14,height:14}} />,tip:t('tagManager.batchAdd'),onClick:()=>{setAddTagInput('');setAddPosition('start');setAddOverwrite(false);setShowAddModal(true);},disabled:images.length===0},
               {icon:<CopyX style={{width:14,height:14}} />,tip:t('tagManager.dedupeTags'),onClick:handleDeduplicateTags,disabled:images.length===0,color:'#f59e0b'},
               {icon:<Trash2 style={{width:14,height:14}} />,tip:t('tagManager.deleteSelected'),onClick:handleBatchDelete,disabled:selectedTags.size===0,color:selectedTags.size>0?'#f87171':undefined},
               {icon:<PlusCircle style={{width:14,height:14}} />,tip:t('tagManager.addToCurrent'),onClick:addSelectedToCurrent,disabled:!cur||selectedTags.size===0},
@@ -946,7 +947,7 @@ export default function TagManagerPage() {
       </div>
 
       {/* ═ 批量添加弹窗 ═ */}
-      {showAddModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setShowAddModal(false)}>
+      {showAddModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
         <div style={{background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',padding:20,width:380,maxWidth:'90vw'}} onClick={e=>e.stopPropagation()}>
           <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>{t('tagManager.batchAddTitle')}</h3>
           <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>{t('tagManager.tagContent')}</label>
@@ -961,10 +962,9 @@ export default function TagManagerPage() {
               <input type="radio" checked={addPosition==='end'} onChange={()=>setAddPosition('end')} /> {t('tagManager.append')}
             </label>
           </div>
-          <label style={{fontSize:11,color:'var(--color-text-secondary)',display:'flex',alignItems:'center',gap:4,cursor:'pointer',marginBottom:16}}>
-            <input type="checkbox" checked={addOverwrite} onChange={e=>setAddOverwrite(e.target.checked)} />
-            {t('tagManager.overwriteIfExist')}
-          </label>
+          <Checkbox checked={addOverwrite} onChange={setAddOverwrite} size={14}
+            label={t('tagManager.overwriteIfExist')}
+            style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:16}} />
           <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
             <button className="btn btn-secondary" style={{height:30,fontSize:11}} onClick={()=>setShowAddModal(false)}>{t('tagManager.cancel')}</button>
             <button className="btn btn-primary" style={{height:30,fontSize:11}} onClick={handleBatchAdd} disabled={!addTagInput.trim()}>{t('tagManager.addToAll')}</button>
@@ -973,7 +973,7 @@ export default function TagManagerPage() {
       </div>}
 
       {/* ═ 替换弹窗 ═ */}
-      {showReplaceModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>{setShowReplaceModal(false);setReplaceDropOpen(false);}}>
+      {showReplaceModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
         <div style={{background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',padding:20,width:380,maxWidth:'90vw'}} onClick={e=>e.stopPropagation()}>
           <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>{t('tagManager.replaceTitle')}</h3>
           <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>{t('tagManager.originalTag')}</label>

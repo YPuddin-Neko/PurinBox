@@ -195,7 +195,7 @@ pub async fn start_llm_tagging(
 
     let mut handles = Vec::new();
 
-    for (_idx, (i, file_path)) in work_items.into_iter().enumerate() {
+    for (i, file_path) in work_items.into_iter() {
         if LLM_CANCELLED.load(Ordering::SeqCst) {
             break;
         }

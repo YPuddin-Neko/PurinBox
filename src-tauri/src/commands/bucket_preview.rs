@@ -421,7 +421,7 @@ fn round_half_to_even(x: f64) -> f64 {
     let floor = x.floor();
     let frac = x - floor;
     if (frac - 0.5).abs() < 1e-12 {
-        if floor as u64 % 2 == 0 {
+        if (floor as u64).is_multiple_of(2) {
             floor
         } else {
             floor + 1.0

@@ -58,8 +58,8 @@ export default function TagSortTab() {
   const [saveMsg, setSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [startTime, setStartTime] = useState<number>(0);
   const [elapsed, setElapsed] = useState('');
-  const [errorFiles, setErrorFiles] = useState<string[]>([]);
-  const [warnFiles, setWarnFiles] = useState<string[]>([]);
+  const errorFilesRef = useRef<string[]>([]);
+  const warnFilesRef = useRef<string[]>([]);
   const [showKey, setShowKey] = useState(false);
   const taskLogs = useUnifiedTaskLogs(setLogs);
 
@@ -108,14 +108,14 @@ export default function TagSortTab() {
         setFailCnt(c => c + 1);
         // 提取文件名
         const m = p.message.match(/\[\u9519\u8bef\] ([^:]+)/);
-        if (m) setErrorFiles(prev => [...prev, m[1]]);
+        if (m) errorFilesRef.current = [...errorFilesRef.current, m[1]];
       }
       if (p.status === 'success') {
         setSuccessCnt(c => c + 1);
         if (p.message.includes('⚠')) {
           setWarnCnt(c => c + 1);
           const m = p.message.match(/\[\u5b8c\u6210\] ([^ ]+)/);
-          if (m) setWarnFiles(prev => [...prev, m[1]]);
+          if (m) warnFilesRef.current = [...warnFilesRef.current, m[1]];
         }
       }
       taskLogs.appendProgressLog(p);
@@ -148,7 +148,7 @@ export default function TagSortTab() {
   const handleStart = async () => {
     if (!inputPath || !outputPath || !endpoint || !modelName) return;
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
-    setSuccessCnt(0); setFailCnt(0); setWarnCnt(0); setErrorFiles([]); setWarnFiles([]);
+    setSuccessCnt(0); setFailCnt(0); setWarnCnt(0); errorFilesRef.current = []; warnFilesRef.current = [];
     setStartTime(Date.now()); setElapsed('');
     addTask('tag-sort', t('tagSort.taskName'));
     const sec = parseFloat(intervalSec);
@@ -178,7 +178,7 @@ export default function TagSortTab() {
     } finally { setProcessing(false); }
   };
 
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); setSuccessCnt(0); setFailCnt(0); setWarnCnt(0); setErrorFiles([]); setWarnFiles([]); setElapsed(''); }, []);
+  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); setSuccessCnt(0); setFailCnt(0); setWarnCnt(0); errorFilesRef.current = []; warnFilesRef.current = []; setElapsed(''); }, []);
   const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   // 耗时计时器
@@ -204,13 +204,15 @@ export default function TagSortTab() {
       setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
     }
     // 输出问题文件
-    if (errorFiles.length > 0) {
-      setLogs(p => [...p, { time: getTimeStr(), message: `${t('tagSort.failedFiles')}: ${errorFiles.join(', ')}`, status: 'error' }]);
+    const errs = errorFilesRef.current;
+    const warns = warnFilesRef.current;
+    if (errs.length > 0) {
+      setLogs(p => [...p, { time: getTimeStr(), message: `${t('tagSort.failedFiles')}: ${errs.join(', ')}`, status: 'error' }]);
     }
-    if (warnFiles.length > 0) {
-      setLogs(p => [...p, { time: getTimeStr(), message: `${t('tagSort.warnFiles')}: ${warnFiles.join(', ')}`, status: 'info' }]);
+    if (warns.length > 0) {
+      setLogs(p => [...p, { time: getTimeStr(), message: `${t('tagSort.warnFiles')}: ${warns.join(', ')}`, status: 'info' }]);
     }
-  }, [isDone]);
+  }, [isDone, t]);
 
   // 日志自动滚动
   const logContainerRef = useRef<HTMLDivElement>(null);

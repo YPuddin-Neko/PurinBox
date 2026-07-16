@@ -957,7 +957,7 @@ pub async fn start_aesthetic_scoring(
     AESTHETIC_CANCELLED.store(false, Ordering::SeqCst);
 
     // 检查 Python 环境
-    let python_check = tokio::task::spawn_blocking(|| super::tagger::inference::check_python_env())
+    let python_check = tokio::task::spawn_blocking(super::tagger::inference::check_python_env)
         .await
         .map_err(|e| format!("检测线程异常: {}", e))?;
 
