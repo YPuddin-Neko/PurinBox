@@ -646,6 +646,25 @@ export class WorkflowEngine {
         unlisten();
       }
       this.unlisteners = [];
+
+      // 清理中间产物临时目录。
+      // 失败/取消：中间产物是无用垃圾，直接清理。
+      // 成功：仅当存在 output-folder 节点时清理——否则最后一个节点的产物就在
+      // 临时目录里，删掉会连用户的结果一起毁掉。
+      const shouldCleanup =
+        this.status !== 'done' || nodes.some(n => n.data.type === 'output-folder');
+      if (shouldCleanup) {
+        const firstImageFolder = nodes.find(n => n.data.type === 'image-folder');
+        const baseDir = firstImageFolder?.data.params.path as string | undefined;
+        if (baseDir) {
+          try {
+            await invoke('cleanup_workflow_temp', { dir: baseDir });
+          } catch (e) {
+            // 清理失败不影响主流程
+            console.warn('清理临时目录失败:', e);
+          }
+        }
+      }
     }
   }
 }

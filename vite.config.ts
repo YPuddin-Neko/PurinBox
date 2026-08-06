@@ -35,6 +35,7 @@ export default defineConfig(async () => ({
         manualChunks(id: string) {
           if (id.includes('node_modules')) {
             if (id.includes('lucide-react')) return 'vendor-icons';
+            if (id.includes('@xyflow/react') || id.includes('@xyflow/system')) return 'vendor-xyflow';
             if (id.includes('react-dom')) return 'vendor-react-dom';
             if (id.includes('react-router')) return 'vendor-router';
             if (id.includes('i18next') || id.includes('react-i18next')) return 'vendor-i18n';
