@@ -22,6 +22,7 @@ pub mod person_crop;
 pub mod perspective;
 pub mod proxy_config;
 pub mod python_env;
+pub mod resolution_analyze;
 pub mod resolution_filter;
 pub mod sd_metadata;
 pub mod tag_db;
@@ -31,6 +32,8 @@ pub mod tag_sort;
 pub mod tagger;
 pub mod translator;
 pub mod upscale;
+pub mod vertex_auth;
+pub mod workflow;
 
 /// 下载临时文件辅助：返回 `{dest}.part` 临时路径，并清理上次中断遗留的旧残件。
 /// 下载应先写入 .part 文件，完成校验后再用 `finalize_part_file` 原子替换到最终路径，

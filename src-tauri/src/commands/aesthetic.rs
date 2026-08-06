@@ -956,25 +956,9 @@ pub async fn start_aesthetic_scoring(
     // 重置取消标志
     AESTHETIC_CANCELLED.store(false, Ordering::SeqCst);
 
-    // 检查 Python 环境
-    let python_check = tokio::task::spawn_blocking(super::tagger::inference::check_python_env)
-        .await
-        .map_err(|e| format!("检测线程异常: {}", e))?;
-
-    if python_check.is_err() {
-        let _ = app.emit(
-            "aesthetic-progress",
-            ProgressEvent {
-                current: 0,
-                total: 0,
-                filename: String::new(),
-                status: "info".to_string(),
-                message: "Python 环境未就绪，正在自动配置...".to_string(),
-                ..Default::default()
-            },
-        );
-        super::python_env::setup_python_env(&app).await?;
-    }
+    // 确保 Python 环境 + onnxruntime GPU 运行时
+    let python = super::python_env::setup_python_env(&app).await?;
+    let _has_gpu = super::python_env::ensure_onnx_gpu_runtime(&app, &python).await?;
 
     // 下载模型
     if !is_model_downloaded() {

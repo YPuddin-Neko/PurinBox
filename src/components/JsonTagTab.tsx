@@ -599,7 +599,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
 
 
   // drag reorder handlers
-  const dragState=useRef<{active:boolean;fromIdx:number;cat:string;startX:number;startY:number}>({active:false,fromIdx:-1,cat:'',startX:0,startY:0});
+  const dragState=useRef<{active:boolean;fromIdx:number;cat:string;startX:number;startY:number;pointerId:number;target:HTMLElement|null}>({active:false,fromIdx:-1,cat:'',startX:0,startY:0,pointerId:0,target:null});
 
   const moveTagInArr=(cat:string,fromIdx:number,toIdx:number)=>{
     if(fromIdx===toIdx)return;
@@ -637,17 +637,22 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
 
   const handleChipPointerDown=(e:React.PointerEvent,idx:number,cat:string)=>{
     if((e.target as HTMLElement).closest('button'))return;
+    // 双击的第二次按下（detail>1）不启动拖拽，避免与 dblclick 竞争
+    if(e.detail>1)return;
     // 不调用 preventDefault()，否则会阻止 dblclick 事件触发（双击编辑失效）
-    // 文字选中已由 chip 上的 userSelect:'none' 防止
-    dragState.current={active:false,fromIdx:idx,cat,startX:e.clientX,startY:e.clientY};
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    // 注意：不在这里 setPointerCapture，延迟到拖拽真正开始时才设置，
+    // 否则 Windows (WebView2/Blink) 会把 mouseup/click/dblclick 重定向到捕获元素
+    dragState.current={active:false,fromIdx:idx,cat,startX:e.clientX,startY:e.clientY,pointerId:e.pointerId,target:e.currentTarget as HTMLElement};
   };
 
   const handleChipPointerMove=(e:React.PointerEvent,cat:string)=>{
     const ds=dragState.current;
     if(ds.fromIdx<0||ds.cat!==cat)return;
     const dx=e.clientX-ds.startX,dy=e.clientY-ds.startY;
-    if(!ds.active&&Math.abs(dx)+Math.abs(dy)>5){ds.active=true;setDragIdx(ds.fromIdx);setDragCat(cat);}
+    if(!ds.active&&Math.abs(dx)+Math.abs(dy)>5){ds.active=true;setDragIdx(ds.fromIdx);setDragCat(cat);
+      // 拖拽真正开始时才设置 pointer capture
+      try{ds.target?.setPointerCapture(ds.pointerId);}catch{}
+    }
     if(!ds.active)return;
     const els=chipRefsMap.current[cat]||[];
     for(let i=0;i<els.length;i++){
@@ -671,7 +676,9 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
       if(ds.fromIdx<toIdx)toIdx-=1;
       moveTagInArr(ds.cat,ds.fromIdx,toIdx);
     }
-    dragState.current={active:false,fromIdx:-1,cat:'',startX:0,startY:0};
+    // 释放 pointer capture（必须在实际捕获的元素上释放，而非事件所在的容器）
+    try{ds.target?.releasePointerCapture(ds.pointerId);}catch{}
+    dragState.current={active:false,fromIdx:-1,cat:'',startX:0,startY:0,pointerId:0,target:null};
     setDragIdx(null);setDragOverIdx(null);setDragCat(null);
   };
 
@@ -703,9 +710,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
         }
         return(
         <div key={ti} ref={el=>{chipRefsMap.current[cat][ti]=el;}} style={{position:'relative',display:'inline-flex'}}
-          onPointerDown={e=>handleChipPointerDown(e,ti,cat)}>
+          onPointerDown={e=>handleChipPointerDown(e,ti,cat)}
+          onDoubleClick={e=>{if(!onReplace)return;if((e.target as HTMLElement).closest('button'))return;e.stopPropagation();setEditingField(null);setEditingChip({cat,idx:ti});}}>
           {isOverBefore&&<div style={{position:'absolute',left:-3,top:2,bottom:2,width:2,borderRadius:1,background:'#7c5cfc',zIndex:1}} />}
-          <div onDoubleClick={e=>{if(!onReplace)return;e.stopPropagation();setEditingField(null);setEditingChip({cat,idx:ti});}} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'2px 7px',borderRadius:12,background:cc.bg,border:`1px solid ${cc.bd}`,fontSize:11,color:cc.tx,lineHeight:1.3,cursor:'grab',transition:'opacity 0.12s',opacity:isDragging?0.35:1,userSelect:'none'}}>
+          <div style={{display:'inline-flex',alignItems:'center',gap:3,padding:'2px 7px',borderRadius:12,background:cc.bg,border:`1px solid ${cc.bd}`,fontSize:11,color:cc.tx,lineHeight:1.3,cursor:'grab',transition:'opacity 0.12s',opacity:isDragging?0.35:1,userSelect:'none'}}>
             <span>{tag}{tr&&<span style={{color:'var(--color-text-tertiary)',fontSize:10,marginLeft:3}}>({tr})</span>}</span>
             <button onClick={()=>onRemove(tag)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:13,height:13,borderRadius:'50%',background:'transparent',color:cc.tx,opacity:0.4,transition:'all 0.12s',flexShrink:0}}
               onMouseEnter={e=>{e.currentTarget.style.opacity='1';e.currentTarget.style.background='rgba(248,113,113,0.15)';e.currentTarget.style.color='#f87171';}}
@@ -875,9 +883,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
                         }
                         return(
                         <div key={pi} ref={el=>{chipRefsMap.current[fieldKey][pi]=el;}} style={{position:'relative',display:'inline-flex'}}
-                          onPointerDown={e=>handleChipPointerDown(e,pi,fieldKey)}>
+                          onPointerDown={e=>handleChipPointerDown(e,pi,fieldKey)}
+                          onDoubleClick={e=>{if((e.target as HTMLElement).closest('button'))return;e.stopPropagation();setEditingField(null);setEditingChip({cat:fieldKey,idx:pi});}}>
                           {isOverBefore&&<div style={{position:'absolute',left:-3,top:2,bottom:2,width:2,borderRadius:1,background:'#7c5cfc',zIndex:1}} />}
-                          <div onDoubleClick={e=>{e.stopPropagation();setEditingField(null);setEditingChip({cat:fieldKey,idx:pi});}} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'2px 7px',borderRadius:12,background:bgChip,border:`1px solid ${bdChip}`,fontSize:11,color,lineHeight:1.3,cursor:'grab',transition:'opacity 0.12s',opacity:isDragging?0.35:1,userSelect:'none'}}>
+                          <div style={{display:'inline-flex',alignItems:'center',gap:3,padding:'2px 7px',borderRadius:12,background:bgChip,border:`1px solid ${bdChip}`,fontSize:11,color,lineHeight:1.3,cursor:'grab',transition:'opacity 0.12s',opacity:isDragging?0.35:1,userSelect:'none'}}>
                             <span>{p}{tr&&<span style={{color:'var(--color-text-tertiary)',fontSize:10,marginLeft:3}}>({tr})</span>}</span>
                             <button onClick={e=>{e.stopPropagation();removeOne(pi);}} style={{display:'flex',alignItems:'center',justifyContent:'center',width:13,height:13,borderRadius:'50%',background:'transparent',color,opacity:0.4,flexShrink:0}}
                               onMouseEnter={e=>{e.currentTarget.style.opacity='1';e.currentTarget.style.background='rgba(248,113,113,0.15)';e.currentTarget.style.color='#f87171';}}

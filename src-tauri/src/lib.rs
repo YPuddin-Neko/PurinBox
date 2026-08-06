@@ -26,6 +26,9 @@ use commands::person_crop::{
 use commands::perspective::{cancel_perspective, perspective_transform};
 use commands::proxy_config::{load_proxy_config, save_proxy_config};
 use commands::python_env::{deploy_python_env, get_python_env_info, reset_python_env};
+use commands::resolution_analyze::{
+    analyze_resolutions, cancel_resolution_analyze, export_resolution_report,
+};
 use commands::resolution_filter::{cancel_filter, filter_by_resolution};
 use commands::sd_metadata::{export_sd_tags, read_single_sd_metadata, scan_sd_metadata};
 use commands::tag_db::{
@@ -52,6 +55,9 @@ use commands::translator::{
 use commands::upscale::{
     cancel_upscale, cancel_upscale_download, download_upscale_engine, force_cancel_upscale,
     get_upscale_engines, start_upscale,
+};
+use commands::workflow::{
+    cleanup_workflow_temp, list_workflows, load_workflow, save_workflow,
 };
 use commands::{
     apply_concept_repeats, check_for_updates, frontend_ready, get_system_stats,
@@ -83,6 +89,9 @@ pub fn run() {
             cancel_person_crop_download,
             filter_by_resolution,
             cancel_filter,
+            analyze_resolutions,
+            cancel_resolution_analyze,
+            export_resolution_report,
             keep_specified_files,
             cancel_keeper,
             convert_format,
@@ -174,6 +183,10 @@ pub fn run() {
             check_tag_db_update,
             start_aesthetic_scoring,
             cancel_aesthetic_scoring,
+            save_workflow,
+            load_workflow,
+            list_workflows,
+            cleanup_workflow_temp,
         ])
         .setup(|app| {
             // 初始化翻译缓存数据库路径（默认使用 exe 根目录/tagcache/）

@@ -335,7 +335,10 @@ def cluster_hdbscan(features, min_cluster_size=5):
 # ── 主流程 ──────────────────────────────────────
 
 def main():
+    # Windows: 注册 CUDA DLL 目录（必须在任何 import torch 之前）
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from cuda_dll_helper import register_cuda_dlls
+    register_cuda_dlls()
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)

@@ -515,41 +515,17 @@ pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String
         }
     };
 
-    // 3. Windows: 如果有 NVIDIA 但没有 CUDA EP，自动安装 onnxruntime-gpu
-    #[cfg(target_os = "windows")]
+    // 3. 通过统一入口确保 GPU 运行时（幂等：已可用或已试过安装则不重复部署）
     if !gpu_ok && python_ok {
-        // 检查是否有 NVIDIA GPU（重新检测一下）
-        let has_nvidia = tokio::task::spawn_blocking(|| {
-            let mut lines = Vec::new();
-            inference::detect_nvidia_env_pub(&mut lines)
-        })
-        .await
-        .unwrap_or(false);
-
-        if has_nvidia {
-            emit_line("正在自动安装 GPU 版 onnxruntime...", "info");
-            let app_ref = app.clone();
-            let install_result =
-                tokio::task::spawn_blocking(move || python_env::install_gpu_deps(&app_ref))
-                    .await
-                    .unwrap_or_else(|_| Err("安装线程异常".into()));
-
-            match install_result {
-                Ok(()) => {
-                    emit_line("✓ onnxruntime-gpu 已安装", "success");
-                    let recheck = tokio::task::spawn_blocking(|| inference::check_python_env())
-                        .await
-                        .unwrap_or_else(|_| Err("检测线程异常".into()));
-                    if let Ok((_, providers)) = recheck {
-                        gpu_ok = providers.contains("CUDAExecutionProvider");
-                        if gpu_ok {
-                            emit_line("✓ CUDA 加速已启用", "success");
-                        }
-                    }
+        if let Some(python) = python_env::get_python_exe() {
+            match python_env::ensure_onnx_gpu_runtime(&app, &python).await {
+                Ok(true) => {
+                    gpu_ok = true;
+                    emit_line("✓ CUDA 加速已启用", "success");
                 }
+                Ok(false) => {}
                 Err(e) => {
-                    emit_line(&format!("GPU 版安装失败: {}", e), "error");
-                    emit_line("将使用 CPU 推理", "info");
+                    emit_line(&format!("GPU 运行时配置失败: {}", e), "error");
                 }
             }
         }
@@ -619,9 +595,10 @@ pub async fn start_tagging(
         .await
         .map_err(|e| format!("检测线程异常: {}", e))?;
 
-    match &python_check {
+    let python = match &python_check {
         Ok((_ver, _providers)) => {
-            // Python 环境已就绪，无需额外日志
+            // Python 环境已就绪
+            python_env::get_python_exe().unwrap_or_default()
         }
         Err(_) => {
             // Python 环境不可用，自动安装
@@ -636,8 +613,13 @@ pub async fn start_tagging(
                     ..Default::default()
                 },
             );
-            python_env::setup_python_env(&app).await?;
+            python_env::setup_python_env(&app).await?
         }
+    };
+
+    // 确保 onnxruntime GPU 运行时（统一入口，幂等：已可用则直接返回不重装）
+    if !python.is_empty() {
+        let _ = python_env::ensure_onnx_gpu_runtime(&app, &python).await;
     }
 
     // 1. 查找模型

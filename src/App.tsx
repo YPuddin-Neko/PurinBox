@@ -9,6 +9,7 @@ import CropPage from './pages/CropPage';
 import PersonCropPage from './pages/PersonCropPage';
 import FlipPage from './pages/FlipPage';
 import FilterPage from './pages/FilterPage';
+import ResolutionAnalyzePage from './pages/ResolutionAnalyzePage';
 import FileKeeperPage from './pages/FileKeeperPage';
 import FormatConvertPage from './pages/FormatConvertPage';
 import AlphaConvertPage from './pages/AlphaConvertPage';
@@ -25,6 +26,7 @@ import ImageDedupPage from './pages/ImageDedupPage';
 import DatasetBalancerPage from './pages/DatasetBalancerPage';
 import SdMetadataPage from './pages/SdMetadataPage';
 import AestheticPage from './pages/AestheticPage';
+import WorkflowPage from './pages/WorkflowPage';
 import SettingsPage from './pages/SettingsPage';
 import './styles/global.css';
 import './styles/sidebar.css';
@@ -39,6 +41,7 @@ const persistentPages = [
   { path: '/scale', component: ScalePage },
   { path: '/flip', component: FlipPage },
   { path: '/filter', component: FilterPage },
+  { path: '/resolution-analyze', component: ResolutionAnalyzePage },
   { path: '/file-keeper', component: FileKeeperPage },
   { path: '/format-convert', component: FormatConvertPage },
   { path: '/alpha-convert', component: AlphaConvertPage },
@@ -55,6 +58,7 @@ const persistentPages = [
   { path: '/dataset-balancer', component: DatasetBalancerPage },
   { path: '/sd-metadata', component: SdMetadataPage },
   { path: '/aesthetic', component: AestheticPage },
+  { path: '/workflow', component: WorkflowPage },
 ];
 
 // 无状态页面走 Routes

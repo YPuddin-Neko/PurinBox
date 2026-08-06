@@ -85,16 +85,17 @@ export default function TagRefineTab() {
   const endpoint = preset === 'custom' ? customEndpoint : (PRESETS[preset]?.url || '');
 
   useEffect(() => {
-    invoke<[string, string, string]>('load_api_config').then(([p, ce, key]) => {
-      if (p) setPreset(p);
-      if (ce) setCustomEndpoint(ce);
+    invoke<{ preset: string; custom_endpoint: string; api_keys: Record<string, string> }>('load_api_config').then((cfg) => {
+      if (cfg.preset) setPreset(cfg.preset);
+      if (cfg.custom_endpoint) setCustomEndpoint(cfg.custom_endpoint);
+      const key = cfg.api_keys?.[cfg.preset] || '';
       if (key) setApiKey(key);
     }).catch(() => {});
   }, []);
 
   const handleSaveConfig = async () => {
     try {
-      await invoke('save_api_config', { preset, customEndpoint, apiKey });
+      await invoke('save_api_config', { preset, customEndpoint, apiKeys: { [preset]: apiKey } });
       setSaveMsg({ text: t('tagSort.configSaved'), ok: true });
     } catch (e: any) {
       setSaveMsg({ text: `${t('tagSort.saveFailed')}: ${String(e)}`, ok: false });

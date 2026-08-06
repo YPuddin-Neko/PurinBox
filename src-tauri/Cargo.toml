@@ -1,6 +1,6 @@
 [package]
 name = "purinbox"
-version = "0.3.22"
+version = "0.3.23"
 description = "PurinBox - AI训练数据处理工具箱"
 authors = ["you"]
 edition = "2021"
@@ -37,6 +37,7 @@ futures-util = "0.3"
 csv = "1"
 
 base64 = "0.22"
+jsonwebtoken = "9"
 dirs = "5"
 sysinfo = "0.35"
 zip = "2"

@@ -33,6 +33,7 @@ const routeI18nMap: Record<string, string> = {
   '/dataset-balancer': 'sidebar.datasetBalancer',
   '/sd-metadata': 'sidebar.sdMetadata',
   '/aesthetic': 'sidebar.aesthetic',
+  '/workflow': 'sidebar.workflow',
   '/settings': 'sidebar.settings',
 };
 

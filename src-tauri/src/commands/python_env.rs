@@ -785,6 +785,247 @@ pub fn install_gpu_deps(app: &tauri::AppHandle) -> Result<(), String> {
     pip_install_with_python(app, &python, &["onnxruntime-gpu==1.25.1"])
 }
 
+/// 安装 PyTorch CUDA 版本（Windows，从 PyTorch 官方 wheel index）
+#[cfg(target_os = "windows")]
+fn install_torch_cuda_deps(app: &tauri::AppHandle, python: &str) -> Result<(), String> {
+    SETUP_CANCELLED.store(false, Ordering::SeqCst);
+
+    emit_progress(app, "@pythonEnv.installTorchCuda", "info");
+
+    // 先卸载可能存在的 CPU 版本（PyPI 的 Windows torch 不含 CUDA）
+    {
+        let mut cmd = std::process::Command::new(python);
+        cmd.args(["-m", "pip", "uninstall", "-y", "torch", "torchvision"])
+            .env("PYTHONIOENCODING", "utf-8");
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+        let _ = cmd.output();
+    }
+
+    let mut cmd = std::process::Command::new(python);
+    cmd.args([
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-cache-dir",
+        "torch",
+        "torchvision",
+        "--index-url",
+        "https://download.pytorch.org/whl/cu121",
+    ])
+    .env("PYTHONIOENCODING", "utf-8");
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000);
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("安装 PyTorch CUDA 版本失败: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("安装 PyTorch CUDA 版本失败: {}", stderr));
+    }
+
+    Ok(())
+}
+
+/// 本会话内是否已尝试过安装 GPU 依赖 —
+/// 装过一次仍不可用（缺 cuDNN、驱动过旧等）就不再重复部署，直接按 CPU 走
+#[cfg(target_os = "windows")]
+static ONNX_GPU_INSTALL_TRIED: AtomicBool = AtomicBool::new(false);
+static TORCH_INSTALL_TRIED: AtomicBool = AtomicBool::new(false);
+
+/// 在指定 Python 下执行探测脚本并返回 stdout（隐藏 Windows 控制台窗口）
+async fn probe_python(python: &str, script: &'static str) -> Option<String> {
+    let p = python.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new(&p);
+        cmd.args(["-c", script]).env("PYTHONIOENCODING", "utf-8");
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        cmd.output().ok().and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// onnxruntime 探测：输出「providers|是否装了 onnxruntime-gpu 包」
+const ONNX_PROBE: &str = "\
+import importlib.metadata as md
+try:
+    import onnxruntime as ort
+    providers = ','.join(ort.get_available_providers())
+except Exception:
+    providers = ''
+try:
+    md.version('onnxruntime-gpu')
+    gpu_pkg = '1'
+except Exception:
+    gpu_pkg = '0'
+print(providers + '|' + gpu_pkg)";
+
+/// torch 探测：输出「是否安装|是否 CUDA 构建|cuda 可用|mps 可用」
+const TORCH_PROBE: &str = "\
+try:
+    import torch
+except Exception:
+    print('0|0|0|0')
+else:
+    cuda_build = '1' if torch.version.cuda else '0'
+    try:
+        cuda_ok = '1' if torch.cuda.is_available() else '0'
+    except Exception:
+        cuda_ok = '0'
+    try:
+        mps_ok = '1' if (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()) else '0'
+    except Exception:
+        mps_ok = '0'
+    print('1|' + cuda_build + '|' + cuda_ok + '|' + mps_ok)";
+
+/// 检测机器上是否存在 NVIDIA GPU
+#[cfg(target_os = "windows")]
+async fn has_nvidia_gpu() -> bool {
+    tokio::task::spawn_blocking(|| {
+        let mut lines = Vec::new();
+        super::tagger::inference::detect_nvidia_env_pub(&mut lines)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// 统一入口：确保 onnxruntime GPU 运行时可用（探测 → 必要时安装 → 复检）
+///
+/// 幂等：GPU EP 已可用时直接返回，不做任何安装；已装 GPU 包但 EP 仍不可用
+/// （缺 cuDNN / 驱动过旧）时也不重复安装。
+/// 返回 Ok(true) 表示有 GPU 加速，Ok(false) 表示按 CPU 运行。
+pub async fn ensure_onnx_gpu_runtime(
+    app: &tauri::AppHandle,
+    python: &str,
+) -> Result<bool, String> {
+    let _ = app; // 非 Windows 平台不触发安装
+
+    let probe = probe_python(python, ONNX_PROBE).await.unwrap_or_default();
+    let (providers, gpu_pkg) = probe.split_once('|').unwrap_or(("", "0"));
+    let gpu_pkg_installed = gpu_pkg.trim() == "1";
+
+    // 已有 GPU ExecutionProvider → 直接用，不重新部署
+    if providers.contains("CUDAExecutionProvider") || providers.contains("CoreMLExecutionProvider")
+    {
+        return Ok(true);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // 已装 GPU 包却仍拿不到 CUDA EP，是 cuDNN/驱动问题，重装无用
+        if gpu_pkg_installed || ONNX_GPU_INSTALL_TRIED.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+        if !has_nvidia_gpu().await {
+            return Ok(false); // 没有 NVIDIA，CPU 即最终形态
+        }
+
+        ONNX_GPU_INSTALL_TRIED.store(true, Ordering::SeqCst);
+
+        let app2 = app.clone();
+        tokio::task::spawn_blocking(move || install_gpu_deps(&app2))
+            .await
+            .map_err(|e| format!("安装线程异常: {}", e))??;
+
+        let probe = probe_python(python, ONNX_PROBE).await.unwrap_or_default();
+        let providers = probe.split('|').next().unwrap_or("");
+        return Ok(providers.contains("CUDAExecutionProvider"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = gpu_pkg_installed;
+        // macOS 的 CoreML EP 随 onnxruntime 提供；Linux 需用户自备 CUDA 运行时。
+        // 两者都不是重装 pip 包能解决的
+        Ok(false)
+    }
+}
+
+/// 统一入口：确保 PyTorch 运行时可用（探测 → 必要时安装 → 复检）
+///
+/// 幂等：GPU 已可用时直接返回；已是 CUDA 构建但 GPU 不可用（驱动问题）时不重装；
+/// 无 NVIDIA 的机器装过一次 CPU 版后也不会反复重装。
+/// 返回 Ok(true) 表示有 GPU 加速，Ok(false) 表示按 CPU 运行。
+pub async fn ensure_torch_gpu_runtime(
+    app: &tauri::AppHandle,
+    python: &str,
+) -> Result<bool, String> {
+    let probe = probe_python(python, TORCH_PROBE).await.unwrap_or_default();
+    let f: Vec<&str> = probe.split('|').map(|s| s.trim()).collect();
+    let installed = f.first().is_some_and(|v| *v == "1");
+    let cuda_build = f.get(1).is_some_and(|v| *v == "1");
+    let cuda_ok = f.get(2).is_some_and(|v| *v == "1");
+    let mps_ok = f.get(3).is_some_and(|v| *v == "1");
+
+    // GPU 已可用 → 直接用，不重新部署
+    if cuda_ok || mps_ok {
+        return Ok(true);
+    }
+
+    #[cfg(target_os = "windows")]
+    let want_cuda = has_nvidia_gpu().await;
+    #[cfg(not(target_os = "windows"))]
+    let want_cuda = false;
+
+    if installed {
+        // 已装 torch：仅当「有 NVIDIA + 当前是 CPU 构建」时才值得换成 CUDA 构建
+        let needs_cuda_swap = want_cuda && !cuda_build;
+        if !needs_cuda_swap || TORCH_INSTALL_TRIED.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
+    }
+
+    TORCH_INSTALL_TRIED.store(true, Ordering::SeqCst);
+
+    #[cfg(target_os = "windows")]
+    if want_cuda {
+        let p = python.to_string();
+        let app2 = app.clone();
+        tokio::task::spawn_blocking(move || install_torch_cuda_deps(&app2, &p))
+            .await
+            .map_err(|e| format!("安装线程异常: {}", e))??;
+    } else {
+        let p = python.to_string();
+        let app2 = app.clone();
+        tokio::task::spawn_blocking(move || {
+            pip_install_with_python(&app2, &p, &["torch", "torchvision"])
+        })
+        .await
+        .map_err(|e| format!("安装线程异常: {}", e))??;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let p = python.to_string();
+        let app2 = app.clone();
+        tokio::task::spawn_blocking(move || {
+            pip_install_with_python(&app2, &p, &["torch", "torchvision"])
+        })
+        .await
+        .map_err(|e| format!("安装线程异常: {}", e))??;
+    }
+
+    let probe = probe_python(python, TORCH_PROBE).await.unwrap_or_default();
+    let f: Vec<&str> = probe.split('|').map(|s| s.trim()).collect();
+    let cuda_ok = f.get(2).is_some_and(|v| *v == "1");
+    let mps_ok = f.get(3).is_some_and(|v| *v == "1");
+    Ok(cuda_ok || mps_ok)
+}
+
 /// 获取当前可用的 Python 路径（venv 优先，系统其次）
 #[cfg(target_os = "windows")]
 fn get_active_python() -> Result<String, String> {

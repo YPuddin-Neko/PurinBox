@@ -1,15 +1,31 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// API 配置
+/// API 配置（磁盘存储格式）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiConfig {
-    /// 预设类型: "openai" | "gemini" | "deepseek" | "custom"
+    /// 预设类型: "openai" | "gemini" | "deepseek" | "vertex_express" | "vertex_sa" | "custom"
     pub preset: String,
     /// 自定义端点 URL（仅 preset="custom" 时使用）
     pub custom_endpoint: String,
-    /// API Key（base64 编码存储）
-    pub api_key_encoded: String,
+    /// 各预设的 API Key（base64 编码存储），key = preset 名称
+    #[serde(default)]
+    pub api_keys: HashMap<String, String>,
+    /// Vertex AI: Google Cloud Project ID
+    #[serde(default)]
+    pub vertex_project_id: String,
+    /// Vertex AI: 区域（如 "global", "us-central1"）
+    #[serde(default)]
+    pub vertex_location: String,
+    /// Vertex AI: Service Account JSON 文件路径
+    #[serde(default)]
+    pub vertex_sa_path: String,
+
+    // ---- 兼容旧版：单一 api_key_encoded ----
+    /// 旧字段（迁移后不再写入，仅用于读取旧配置）
+    #[serde(default, skip_serializing)]
+    api_key_encoded: String,
 }
 
 impl Default for ApiConfig {
@@ -17,9 +33,25 @@ impl Default for ApiConfig {
         Self {
             preset: "openai".to_string(),
             custom_endpoint: String::new(),
+            api_keys: HashMap::new(),
+            vertex_project_id: String::new(),
+            vertex_location: "global".to_string(),
+            vertex_sa_path: String::new(),
             api_key_encoded: String::new(),
         }
     }
+}
+
+/// 返回给前端的配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiConfigResponse {
+    pub preset: String,
+    pub custom_endpoint: String,
+    /// 各预设的 API Key（已解码明文），key = preset 名称
+    pub api_keys: HashMap<String, String>,
+    pub vertex_project_id: String,
+    pub vertex_location: String,
+    pub vertex_sa_path: String,
 }
 
 const CONFIG_FILE: &str = "api_config.json";
@@ -53,15 +85,29 @@ fn decode_key(encoded: &str) -> String {
 pub fn save_api_config(
     preset: String,
     custom_endpoint: String,
-    api_key: String,
+    api_keys: HashMap<String, String>,
+    vertex_project_id: Option<String>,
+    vertex_location: Option<String>,
+    vertex_sa_path: Option<String>,
 ) -> Result<(), String> {
     let dir = super::config_paths::user_config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
 
+    // 编码所有 key
+    let encoded_keys: HashMap<String, String> = api_keys
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| (k, encode_key(&v)))
+        .collect();
+
     let config = ApiConfig {
         preset,
         custom_endpoint,
-        api_key_encoded: encode_key(&api_key),
+        api_keys: encoded_keys,
+        vertex_project_id: vertex_project_id.unwrap_or_default(),
+        vertex_location: vertex_location.unwrap_or_else(|| "global".to_string()),
+        vertex_sa_path: vertex_sa_path.unwrap_or_default(),
+        api_key_encoded: String::new(),
     };
 
     let json = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {}", e))?;
@@ -69,21 +115,47 @@ pub fn save_api_config(
     Ok(())
 }
 
-/// 加载 API 配置（返回解码后的 key）
+/// 加载 API 配置
 #[tauri::command]
-pub fn load_api_config() -> Result<(String, String, String), String> {
+pub fn load_api_config() -> Result<ApiConfigResponse, String> {
     let path = config_path();
     if !path.exists() {
-        return Ok(("openai".to_string(), String::new(), String::new()));
+        return Ok(ApiConfigResponse {
+            preset: "openai".to_string(),
+            custom_endpoint: String::new(),
+            api_keys: HashMap::new(),
+            vertex_project_id: String::new(),
+            vertex_location: "global".to_string(),
+            vertex_sa_path: String::new(),
+        });
     }
 
     let content = std::fs::read_to_string(&path).map_err(|e| format!("读取配置失败: {}", e))?;
     let config: ApiConfig =
         serde_json::from_str(&content).map_err(|e| format!("解析配置失败: {}", e))?;
 
-    Ok((
-        config.preset,
-        config.custom_endpoint,
-        decode_key(&config.api_key_encoded),
-    ))
+    // 解码所有 key
+    let mut decoded_keys: HashMap<String, String> = config
+        .api_keys
+        .iter()
+        .map(|(k, v)| (k.clone(), decode_key(v)))
+        .filter(|(_, v)| !v.is_empty())
+        .collect();
+
+    // 兼容旧版：如果有 api_key_encoded 但 api_keys 为空，迁移到当前 preset
+    if decoded_keys.is_empty() && !config.api_key_encoded.is_empty() {
+        let old_key = decode_key(&config.api_key_encoded);
+        if !old_key.is_empty() {
+            decoded_keys.insert(config.preset.clone(), old_key);
+        }
+    }
+
+    Ok(ApiConfigResponse {
+        preset: config.preset,
+        custom_endpoint: config.custom_endpoint,
+        api_keys: decoded_keys,
+        vertex_project_id: config.vertex_project_id,
+        vertex_location: config.vertex_location,
+        vertex_sa_path: config.vertex_sa_path,
+    })
 }

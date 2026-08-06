@@ -366,8 +366,9 @@ pub async fn start_person_crop(
 ) -> Result<ProcessResult, String> {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
 
-    // Ensure Python environment is ready (onnxruntime + numpy + pillow)
-    super::python_env::setup_python_env(&app).await?;
+    // 确保 Python 环境 + onnxruntime GPU 运行时
+    let python = super::python_env::setup_python_env(&app).await?;
+    let _has_gpu = super::python_env::ensure_onnx_gpu_runtime(&app, &python).await?;
 
     let _ = app.emit(
         "person-crop-progress",

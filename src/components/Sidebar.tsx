@@ -28,6 +28,8 @@ import {
   FileCode2,
   Star,
   Wand2,
+  BarChart3,
+  Workflow,
 } from 'lucide-react';
 import '../styles/sidebar.css';
 import { getAppVersion, packageAppVersion } from '../utils/appVersion';
@@ -47,6 +49,7 @@ const navSections: NavSection[] = [
       { id: 'scale', labelKey: 'sidebar.scale', icon: <Scaling />, path: '/scale' },
       { id: 'flip', labelKey: 'sidebar.imageProcess', icon: <FlipHorizontal2 />, path: '/flip' },
       { id: 'filter', labelKey: 'sidebar.filter', icon: <ScanSearch />, path: '/filter' },
+      { id: 'resolution-analyze', labelKey: 'sidebar.resolutionAnalyze', icon: <BarChart3 />, path: '/resolution-analyze' },
       { id: 'file-keeper', labelKey: 'sidebar.fileKeeper', icon: <FileCheck2 />, path: '/file-keeper' },
       { id: 'format-convert', labelKey: 'sidebar.formatConvert', icon: <FileType />, path: '/format-convert' },
       { id: 'alpha-convert', labelKey: 'sidebar.alphaConvert', icon: <Layers />, path: '/alpha-convert' },
@@ -72,6 +75,12 @@ const navSections: NavSection[] = [
       { id: 'image-dedup', labelKey: 'sidebar.imageDedup', icon: <Copy />, path: '/image-dedup' },
       { id: 'dataset-balancer', labelKey: 'sidebar.datasetBalancer', icon: <Scale />, path: '/dataset-balancer' },
       { id: 'sd-metadata', labelKey: 'sidebar.sdMetadata', icon: <FileCode2 />, path: '/sd-metadata' },
+    ],
+  },
+  {
+    titleKey: 'sidebar.sectionAutomation',
+    items: [
+      { id: 'workflow', labelKey: 'sidebar.workflow', icon: <Workflow />, path: '/workflow' },
     ],
   },
 ];

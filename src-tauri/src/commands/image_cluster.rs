@@ -87,34 +87,8 @@ async fn ensure_cluster_deps(app: &tauri::AppHandle) -> Result<(), String> {
     emit_log("正在检查 Python 环境...");
     let python = super::python_env::setup_python_env(app).await?;
 
-    // 检查 torch
-    let has_torch = {
-        let p = python.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new(&p);
-            cmd.args(["-c", "import torch; print(torch.__version__)"]);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output().map(|o| o.status.success()).unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false)
-    };
-
-    if !has_torch {
-        emit_log("正在安装 PyTorch（首次安装约 500MB-2GB）...");
-        let p = python.clone();
-        let app2 = app.clone();
-        tokio::task::spawn_blocking(move || {
-            super::python_env::pip_install_with_python(&app2, &p, &["torch", "torchvision"])
-        })
-        .await
-        .map_err(|e| format!("安装线程异常: {}", e))??;
-        emit_log("PyTorch 安装完成");
-    }
+    // 确保 PyTorch GPU 运行时（统一入口：检查 + 按需安装）
+    let _has_gpu = super::python_env::ensure_torch_gpu_runtime(app, &python).await?;
 
     // 检查 sklearn
     let has_sklearn = {

@@ -554,9 +554,10 @@ async fn download_python_engine(
         );
     };
 
-    // Step 1: Ensure Python environment (onnxruntime already installed by setup_python_env)
+    // Step 1: Ensure Python environment + onnxruntime GPU 运行时
     emit(5.0, "downloading", "正在检查 Python 环境...".into());
     let python = super::python_env::setup_python_env(app).await?;
+    let _has_gpu = super::python_env::ensure_onnx_gpu_runtime(app, &python).await?;
 
     if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
         return Err("下载已取消".into());

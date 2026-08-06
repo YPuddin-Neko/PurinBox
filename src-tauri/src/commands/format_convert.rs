@@ -134,6 +134,15 @@ fn convert_format_sync(
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
 
+    // 前置校验：输入不存在时给出明确原因。工作流中最常见的成因是
+    // 上游节点为原地操作、并未产出该目录
+    if !input.exists() {
+        return Err(format!(
+            "输入路径不存在: {}（若在工作流中使用，请检查上游节点是否实际产出了该目录）",
+            input.display()
+        ));
+    }
+
     if !output_dir.exists() {
         std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
     }

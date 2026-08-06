@@ -17,10 +17,12 @@ interface CustomSelectProps {
   style?: React.CSSProperties;
   /** compact 模式：更小字号/高度 */
   compact?: boolean;
+  /** 允许手动输入自定义值 */
+  allowCustom?: boolean;
 }
 
 export default function CustomSelect({
-  value, options, onChange, placeholder, disabled = false, style, compact = false,
+  value, options, onChange, placeholder, disabled = false, style, compact = false, allowCustom = false,
 }: CustomSelectProps) {
   const { t } = useTranslation();
   const resolvedPlaceholder = placeholder || t('common.select');
@@ -29,6 +31,7 @@ export default function CustomSelect({
   const listRef = useRef<HTMLDivElement>(null);
 
   const selected = options.find(o => o.value === value);
+  const [customInput, setCustomInput] = useState('');
 
   // 点击外部关闭
   useEffect(() => {
@@ -80,8 +83,8 @@ export default function CustomSelect({
       onKeyDown={handleKeyDown}
     >
       <div className="cs-trigger" onClick={() => !disabled && setOpen(o => !o)}>
-        <span className={`cs-value ${!selected ? 'cs-placeholder' : ''}`}>
-          {selected ? selected.label : resolvedPlaceholder}
+        <span className={`cs-value ${!selected && !value ? 'cs-placeholder' : ''}`}>
+          {selected ? selected.label : (value || resolvedPlaceholder)}
         </span>
         <ChevronDown className={`cs-arrow ${open ? 'cs-arrow-open' : ''}`} />
       </div>
@@ -98,8 +101,17 @@ export default function CustomSelect({
               {opt.value === value && <Check className="cs-option-check" />}
             </div>
           ))}
-          {options.length === 0 && (
+          {options.length === 0 && !allowCustom && (
             <div className="cs-empty">{t('common.noOptions')}</div>
+          )}
+          {allowCustom && (
+            <div style={{ borderTop: '1px solid var(--color-border)', padding: '4px 6px', display: 'flex', gap: 4 }}>
+              <input className="form-input" placeholder={t('llmTagger.modelPlaceholder')}
+                value={customInput} onChange={e => setCustomInput(e.target.value)}
+                onClick={e => e.stopPropagation()}
+                onKeyDown={e => { if (e.key === 'Enter' && customInput.trim()) { onChange(customInput.trim()); setCustomInput(''); setOpen(false); } e.stopPropagation(); }}
+                style={{ flex: 1, fontSize: 11, height: 26 }} />
+            </div>
           )}
         </div>
       )}
