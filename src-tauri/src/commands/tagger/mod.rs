@@ -579,6 +579,16 @@ pub fn cancel_tagging() {
     python_env::cancel_setup();
 }
 
+/// 强制取消打标（终止整个子进程树）
+#[tauri::command]
+pub fn force_cancel_tagging() {
+    inference::cancel_tagging();
+    download::cancel_download();
+    gpu_runtime::cancel_ort_download();
+    python_env::cancel_setup();
+    inference::kill_python_process();
+}
+
 /// 开始打标
 #[tauri::command]
 pub async fn start_tagging(

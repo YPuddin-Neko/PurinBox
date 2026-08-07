@@ -38,6 +38,7 @@ export interface NodeTypeDef {
   outputLabelKey?: string;     // i18n key for output slot label
   outputBLabelKey?: string;    // i18n key for second output slot label
   tauriCommand?: string;       // mapped Tauri command name
+  cancelCommand?: string;      // 取消命令（停止工作流时用于终止该节点的子进程）
 }
 
 /** 节点运行时数据 */

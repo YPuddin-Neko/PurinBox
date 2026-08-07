@@ -1402,24 +1402,13 @@ pub fn cancel_upscale() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
-/// 强制取消超分（杀死 Python 子进程）
+/// 强制取消超分（终止整个子进程树）
 #[tauri::command]
 pub fn force_cancel_upscale() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
     if let Ok(mut guard) = ACTIVE_CHILD.lock() {
         if let Some(pid) = guard.take() {
-            #[cfg(unix)]
-            {
-                let _ = std::process::Command::new("kill")
-                    .args(["-9", &pid.to_string()])
-                    .output();
-            }
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/PID", &pid.to_string(), "/T"])
-                    .output();
-            }
+            super::kill_process_tree(pid);
         }
     }
 }

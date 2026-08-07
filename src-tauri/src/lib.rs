@@ -1,6 +1,8 @@
 mod commands;
 
-use commands::aesthetic::{cancel_aesthetic_scoring, start_aesthetic_scoring};
+use commands::aesthetic::{
+    cancel_aesthetic_scoring, force_cancel_aesthetic_scoring, start_aesthetic_scoring,
+};
 use commands::alpha_convert::{cancel_alpha, convert_alpha};
 use commands::api_config::{load_api_config, save_api_config};
 use commands::batch_rename::{execute_rename, preview_rename};
@@ -21,6 +23,7 @@ use commands::image_flip::{cancel_flip, flip_images};
 use commands::image_scale::{cancel_scale, scale_images};
 use commands::person_crop::{
     cancel_person_crop, cancel_person_crop_download, download_person_crop_model,
+    force_cancel_person_crop,
     get_person_crop_models, start_person_crop,
 };
 use commands::perspective::{cancel_perspective, perspective_transform};
@@ -45,6 +48,7 @@ use commands::tag_sort::{cancel_tag_sorting, start_tag_sorting};
 use commands::tagger::llm_tagger::{cancel_llm_tagging, fetch_llm_models, start_llm_tagging};
 use commands::tagger::{
     cancel_gpu_runtime_download, cancel_tagger_download, cancel_tagging, check_cuda_available,
+    force_cancel_tagging,
     detect_onnx_model_info, download_gpu_runtime, get_gpu_runtime_status, get_tagger_models,
     import_local_tagger_model, remove_custom_tagger_model, start_tagging,
 };
@@ -84,6 +88,7 @@ pub fn run() {
             cancel_flip,
             start_person_crop,
             cancel_person_crop,
+            force_cancel_person_crop,
             get_person_crop_models,
             download_person_crop_model,
             cancel_person_crop_download,
@@ -111,6 +116,7 @@ pub fn run() {
             download_gpu_runtime,
             cancel_gpu_runtime_download,
             cancel_tagging,
+            force_cancel_tagging,
             reset_python_env,
             deploy_python_env,
             get_python_env_info,
@@ -183,6 +189,7 @@ pub fn run() {
             check_tag_db_update,
             start_aesthetic_scoring,
             cancel_aesthetic_scoring,
+            force_cancel_aesthetic_scoring,
             save_workflow,
             load_workflow,
             list_workflows,

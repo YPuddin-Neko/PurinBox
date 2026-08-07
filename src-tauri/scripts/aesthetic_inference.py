@@ -147,30 +147,9 @@ def main():
                 log(f"标签: {labels}")
                 log(f"输入尺寸: {input_size}x{input_size}")
 
-                # 选择 provider
-                providers = []
-                if use_gpu:
-                    available = ort.get_available_providers()
-                    if "CUDAExecutionProvider" in available:
-                        providers.append("CUDAExecutionProvider")
-                        # 尝试获取 GPU 名称
-                        try:
-                            import subprocess
-                            r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                                               capture_output=True, text=True, timeout=5)
-                            gpu_name = r.stdout.strip().split("\n")[0] if r.returncode == 0 else "NVIDIA GPU"
-                        except Exception:
-                            gpu_name = "NVIDIA GPU"
-                        log_i18n("gpu.usingCuda", {"name": gpu_name})
-                    elif "CoreMLExecutionProvider" in available:
-                        providers.append("CoreMLExecutionProvider")
-                        log_i18n("gpu.usingCoreML")
-                    else:
-                        log_i18n("gpu.unavailable")
-                        from gpu_diagnostics import diagnose_gpu
-                        for item in diagnose_gpu():
-                            log_i18n(item["key"], item.get("params"))
-                providers.append("CPUExecutionProvider")
+                # 选择 provider — 统一流程：探测环境 + 输出日志 + 决定 providers
+                from gpu_diagnostics import resolve_ort_providers
+                providers = resolve_ort_providers(log_i18n, use_gpu=use_gpu)
 
                 sess_options = ort.SessionOptions()
                 sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL

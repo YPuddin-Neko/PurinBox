@@ -497,39 +497,10 @@ def main():
                 preprocess_mode = cmd.get("preprocess_mode", "auto")
 
                 # === ONNX Runtime 后端 ===
-                available = ort.get_available_providers()
-                gpu_provider = None
-                if use_gpu:
-                    if "CUDAExecutionProvider" in available:
-                        gpu_provider = "CUDAExecutionProvider"
-                        log_i18n("gpu.usingCuda", {"name": "NVIDIA GPU"})
-                    elif "CoreMLExecutionProvider" in available:
-                        gpu_provider = "CoreMLExecutionProvider"
-                        log_i18n("gpu.usingCoreML")
-                    else:
-                        log_i18n("gpu.unavailable")
-                        from gpu_diagnostics import diagnose_gpu
-                        for item in diagnose_gpu():
-                            log_i18n(item["key"], item.get("params"))
-
-                if gpu_provider:
-                    providers = [gpu_provider, "CPUExecutionProvider"]
-                else:
-                    providers = ["CPUExecutionProvider"]
-                    if not use_gpu:
-                        log_i18n("gpu.usingCpu")
-
-                # GPU 模式下打印诊断信息（仅 Windows CUDA）
-                if use_gpu and sys.platform == "win32" and gpu_provider == "CUDAExecutionProvider":
-                    import ctypes, glob
-                    cudnn_found = False
-                    for p in os.environ.get("PATH", "").split(os.pathsep):
-                        cudnn_dlls = glob.glob(os.path.join(p, "cudnn*.dll"))
-                        if cudnn_dlls:
-                            cudnn_found = True
-                            break
-                    if not cudnn_found:
-                        log("⚠ 未在 PATH 中找到 cuDNN DLL (cudnn*.dll)")
+                # 统一流程：探测环境（显卡型号 / CUDA / cuDNN）+ 输出日志 + 决定 providers
+                from gpu_diagnostics import resolve_ort_providers
+                providers = resolve_ort_providers(log_i18n, use_gpu=use_gpu)
+                gpu_provider = providers[0] if providers[0] != "CPUExecutionProvider" else None
 
                 # 尝试创建 session，GPU 失败时自动回退 CPU
                 try:

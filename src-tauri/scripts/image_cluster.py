@@ -77,18 +77,26 @@ def relative_parent(input_path, file_path, recursive=False):
 # ── 设备检测 ──────────────────────────────────────
 
 def detect_device():
+    """统一流程探测环境，再用 torch 确认后端实际可用性"""
+    from gpu_diagnostics import emit_gpu_report
+
+    # 1~4 步：显卡型号 / CUDA / cuDNN 探测与日志（不安装任何东西）
+    if not emit_gpu_report(emit_i18n):
+        return "cpu"
+
     import torch
+
+    # 环境探测通过，再确认 torch 实际能用哪个后端
     if torch.cuda.is_available():
-        name = torch.cuda.get_device_name(0)
-        emit_i18n("gpu.usingCuda", {"name": name})
+        emit_i18n("gpu.usingCuda", {"name": torch.cuda.get_device_name(0)})
         return "cuda"
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         emit_i18n("gpu.usingMPS")
         return "mps"
+
+    # 环境齐备但 torch 拿不到后端（如装的是 CPU-only 构建）
     emit_i18n("gpu.unavailable")
-    from gpu_diagnostics import diagnose_gpu
-    for item in diagnose_gpu():
-        emit_i18n(item["key"], item.get("params"))
+    emit_i18n("gpu.fallbackCpu")
     return "cpu"
 
 # ── 颜色直方图特征 ──────────────────────────────────────

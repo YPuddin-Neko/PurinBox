@@ -188,7 +188,7 @@ export default function AestheticPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!inputPath}
-            cancelCommand="cancel_aesthetic_scoring"
+            cancelCommand="cancel_aesthetic_scoring" forceCancelCommand="force_cancel_aesthetic_scoring"
             startText={t('aesthetic.start')}
             processingText={t('aesthetic.processing')}
             onCancelLog={addCancelLog} />

@@ -13,8 +13,6 @@ from pathlib import Path
 
 def _resolve_providers(use_gpu):
     """检测 GPU 环境并返回 providers 列表，同时输出诊断日志（只调用一次）"""
-    import onnxruntime as ort
-    
     def _log_i18n(key, params=None):
         d = {"type": "log", "i18n_key": key, "message": key}
         if params:
@@ -22,30 +20,9 @@ def _resolve_providers(use_gpu):
         line = json.dumps(d) + "\n"
         sys.stdout.buffer.write(line.encode("utf-8"))
         sys.stdout.buffer.flush()
-    
-    providers = ['CPUExecutionProvider']
-    if use_gpu:
-        available = ort.get_available_providers()
-        if 'CUDAExecutionProvider' in available:
-            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            try:
-                import subprocess
-                r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                                   capture_output=True, text=True, timeout=5)
-                gpu_name = r.stdout.strip().split("\n")[0] if r.returncode == 0 else "NVIDIA GPU"
-            except Exception:
-                gpu_name = "NVIDIA GPU"
-            _log_i18n("gpu.usingCuda", {"name": gpu_name})
-        elif 'CoreMLExecutionProvider' in available:
-            providers = ['CoreMLExecutionProvider', 'CPUExecutionProvider']
-            _log_i18n("gpu.usingCoreML")
-        else:
-            _log_i18n("gpu.unavailable")
-            from gpu_diagnostics import diagnose_gpu
-            for item in diagnose_gpu():
-                _log_i18n(item["key"], item.get("params"))
-    
-    return providers
+
+    from gpu_diagnostics import resolve_ort_providers
+    return resolve_ort_providers(_log_i18n, use_gpu=use_gpu)
 
 def load_model(model_path, providers):
     """加载 ONNX 模型（使用预先解析好的 providers）"""

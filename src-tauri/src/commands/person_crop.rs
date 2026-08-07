@@ -392,18 +392,15 @@ pub fn cancel_person_crop() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
     if let Ok(mut guard) = CHILD_PROCESS.lock() {
         if let Some(pid) = guard.take() {
-            #[cfg(target_os = "windows")]
-            {
-                let _ = Command::new("taskkill")
-                    .args(["/F", "/T", "/PID", &pid.to_string()])
-                    .output();
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
-            }
+            super::kill_process_tree(pid);
         }
     }
+}
+
+/// 强制取消三分法裁切（终止整个子进程树）
+#[tauri::command]
+pub fn force_cancel_person_crop() {
+    cancel_person_crop();
 }
 
 fn find_python() -> Result<String, String> {

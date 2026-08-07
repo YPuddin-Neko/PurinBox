@@ -96,27 +96,17 @@ def tile_process(img_np, session, input_name, output_name, scale, tile_size=0, t
 def create_session(onnx_path, device):
     """创建 onnxruntime InferenceSession，自动选择最佳 EP"""
     import onnxruntime as ort
+    from gpu_diagnostics import resolve_ort_providers
 
     onnx_path = os.path.abspath(onnx_path)
 
-    providers = []
-    actual_device = "cpu"
-
-    if device != "cpu":
-        available = ort.get_available_providers()
-
-        # CUDA (Windows/Linux)
-        if "CUDAExecutionProvider" in available:
-            providers.append("CUDAExecutionProvider")
-            actual_device = "cuda"
-        # CoreML (macOS Apple Silicon)
-        elif "CoreMLExecutionProvider" in available:
-            providers.append(("CoreMLExecutionProvider", {
-                "MLComputeUnits": "ALL",  # Use ANE + GPU + CPU
-            }))
-            actual_device = "coreml"
-
-    providers.append("CPUExecutionProvider")
+    # 统一流程：探测环境 + 输出日志 + 决定 providers
+    # CoreML 启用 ANE+GPU+CPU 全部计算单元
+    providers = resolve_ort_providers(
+        emit_i18n,
+        use_gpu=(device != "cpu"),
+        coreml_options={"MLComputeUnits": "ALL"},
+    )
 
     sess_opts = ort.SessionOptions()
     sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -124,32 +114,18 @@ def create_session(onnx_path, device):
     try:
         session = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=providers)
     except Exception as e:
-        # GPU EP failed (e.g. CoreML doesn't support some ops) — fall back to CPU
+        # GPU EP 加载失败（如 CoreML 不支持某些算子）— 回退 CPU
         emit_log(f"GPU 加载失败 ({e})，回退到 CPU")
-        actual_device = "cpu"
-        session = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=["CPUExecutionProvider"])
+        session = ort.InferenceSession(onnx_path, sess_options=sess_opts,
+                                       providers=["CPUExecutionProvider"])
 
     active_ep = session.get_providers()[0] if session.get_providers() else "CPUExecutionProvider"
-
     if "CUDA" in active_ep:
-        try:
-            import subprocess
-            r = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                               capture_output=True, text=True, timeout=5)
-            gpu_name = r.stdout.strip().split("\n")[0] if r.returncode == 0 else "NVIDIA GPU"
-        except Exception:
-            gpu_name = "NVIDIA GPU"
-        emit_i18n("gpu.usingCuda", {"name": gpu_name})
+        actual_device = "cuda"
     elif "CoreML" in active_ep:
-        emit_i18n("gpu.usingCoreML")
+        actual_device = "coreml"
     else:
-        if device != "cpu":
-            emit_i18n("gpu.unavailable")
-            from gpu_diagnostics import diagnose_gpu
-            for item in diagnose_gpu():
-                emit_i18n(item["key"], item.get("params"))
-        else:
-            emit_i18n("gpu.usingCpu")
+        actual_device = "cpu"
 
     return session, actual_device
 

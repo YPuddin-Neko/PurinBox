@@ -793,3 +793,45 @@ fn version_compare(latest: &str, current: &str) -> bool {
     }
     false
 }
+
+/// 强制终止子进程树（按 PID）。
+///
+/// 普通的 `Child::kill()` 只终止直接子进程，Python 派生的工作进程
+/// （onnxruntime 线程池、torch worker 等）会存活成为孤儿进程，
+/// 表现为「强制结束不起作用」。这里按进程树整体终止。
+pub fn kill_process_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let _ = cmd.output();
+    }
+    #[cfg(unix)]
+    {
+        // 先杀进程组（负 PID 表示进程组），失败再退化为单进程
+        let killed_group = std::process::Command::new("kill")
+            .args(["-9", &format!("-{}", pid)])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !killed_group {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+        }
+    }
+}
+
+/// 强制终止 `Child` 句柄对应的整个进程树，并回收句柄避免僵尸进程。
+pub fn kill_child_tree(slot: &std::sync::Mutex<Option<std::process::Child>>) {
+    if let Ok(mut guard) = slot.lock() {
+        if let Some(mut child) = guard.take() {
+            kill_process_tree(child.id());
+            // taskkill/kill 之后仍需 kill+wait 回收句柄
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}

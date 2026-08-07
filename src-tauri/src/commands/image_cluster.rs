@@ -488,18 +488,7 @@ pub fn force_cancel_image_cluster() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
     if let Ok(mut guard) = CHILD_PID.lock() {
         if let Some(pid) = guard.take() {
-            #[cfg(unix)]
-            {
-                let _ = std::process::Command::new("kill")
-                    .args(["-9", &pid.to_string()])
-                    .output();
-            }
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/PID", &pid.to_string(), "/T"])
-                    .output();
-            }
+            super::kill_process_tree(pid);
         }
     }
 }

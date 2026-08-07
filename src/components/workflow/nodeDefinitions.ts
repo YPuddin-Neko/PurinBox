@@ -51,6 +51,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'scale_images',
+    cancelCommand: 'cancel_scale',
   },
   {
     type: 'crop',
@@ -71,6 +72,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'crop_images',
+    cancelCommand: 'cancel_crop',
   },
   {
     type: 'flip',
@@ -89,6 +91,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'flip_images',
+    cancelCommand: 'cancel_flip',
   },
   {
     type: 'format-convert',
@@ -109,6 +112,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'convert_format',
+    cancelCommand: 'cancel_convert',
   },
   {
     type: 'alpha-convert',
@@ -127,6 +131,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'convert_alpha',
+    cancelCommand: 'cancel_alpha',
   },
   {
     type: 'blur-noise',
@@ -143,6 +148,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'blur_noise_images',
+    cancelCommand: 'cancel_blur_noise',
   },
   {
     type: 'perspective',
@@ -158,6 +164,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'perspective_transform',
+    cancelCommand: 'cancel_perspective',
   },
 
   // ── AI 处理 ──
@@ -184,6 +191,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'start_upscale',
+    cancelCommand: 'force_cancel_upscale',
   },
   {
     type: 'person-crop',
@@ -202,6 +210,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'start_person_crop',
+    cancelCommand: 'force_cancel_person_crop',
   },
   {
     type: 'aesthetic',
@@ -217,6 +226,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'start_aesthetic_scoring',
+    cancelCommand: 'force_cancel_aesthetic_scoring',
   },
 
   // ── 标签 ──
@@ -268,6 +278,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'start_tagging',
+    cancelCommand: 'force_cancel_tagging',
   },
   {
     type: 'llm-tagger',
@@ -297,6 +308,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'start_llm_tagging',
+    cancelCommand: 'cancel_llm_tagging',
   },
 
   // ── 分析/条件 ──
@@ -353,6 +365,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'filter_by_resolution',
+    cancelCommand: 'cancel_filter',
   },
   {
     type: 'rename',

@@ -347,11 +347,28 @@ export class WorkflowEngine {
   private status: ExecutionStatus = 'idle';
   private unlisteners: UnlistenFn[] = [];
   private currentNodeId = '';
+  /** 当前正在执行的节点类型，用于取消时定位对应的 Rust 取消命令 */
+  private currentNodeType = '';
 
   getStatus() { return this.status; }
 
+  /**
+   * 取消工作流。
+   * 仅置本地标志不足以停止正在运行的节点——Rust 侧的处理循环和 Python
+   * 子进程都不知情，会继续跑完当前节点。必须同时调用该节点的取消命令。
+   */
   cancel() {
     this.cancelFlag = true;
+
+    // 终止当前节点正在执行的后端任务（含其 Python 子进程树）
+    if (this.currentNodeType) {
+      const cancelCommand = getNodeDef(this.currentNodeType)?.cancelCommand;
+      if (cancelCommand) {
+        invoke(cancelCommand).catch((e) => {
+          console.warn(`取消命令 ${cancelCommand} 调用失败:`, e);
+        });
+      }
+    }
   }
 
   async execute(
@@ -374,6 +391,19 @@ export class WorkflowEngine {
     };
 
     try {
+      // 0. 清理上一次运行的中间产物。
+      // 临时目录名按 step_{序号}_{类型} 生成，多次运行之间完全相同，
+      // 若上次被取消/失败留下了残留文件，本次会把它们当成上游产物读进来。
+      const firstInputFolder = nodes.find(n => n.data.type === 'image-folder');
+      const cleanupBaseDir = firstInputFolder?.data.params.path as string | undefined;
+      if (cleanupBaseDir) {
+        try {
+          await invoke('cleanup_workflow_temp', { dir: cleanupBaseDir });
+        } catch (e) {
+          console.warn('清理上次运行的临时目录失败:', e);
+        }
+      }
+
       // 1. 拓扑排序
       const sortedIds = topologicalSort(nodes, edges);
       const nodeMap = new Map(nodes.map(n => [n.id, n]));
@@ -441,6 +471,7 @@ export class WorkflowEngine {
         const def = getNodeDef(data.type);
 
         this.currentNodeId = nodeId;
+        this.currentNodeType = data.type;
         callbacks.onStepStart(nodeId, i, totalSteps);
         callbacks.onNodeStatusChange(nodeId, 'running', `执行中 (${i + 1}/${totalSteps})`);
 

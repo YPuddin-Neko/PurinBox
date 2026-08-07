@@ -523,7 +523,7 @@ export default function AiTaggerTab() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
         <ProcessButton processing={processing} onStart={handleStart}
           disabled={!inputPath || !selectedModel || enabled.size === 0}
-          cancelCommand="cancel_tagging" forceCancelCommand="cancel_tagging"
+          cancelCommand="cancel_tagging" forceCancelCommand="force_cancel_tagging"
           startText={cur && !cur.is_downloaded ? t('aiTagger.downloadAndTag') : t('aiTagger.startTag')}
           startIcon={cur && !cur.is_downloaded ? <Download style={{ width: 18, height: 18 }} /> : undefined}
           processingText={t('aiTagger.tagging')}

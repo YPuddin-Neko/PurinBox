@@ -3,10 +3,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { FolderOpen, BarChart3, Download, AlertCircle, FileText, FileSpreadsheet } from 'lucide-react';
+import { FolderOpen, Download, AlertCircle } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
+import { useTaskQueue } from '../components/TaskContext';
 
 interface ResolutionGroup {
   width: number;
@@ -31,19 +32,12 @@ interface AnalyzeResult {
   max_height: number;
 }
 
-interface ProgressPayload {
-  current: number;
-  total: number;
-  filename: string;
-  status: string;
-  message: string;
-}
-
 export default function ResolutionAnalyzePage() {
   const { t } = useTranslation();
+  const { addTask, updateTask } = useTaskQueue();
   const [inputPath, setInputPath] = useState('');
-  const [recursive, setRecursive] = useState(false);
   const [rareThreshold, setRareThreshold] = useState(10);
+  const [recursive, setRecursive] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressCurrent, setProgressCurrent] = useState(0);
@@ -52,18 +46,26 @@ export default function ResolutionAnalyzePage() {
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [expandedRare, setExpandedRare] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let active = true;
-    const p = listen<ProgressPayload>('resolution-analyze-progress', (event) => {
+    const p = listen('resolution_analyze_progress', (event: any) => {
       if (!active) return;
       const d = event.payload;
-      setProgressCurrent(d.current);
-      setProgressTotal(d.total);
-      if (d.total > 0) setProgress((d.current / d.total) * 100);
-      if (d.status === 'done') setIsDone(true);
-      if (d.status === 'error') setHasError(true);
+      if (d.status === 'processing') {
+        setProgress(d.progress ?? 0);
+        setProgressCurrent(d.current ?? 0);
+        setProgressTotal(d.total ?? 0);
+      } else if (d.status === 'done') {
+        setProcessing(false);
+        setIsDone(true);
+        updateTask('resolution-analyze', { status: 'done' });
+      } else if (d.status === 'error') {
+        setProcessing(false);
+        setHasError(true);
+        updateTask('resolution-analyze', { status: 'error', message: d.message });
+      }
       if (d.status !== 'processing') {
         setLogs((prev) => [
           ...prev,
@@ -79,7 +81,7 @@ export default function ResolutionAnalyzePage() {
       active = false;
       p.then((unlisten) => unlisten());
     };
-  }, []);
+  }, [updateTask]);
 
   const handleOpenInput = async () => {
     const selected = await open({ directory: true, multiple: false });
@@ -96,6 +98,14 @@ export default function ResolutionAnalyzePage() {
     setResult(null);
     setIsDone(false);
     setHasError(false);
+    setExpandedRare(new Set());
+
+    addTask('resolution-analyze', t('resolutionAnalyze.taskName'));
+    setLogs([{
+      time: getTimeStr(),
+      message: `${t('pages.startPrefix')}${t('resolutionAnalyze.analyzing')}...`,
+      status: 'info',
+    }]);
 
     try {
       const res = await invoke<AnalyzeResult>('analyze_resolutions', {
@@ -126,28 +136,25 @@ export default function ResolutionAnalyzePage() {
           status: 'error',
         },
       ]);
-      setHasError(true);
-    } finally {
       setProcessing(false);
+      setHasError(true);
+      updateTask('resolution-analyze', { status: 'error', message: String(e) });
     }
   };
 
   const handleExport = async (format: 'txt' | 'csv' | 'json') => {
     if (!result) return;
-    const ext = format;
-    const defaultFileName = `resolution_report_${new Date().getTime()}.${ext}`;
-    const savePath = await save({
-      defaultPath: defaultFileName,
-      filters: [
-        { name: format.toUpperCase(), extensions: [ext] },
-        { name: 'All Files', extensions: ['*'] },
-      ],
-    });
+    const filters = format === 'txt'
+      ? [{ name: 'Text', extensions: ['txt'] }]
+      : format === 'csv'
+      ? [{ name: 'CSV', extensions: ['csv'] }]
+      : [{ name: 'JSON', extensions: ['json'] }];
+
+    const savePath = await save({ filters, defaultPath: `resolution_report.${format}` });
     if (!savePath) return;
 
-    setExporting(true);
     try {
-      await invoke<string>('export_resolution_report', {
+      const msg = await invoke<string>('export_resolution_report', {
         result,
         format,
         savePath,
@@ -157,7 +164,7 @@ export default function ResolutionAnalyzePage() {
         ...prev,
         {
           time: getTimeStr(),
-          message: t('resolutionAnalyze.exportSuccess', { path: savePath }),
+          message: msg,
           status: 'success',
         },
       ]);
@@ -166,263 +173,310 @@ export default function ResolutionAnalyzePage() {
         ...prev,
         {
           time: getTimeStr(),
-          message: t('resolutionAnalyze.exportError', { error: e?.message || e }),
+          message: typeof e === 'string' ? e : e?.message || t('resolutionAnalyze.exportError'),
           status: 'error',
         },
       ]);
-    } finally {
-      setExporting(false);
     }
   };
 
-  const rareGroups = result?.groups.filter((g) => g.is_rare) || [];
+  const clearLogs = () => {
+    setLogs([]);
+    setIsDone(false);
+    setHasError(false);
+  };
+
+  const toggleRareExpand = (key: string) => {
+    setExpandedRare((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <div style={{ padding: '20px 30px', borderBottom: '1px solid var(--color-border)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-          <BarChart3 style={{ width: 24, height: 24, color: 'var(--color-primary)' }} />
-          <h1 style={{ fontSize: 20, fontWeight: 600, margin: 0 }}>{t('resolutionAnalyze.title')}</h1>
+    <div className="page">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">{t('resolutionAnalyze.title')}</h1>
         </div>
-        <p style={{ fontSize: 12, color: 'var(--color-text-secondary)', margin: 0 }}>
-          {t('resolutionAnalyze.subtitle')}
-        </p>
+        <p className="page-subtitle">{t('resolutionAnalyze.subtitle')}</p>
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 30px' }}>
-        {/* Input Controls */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 15, marginBottom: 20 }}>
-          <div>
-            <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 6 }}>
-              {t('resolutionAnalyze.inputPath')}
-            </label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                type="text"
-                value={inputPath}
-                readOnly
-                placeholder={t('resolutionAnalyze.inputPathPlaceholder')}
-                style={{
-                  flex: 1,
-                  padding: '8px 12px',
-                  fontSize: 13,
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 6,
-                  background: 'var(--color-bg-secondary)',
-                }}
-              />
-              <button onClick={handleOpenInput} className="btn btn-secondary" style={{ gap: 5 }}>
-                <FolderOpen style={{ width: 14, height: 14 }} />
-                {t('common.browse')}
-              </button>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-5)' }}>
+        {/* 左侧 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
+          <div className="tool-panel">
+            <div className="tool-panel-header">
+              <span className="tool-panel-title">{t('pages.pathSettings')}</span>
+            </div>
+            <div className="tool-panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+              <div className="form-group">
+                <div className="form-label-row">
+                  <label className="form-label">{t('pages.inputPathShort')}</label>
+                  <button className="form-label-action" onClick={handleOpenInput}>
+                    <FolderOpen size={12} />
+                    {t('pages.selectInputFolderOption')}
+                  </button>
+                </div>
+                <input
+                  className="form-input"
+                  value={inputPath}
+                  onChange={(e) => setInputPath(e.target.value)}
+                  placeholder={t('pages.selectInputFolder')}
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">{t('resolutionAnalyze.rareThreshold')}</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  value={rareThreshold}
+                  onChange={(e) => setRareThreshold(Math.max(1, parseInt(e.target.value) || 1))}
+                  onBlur={(e) => { if (e.target.value === "") setRareThreshold(10); }}
+                  min={1}
+                />
+                <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)', margin: '4px 0 0' }}>
+                  {t('resolutionAnalyze.rareThresholdDesc')}
+                </p>
+              </div>
+
+              <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 15, alignItems: 'flex-end' }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ fontSize: 13, fontWeight: 500, display: 'block', marginBottom: 6 }}>
-                {t('resolutionAnalyze.rareThreshold')}
-              </label>
-              <input
-                type="number"
-                value={rareThreshold}
-                onChange={(e) => setRareThreshold(Math.max(1, parseInt(e.target.value) || 1))}
-                min={1}
-                style={{
-                  width: '100%',
-                  padding: '8px 12px',
-                  fontSize: 13,
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 6,
-                }}
-              />
-              <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)', margin: '4px 0 0' }}>
-                {t('resolutionAnalyze.rareThresholdDesc')}
-              </p>
+          {result && (
+            <div className="tool-panel">
+              <div className="tool-panel-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span className="tool-panel-title">{t('resolutionAnalyze.analysisResults')}</span>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    className="icon-btn"
+                    onClick={() => handleExport('txt')}
+                    title={t('resolutionAnalyze.exportTXT')}
+                    style={{ padding: '4px 8px', fontSize: 11 }}
+                  >
+                    <Download size={12} />
+                    TXT
+                  </button>
+                  <button
+                    className="icon-btn"
+                    onClick={() => handleExport('csv')}
+                    title={t('resolutionAnalyze.exportCSV')}
+                    style={{ padding: '4px 8px', fontSize: 11 }}
+                  >
+                    <Download size={12} />
+                    CSV
+                  </button>
+                  <button
+                    className="icon-btn"
+                    onClick={() => handleExport('json')}
+                    title={t('resolutionAnalyze.exportJSON')}
+                    style={{ padding: '4px 8px', fontSize: 11 }}
+                  >
+                    <Download size={12} />
+                    JSON
+                  </button>
+                </div>
+              </div>
+              <div className="tool-panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+                {/* 概览卡片 */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+                  <div style={{
+                    padding: 12,
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--color-border)',
+                    background: 'var(--color-bg-input)',
+                  }}>
+                    <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginBottom: 4 }}>
+                      {t('resolutionAnalyze.totalImages')}
+                    </div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>
+                      {result.total_images.toLocaleString()}
+                    </div>
+                  </div>
+                  <div style={{
+                    padding: 12,
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--color-border)',
+                    background: 'var(--color-bg-input)',
+                  }}>
+                    <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginBottom: 4 }}>
+                      {t('resolutionAnalyze.distinctResolutions')}
+                    </div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--color-text-primary)' }}>
+                      {result.distinct_count}
+                    </div>
+                  </div>
+                  <div style={{
+                    padding: 12,
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--color-border)',
+                    background: 'var(--color-bg-input)',
+                  }}>
+                    <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginBottom: 4 }}>
+                      {t('resolutionAnalyze.sizeRange')}
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                      {result.min_width}×{result.min_height} ~ {result.max_width}×{result.max_height}
+                    </div>
+                  </div>
+                  <div style={{
+                    padding: 12,
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--color-border)',
+                    background: 'var(--color-bg-input)',
+                  }}>
+                    <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginBottom: 4 }}>
+                      {t('resolutionAnalyze.readErrors')}
+                    </div>
+                    <div style={{ fontSize: 20, fontWeight: 700, color: result.failed_count > 0 ? '#ef4444' : 'var(--color-text-primary)' }}>
+                      {result.failed_count}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 分辨率列表 */}
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 8 }}>
+                    {t('resolutionAnalyze.resolutionDistribution')}
+                  </div>
+                  <div style={{
+                    maxHeight: 400,
+                    overflowY: 'auto',
+                    overscrollBehavior: 'contain',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                  }}>
+                    {result.groups.map((g) => {
+                      const key = `${g.width}x${g.height}`;
+                      const isExpanded = expandedRare.has(key);
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            padding: 10,
+                            borderRadius: 'var(--radius-sm)',
+                            border: g.is_rare ? '1px solid #ef4444' : '1px solid var(--color-border)',
+                            background: g.is_rare ? 'rgba(239, 68, 68, 0.05)' : 'var(--color-bg-input)',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                              {g.is_rare && <AlertCircle size={14} style={{ color: '#ef4444', flexShrink: 0 }} />}
+                              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                                {g.width} × {g.height}
+                              </span>
+                              <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                                {g.aspect_label}
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                                {g.count}
+                              </span>
+                              <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                                ({g.percent.toFixed(1)}%)
+                              </span>
+                            </div>
+                          </div>
+                          {g.is_rare && g.files.length > 0 && (
+                            <>
+                              <button
+                                onClick={() => toggleRareExpand(key)}
+                                style={{
+                                  marginTop: 6,
+                                  fontSize: 11,
+                                  color: '#ef4444',
+                                  background: 'none',
+                                  border: 'none',
+                                  padding: 0,
+                                  cursor: 'pointer',
+                                  textDecoration: 'underline',
+                                }}
+                              >
+                                {isExpanded ? t('resolutionAnalyze.hideFiles') : t('resolutionAnalyze.showFiles', { count: g.files.length })}
+                              </button>
+                              {isExpanded && (
+                                <div style={{
+                                  marginTop: 6,
+                                  padding: 8,
+                                  borderRadius: 4,
+                                  background: 'var(--color-bg)',
+                                  fontSize: 10,
+                                  color: 'var(--color-text-secondary)',
+                                  maxHeight: 120,
+                                  overflowY: 'auto',
+                                  overscrollBehavior: 'contain',
+                                  wordBreak: 'break-all',
+                                }}>
+                                  {g.files.map((f, i) => (
+                                    <div key={i} style={{ marginBottom: 2 }}>{f}</div>
+                                  ))}
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 读取失败文件 */}
+                {result.failed_count > 0 && (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#ef4444', marginBottom: 8 }}>
+                      {t('resolutionAnalyze.failedFiles')} ({result.failed_count})
+                    </div>
+                    <div style={{
+                      padding: 10,
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid #ef4444',
+                      background: 'rgba(239, 68, 68, 0.05)',
+                      fontSize: 11,
+                      color: 'var(--color-text-secondary)',
+                      maxHeight: 150,
+                      overflowY: 'auto',
+                      overscrollBehavior: 'contain',
+                      wordBreak: 'break-all',
+                    }}>
+                      {result.failed_files.map((f, i) => (
+                        <div key={i} style={{ marginBottom: 2 }}>{f}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
-            <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
-          </div>
+          )}
         </div>
 
-        {/* Action Button */}
-        <div style={{ marginBottom: 20 }}>
+        {/* 右侧 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           <ProcessButton
             processing={processing}
             onStart={handleAnalyze}
-            cancelCommand="cancel_resolution_analyze"
-            startText={t('resolutionAnalyze.analyze')}
-            startIcon={<BarChart3 style={{ width: 16, height: 16 }} />}
-            processingText={t('resolutionAnalyze.analyzing')}
             disabled={!inputPath}
-            onCancelLog={(msg) => setLogs((prev) => [...prev, { time: getTimeStr(), message: msg, status: 'info' }])}
+            cancelCommand="cancel_resolution_analyze"
+            startText={t('resolutionAnalyze.startAnalyze')}
+            processingText={t('pages.processing')}
+            onCancelLog={(msg) => setLogs((prev) => [...prev, { time: getTimeStr(), message: msg, status: 'warning' }])}
+          />
+
+          <ProgressLog
+            progress={progress}
+            current={progressCurrent}
+            total={progressTotal}
+            logs={logs}
+            isDone={isDone}
+            hasError={hasError}
+            onClearLogs={clearLogs}
           />
         </div>
-
-        {/* Progress */}
-        {processing && (
-          <div style={{ marginBottom: 20 }}>
-            <div
-              style={{
-                width: '100%',
-                height: 6,
-                background: 'var(--color-bg-tertiary)',
-                borderRadius: 3,
-                overflow: 'hidden',
-              }}
-            >
-              <div
-                style={{
-                  width: `${progress}%`,
-                  height: '100%',
-                  background: 'var(--color-primary)',
-                  transition: 'width 0.2s',
-                }}
-              />
-            </div>
-            <p style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginTop: 6 }}>
-              {progressCurrent} / {progressTotal}
-            </p>
-          </div>
-        )}
-
-        {/* Results */}
-        {result && !processing && (
-          <div style={{ marginBottom: 20 }}>
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                marginBottom: 12,
-              }}
-            >
-              <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>{t('resolutionAnalyze.results')}</h2>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button
-                  onClick={() => handleExport('txt')}
-                  disabled={exporting}
-                  className="btn btn-secondary"
-                  style={{ fontSize: 12, padding: '6px 12px', gap: 4 }}
-                >
-                  <FileText style={{ width: 12, height: 12 }} />
-                  TXT
-                </button>
-                <button
-                  onClick={() => handleExport('csv')}
-                  disabled={exporting}
-                  className="btn btn-secondary"
-                  style={{ fontSize: 12, padding: '6px 12px', gap: 4 }}
-                >
-                  <FileSpreadsheet style={{ width: 12, height: 12 }} />
-                  CSV
-                </button>
-                <button
-                  onClick={() => handleExport('json')}
-                  disabled={exporting}
-                  className="btn btn-secondary"
-                  style={{ fontSize: 12, padding: '6px 12px', gap: 4 }}
-                >
-                  <Download style={{ width: 12, height: 12 }} />
-                  JSON
-                </button>
-              </div>
-            </div>
-
-            {/* Summary Cards */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 16 }}>
-              <div style={{ padding: 12, background: 'var(--color-bg-secondary)', borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginBottom: 4 }}>{t('resolutionAnalyze.totalImages')}</div>
-                <div style={{ fontSize: 20, fontWeight: 600 }}>{result.total_images}</div>
-              </div>
-              <div style={{ padding: 12, background: 'var(--color-bg-secondary)', borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginBottom: 4 }}>{t('resolutionAnalyze.distinctCount')}</div>
-                <div style={{ fontSize: 20, fontWeight: 600 }}>{result.distinct_count}</div>
-              </div>
-              <div style={{ padding: 12, background: 'var(--color-bg-secondary)', borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginBottom: 4 }}>{t('resolutionAnalyze.widthRange')}</div>
-                <div style={{ fontSize: 14, fontWeight: 600 }}>{result.min_width} - {result.max_width}</div>
-              </div>
-              <div style={{ padding: 12, background: 'var(--color-bg-secondary)', borderRadius: 8, border: '1px solid var(--color-border)' }}>
-                <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginBottom: 4 }}>{t('resolutionAnalyze.heightRange')}</div>
-                <div style={{ fontSize: 14, fontWeight: 600 }}>{result.min_height} - {result.max_height}</div>
-              </div>
-            </div>
-
-            {/* Groups Table */}
-            <div style={{ border: '1px solid var(--color-border)', borderRadius: 8, overflow: 'hidden' }}>
-              <div style={{ maxHeight: 400, overflowY: 'auto' }}>
-                <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-                  <thead style={{ position: 'sticky', top: 0, background: 'var(--color-bg-secondary)', borderBottom: '1px solid var(--color-border)' }}>
-                    <tr>
-                      <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600 }}>{t('resolutionAnalyze.resolution')}</th>
-                      <th style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600 }}>{t('resolutionAnalyze.count')}</th>
-                      <th style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600 }}>{t('resolutionAnalyze.percent')}</th>
-                      <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600 }}>{t('resolutionAnalyze.aspectRatio')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.groups.map((g, i) => (
-                      <tr key={i} style={{ borderBottom: i < result.groups.length - 1 ? '1px solid var(--color-border-light)' : 'none', background: g.is_rare ? 'rgba(251, 191, 36, 0.05)' : 'transparent' }}>
-                        <td style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 6 }}>
-                          {g.is_rare && <AlertCircle style={{ width: 12, height: 12, color: '#f59e0b', flexShrink: 0 }} />}
-                          <span>{g.width} × {g.height}</span>
-                        </td>
-                        <td style={{ padding: '8px 12px', textAlign: 'right' }}>{g.count}</td>
-                        <td style={{ padding: '8px 12px', textAlign: 'right' }}>{g.percent.toFixed(1)}%</td>
-                        <td style={{ padding: '8px 12px' }}>{g.aspect_label || g.aspect_ratio.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Rare Files List */}
-            {rareGroups.length > 0 && (
-              <div style={{ marginTop: 16, padding: 12, background: 'rgba(251, 191, 36, 0.08)', border: '1px solid rgba(251, 191, 36, 0.2)', borderRadius: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-                  <AlertCircle style={{ width: 14, height: 14, color: '#f59e0b' }} />
-                  <h3 style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>{t('resolutionAnalyze.rareResolutions')}</h3>
-                </div>
-                <div style={{ maxHeight: 200, overflowY: 'auto', fontSize: 11 }}>
-                  {rareGroups.map((g, gi) => (
-                    <div key={gi} style={{ marginBottom: 12 }}>
-                      <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                        {g.width} × {g.height} ({g.count} {t('resolutionAnalyze.images')})
-                      </div>
-                      {g.files.map((f, fi) => (
-                        <div key={fi} style={{ paddingLeft: 12, color: 'var(--color-text-secondary)', wordBreak: 'break-all' }}>
-                          • {f}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {result.failed_count > 0 && (
-              <div style={{ marginTop: 12, padding: 12, background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)', borderRadius: 8 }}>
-                <h3 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{t('resolutionAnalyze.failedFiles', { count: result.failed_count })}</h3>
-                <div style={{ maxHeight: 120, overflowY: 'auto', fontSize: 11, color: 'var(--color-text-secondary)' }}>
-                  {result.failed_files.map((f, i) => (
-                    <div key={i} style={{ marginBottom: 2 }}>• {f}</div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Logs */}
-        <ProgressLog 
-          progress={progress} 
-          current={progressCurrent} 
-          total={progressTotal} 
-          logs={logs} 
-          isDone={isDone} 
-          hasError={hasError} 
-        />
       </div>
     </div>
   );

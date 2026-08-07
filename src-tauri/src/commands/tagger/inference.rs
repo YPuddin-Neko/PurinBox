@@ -177,13 +177,8 @@ pub fn is_tagging_cancelled() -> bool {
 
 /// 杀死正在运行的 Python 推理进程
 pub fn kill_python_process() {
-    if let Ok(mut guard) = PYTHON_PROCESS.lock() {
-        if let Some(ref mut child) = *guard {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        *guard = None;
-    }
+    // 按进程树终止：Python 会派生工作进程，单杀直接子进程会留下孤儿进程
+    crate::commands::kill_child_tree(&PYTHON_PROCESS);
 }
 
 /// 在 Windows 上获取 nvidia-smi 的完整路径

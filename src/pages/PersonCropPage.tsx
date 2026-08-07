@@ -361,7 +361,7 @@ export default function PersonCropPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           <ProcessButton processing={processing} onStart={handleProcess}
             disabled={!inputPath || !outputPath || !ms.allReady}
-            cancelCommand="cancel_person_crop" startText={t('personCrop.startCrop')} processingText={t('pages.processing')}
+            cancelCommand="cancel_person_crop" forceCancelCommand="force_cancel_person_crop" startText={t('personCrop.startCrop')} processingText={t('pages.processing')}
             onCancelLog={addCancelLog} />
           <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
         </div>

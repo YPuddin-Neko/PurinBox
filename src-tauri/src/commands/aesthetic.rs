@@ -153,13 +153,8 @@ fn read_utf8_line(reader: &mut impl BufRead) -> Option<String> {
 }
 
 fn kill_process() {
-    if let Ok(mut guard) = AESTHETIC_PROCESS.lock() {
-        if let Some(ref mut child) = *guard {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        *guard = None;
-    }
+    // 按进程树终止：Python 会派生工作进程，单杀直接子进程会留下孤儿进程
+    super::kill_child_tree(&AESTHETIC_PROCESS);
 }
 
 /// 下载进度事件
@@ -981,6 +976,14 @@ pub async fn start_aesthetic_scoring(
 /// 取消美学评分
 #[tauri::command]
 pub fn cancel_aesthetic_scoring() {
+    AESTHETIC_CANCELLED.store(true, Ordering::SeqCst);
+    DOWNLOAD_CANCELLED.store(true, Ordering::SeqCst);
+    kill_process();
+}
+
+/// 强制取消美学评分（终止整个子进程树）
+#[tauri::command]
+pub fn force_cancel_aesthetic_scoring() {
     AESTHETIC_CANCELLED.store(true, Ordering::SeqCst);
     DOWNLOAD_CANCELLED.store(true, Ordering::SeqCst);
     kill_process();
