@@ -746,23 +746,17 @@ fn create_venv(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 安装依赖
+/// 安装基础依赖。
 ///
-/// Windows/Linux 直接装 onnxruntime-gpu：该包同时包含 CUDA 与 CPU
-/// ExecutionProvider，本机有可用 CUDA 就走 GPU，否则自动回落 CPU，
-/// 无需二次替换安装。
-/// macOS 没有 onnxruntime-gpu 发行版，用 onnxruntime（自带 CoreML EP）。
+/// 统一装 CPU 版 onnxruntime，确保任何环境（AMD/Intel/无独显/缺 cuDNN）
+/// 都能正常运行。onnxruntime-gpu 在缺少 CUDA 库时 import 会直接报错，
+/// 不适合作为默认依赖。GPU 升级由 ensure_onnx_gpu_runtime 在检测到
+/// NVIDIA 环境后单独处理。
 fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
     let python = get_venv_python();
     let python_str = python.to_string_lossy().to_string();
-
-    #[cfg(target_os = "macos")]
-    let ort = "onnxruntime==1.25.1";
-    #[cfg(not(target_os = "macos"))]
-    let ort = "onnxruntime-gpu==1.25.1";
-
     // 固定版本，避免供应链风险
-    pip_install_with_python(app, &python_str, &[ort, "numpy==2.2.6", "pillow==11.3.0"])
+    pip_install_with_python(app, &python_str, &["onnxruntime==1.25.1", "numpy==2.2.6", "pillow==11.3.0"])
 }
 
 /// 修复历史环境：把旧版遗留的 CPU-only onnxruntime 换成 onnxruntime-gpu。
@@ -874,9 +868,12 @@ async fn has_nvidia_gpu() -> bool {
 
 /// 统一入口：探测 onnxruntime 的 GPU ExecutionProvider 可用性。
 ///
-/// 不安装 CUDA、不下载运行时，只使用本机既有的 CUDA 环境。
-/// 唯一的例外是历史环境修复：老版本装的是 CPU-only 的 `onnxruntime`，
-/// 这种情况下换成同时支持 GPU/CPU 的 `onnxruntime-gpu`（仅一次）。
+/// 不安装 CUDA、不下载 CUDA 运行时，只使用本机既有的 CUDA 环境。
+///
+/// 基础依赖装的是 CPU 版 onnxruntime（保证任何环境都能跑），因此这里承担
+/// 「有 NVIDIA 就换成 onnxruntime-gpu」这一步。无 NVIDIA 的机器（AMD/Intel/
+/// 核显）不会触发升级，继续用 CPU 版，避免装上无法加载 CUDA 库的 GPU 包。
+/// 每个会话最多尝试升级一次，失败不重复下载。
 /// 返回 Ok(true) 表示有 GPU 加速，Ok(false) 表示按 CPU 运行。
 pub async fn ensure_onnx_gpu_runtime(
     app: &tauri::AppHandle,
@@ -920,17 +917,82 @@ pub async fn ensure_onnx_gpu_runtime(
 }
 
 /// 统一入口：探测 PyTorch 是否可用 GPU（CUDA / MPS）
-/// 只做检测，不安装任何东西。
+/// 探测 PyTorch 是否可用 GPU（CUDA / MPS）。
+///
+/// 如果 torch 已装但是 CPU-only 构建，且本机有 NVIDIA GPU，
+/// 则自动换成 CUDA 版本（从 PyTorch 官方 wheel index 安装，体积约 2GB，
+/// 仅首次触发一次）。这不是"下载 CUDA"——torch wheel 自带所需的
+/// CUDA 运行时库，用户无需另装 CUDA Toolkit。
 /// 返回 Ok(true) 表示有 GPU 加速，Ok(false) 表示按 CPU 运行。
 pub async fn ensure_torch_gpu_runtime(
-    _app: &tauri::AppHandle,
+    app: &tauri::AppHandle,
     python: &str,
 ) -> Result<bool, String> {
     let probe = probe_python(python, TORCH_PROBE).await.unwrap_or_default();
     let f: Vec<&str> = probe.split('|').map(|s| s.trim()).collect();
-    let cuda_ok = f.get(2).is_some_and(|v| *v == "1");
-    let mps_ok = f.get(3).is_some_and(|v| *v == "1");
-    Ok(cuda_ok || mps_ok)
+    #[allow(unused_variables)]
+    let installed   = f.first().is_some_and(|v| *v == "1");
+    #[allow(unused_variables)]
+    let cuda_build  = f.get(1).is_some_and(|v| *v == "1");
+    let cuda_ok     = f.get(2).is_some_and(|v| *v == "1");
+    let mps_ok      = f.get(3).is_some_and(|v| *v == "1");
+    let _ = app;
+
+    // GPU 已可用 → 直接用
+    if cuda_ok || mps_ok {
+        return Ok(true);
+    }
+
+    // 已装但是 CPU-only 构建，且本机有 NVIDIA → 换成 CUDA 版
+    #[cfg(target_os = "windows")]
+    if installed && !cuda_build && !TORCH_UPGRADE_TRIED.load(Ordering::SeqCst) && has_nvidia_gpu().await {
+        TORCH_UPGRADE_TRIED.store(true, Ordering::SeqCst);
+
+        // 先卸载 CPU 版（两者文件冲突，必须先移除）
+        {
+            let p = python.to_string();
+            let _ = tokio::task::spawn_blocking(move || {
+                let mut cmd = std::process::Command::new(&p);
+                cmd.args(["-m", "pip", "uninstall", "-y", "torch", "torchvision"])
+                    .env("PYTHONIOENCODING", "utf-8");
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000);
+                cmd.output()
+            }).await;
+        }
+
+        // 安装 CUDA 版（torch wheel 自带 CUDA 运行时，不依赖系统 CUDA Toolkit）
+        let p = python.to_string();
+        let app2 = app.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new(&p);
+            cmd.args([
+                "-m", "pip", "install",
+                "--disable-pip-version-check", "--no-cache-dir",
+                "torch", "torchvision",
+                "--index-url", "https://download.pytorch.org/whl/cu121",
+            ])
+            .env("PYTHONIOENCODING", "utf-8");
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+            let output = cmd.output().map_err(|e| format!("安装失败: {}", e))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("安装 CUDA 版 torch 失败: {}", stderr));
+            }
+            let _ = app2; // 进度由 pip 自身输出，这里不额外 emit
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("安装线程异常: {}", e))??;
+
+        // 复检
+        let probe = probe_python(python, TORCH_PROBE).await.unwrap_or_default();
+        let f: Vec<&str> = probe.split('|').map(|s| s.trim()).collect();
+        return Ok(f.get(2).is_some_and(|v| *v == "1"));
+    }
+
+    Ok(false)
 }
 
 /// 获取当前可用的 Python 路径（venv 优先，系统其次）
