@@ -798,6 +798,10 @@ pub fn upgrade_onnxruntime_to_gpu(app: &tauri::AppHandle, python: &str) -> Resul
 #[cfg(not(target_os = "macos"))]
 static ORT_UPGRADE_TRIED: AtomicBool = AtomicBool::new(false);
 
+/// 本会话是否已尝试过把 CPU-only torch 升级为 CUDA 构建（避免反复下载 ~2GB）
+#[cfg(target_os = "windows")]
+static TORCH_UPGRADE_TRIED: AtomicBool = AtomicBool::new(false);
+
 /// 在指定 Python 下执行探测脚本并返回 stdout（隐藏 Windows 控制台窗口）
 async fn probe_python(python: &str, script: &'static str) -> Option<String> {
     let p = python.to_string();
