@@ -34,8 +34,8 @@ fn has_alpha(img: &DynamicImage) -> bool {
 }
 
 #[tauri::command]
-pub async fn convert_alpha(
-    app: tauri::AppHandle,
+pub async fn convert_alpha<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: AlphaConvertOptions,
 ) -> Result<ProcessResult, String> {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
@@ -49,8 +49,8 @@ pub fn cancel_alpha() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
-fn convert_alpha_sync(
-    app: &tauri::AppHandle,
+fn convert_alpha_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     options: &AlphaConvertOptions,
 ) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);

@@ -458,7 +458,90 @@ def _build_simplified_json(selected_tags):
 
     return out
 
+
+def _normalize_tag_key(tag):
+    """词表查询键归一化：下划线/空格互换、大小写不敏感"""
+    return tag.strip().lower().replace("_", " ")
+
+
+def run_convert_mode():
+    """--convert 一次性模式：把图片旁的 .txt 标签按模型词表分类后转换为 JSON。
+
+    仅加载词表（CSV/JSON），不加载 ONNX/onnxruntime，速度很快。
+    LLM 调优新增的、不在词表中的标签按 general 处理（再走外观/环境关键词细分）。
+    """
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--convert", action="store_true")
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--tags-path", required=True)
+    parser.add_argument("--simplified", action="store_true")
+    parser.add_argument("--remove-txt", action="store_true")
+    parser.add_argument("--recursive", action="store_true")
+    args = parser.parse_args()
+
+    if args.tags_path.endswith(".json"):
+        defs = load_tags_json(args.tags_path)
+    else:
+        defs = load_tags_csv(args.tags_path)
+    cat_by_name = {}
+    for d in defs:
+        cat_by_name[_normalize_tag_key(d["name"])] = d["category"]
+
+    exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".gif"}
+    root = Path(args.input)
+    if not root.is_dir():
+        result({"type": "error", "message": f"输入目录不存在: {args.input}"})
+        return
+    if args.recursive:
+        images = sorted(f for f in root.rglob("*") if f.is_file() and f.suffix.lower() in exts)
+    else:
+        images = sorted(f for f in root.iterdir() if f.is_file() and f.suffix.lower() in exts)
+
+    total = len(images)
+    converted = 0
+    skipped = 0
+    failed = 0
+    for i, img in enumerate(images):
+        txt = img.parent / f"{img.stem}.txt"
+        if not txt.exists():
+            skipped += 1
+        else:
+            try:
+                raw = txt.read_text(encoding="utf-8")
+                tag_list = [t.strip() for t in raw.replace("\n", ",").split(",") if t.strip()]
+                selected = []
+                for t in tag_list:
+                    plain = t.replace("\\(", "(").replace("\\)", ")")
+                    cat = cat_by_name.get(_normalize_tag_key(plain), "general")
+                    selected.append((plain, cat))
+                data = _build_simplified_json(selected) if args.simplified else _build_structured_json(selected)
+                json_path = img.parent / f"{img.stem}.json"
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                if args.remove_txt:
+                    txt.unlink()
+                converted += 1
+            except Exception as e:
+                failed += 1
+                result({"type": "log", "message": f"转换失败 {img.name}: {e}"})
+        result({"type": "progress", "current": i + 1, "total": total, "filename": img.name})
+
+    result({
+        "type": "done",
+        "converted": converted,
+        "skipped": skipped,
+        "failed": failed,
+        "total": total,
+    })
+
+
 def main():
+    # --convert：txt → JSON 转换模式（无需 ONNX，处理完直接退出）
+    if "--convert" in sys.argv:
+        run_convert_mode()
+        return
+
     # Windows: 注册 CUDA DLL 目录（必须在 import onnxruntime 之前）
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from cuda_dll_helper import register_cuda_dlls

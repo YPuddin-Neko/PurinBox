@@ -10,31 +10,8 @@ static DOWNLOAD_CANCEL: AtomicBool = AtomicBool::new(false);
 static IS_DOWNLOADING: AtomicBool = AtomicBool::new(false);
 static IS_TRANSLATING: AtomicBool = AtomicBool::new(false);
 
-/// 获取软件根目录
-fn get_exe_root() -> PathBuf {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    let exe_dir = exe
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
-    if cfg!(target_os = "macos") {
-        if let Some(contents) = exe_dir.parent() {
-            if let Some(app_bundle) = contents.parent() {
-                if app_bundle.extension().map(|e| e == "app").unwrap_or(false) {
-                    return app_bundle.parent().unwrap_or(&exe_dir).to_path_buf();
-                }
-            }
-        }
-    }
-    exe_dir
-}
-
 fn default_db_dir() -> PathBuf {
-    if cfg!(target_os = "windows") {
-        get_exe_root().join("data").join("tagcache")
-    } else {
-        get_exe_root().join("tagcache")
-    }
+    super::config_paths::default_tagcache_dir()
 }
 
 fn get_tag_db_path() -> PathBuf {

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import ThumbImage from '../components/ThumbImage';
 import {
   FolderOpen, Trash2, Check, X, Copy, Search, ChevronLeft, ChevronRight,
 } from 'lucide-react';
@@ -309,7 +310,7 @@ export default function ImageDedupPage() {
                                 }}>
                                   <div style={{ aspectRatio: '1', background: 'rgba(0,0,0,0.1)' }}
                                     onClick={() => setLightbox({ groupIdx: gi, imgIdx: pi })}>
-                                    <img src={convertFileSrc(p)} alt={fname} loading="lazy"
+                                    <ThumbImage path={p} alt={fname}
                                       style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                                   </div>
                                   {/* select/deselect badge */}

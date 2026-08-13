@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronDown, Check } from 'lucide-react';
 import '../styles/custom-select.css';
 import { useTranslation } from 'react-i18next';
@@ -32,12 +33,43 @@ export default function CustomSelect({
 
   const selected = options.find(o => o.value === value);
   const [customInput, setCustomInput] = useState('');
+  // 下拉经 portal 渲染到 body（fixed 定位），避免被 overflow 容器裁剪
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number; flipUp: boolean } | null>(null);
 
-  // 点击外部关闭
+  const updateDropdownPosition = useCallback(() => {
+    if (!ref.current) return;
+    const rect = ref.current.getBoundingClientRect();
+    const dropdownMaxH = 220; // 与 .cs-dropdown 的 max-height 一致
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const flipUp = spaceBelow < dropdownMaxH && rect.top > spaceBelow;
+    setDropdownPos({
+      top: flipUp ? rect.top - 4 : rect.bottom + 4,
+      left: rect.left,
+      width: rect.width,
+      flipUp,
+    });
+  }, []);
+
+  // 打开时计算位置，并跟随滚动/缩放更新
+  useEffect(() => {
+    if (!open) return;
+    updateDropdownPosition();
+    window.addEventListener('scroll', updateDropdownPosition, true);
+    window.addEventListener('resize', updateDropdownPosition);
+    return () => {
+      window.removeEventListener('scroll', updateDropdownPosition, true);
+      window.removeEventListener('resize', updateDropdownPosition);
+    };
+  }, [open, updateDropdownPosition]);
+
+  // 点击外部关闭（下拉已 portal 到 body，需同时排除下拉自身）
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (ref.current?.contains(target)) return;
+      if (listRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -89,8 +121,19 @@ export default function CustomSelect({
         <ChevronDown className={`cs-arrow ${open ? 'cs-arrow-open' : ''}`} />
       </div>
 
-      {open && (
-        <div className="cs-dropdown" ref={listRef}>
+      {open && dropdownPos && createPortal(
+        <div
+          className={`cs-dropdown ${compact ? 'cs-compact' : ''}`}
+          ref={listRef}
+          style={{
+            position: 'fixed',
+            top: dropdownPos.top,
+            left: dropdownPos.left,
+            width: dropdownPos.width,
+            right: 'auto',
+            transform: dropdownPos.flipUp ? 'translateY(-100%)' : undefined,
+          }}
+        >
           {options.map(opt => (
             <div
               key={opt.value}
@@ -113,7 +156,8 @@ export default function CustomSelect({
                 style={{ flex: 1, fontSize: 11, height: 26 }} />
             </div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

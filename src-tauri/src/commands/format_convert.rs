@@ -112,8 +112,8 @@ fn open_image(file_path: &Path) -> Result<DynamicImage, String> {
 }
 
 #[tauri::command]
-pub async fn convert_format(
-    app: tauri::AppHandle,
+pub async fn convert_format<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: FormatConvertOptions,
 ) -> Result<ProcessResult, String> {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
@@ -127,8 +127,8 @@ pub fn cancel_convert() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
-fn convert_format_sync(
-    app: &tauri::AppHandle,
+fn convert_format_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     options: &FormatConvertOptions,
 ) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);
@@ -190,17 +190,52 @@ fn convert_format_sync(
             other => other,
         };
         if src_normalized == tgt_normalized {
-            let _ = app.emit(
-                "convert-progress",
-                ProgressEvent {
-                    current: i as u32 + 1,
-                    total,
-                    filename: filename.clone(),
-                    status: "skipped".to_string(),
-                    message: format!("[跳过] {} (已是 .{} 格式)", filename, target_ext),
-                    ..Default::default()
-                },
-            );
+            // 已是目标格式：直接复制到输出目录。
+            // 工作流中输出目录是下游节点的输入，单纯跳过会造成数据集缺文件。
+            let copy_result = crate::commands::output_path_for_input(
+                input,
+                file_path,
+                output_dir,
+                &filename,
+                options.recursive,
+            )
+            .and_then(|dst| {
+                std::fs::copy(file_path, &dst)
+                    .map(|_| ())
+                    .map_err(|e| format!("复制失败: {}", e))
+            });
+            match copy_result {
+                Ok(_) => {
+                    success_count += 1;
+                    let _ = app.emit(
+                        "convert-progress",
+                        ProgressEvent {
+                            current: i as u32 + 1,
+                            total,
+                            filename: filename.clone(),
+                            status: "skipped".to_string(),
+                            message: format!("[跳过转换] {} (已是 .{} 格式，直接复制)", filename, target_ext),
+                            ..Default::default()
+                        },
+                    );
+                }
+                Err(e) => {
+                    fail_count += 1;
+                    let err_msg = format!("{}: {}", filename, e);
+                    errors.push(err_msg.clone());
+                    let _ = app.emit(
+                        "convert-progress",
+                        ProgressEvent {
+                            current: i as u32 + 1,
+                            total,
+                            filename: filename.clone(),
+                            status: "error".to_string(),
+                            message: format!("[错误] {}", err_msg),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
             continue;
         }
 

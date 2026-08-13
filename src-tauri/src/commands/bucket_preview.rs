@@ -1,6 +1,23 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
+
+/// 分析与推荐各自独立的取消标志（两者可分别取消，互不影响）
+static ANALYZE_CANCEL: AtomicBool = AtomicBool::new(false);
+static RECOMMEND_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// 取消正在进行的分桶分析
+#[tauri::command]
+pub fn cancel_bucket_analysis() {
+    ANALYZE_CANCEL.store(true, Ordering::SeqCst);
+}
+
+/// 取消正在进行的分桶参数推荐
+#[tauri::command]
+pub fn cancel_bucket_recommend() {
+    RECOMMEND_CANCEL.store(true, Ordering::SeqCst);
+}
 
 /// 分桶分析参数
 #[derive(Debug, Clone, Deserialize)]
@@ -514,9 +531,22 @@ fn select_bucket_no_upscale(w: u32, h: u32, max_area: f64, reso_steps: u32) -> (
 }
 
 /// 分析分桶（不复制文件，仅计算）
+///
+/// 扫描与计算是同步 CPU/IO 密集操作，必须放入 spawn_blocking，
+/// 否则会占死 tokio worker 导致其他命令与事件全部卡住。
 #[tauri::command]
-pub async fn analyze_buckets(
-    app: tauri::AppHandle,
+pub async fn analyze_buckets<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    options: BucketOptions,
+) -> Result<BucketAnalysis, String> {
+    ANALYZE_CANCEL.store(false, Ordering::SeqCst);
+    tokio::task::spawn_blocking(move || analyze_buckets_sync(app, options))
+        .await
+        .map_err(|e| format!("分桶分析任务执行失败: {}", e))?
+}
+
+fn analyze_buckets_sync<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: BucketOptions,
 ) -> Result<BucketAnalysis, String> {
     let input_path = std::path::PathBuf::from(&options.input_path);
@@ -564,6 +594,9 @@ pub async fn analyze_buckets(
         let mut processed = 0u32;
 
         for file_path in &image_files {
+            if ANALYZE_CANCEL.load(Ordering::SeqCst) {
+                return Err("已取消".to_string());
+            }
             let name = file_path
                 .file_name()
                 .unwrap_or_default()
@@ -626,6 +659,9 @@ pub async fn analyze_buckets(
         let mut processed = 0u32;
 
         for file_path in &image_files {
+            if ANALYZE_CANCEL.load(Ordering::SeqCst) {
+                return Err("已取消".to_string());
+            }
             let name = file_path
                 .file_name()
                 .unwrap_or_default()
@@ -711,6 +747,9 @@ pub async fn analyze_buckets(
     let mut processed = 0u32;
 
     for file_path in &image_files {
+        if ANALYZE_CANCEL.load(Ordering::SeqCst) {
+            return Err("已取消".to_string());
+        }
         let name = file_path
             .file_name()
             .unwrap_or_default()
@@ -818,8 +857,20 @@ fn evaluate_diffusion_pipe_candidate(
 }
 
 /// 根据数据集尺寸分布推荐分桶参数
+///
+/// 网格搜索是纯 CPU 密集操作（最坏约 2.5 万次全数据集评估），
+/// 必须放入 spawn_blocking，否则会长时间占死 tokio worker。
 #[tauri::command]
 pub async fn recommend_bucket_params(
+    options: BucketRecommendOptions,
+) -> Result<BucketParamRecommendation, String> {
+    RECOMMEND_CANCEL.store(false, Ordering::SeqCst);
+    tokio::task::spawn_blocking(move || recommend_bucket_params_sync(options))
+        .await
+        .map_err(|e| format!("参数推荐任务执行失败: {}", e))?
+}
+
+fn recommend_bucket_params_sync(
     options: BucketRecommendOptions,
 ) -> Result<BucketParamRecommendation, String> {
     let input_path = PathBuf::from(&options.input_path);
@@ -834,6 +885,9 @@ pub async fn recommend_bucket_params(
     let mut skipped_count = 0u32;
 
     for file_path in &image_files {
+        if RECOMMEND_CANCEL.load(Ordering::SeqCst) {
+            return Err("已取消".to_string());
+        }
         let img_repeats = file_path
             .parent()
             .and_then(|p| p.file_name())
@@ -939,6 +993,9 @@ pub async fn recommend_bucket_params(
         for steps in [32u32, 64u32] {
             for (min_ar, max_ar) in &range_candidates {
                 for count in 2u32..=40u32 {
+                    if RECOMMEND_CANCEL.load(Ordering::SeqCst) {
+                        return Err("已取消".to_string());
+                    }
                     let ar_buckets = make_diffusion_pipe_ar_buckets(*min_ar, *max_ar, count)?;
                     let max_area = (*side as f64) * (*side as f64);
                     for batch_size in 1u32..=max_batch_candidate {
@@ -1047,8 +1104,8 @@ pub async fn recommend_bucket_params(
 }
 
 /// 构建分桶分析结果
-fn build_analysis_result(
-    app: &tauri::AppHandle,
+fn build_analysis_result<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     bucket_map: std::collections::BTreeMap<(u32, u32), Vec<BucketImageInfo>>,
     skipped: Vec<(String, String)>,
     file_count: u32,
@@ -1161,7 +1218,9 @@ fn build_analysis_result(
     })
 }
 
-fn unique_copy_destination(dir: &Path, filename: &str) -> PathBuf {
+/// 生成不与已有文件冲突的复制目标路径（同名时追加 _1/_2 …）。
+/// 分辨率聚合导出（resolution_analyze）复用此逻辑。
+pub(crate) fn unique_copy_destination(dir: &Path, filename: &str) -> PathBuf {
     let mut dst = dir.join(filename);
     let mut counter = 1;
     while dst.exists() {
@@ -1199,8 +1258,20 @@ fn dropped_images_for_bucket(bucket: &BucketGroup) -> Vec<(&BucketImageInfo, u32
 }
 
 /// 导出分桶结果（将图片按桶复制到子文件夹）
+///
+/// 大量文件复制是同步 IO，放入 spawn_blocking 避免占用 tokio worker。
 #[tauri::command]
 pub async fn export_buckets(
+    app: tauri::AppHandle,
+    analysis: BucketAnalysis,
+    output_path: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || export_buckets_sync(app, analysis, output_path))
+        .await
+        .map_err(|e| format!("导出任务执行失败: {}", e))?
+}
+
+fn export_buckets_sync(
     app: tauri::AppHandle,
     analysis: BucketAnalysis,
     output_path: String,

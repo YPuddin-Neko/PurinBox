@@ -25,8 +25,8 @@ pub struct FilterOptions {
 }
 
 #[tauri::command]
-pub async fn filter_by_resolution(
-    app: tauri::AppHandle,
+pub async fn filter_by_resolution<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: FilterOptions,
 ) -> Result<ProcessResult, String> {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
@@ -40,7 +40,7 @@ pub fn cancel_filter() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
-fn filter_sync(app: &tauri::AppHandle, options: &FilterOptions) -> Result<ProcessResult, String> {
+fn filter_sync<R: tauri::Runtime>(app: &tauri::AppHandle<R>, options: &FilterOptions) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
 

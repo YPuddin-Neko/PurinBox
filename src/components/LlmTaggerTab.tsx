@@ -1,11 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
-import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import {
   Play, Loader2, Globe, Key, MessageSquare, Bot,
   RefreshCw, Thermometer, Hash, StopCircle, Save, ImageIcon, Timer, Layers,
-  CheckCircle2, XCircle, Info, ScrollText, Trash2, Eye, EyeOff, FolderOpen
+  CheckCircle2, XCircle, Info, ScrollText, Trash2, Eye, EyeOff
 } from 'lucide-react';
 import { LogEntry, getTimeStr } from './ProgressLog';
 import { useTaskQueue } from './TaskContext';
@@ -14,15 +13,6 @@ import { useTranslation } from 'react-i18next';
 import InputPathPickerButton from './InputPathPickerButton';
 import Checkbox from './Checkbox';
 import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
-
-// Vertex AI 硬编码模型列表（按 SillyTavern 参考）
-const VERTEX_MODELS = [
-  { group: 'Gemini 3.1', models: ['gemini-3.1-pro-preview', 'gemini-3.1-flash-lite-preview', 'gemini-3.1-flash-image-preview'] },
-  { group: 'Gemini 3.0', models: ['gemini-3-pro-preview', 'gemini-3-pro-image-preview', 'gemini-3-flash-preview'] },
-  { group: 'Gemini 2.5', models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview'] },
-  { group: 'Gemini 2.0', models: ['gemini-2.0-flash', 'gemini-2.0-flash-001', 'gemini-2.0-flash-lite-001', 'gemini-2.0-flash-exp'] },
-];
-const VERTEX_MODEL_LIST = VERTEX_MODELS.flatMap(g => g.models);
 
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
@@ -124,61 +114,37 @@ export default function LlmTaggerTab() {
   const [concurrency, setConcurrency] = useState('1');
   const [recursive, setRecursive] = useState(false);
   const taskLogs = useUnifiedTaskLogs(setLogs);
-  // Vertex AI 相关
-  const [vertexProjectId, setVertexProjectId] = useState('');
-  const [vertexLocation, setVertexLocation] = useState('global');
-  const [vertexSaPath, setVertexSaPath] = useState('');
-
   const PRESETS: Record<string, { label: string; url: string }> = {
     openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
     gemini: { label: 'Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/' },
     deepseek: { label: 'DeepSeek', url: 'https://api.deepseek.com/v1/' },
-    vertex_express: { label: 'Vertex AI (Express)', url: '' },
-    vertex_sa: { label: 'Vertex AI (SA)', url: '' },
     custom: { label: t('llmTagger.customLabel'), url: '' },
   };
 
-  const isVertex = preset === 'vertex_express' || preset === 'vertex_sa';
-  const vertexEndpoint = vertexProjectId
-    ? (vertexLocation === 'global'
-        ? `https://aiplatform.googleapis.com/v1/projects/${vertexProjectId}/locations/global/endpoints/openapi/`
-        : `https://${vertexLocation}-aiplatform.googleapis.com/v1/projects/${vertexProjectId}/locations/${vertexLocation}/endpoints/openapi/`)
-    : '';
-  const endpoint = isVertex ? vertexEndpoint : (preset === 'custom' ? customEndpoint : (PRESETS[preset]?.url || ''));
+  const endpoint = preset === 'custom' ? customEndpoint : (PRESETS[preset]?.url || '');
   const apiKey = apiKeys[preset] || '';
   const setApiKey = (v: string) => setApiKeys(prev => ({ ...prev, [preset]: v }));
 
   // 加载保存的配置
-  interface ApiConfigResponse { preset: string; custom_endpoint: string; api_keys: Record<string, string>; vertex_project_id: string; vertex_location: string; vertex_sa_path: string; }
+  interface ApiConfigResponse { preset: string; custom_endpoint: string; api_keys: Record<string, string>; }
   useEffect(() => {
     invoke<ApiConfigResponse>('load_api_config').then((cfg) => {
-      if (cfg.preset) setPreset(cfg.preset);
+      // Vertex AI 支持已移除：旧配置里的 vertex 预设回退到自定义
+      const known = ['openai', 'gemini', 'deepseek', 'custom'];
+      if (cfg.preset) setPreset(known.includes(cfg.preset) ? cfg.preset : 'custom');
       if (cfg.custom_endpoint) setCustomEndpoint(cfg.custom_endpoint);
       if (cfg.api_keys) setApiKeys(cfg.api_keys);
-      if (cfg.vertex_project_id) setVertexProjectId(cfg.vertex_project_id);
-      if (cfg.vertex_location) setVertexLocation(cfg.vertex_location);
-      if (cfg.vertex_sa_path) setVertexSaPath(cfg.vertex_sa_path);
     }).catch(() => {});
   }, []);
 
   const handleSaveConfig = async () => {
     try {
-      await invoke('save_api_config', {
-        preset, customEndpoint, apiKeys,
-        vertexProjectId: vertexProjectId || null,
-        vertexLocation: vertexLocation || null,
-        vertexSaPath: vertexSaPath || null,
-      });
+      await invoke('save_api_config', { preset, customEndpoint, apiKeys });
       setSaveMsg({ text: t('llmTagger.configSaved'), ok: true });
     } catch (e: any) {
       setSaveMsg({ text: `${t('llmTagger.saveFailed')}: ${String(e)}`, ok: false });
     }
     setTimeout(() => setSaveMsg(null), 2000);
-  };
-
-  const handlePickSaFile = async () => {
-    const f = await dialogOpen({ filters: [{ name: 'JSON', extensions: ['json'] }] });
-    if (f) setVertexSaPath(f as string);
   };
 
   useEffect(() => {
@@ -236,7 +202,7 @@ export default function LlmTaggerTab() {
     try {
       await invoke<ProcessResult>('start_llm_tagging', {
         options: {
-          input_path: inputPath, api_endpoint: endpoint, api_key: preset === 'vertex_sa' ? '' : apiKey, model_name: modelName,
+          input_path: inputPath, api_endpoint: endpoint, api_key: apiKey, model_name: modelName,
           system_prompt: sysPrompt, user_prompt: userPrompt,
           temperature: parseFloat(temperature) || 0.2, max_tokens: parseInt(maxTokens) || -1,
           image_size: parseInt(imageSize) || 1024,
@@ -247,7 +213,6 @@ export default function LlmTaggerTab() {
           request_interval_ms: intervalMs,
           concurrency: threads,
           recursive,
-          vertex_sa_path: preset === 'vertex_sa' ? vertexSaPath : '',
         },
       });
     } catch (e: any) {
@@ -348,43 +313,6 @@ export default function LlmTaggerTab() {
                     onClick={() => setPreset(key)} style={{ fontSize: 11 }}>{label}</button>
                 ))}
               </div>
-              {/* Vertex AI: Project ID + Location */}
-              {isVertex && (
-                <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 6 }}>
-                  <div style={{ flex: 1 }}>
-                    <label className="form-label" style={{ fontSize: 11 }}>Project ID</label>
-                    <input className="form-input" placeholder="my-gcp-project" value={vertexProjectId}
-                      onChange={e => setVertexProjectId(e.target.value)} />
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <label className="form-label" style={{ fontSize: 11 }}>{t('llmTagger.vertexLocation')}</label>
-                    <CustomSelect value={vertexLocation} onChange={v => setVertexLocation(v)}
-                      options={[
-                        { value: 'global', label: 'global' },
-                        { value: 'us-central1', label: 'us-central1' },
-                        { value: 'us-east4', label: 'us-east4' },
-                        { value: 'us-west1', label: 'us-west1' },
-                        { value: 'europe-west1', label: 'europe-west1' },
-                        { value: 'europe-west4', label: 'europe-west4' },
-                        { value: 'asia-northeast1', label: 'asia-northeast1' },
-                        { value: 'asia-southeast1', label: 'asia-southeast1' },
-                      ]} />
-                  </div>
-                </div>
-              )}
-              {/* Vertex SA: Service Account JSON 文件选择 */}
-              {preset === 'vertex_sa' && (
-                <div style={{ marginTop: 6 }}>
-                  <label className="form-label" style={{ fontSize: 11 }}>{t('llmTagger.vertexSaFile')}</label>
-                  <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                    <input className="form-input" readOnly placeholder={t('llmTagger.vertexSaPlaceholder')} value={vertexSaPath}
-                      style={{ flex: 1, fontSize: 11 }} />
-                    <button className="btn btn-sm btn-secondary" onClick={handlePickSaFile} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
-                      <FolderOpen style={{ width: 12, height: 12 }} /> {t('llmTagger.selectFile')}
-                    </button>
-                  </div>
-                </div>
-              )}
               {preset === 'custom' && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 6 }}>
                   <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>{t('llmTagger.apiAddress')}</span>
@@ -402,15 +330,11 @@ export default function LlmTaggerTab() {
                   )}
                 </>
               )}
-              {!isVertex && preset !== 'custom' && (
+              {preset !== 'custom' && (
                 <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{endpoint}</div>
               )}
-              {isVertex && vertexEndpoint && (
-                <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4, fontFamily: 'monospace', wordBreak: 'break-all' }}>{vertexEndpoint}</div>
-              )}
             </div>
-            {/* API Key: 仅非 SA 模式显示 */}
-            {preset !== 'vertex_sa' && (
+            {(
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Key style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> API Key</label>
                 <div style={{ position: 'relative' }}>
@@ -425,16 +349,11 @@ export default function LlmTaggerTab() {
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Bot style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('llmTagger.modelLabel')}</span>
-                {!isVertex && (
-                  <button className="btn btn-ghost btn-sm" onClick={handleFetchModels} disabled={fetchingModels || !endpoint} style={{ padding: '2px 8px', fontSize: 11 }}>
-                    {fetchingModels ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 12, height: 12 }} />} {t('llmTagger.fetchModels')}
-                  </button>
-                )}
+                <button className="btn btn-ghost btn-sm" onClick={handleFetchModels} disabled={fetchingModels || !endpoint} style={{ padding: '2px 8px', fontSize: 11 }}>
+                  {fetchingModels ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 12, height: 12 }} />} {t('llmTagger.fetchModels')}
+                </button>
               </label>
-              {isVertex ? (
-                <CustomSelect value={modelName} onChange={v => setModelName(v)} allowCustom
-                  options={VERTEX_MODEL_LIST.map(m => ({ value: m, label: m }))} />
-              ) : modelList.length > 0 ? (
+              {modelList.length > 0 ? (
                 <CustomSelect value={modelName} onChange={v => setModelName(v)}
                   options={modelList.map(m => ({ value: m, label: m }))} />
               ) : (

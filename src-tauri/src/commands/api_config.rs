@@ -5,23 +5,13 @@ use std::path::PathBuf;
 /// API 配置（磁盘存储格式）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiConfig {
-    /// 预设类型: "openai" | "gemini" | "deepseek" | "vertex_express" | "vertex_sa" | "custom"
+    /// 预设类型: "openai" | "gemini" | "deepseek" | "custom"
     pub preset: String,
     /// 自定义端点 URL（仅 preset="custom" 时使用）
     pub custom_endpoint: String,
     /// 各预设的 API Key（base64 编码存储），key = preset 名称
     #[serde(default)]
     pub api_keys: HashMap<String, String>,
-    /// Vertex AI: Google Cloud Project ID
-    #[serde(default)]
-    pub vertex_project_id: String,
-    /// Vertex AI: 区域（如 "global", "us-central1"）
-    #[serde(default)]
-    pub vertex_location: String,
-    /// Vertex AI: Service Account JSON 文件路径
-    #[serde(default)]
-    pub vertex_sa_path: String,
-
     // ---- 兼容旧版：单一 api_key_encoded ----
     /// 旧字段（迁移后不再写入，仅用于读取旧配置）
     #[serde(default, skip_serializing)]
@@ -34,9 +24,6 @@ impl Default for ApiConfig {
             preset: "openai".to_string(),
             custom_endpoint: String::new(),
             api_keys: HashMap::new(),
-            vertex_project_id: String::new(),
-            vertex_location: "global".to_string(),
-            vertex_sa_path: String::new(),
             api_key_encoded: String::new(),
         }
     }
@@ -49,9 +36,6 @@ pub struct ApiConfigResponse {
     pub custom_endpoint: String,
     /// 各预设的 API Key（已解码明文），key = preset 名称
     pub api_keys: HashMap<String, String>,
-    pub vertex_project_id: String,
-    pub vertex_location: String,
-    pub vertex_sa_path: String,
 }
 
 const CONFIG_FILE: &str = "api_config.json";
@@ -86,9 +70,6 @@ pub fn save_api_config(
     preset: String,
     custom_endpoint: String,
     api_keys: HashMap<String, String>,
-    vertex_project_id: Option<String>,
-    vertex_location: Option<String>,
-    vertex_sa_path: Option<String>,
 ) -> Result<(), String> {
     let dir = super::config_paths::user_config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
@@ -104,9 +85,6 @@ pub fn save_api_config(
         preset,
         custom_endpoint,
         api_keys: encoded_keys,
-        vertex_project_id: vertex_project_id.unwrap_or_default(),
-        vertex_location: vertex_location.unwrap_or_else(|| "global".to_string()),
-        vertex_sa_path: vertex_sa_path.unwrap_or_default(),
         api_key_encoded: String::new(),
     };
 
@@ -124,9 +102,6 @@ pub fn load_api_config() -> Result<ApiConfigResponse, String> {
             preset: "openai".to_string(),
             custom_endpoint: String::new(),
             api_keys: HashMap::new(),
-            vertex_project_id: String::new(),
-            vertex_location: "global".to_string(),
-            vertex_sa_path: String::new(),
         });
     }
 
@@ -154,8 +129,5 @@ pub fn load_api_config() -> Result<ApiConfigResponse, String> {
         preset: config.preset,
         custom_endpoint: config.custom_endpoint,
         api_keys: decoded_keys,
-        vertex_project_id: config.vertex_project_id,
-        vertex_location: config.vertex_location,
-        vertex_sa_path: config.vertex_sa_path,
     })
 }

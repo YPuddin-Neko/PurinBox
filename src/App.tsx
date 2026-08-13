@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
-import { useRef } from 'react';
+import { useRef, type ComponentType } from 'react';
 import { ThemeProvider } from './components/ThemeProvider';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -33,45 +33,48 @@ import './styles/sidebar.css';
 import './styles/layout.css';
 import './styles/progress.css';
 import { TaskProvider } from './components/TaskContext';
+import { PAGES, persistentPages, routePages } from './appRegistry';
 
-// 所有功能页面持久化（用 display:none 隐藏而非卸载，切换页面不丢失状态）
-const persistentPages = [
-  { path: '/crop', component: CropPage },
-  { path: '/person-crop', component: PersonCropPage },
-  { path: '/scale', component: ScalePage },
-  { path: '/flip', component: FlipPage },
-  { path: '/filter', component: FilterPage },
-  { path: '/resolution-analyze', component: ResolutionAnalyzePage },
-  { path: '/file-keeper', component: FileKeeperPage },
-  { path: '/format-convert', component: FormatConvertPage },
-  { path: '/alpha-convert', component: AlphaConvertPage },
-  { path: '/batch-rename', component: BatchRenamePage },
-  { path: '/tagger', component: TaggerPage },
-  { path: '/tag-manager', component: TagManagerPage },
-  { path: '/tag-sort', component: TagSortPage },
-  { path: '/bucket-preview', component: BucketPreviewPage },
-  { path: '/perspective', component: PerspectivePage },
-  { path: '/blur-noise', component: BlurNoisePage },
-  { path: '/upscale', component: UpscalePage },
-  { path: '/image-cluster', component: ImageClusterPage },
-  { path: '/image-dedup', component: ImageDedupPage },
-  { path: '/dataset-balancer', component: DatasetBalancerPage },
-  { path: '/sd-metadata', component: SdMetadataPage },
-  { path: '/aesthetic', component: AestheticPage },
-  { path: '/workflow', component: WorkflowPage },
-];
+// 路由路径 → 页面组件。页面清单本身在 appRegistry.ts（单一事实来源），
+// 这里只做组件绑定；注册表里有路径但此处缺组件会在启动时立刻报错。
+const PAGE_COMPONENTS: Record<string, ComponentType> = {
+  '/': HomePage,
+  '/aesthetic': AestheticPage,
+  '/crop': CropPage,
+  '/person-crop': PersonCropPage,
+  '/scale': ScalePage,
+  '/flip': FlipPage,
+  '/filter': FilterPage,
+  '/resolution-analyze': ResolutionAnalyzePage,
+  '/file-keeper': FileKeeperPage,
+  '/format-convert': FormatConvertPage,
+  '/alpha-convert': AlphaConvertPage,
+  '/batch-rename': BatchRenamePage,
+  '/perspective': PerspectivePage,
+  '/blur-noise': BlurNoisePage,
+  '/tagger': TaggerPage,
+  '/tag-manager': TagManagerPage,
+  '/tag-sort': TagSortPage,
+  '/bucket-preview': BucketPreviewPage,
+  '/upscale': UpscalePage,
+  '/image-cluster': ImageClusterPage,
+  '/image-dedup': ImageDedupPage,
+  '/dataset-balancer': DatasetBalancerPage,
+  '/sd-metadata': SdMetadataPage,
+  '/workflow': WorkflowPage,
+  '/settings': SettingsPage,
+};
 
-// 无状态页面走 Routes
-const routePages = [
-  { path: '/', component: HomePage },
-  { path: '/settings', component: SettingsPage },
-];
-
+for (const page of PAGES) {
+  if (!PAGE_COMPONENTS[page.path]) {
+    throw new Error(`appRegistry 中的页面 ${page.path} 缺少组件映射，请在 App.tsx 的 PAGE_COMPONENTS 中补充`);
+  }
+}
 
 function AppContent() {
   const location = useLocation();
   const currentPath = location.pathname;
-  // 懒加载：仅在首次访问时挂载页面，之后保持 mounted
+  // 懒加载：仅在首次访问时挂载页面，之后保持 mounted（display 切换，切页不丢状态）
   const visitedRef = useRef<Set<string>>(new Set());
   if (persistentPages.some(p => p.path === currentPath)) {
     visitedRef.current.add(currentPath);
@@ -82,8 +85,9 @@ function AppContent() {
       <Header />
       <main className="main-content">
         {/* 持久化页面 - 首次访问时挂载，之后通过 display 控制显示 */}
-        {persistentPages.map(({ path, component: Component }) => {
+        {persistentPages.map(({ path }) => {
           if (!visitedRef.current.has(path)) return null;
+          const Component = PAGE_COMPONENTS[path];
           return (
             <div key={path} style={{ display: currentPath === path ? 'block' : 'none', height: '100%' }}>
               <Component />
@@ -94,9 +98,10 @@ function AppContent() {
         {/* 非持久化页面 - 正常路由 */}
         {!persistentPages.some(p => p.path === currentPath) && (
           <Routes>
-            {routePages.map(({ path, component: Component }) => (
-              <Route key={path} path={path} element={<Component />} />
-            ))}
+            {routePages.map(({ path }) => {
+              const Component = PAGE_COMPONENTS[path];
+              return <Route key={path} path={path} element={<Component />} />;
+            })}
           </Routes>
         )}
       </main>

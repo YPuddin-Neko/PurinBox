@@ -100,24 +100,15 @@ function WorkflowEditor() {
   const loadSavedConfig = useCallback(async (nodeId: string, nodeType: string) => {
     if (nodeType === 'llm-tagger') {
       try {
-        const cfg = await invoke<{ preset: string; custom_endpoint: string; api_keys: Record<string, string>; vertex_project_id: string; vertex_location: string; vertex_sa_path: string }>('load_api_config');
-        const isVertex = cfg.preset === 'vertex_express' || cfg.preset === 'vertex_sa';
-        let endpoint = '';
-        if (isVertex && cfg.vertex_project_id) {
-          endpoint = cfg.vertex_location === 'global'
-            ? `https://aiplatform.googleapis.com/v1/projects/${cfg.vertex_project_id}/locations/global/endpoints/openapi/`
-            : `https://${cfg.vertex_location}-aiplatform.googleapis.com/v1/projects/${cfg.vertex_project_id}/locations/${cfg.vertex_location}/endpoints/openapi/`;
-        } else {
-          endpoint = cfg.preset === 'custom' ? cfg.custom_endpoint : (LLM_PRESETS[cfg.preset] || cfg.custom_endpoint || '');
-        }
+        const cfg = await invoke<{ preset: string; custom_endpoint: string; api_keys: Record<string, string> }>('load_api_config');
+        const endpoint = cfg.preset === 'custom' ? cfg.custom_endpoint : (LLM_PRESETS[cfg.preset] || cfg.custom_endpoint || '');
         const apiKey = cfg.api_keys?.[cfg.preset] || '';
         setNodes(nds => nds.map(n => {
           if (n.id !== nodeId) return n;
           const d = n.data as WorkflowNodeData;
           return { ...n, data: { ...d, params: { ...d.params,
             api_endpoint: endpoint || d.params.api_endpoint,
-            api_key: cfg.preset === 'vertex_sa' ? '' : (apiKey || d.params.api_key),
-            vertex_sa_path: cfg.preset === 'vertex_sa' ? (cfg.vertex_sa_path || '') : '',
+            api_key: apiKey || d.params.api_key,
           }}};
         }));
       } catch {}

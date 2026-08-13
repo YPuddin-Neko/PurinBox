@@ -44,9 +44,6 @@ pub struct LlmTaggerOptions {
     /// 是否递归扫描子文件夹
     #[serde(default)]
     pub recursive: bool,
-    /// Vertex AI 服务账号 JSON 文件路径（非空时自动获取 OAuth token）
-    #[serde(default)]
-    pub vertex_sa_path: String,
 }
 
 fn default_image_size() -> u32 {
@@ -509,13 +506,7 @@ async fn tag_with_llm(
         .header("Content-Type", "application/json")
         .json(&request_body);
 
-    // Vertex AI 服务账号模式：自动获取 OAuth2 access token
-    if !options.vertex_sa_path.is_empty() {
-        let token = crate::commands::vertex_auth::get_vertex_access_token(&options.vertex_sa_path)
-            .await
-            .map_err(|e| format!("Vertex AI 认证失败: {}", e))?;
-        req = req.header("Authorization", format!("Bearer {}", token));
-    } else if !options.api_key.is_empty() {
+    if !options.api_key.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", options.api_key));
     }
 

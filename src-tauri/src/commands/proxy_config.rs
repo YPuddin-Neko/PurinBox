@@ -135,19 +135,41 @@ fn apply_proxy(builder: reqwest::ClientBuilder, cfg: &ProxyConfig) -> reqwest::C
         return builder;
     }
 
-    let url = match cfg.proxy_type.as_str() {
-        "socks5" => format!("socks5://{}:{}", cfg.host, cfg.port),
-        _ => format!("http://{}:{}", cfg.host, cfg.port),
+    let is_socks = cfg.proxy_type == "socks5";
+    let url = if is_socks {
+        // SOCKS5 的认证必须放在 URL userinfo 中：Proxy::basic_auth 仅对 HTTP 代理生效
+        if cfg.username.is_empty() {
+            format!("socks5://{}:{}", cfg.host, cfg.port)
+        } else {
+            let password = decode(&cfg.password_encoded);
+            format!(
+                "socks5://{}:{}@{}:{}",
+                urlencoding::encode(&cfg.username),
+                urlencoding::encode(&password),
+                cfg.host,
+                cfg.port
+            )
+        }
+    } else {
+        format!("http://{}:{}", cfg.host, cfg.port)
     };
 
-    if let Ok(mut proxy) = reqwest::Proxy::all(&url) {
-        if !cfg.username.is_empty() {
-            let password = decode(&cfg.password_encoded);
-            proxy = proxy.basic_auth(&cfg.username, &password);
+    match reqwest::Proxy::all(&url) {
+        Ok(mut proxy) => {
+            if !is_socks && !cfg.username.is_empty() {
+                let password = decode(&cfg.password_encoded);
+                proxy = proxy.basic_auth(&cfg.username, &password);
+            }
+            builder.proxy(proxy)
         }
-        builder.proxy(proxy)
-    } else {
-        builder
+        Err(e) => {
+            // 代理无效时不能静默忽略：所有网络请求会绕过代理直连
+            eprintln!(
+                "[PurinBox] 代理配置无效，本次请求将直连（{} {}:{}）: {}",
+                cfg.proxy_type, cfg.host, cfg.port, e
+            );
+            builder
+        }
     }
 }
 

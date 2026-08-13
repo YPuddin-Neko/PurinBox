@@ -9,12 +9,16 @@ interface AppSettingsContextType {
   monitorInterval: number;
   setMonitorInterval: (ms: number) => void;
   cycleThemeWithRipple: (x: number, y: number) => void;
+  /** 实验性功能：工作流是否显示在工具箱（侧边栏）中 */
+  workflowEnabled: boolean;
+  setWorkflowEnabled: (on: boolean) => void;
 }
 
 const AppSettingsContext = createContext<AppSettingsContextType>({
   mode: 'dark', setMode: () => {}, resolved: 'dark',
   monitorInterval: 0, setMonitorInterval: () => {},
   cycleThemeWithRipple: () => {},
+  workflowEnabled: false, setWorkflowEnabled: () => {},
 });
 
 export function useTheme() { return useContext(AppSettingsContext); }
@@ -28,6 +32,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [monitorInterval, setMonitorIntervalRaw] = useState<number>(() => {
     const saved = localStorage.getItem('monitorInterval');
     return saved ? Number(saved) : 0;
+  });
+
+  // 实验性功能开关：默认关闭（测试版功能按需启用）
+  const [workflowEnabled, setWorkflowEnabledRaw] = useState<boolean>(() => {
+    return localStorage.getItem('workflow_enabled') === '1';
   });
 
   const [systemDark, setSystemDark] = useState(
@@ -49,6 +58,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setMonitorInterval = (ms: number) => {
     setMonitorIntervalRaw(ms);
     localStorage.setItem('monitorInterval', String(ms));
+  };
+
+  const setWorkflowEnabled = (on: boolean) => {
+    setWorkflowEnabledRaw(on);
+    localStorage.setItem('workflow_enabled', on ? '1' : '0');
   };
 
   const resolved = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode;
@@ -106,7 +120,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [mode, resolved, systemDark, setMode]);
 
   return (
-    <AppSettingsContext.Provider value={{ mode, setMode, resolved, monitorInterval, setMonitorInterval, cycleThemeWithRipple }}>
+    <AppSettingsContext.Provider value={{ mode, setMode, resolved, monitorInterval, setMonitorInterval, cycleThemeWithRipple, workflowEnabled, setWorkflowEnabled }}>
       {children}
     </AppSettingsContext.Provider>
   );

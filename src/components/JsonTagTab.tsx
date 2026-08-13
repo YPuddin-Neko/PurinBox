@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef, forwardRef, useImper
 import { createPortal } from 'react-dom';
 import TagAutocomplete from './TagAutocomplete';
 import ImageLightbox from './ImageLightbox';
+import ThumbImage from './ThumbImage';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
@@ -220,6 +221,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   const [batchField,setBatchField]=useState('fixed.quality');
   const [batchTags,setBatchTags]=useState('');
   const [batchPosition,setBatchPosition]=useState<'prepend'|'append'>('prepend');
+  /** 批量添加/删除的应用范围：当前图片 or 全部图片 */
+  const [batchScope,setBatchScope]=useState<'current'|'all'>('all');
+  const [showSelDeleteModal,setShowSelDeleteModal]=useState(false);
+  const [selDeleteScope,setSelDeleteScope]=useState<'current'|'all'>('all');
 
   const BATCH_FIELD_OPTIONS = [
     { value: 'fixed.quality', label: 'quality — ' + t('jsonTag.fieldQuality') },
@@ -404,10 +409,12 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   };
 
 
-  // Delete selected tags from all images
+  // Delete selected tags (scope: current image / all images)
   const handleSidebarBatchDelete=useCallback(()=>{
     if(selectedTags.size===0)return;
-    setImages(prev=>prev.map(img=>{
+    if(selDeleteScope==='current'&&selectedIdx<0)return;
+    setImages(prev=>prev.map((img,i)=>{
+      if(selDeleteScope==='current'&&i!==selectedIdx)return img;
       const d=JSON.parse(JSON.stringify(img.data)) as JsonTagData;
       let changed=false;
       const filterArr=(arr:string[])=>{const n=arr.filter(t=>!selectedTags.has(t));if(n.length!==arr.length)changed=true;return n;};
@@ -417,18 +424,21 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
       return changed?{...img,data:d,dirty:true}:img;
     }));
     setSelectedTags(new Set());
-  },[selectedTags]);
+    setShowSelDeleteModal(false);
+  },[selectedTags,selDeleteScope,selectedIdx]);
 
   // Tag chip color helper
   const statChipColors=[{bg:'rgba(124,92,252,0.10)',bd:'rgba(124,92,252,0.25)',tx:'#a78bfa'},{bg:'rgba(96,165,250,0.10)',bd:'rgba(96,165,250,0.25)',tx:'#60a5fa'},{bg:'rgba(74,222,128,0.10)',bd:'rgba(74,222,128,0.25)',tx:'#4ade80'},{bg:'rgba(251,191,36,0.10)',bd:'rgba(251,191,36,0.25)',tx:'#fbbf24'},{bg:'rgba(248,113,113,0.10)',bd:'rgba(248,113,113,0.25)',tx:'#f87171'},{bg:'rgba(192,132,252,0.10)',bd:'rgba(192,132,252,0.25)',tx:'#c084fc'},{bg:'rgba(45,212,191,0.10)',bd:'rgba(45,212,191,0.25)',tx:'#2dd4bf'},{bg:'rgba(251,146,60,0.10)',bd:'rgba(251,146,60,0.25)',tx:'#fb923c'},{bg:'rgba(236,72,153,0.10)',bd:'rgba(236,72,153,0.25)',tx:'#ec4899'},{bg:'rgba(132,204,22,0.10)',bd:'rgba(132,204,22,0.25)',tx:'#84cc16'}];
   const getStatColor=(tag:string)=>{let h=0;for(let i=0;i<tag.length;i++)h=((h<<5)-h+tag.charCodeAt(i))|0;return statChipColors[Math.abs(h)%statChipColors.length];};
 
-  // Batch add tags to all images
+  // Batch add tags (scope: current image / all images)
   const handleBatchAdd=useCallback(()=>{
     const tags=batchTags.split(',').map(s=>s.trim()).filter(Boolean);
     if(!tags.length)return;
+    if(batchScope==='current'&&selectedIdx<0)return;
     const isArray=['ai_output.appearance','ai_output.tags','ai_output.environment','from_path.appearance'].includes(batchField);
-    setImages(prev=>prev.map(img=>{
+    setImages(prev=>prev.map((img,i)=>{
+      if(batchScope==='current'&&i!==selectedIdx)return img;
       const d=JSON.parse(JSON.stringify(img.data)) as JsonTagData;
       if(isArray){
         const [section,field]=batchField.split('.') as [keyof JsonTagData, string];
@@ -449,15 +459,17 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
       return {...img,data:d,dirty:true};
     }));
     setBatchTags('');setShowBatchAddModal(false);
-  },[batchField,batchTags,batchPosition]);
+  },[batchField,batchTags,batchPosition,batchScope,selectedIdx]);
 
-  // Batch delete tags from all images
+  // Batch delete tags (scope: current image / all images)
   const handleBatchDelete=useCallback(()=>{
     const tags=batchTags.split(',').map(s=>s.trim()).filter(Boolean);
     if(!tags.length)return;
+    if(batchScope==='current'&&selectedIdx<0)return;
     const tagsSet=new Set(tags);
     const isAll=batchField==='all';
-    setImages(prev=>prev.map(img=>{
+    setImages(prev=>prev.map((img,i)=>{
+      if(batchScope==='current'&&i!==selectedIdx)return img;
       const d=JSON.parse(JSON.stringify(img.data)) as JsonTagData;
       let changed=false;
       const filterArr=(arr:string[])=>{const n=arr.filter(t=>!tagsSet.has(t));if(n.length!==arr.length){changed=true;}return n;};
@@ -475,7 +487,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
       return changed?{...img,data:d,dirty:true}:img;
     }));
     setBatchTags('');setShowBatchDeleteModal(false);
-  },[batchField,batchTags]);
+  },[batchField,batchTags,batchScope,selectedIdx]);
 
   const dedupeValues=(values:string[],seen:Set<string>)=>{
     let changed=false;
@@ -765,9 +777,9 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
         <div style={{flex:1,overflowY:'auto',padding:6}}>
           {images.length===0?(<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)'}}><FolderOpen style={{width:32,height:32,opacity:0.2}} /><span style={{fontSize:11,opacity:0.6}}>{t('jsonTag.loadHint')}</span></div>):(
             <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4}}>
-              {pagedFiltered.map(img=>{const sel=img._i===selectedIdx;const src=convertFileSrc(img.path);const total=img.data.ai_output.appearance.length+img.data.ai_output.tags.length+img.data.ai_output.environment.length+img.data.from_path.appearance.length;return(
+              {pagedFiltered.map(img=>{const sel=img._i===selectedIdx;const total=img.data.ai_output.appearance.length+img.data.ai_output.tags.length+img.data.ai_output.environment.length+img.data.from_path.appearance.length;return(
                 <div key={img._i} onClick={()=>setSelectedIdx(img._i)} style={{position:'relative',aspectRatio:'1',borderRadius:8,overflow:'hidden',cursor:'pointer',border:`2px solid ${sel?'#7c5cfc':'transparent'}`,boxShadow:sel?'0 0 0 1px rgba(124,92,252,0.3)':'none',transition:'all 0.15s',background:'var(--color-bg-input)'}}>
-                  <img src={src} alt={img.filename} style={{width:'100%',height:'100%',objectFit:'cover'}} loading="lazy" />
+                  <ThumbImage path={img.path} alt={img.filename} style={{width:'100%',height:'100%',objectFit:'cover'}} />
                   {img.has_json&&<div style={{position:'absolute',bottom:2,right:2,minWidth:14,height:14,borderRadius:7,padding:'0 3px',background:img.dirty?'rgba(239,68,68,0.9)':'rgba(124,92,252,0.85)',fontSize:8,color:'#fff',fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center'}}>{total}</div>}
                 </div>
               );})}
@@ -806,7 +818,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
             </div>
           </div>
           <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.15)',minHeight:0,overflow:'hidden'}}>
-            {cur?<img src={imgSrc} alt={cur.filename} draggable={false} onClick={()=>setShowLargePreview(true)} style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',cursor:'zoom-in'}} />
+            {cur?<ThumbImage path={cur.path} maxEdge={1024} alt={cur.filename} draggable={false} onClick={()=>setShowLargePreview(true)} style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',cursor:'zoom-in'}} />
               :<div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:8,color:'var(--color-text-tertiary)'}}><ImageIcon style={{width:48,height:48,opacity:0.2}} /><span style={{fontSize:12,opacity:0.6}}>{images.length===0?t('jsonTag.loadToShow'):t('jsonTag.selectToPreview')}</span></div>}
           </div>
         </div>
@@ -1142,10 +1154,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
         {col3Mode==='stats'&&<div style={{display:'flex',flexDirection:'column',gap:2,padding:'8px 4px',borderLeft:'1px solid var(--color-border)',alignItems:'center'}}>
           {[
             {icon:<Filter style={{width:14,height:14}} />,tip:t('jsonTag.filterByTag'),onClick:()=>setTagFilterActive(v=>!v),disabled:images.length===0,color:tagFilterActive?'#7c5cfc':undefined},
-            {icon:<ListPlus style={{width:14,height:14}} />,tip:t('jsonTag.batchAdd'),onClick:()=>{setBatchField('fixed.quality');setBatchTags('');setBatchPosition('prepend');setShowBatchAddModal(true);},disabled:images.length===0},
-            {icon:<ListX style={{width:14,height:14}} />,tip:t('jsonTag.batchDelete'),onClick:()=>{setBatchField('all');setBatchTags('');setShowBatchDeleteModal(true);},disabled:images.length===0},
+            {icon:<ListPlus style={{width:14,height:14}} />,tip:t('jsonTag.batchAdd'),onClick:()=>{setBatchField('fixed.quality');setBatchTags('');setBatchPosition('prepend');setBatchScope('all');setShowBatchAddModal(true);},disabled:images.length===0},
+            {icon:<ListX style={{width:14,height:14}} />,tip:t('jsonTag.batchDelete'),onClick:()=>{setBatchField('all');setBatchTags('');setBatchScope('all');setShowBatchDeleteModal(true);},disabled:images.length===0},
             {icon:<CopyX style={{width:14,height:14}} />,tip:t('jsonTag.dedupeTags'),onClick:handleDeduplicateTags,disabled:images.length===0,color:'#f59e0b'},
-            {icon:<Trash2 style={{width:14,height:14}} />,tip:t('jsonTag.deleteSelected'),onClick:handleSidebarBatchDelete,disabled:selectedTags.size===0,color:selectedTags.size>0?'#f87171':undefined},
+            {icon:<Trash2 style={{width:14,height:14}} />,tip:t('jsonTag.deleteSelected'),onClick:()=>{setSelDeleteScope('all');setShowSelDeleteModal(true);},disabled:selectedTags.size===0,color:selectedTags.size>0?'#f87171':undefined},
           ].map((item,i)=>(
             <button key={i} className="btn btn-ghost" title={item.tip} disabled={item.disabled}
               onClick={item.onClick}
@@ -1195,6 +1207,20 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
               </div>
             </div>
             <div>
+              <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:6}}>{t('jsonTag.applyScope')}</span>
+              <div style={{display:'flex',gap:4}}>
+                {[{v:'all' as const,l:t('jsonTag.scopeAllImages')},{v:'current' as const,l:t('jsonTag.scopeCurrentImage')}].map(p=>(
+                  <button key={p.v} onClick={()=>{if(p.v==='current'&&!cur)return;setBatchScope(p.v);}} disabled={p.v==='current'&&!cur}
+                    style={{padding:'4px 14px',borderRadius:8,fontSize:10,fontWeight:600,border:'1px solid',cursor:p.v==='current'&&!cur?'not-allowed':'pointer',transition:'all 0.15s',fontFamily:'inherit',opacity:p.v==='current'&&!cur?0.5:1,maxWidth:220,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
+                      background:batchScope===p.v?'rgba(96,165,250,0.15)':'var(--color-bg-input)',
+                      borderColor:batchScope===p.v?'rgba(96,165,250,0.4)':'var(--color-border)',
+                      color:batchScope===p.v?'rgb(96,165,250)':'var(--color-text-tertiary)'}}>
+                    {p.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
               <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:4}}>{t('jsonTag.batchTagsPlaceholder')}</span>
               <BatchTagInput value={batchTags} onChange={setBatchTags} />
             </div>
@@ -1238,6 +1264,20 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
               </div>
             </div>
             <div>
+              <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:6}}>{t('jsonTag.applyScope')}</span>
+              <div style={{display:'flex',gap:4}}>
+                {[{v:'all' as const,l:t('jsonTag.scopeAllImages')},{v:'current' as const,l:t('jsonTag.scopeCurrentImage')}].map(p=>(
+                  <button key={p.v} onClick={()=>{if(p.v==='current'&&!cur)return;setBatchScope(p.v);}} disabled={p.v==='current'&&!cur}
+                    style={{padding:'4px 14px',borderRadius:8,fontSize:10,fontWeight:600,border:'1px solid',cursor:p.v==='current'&&!cur?'not-allowed':'pointer',transition:'all 0.15s',fontFamily:'inherit',opacity:p.v==='current'&&!cur?0.5:1,maxWidth:220,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
+                      background:batchScope===p.v?'rgba(248,113,113,0.15)':'var(--color-bg-input)',
+                      borderColor:batchScope===p.v?'rgba(248,113,113,0.4)':'var(--color-border)',
+                      color:batchScope===p.v?'rgb(248,113,113)':'var(--color-text-tertiary)'}}>
+                    {p.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
               <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:4}}>{t('jsonTag.batchTagsPlaceholder')}</span>
               <input autoFocus className="form-input" value={batchTags} onChange={e=>setBatchTags(e.target.value)}
                 onKeyDown={e=>{if(e.key==='Enter'&&batchTags.trim())handleBatchDelete();}}
@@ -1248,6 +1288,46 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
             <button className="btn btn-ghost" onClick={()=>setShowBatchDeleteModal(false)} style={{fontSize:11,height:30,padding:'0 16px'}}>{t('jsonTag.cancel')}</button>
             <button className="btn btn-primary" onClick={handleBatchDelete} disabled={!batchTags.trim()} style={{fontSize:11,height:30,padding:'0 16px',gap:4,background:'rgba(248,113,113,0.9)'}}>
               <ListX style={{width:12,height:12}} /> {t('jsonTag.batchApplyDelete')}
+            </button>
+          </div>
+        </div>
+      </div>}
+
+      {/* 所选标签删除确认（范围可选） */}
+      {showSelDeleteModal&&<div style={{position:'fixed',inset:0,zIndex:999,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.5)',backdropFilter:'blur(4px)'}}>
+        <div onClick={e=>e.stopPropagation()} style={{width:440,background:'var(--color-bg-card)',borderRadius:16,border:'1px solid var(--color-border)',boxShadow:'0 20px 60px rgba(0,0,0,0.3)',overflow:'hidden'}}>
+          <div style={{padding:'16px 20px',borderBottom:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:8}}>
+            <Trash2 style={{width:16,height:16,color:'#f87171'}} />
+            <span style={{fontSize:13,fontWeight:700,color:'var(--color-text-primary)'}}>{t('jsonTag.deleteSelectedTitle')}</span>
+          </div>
+          <div style={{padding:'16px 20px',display:'flex',flexDirection:'column',gap:14}}>
+            <div>
+              <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:6}}>{t('jsonTag.deleteTagsHint',{n:selectedTags.size})}</span>
+              <div style={{display:'flex',flexWrap:'wrap',gap:4,maxHeight:96,overflowY:'auto',overscrollBehavior:'contain'}}>
+                {[...selectedTags].map(tag=>(
+                  <span key={tag} style={{fontSize:10,padding:'1px 7px',borderRadius:4,border:'1px solid rgba(248,113,113,0.45)',background:'rgba(248,113,113,0.06)',color:'var(--color-text-secondary)'}}>{tag}</span>
+                ))}
+              </div>
+            </div>
+            <div>
+              <span style={{fontSize:11,fontWeight:600,color:'var(--color-text-secondary)',display:'block',marginBottom:6}}>{t('jsonTag.applyScope')}</span>
+              <div style={{display:'flex',gap:4}}>
+                {[{v:'all' as const,l:t('jsonTag.scopeAllImages')},{v:'current' as const,l:t('jsonTag.scopeCurrentImage')}].map(p=>(
+                  <button key={p.v} onClick={()=>{if(p.v==='current'&&!cur)return;setSelDeleteScope(p.v);}} disabled={p.v==='current'&&!cur}
+                    style={{padding:'4px 14px',borderRadius:8,fontSize:10,fontWeight:600,border:'1px solid',cursor:p.v==='current'&&!cur?'not-allowed':'pointer',transition:'all 0.15s',fontFamily:'inherit',opacity:p.v==='current'&&!cur?0.5:1,maxWidth:220,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',
+                      background:selDeleteScope===p.v?'rgba(248,113,113,0.15)':'var(--color-bg-input)',
+                      borderColor:selDeleteScope===p.v?'rgba(248,113,113,0.4)':'var(--color-border)',
+                      color:selDeleteScope===p.v?'#f87171':'var(--color-text-tertiary)'}}>
+                    {p.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{padding:'12px 20px',borderTop:'1px solid var(--color-border)',display:'flex',justifyContent:'flex-end',gap:8}}>
+            <button className="btn btn-ghost" onClick={()=>setShowSelDeleteModal(false)} style={{fontSize:11,height:30,padding:'0 16px'}}>{t('jsonTag.cancel')}</button>
+            <button className="btn btn-primary" onClick={handleSidebarBatchDelete} disabled={selDeleteScope==='current'&&!cur} style={{fontSize:11,height:30,padding:'0 16px',gap:4,background:'rgba(248,113,113,0.9)'}}>
+              <Trash2 style={{width:12,height:12}} /> {selDeleteScope==='all'?t('jsonTag.deleteFromAll'):t('jsonTag.deleteFromCurrentOne')}
             </button>
           </div>
         </div>

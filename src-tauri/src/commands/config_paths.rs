@@ -61,3 +61,33 @@ pub fn resolve_config_file(file_name: &str) -> PathBuf {
 
     new_path
 }
+
+/// 软件根目录（exe 所在目录，macOS .app 则取 bundle 外层）。
+/// 翻译缓存与标签库数据库默认落在此目录下（便于随应用一起搬迁）。
+pub fn exe_root() -> PathBuf {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let exe_dir = exe
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    // macOS .app bundle: …/Foo.app/Contents/MacOS/exe → 取 Foo.app 所在目录
+    if cfg!(target_os = "macos") {
+        if let Some(contents) = exe_dir.parent() {
+            if let Some(app_bundle) = contents.parent() {
+                if app_bundle.extension().map(|e| e == "app").unwrap_or(false) {
+                    return app_bundle.parent().unwrap_or(&exe_dir).to_path_buf();
+                }
+            }
+        }
+    }
+    exe_dir
+}
+
+/// 标签缓存目录（翻译缓存库与 Danbooru 标签库共用）
+pub fn default_tagcache_dir() -> PathBuf {
+    if cfg!(target_os = "windows") {
+        exe_root().join("data").join("tagcache")
+    } else {
+        exe_root().join("tagcache")
+    }
+}

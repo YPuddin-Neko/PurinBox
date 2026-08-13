@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { invoke } from '@tauri-apps/api/core';
 import { hasTauriRuntime, listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
+import ThumbImage from '../components/ThumbImage';
 import {
   FileCode2, FolderOpen, Loader2, Eye, Download,
   ChevronLeft, ChevronRight, ImageUp, X, Clipboard, Check,
@@ -416,10 +417,10 @@ export default function SdMetadataPage() {
                   border: '1px solid var(--color-border)', background: 'rgba(0,0,0,0.3)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 200,
                 }}>
-                  <img src={convertFileSrc(modalItem.path)}
+                  <ThumbImage path={modalItem.path}
+                    maxEdge={1024}
                     alt={modalItem.filename}
-                    style={{ maxWidth: '100%', maxHeight: 360, objectFit: 'contain' }}
-                    onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                    style={{ maxWidth: '100%', maxHeight: 360, objectFit: 'contain' }} />
                 </div>
                 <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', wordBreak: 'break-all', fontFamily: 'monospace' }}>
                   {modalItem.path}

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import ImageLightbox from './ImageLightbox';
+import ThumbImage from './ThumbImage';
 
 type ImageItem = { filename: string; path: string; caption: string; dirty: boolean; };
 
@@ -167,9 +168,9 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 4 }}>
-              {pagedFiltered.map(img => { const sel = img._i === selectedIdx; const src = convertFileSrc(img.path); return (
+              {pagedFiltered.map(img => { const sel = img._i === selectedIdx; return (
                 <div key={img._i} onClick={() => setSelectedIdx(img._i)} style={{ position: 'relative', aspectRatio: '1', borderRadius: 8, overflow: 'hidden', cursor: 'pointer', border: `2px solid ${sel ? '#7c5cfc' : 'transparent'}`, boxShadow: sel ? '0 0 0 1px rgba(124,92,252,0.3)' : 'none', transition: 'all 0.15s', background: 'var(--color-bg-input)' }}>
-                  <img src={src} alt={img.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
+                  <ThumbImage path={img.path} alt={img.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   {img.caption.trim().length > 0 && <div style={{ position: 'absolute', bottom: 2, right: 2, minWidth: 14, height: 14, borderRadius: 7, padding: '0 3px', background: img.dirty ? 'rgba(239,68,68,0.9)' : 'rgba(124,92,252,0.85)', fontSize: 8, color: '#fff', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✓</div>}
                 </div>
               ); })}
@@ -211,7 +212,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
           </div>
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.15)', minHeight: 0, overflow: 'hidden' }}>
             {cur ? (
-              <img src={imgSrc} alt={cur.filename} draggable={false} onClick={() => setShowLargePreview(true)} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', cursor: 'zoom-in' }} />
+              <ThumbImage path={cur.path} maxEdge={1024} alt={cur.filename} draggable={false} onClick={() => setShowLargePreview(true)} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', cursor: 'zoom-in' }} />
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: 'var(--color-text-tertiary)' }}>
                 <ImageIcon style={{ width: 56, height: 56, opacity: 0.2 }} />

@@ -14,6 +14,7 @@ import NaturalLangTab from '../components/NaturalLangTab';
 import JsonTagTab, { translateOwner, type JsonTagTabHandle } from '../components/JsonTagTab';
 import TagAutocomplete from '../components/TagAutocomplete';
 import ImageLightbox from '../components/ImageLightbox';
+import ThumbImage from '../components/ThumbImage';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
 import Checkbox from '../components/Checkbox';
 import { useTranslation } from 'react-i18next';
@@ -158,6 +159,10 @@ export default function TagManagerPage() {
   const [addTagInput, setAddTagInput] = useState('');
   const [addPosition, setAddPosition] = useState<'start'|'end'>('start');
   const [addOverwrite, setAddOverwrite] = useState(false);
+  /** 批量添加/删除的应用范围：当前图片 or 全部图片 */
+  const [addScope, setAddScope] = useState<'current'|'all'>('all');
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteScope, setDeleteScope] = useState<'current'|'all'>('all');
   const [showReplaceModal, setShowReplaceModal] = useState(false);
   const [replaceFrom, setReplaceFrom] = useState('');
   const [replaceTo, setReplaceTo] = useState('');
@@ -363,11 +368,13 @@ export default function TagManagerPage() {
     if (!e.shiftKey) lastClickedTag.current = tag;
   };
 
-  // ── 批量添加标签 ──
+  // ── 批量添加标签（按范围：当前图片 / 全部图片）──
   const handleBatchAdd = () => {
     const tags = addTagInput.split(',').map(t => t.trim().toLowerCase().replace(/_/g,' ')).filter(Boolean);
     if (tags.length === 0) return;
-    setImages(p => p.map(img => {
+    if (addScope === 'current' && selectedIdx < 0) return;
+    setImages(p => p.map((img, i) => {
+      if (addScope === 'current' && i !== selectedIdx) return img;
       let newTags = [...img.tags];
       tags.forEach(t => {
         const idx = newTags.indexOf(t);
@@ -383,15 +390,18 @@ export default function TagManagerPage() {
     setShowAddModal(false); setAddTagInput('');
   };
 
-  // ── 批量删除标签 ──
+  // ── 批量删除标签（按范围：当前图片 / 全部图片）──
   const handleBatchDelete = () => {
     if (selectedTags.size === 0) return;
-    setImages(p => p.map(img => {
+    if (deleteScope === 'current' && selectedIdx < 0) return;
+    setImages(p => p.map((img, i) => {
+      if (deleteScope === 'current' && i !== selectedIdx) return img;
       const newTags = img.tags.filter(t => !selectedTags.has(t));
       if (newTags.length === img.tags.length) return img;
       return { ...img, tags: newTags, dirty: true };
     }));
     setSelectedTags(new Set());
+    setShowDeleteModal(false);
   };
 
   const dedupeTagList = (tags: string[]) => {
@@ -684,9 +694,9 @@ export default function TagManagerPage() {
               </div>
             ):(
               <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4}}>
-                {pagedFiltered.map(img=>{const sel=img._i===selectedIdx;const src=convertFileSrc(img.path);return(
+                {pagedFiltered.map(img=>{const sel=img._i===selectedIdx;return(
                   <div key={img._i} onClick={()=>setSelectedIdx(img._i)} style={{position:'relative',aspectRatio:'1',borderRadius:8,overflow:'hidden',cursor:'pointer',border:`2px solid ${sel?'#7c5cfc':'transparent'}`,boxShadow:sel?'0 0 0 1px rgba(124,92,252,0.3)':'none',transition:'all 0.15s',background:'var(--color-bg-input)'}}>
-                    <img src={src} alt={img.filename} style={{width:'100%',height:'100%',objectFit:'cover'}} loading="lazy" />
+                    <ThumbImage path={img.path} alt={img.filename} style={{width:'100%',height:'100%',objectFit:'cover'}} />
                     {img.tags.length>0&&<div style={{position:'absolute',bottom:2,right:2,minWidth:14,height:14,borderRadius:7,padding:'0 3px',background:img.dirty?'rgba(239,68,68,0.9)':'rgba(124,92,252,0.85)',fontSize:8,color:'#fff',fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center'}}>{img.tags.length}</div>}
                   </div>
                 );})}
@@ -728,7 +738,7 @@ export default function TagManagerPage() {
             </div>
             <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.15)',minHeight:0,overflow:'hidden'}}>
               {cur?(
-                <img src={imgSrc} alt={cur.filename} draggable={false} onClick={()=>setShowLargePreview(true)} style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',cursor:'zoom-in'}} />
+                <ThumbImage path={cur.path} maxEdge={1024} alt={cur.filename} draggable={false} onClick={()=>setShowLargePreview(true)} style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',cursor:'zoom-in'}} />
               ):(
                 <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:8,color:'var(--color-text-tertiary)'}}>
                   <ImageIcon style={{width:56,height:56,opacity:0.2}} />
@@ -927,9 +937,9 @@ export default function TagManagerPage() {
             {[
               {icon:<Filter style={{width:14,height:14}} />,tip:t('tagManager.filterByTag'),onClick:()=>setTagFilterActive(v=>!v),disabled:images.length===0,color:tagFilterActive?'#7c5cfc':undefined},
               {icon:<Replace style={{width:14,height:14}} />,tip:t('tagManager.replaceTag'),onClick:()=>{setReplaceTo('');if(selectedTags.size===1){setReplaceFrom([...selectedTags][0]);}else{setReplaceFrom('');}setShowReplaceModal(true);},disabled:images.length===0},
-              {icon:<ListPlus style={{width:14,height:14}} />,tip:t('tagManager.batchAdd'),onClick:()=>{setAddTagInput('');setAddPosition('start');setAddOverwrite(false);setShowAddModal(true);},disabled:images.length===0},
+              {icon:<ListPlus style={{width:14,height:14}} />,tip:t('tagManager.batchAdd'),onClick:()=>{setAddTagInput('');setAddPosition('start');setAddOverwrite(false);setAddScope('all');setShowAddModal(true);},disabled:images.length===0},
               {icon:<CopyX style={{width:14,height:14}} />,tip:t('tagManager.dedupeTags'),onClick:handleDeduplicateTags,disabled:images.length===0,color:'#f59e0b'},
-              {icon:<Trash2 style={{width:14,height:14}} />,tip:t('tagManager.deleteSelected'),onClick:handleBatchDelete,disabled:selectedTags.size===0,color:selectedTags.size>0?'#f87171':undefined},
+              {icon:<Trash2 style={{width:14,height:14}} />,tip:t('tagManager.deleteSelected'),onClick:()=>{setDeleteScope('all');setShowDeleteModal(true);},disabled:selectedTags.size===0,color:selectedTags.size>0?'#f87171':undefined},
               {icon:<PlusCircle style={{width:14,height:14}} />,tip:t('tagManager.addToCurrent'),onClick:addSelectedToCurrent,disabled:!cur||selectedTags.size===0},
               {icon:<MinusCircle style={{width:14,height:14}} />,tip:t('tagManager.removeFromCurrent'),onClick:removeSelectedFromCurrent,disabled:!cur||selectedTags.size===0||!curHasAllSelected,color:curHasAllSelected&&selectedTags.size>0?'#f87171':undefined},
             ].map((item,i)=>(
@@ -970,12 +980,53 @@ export default function TagManagerPage() {
               <input type="radio" checked={addPosition==='end'} onChange={()=>setAddPosition('end')} /> {t('tagManager.append')}
             </label>
           </div>
+          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>{t('tagManager.applyScope')}</label>
+          <div style={{display:'flex',gap:12,marginBottom:12}}>
+            <label style={{fontSize:11,color:'var(--color-text-secondary)',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}>
+              <input type="radio" checked={addScope==='all'} onChange={()=>setAddScope('all')} /> {t('tagManager.scopeAllImages')}
+            </label>
+            <label style={{fontSize:11,color:cur?'var(--color-text-secondary)':'var(--color-text-tertiary)',display:'flex',alignItems:'center',gap:4,cursor:cur?'pointer':'not-allowed'}}>
+              <input type="radio" checked={addScope==='current'} disabled={!cur} onChange={()=>setAddScope('current')} /> {t('tagManager.scopeCurrentImage')}
+            </label>
+          </div>
           <Checkbox checked={addOverwrite} onChange={setAddOverwrite} size={14}
             label={t('tagManager.overwriteIfExist')}
             style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:16}} />
           <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
             <button className="btn btn-secondary" style={{height:30,fontSize:11}} onClick={()=>setShowAddModal(false)}>{t('tagManager.cancel')}</button>
-            <button className="btn btn-primary" style={{height:30,fontSize:11}} onClick={handleBatchAdd} disabled={!addTagInput.trim()}>{t('tagManager.addToAll')}</button>
+            <button className="btn btn-primary" style={{height:30,fontSize:11}} onClick={handleBatchAdd} disabled={!addTagInput.trim()||(addScope==='current'&&!cur)}>
+              {addScope==='all'?t('tagManager.addToAll'):t('tagManager.addToCurrentOne')}
+            </button>
+          </div>
+        </div>
+      </div>}
+
+      {/* ═ 批量删除弹窗 ═ */}
+      {showDeleteModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
+        <div style={{background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',padding:20,width:380,maxWidth:'90vw'}} onClick={e=>e.stopPropagation()}>
+          <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>{t('tagManager.batchDeleteTitle')}</h3>
+          <div style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:10}}>
+            {t('tagManager.deleteTagsHint',{n:selectedTags.size})}
+          </div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:4,marginBottom:12,maxHeight:96,overflowY:'auto',overscrollBehavior:'contain'}}>
+            {[...selectedTags].map(tag=>(
+              <span key={tag} style={{fontSize:10,padding:'1px 7px',borderRadius:4,border:'1px solid rgba(248,113,113,0.45)',background:'rgba(248,113,113,0.06)',color:'var(--color-text-secondary)'}}>{tag}</span>
+            ))}
+          </div>
+          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>{t('tagManager.applyScope')}</label>
+          <div style={{display:'flex',gap:12,marginBottom:16}}>
+            <label style={{fontSize:11,color:'var(--color-text-secondary)',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}>
+              <input type="radio" checked={deleteScope==='all'} onChange={()=>setDeleteScope('all')} /> {t('tagManager.scopeAllImages')}
+            </label>
+            <label style={{fontSize:11,color:cur?'var(--color-text-secondary)':'var(--color-text-tertiary)',display:'flex',alignItems:'center',gap:4,cursor:cur?'pointer':'not-allowed'}}>
+              <input type="radio" checked={deleteScope==='current'} disabled={!cur} onChange={()=>setDeleteScope('current')} /> {t('tagManager.scopeCurrentImage')}
+            </label>
+          </div>
+          <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+            <button className="btn btn-secondary" style={{height:30,fontSize:11}} onClick={()=>setShowDeleteModal(false)}>{t('tagManager.cancel')}</button>
+            <button className="btn btn-primary" style={{height:30,fontSize:11,background:'#ef4444',borderColor:'#ef4444'}} onClick={handleBatchDelete} disabled={deleteScope==='current'&&!cur}>
+              {deleteScope==='all'?t('tagManager.deleteFromAll'):t('tagManager.deleteFromCurrentOne')}
+            </button>
           </div>
         </div>
       </div>}

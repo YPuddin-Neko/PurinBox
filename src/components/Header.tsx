@@ -7,59 +7,8 @@ import { useTheme } from './ThemeProvider';
 import { useTaskQueue } from './TaskContext';
 import { changeLanguage, availableLanguages } from '../i18n';
 import { hasTauriRuntime } from '../utils/tauriRuntime';
+import { routeI18nMap, TASK_ROUTE_MAP } from '../appRegistry';
 import '../styles/layout.css';
-
-// 路由路径 → 侧边栏翻译 key 映射（复用 sidebar 的翻译 key）
-const routeI18nMap: Record<string, string> = {
-  '/': 'sidebar.home',
-  '/scale': 'sidebar.scale',
-  '/flip': 'sidebar.imageProcess',
-  '/filter': 'sidebar.filter',
-  '/file-keeper': 'sidebar.fileKeeper',
-  '/format-convert': 'sidebar.formatConvert',
-  '/alpha-convert': 'sidebar.alphaConvert',
-  '/batch-rename': 'sidebar.batchRename',
-  '/crop': 'sidebar.crop',
-  '/person-crop': 'sidebar.personCrop',
-  '/perspective': 'sidebar.perspective',
-  '/blur-noise': 'sidebar.blurNoise',
-  '/tagger': 'sidebar.tagger',
-  '/tag-manager': 'sidebar.tagManager',
-  '/tag-sort': 'sidebar.tagOptimize',
-  '/bucket-preview': 'sidebar.bucketPreview',
-  '/upscale': 'sidebar.upscale',
-  '/image-cluster': 'sidebar.imageCluster',
-  '/image-dedup': 'sidebar.imageDedup',
-  '/dataset-balancer': 'sidebar.datasetBalancer',
-  '/sd-metadata': 'sidebar.sdMetadata',
-  '/aesthetic': 'sidebar.aesthetic',
-  '/workflow': 'sidebar.workflow',
-  '/settings': 'sidebar.settings',
-};
-
-// 任务 ID → 路由路径映射
-const TASK_ROUTE_MAP: Record<string, string> = {
-  scale: '/scale',
-  flip: '/flip',
-  filter: '/filter',
-  keeper: '/file-keeper',
-  convert: '/format-convert',
-  alpha: '/alpha-convert',
-  rename: '/batch-rename',
-  crop: '/crop',
-  'person-crop': '/person-crop',
-  perspective: '/perspective',
-  'blur-noise': '/blur-noise',
-  tagger: '/tagger',
-  'llm-tagger': '/tagger',
-  'tag-sort': '/tag-sort',
-  'tag-refine': '/tag-sort',
-  upscale: '/upscale',
-  aesthetic: '/aesthetic',
-  'dedup-rename': '/batch-rename',
-  'image-cluster': '/image-cluster',
-  'sd-metadata': '/sd-metadata',
-};
 
 interface SystemStats {
   cpu_usage: number;

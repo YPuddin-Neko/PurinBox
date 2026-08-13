@@ -67,25 +67,7 @@ fn is_model_downloaded() -> bool {
 
 /// 获取推理脚本路径
 fn get_script_path() -> Result<PathBuf, String> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let candidates = vec![
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/aesthetic_inference.py"),
-        exe_dir.join("scripts/aesthetic_inference.py"),
-        exe_dir.join("aesthetic_inference.py"),
-        exe_dir.join("../Resources/scripts/aesthetic_inference.py"),
-    ];
-
-    for path in &candidates {
-        if path.exists() {
-            return Ok(path.canonicalize().unwrap_or_else(|_| path.clone()));
-        }
-    }
-
-    Err("美学评分推理脚本未找到".into())
+    super::python_proc::find_script("aesthetic_inference.py")
 }
 
 /// 查找 Python
@@ -382,34 +364,9 @@ fn run_aesthetic_scoring(
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONIOENCODING", "utf-8");
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-
-        if options.use_gpu {
-            let mut path = std::env::var("PATH").unwrap_or_default();
-            let mut add_dir = |dir: &str| {
-                if std::path::Path::new(dir).exists() && !path.contains(dir) {
-                    path = format!("{};{}", dir, path);
-                }
-            };
-
-            // CUDA 路径
-            for (_key, val) in super::tagger::inference::get_cuda_env_vars() {
-                add_dir(&format!(r"{}\bin", val));
-                add_dir(&format!(r"{}\bin\x64", val));
-                add_dir(&format!(r"{}\lib\x64", val));
-            }
-
-            // cuDNN 路径
-            if let Ok(cudnn_path) = std::env::var("CUDNN_PATH") {
-                add_dir(&format!(r"{}\bin", cudnn_path));
-            }
-
-            cmd.env("PATH", &path);
-        }
-    }
+    // Windows: 无窗口 + GPU 模式注入 CUDA/cuDNN DLL 路径（共享实现见 python_proc，
+    // 相比旧的本地实现补齐了 cuDNN 9.x 子目录与 PATH 扫描）
+    super::python_proc::configure_python_command(&mut cmd, options.use_gpu);
 
     let mut child = cmd
         .spawn()

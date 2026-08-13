@@ -1,6 +1,8 @@
 // ═══════════════ 工作流执行引擎 ═══════════════
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+// 统一走 tauriRuntime 封装（浏览器模式下为 noop），不再直接依赖官方 event API
+import { listen } from '../../utils/tauriRuntime';
+type UnlistenFn = () => void;
 import type { Node, Edge } from '@xyflow/react';
 import type { WorkflowNodeData } from './workflowTypes';
 import { getNodeDef } from './nodeDefinitions';
@@ -73,9 +75,11 @@ const IN_PLACE_NODE_TYPES = new Set(['tagger', 'llm-tagger', 'rename']);
 const TEMP_DIR_NAME = '.workflow_temp';
 
 /**
- * 生成节点的中间产物临时目录，分隔符无关（兼容 Windows 的 \ 与 POSIX 的 /）
+ * 推导临时目录的根（.workflow_temp 所在的目录），分隔符无关。
+ * 创建（buildTempOutputPath）与清理（cleanup_workflow_temp）必须共用此逻辑，
+ * 否则清理会指向一个不存在的路径而静默什么都不删。
  */
-function buildTempOutputPath(inputPath: string, stepIndex: number, nodeType: string): string {
+function resolveTempRoot(inputPath: string): string {
   // 统一按两种分隔符处理，末尾分隔符先剥掉
   let rootDir = inputPath.replace(/[/\\]+$/, '');
 
@@ -93,11 +97,39 @@ function buildTempOutputPath(inputPath: string, stepIndex: number, nodeType: str
     // 避免 substring(0,-1) 得到空串而让临时目录落到文件系统根
   }
 
-  // 沿用原始输入路径的分隔符风格（rootDir 可能已被截断到不含分隔符，如 "D:"）
+  // 去掉可能残留的尾部分隔符（如输入本身就是盘根 "C:\"），避免拼出 "C:\\"
+  return rootDir.replace(/[/\\]+$/, '');
+}
+
+/**
+ * 生成节点的中间产物临时目录，分隔符无关（兼容 Windows 的 \ 与 POSIX 的 /）
+ */
+function buildTempOutputPath(inputPath: string, stepIndex: number, nodeType: string): string {
+  const base = resolveTempRoot(inputPath);
+  // 沿用原始输入路径的分隔符风格（base 可能已被截断到不含分隔符，如 "D:"）
   const sep = inputPath.includes('\\') && !inputPath.includes('/') ? '\\' : '/';
-  // 去掉 rootDir 可能残留的尾部分隔符（如输入本身就是盘根 "C:\"），避免拼出 "C:\\"
-  const base = rootDir.replace(/[/\\]+$/, '');
   return `${base}${sep}${TEMP_DIR_NAME}${sep}step_${stepIndex}_${nodeType}`;
+}
+
+/**
+ * 清理工作流临时目录。temp 根按每个输入节点的路径推导（与创建逻辑一致），
+ * 多个输入节点可能散落在不同父目录，逐一去重清理。
+ */
+async function cleanupWorkflowTemp(nodes: Node<WorkflowNodeData>[]): Promise<void> {
+  const roots = new Set<string>();
+  for (const node of nodes) {
+    if (node.data.type !== 'image-folder') continue;
+    const path = node.data.params.path as string | undefined;
+    if (path) roots.add(resolveTempRoot(path));
+  }
+  for (const root of roots) {
+    try {
+      await invoke('cleanup_workflow_temp', { dir: root });
+    } catch (e) {
+      // 清理失败不影响主流程
+      console.warn('清理工作流临时目录失败:', root, e);
+    }
+  }
 }
 
 /**
@@ -394,15 +426,7 @@ export class WorkflowEngine {
       // 0. 清理上一次运行的中间产物。
       // 临时目录名按 step_{序号}_{类型} 生成，多次运行之间完全相同，
       // 若上次被取消/失败留下了残留文件，本次会把它们当成上游产物读进来。
-      const firstInputFolder = nodes.find(n => n.data.type === 'image-folder');
-      const cleanupBaseDir = firstInputFolder?.data.params.path as string | undefined;
-      if (cleanupBaseDir) {
-        try {
-          await invoke('cleanup_workflow_temp', { dir: cleanupBaseDir });
-        } catch (e) {
-          console.warn('清理上次运行的临时目录失败:', e);
-        }
-      }
+      await cleanupWorkflowTemp(nodes);
 
       // 1. 拓扑排序
       const sortedIds = topologicalSort(nodes, edges);
@@ -415,32 +439,11 @@ export class WorkflowEngine {
       const skippedNodes = new Set<string>();
 
       // 2. 节点类型 → Rust 进度事件名映射
-      const PROGRESS_EVENT_MAP: Record<string, string> = {
-        'scale':          'scale-progress',
-        'crop':           'crop-progress',
-        'flip':           'flip-progress',
-        'format-convert': 'convert-progress',
-        'alpha-convert':  'alpha-progress',
-        'blur-noise':     'blur-noise-progress',
-        'perspective':    'perspective-progress',
-        'upscale':        'upscale-progress',
-        'person-crop':    'person-crop-progress',
-        'aesthetic':      'aesthetic-progress',
-        'tagger':         'tagger-progress',
-        'batch-rename':   'rename-progress',
-        'dedup-rename':   'dedup-rename-progress',
-        'bucket-assign':  'bucket-progress',
-        'cluster':        'cluster-progress',
-        'resolution-filter': 'filter-progress',
-        'keep-file':      'keeper-progress',
-        'tag-optimize':   'tag-refine-progress',
-        'metadata':       'sd-metadata-progress',
-      };
-
       const startProgressListener = async (nodeType: string) => {
         // 先清理上一个
         stopProgressListener();
-        const eventName = PROGRESS_EVENT_MAP[nodeType];
+        // 进度事件名跟随节点定义（nodeDefinitions.ts 的 progressEvent），不再单独维护映射表
+        const eventName = getNodeDef(nodeType)?.progressEvent;
         if (!eventName || !callbacks.onProgress) return;
 
         currentProgressUnlisten = await listen<{ current: number; total: number }>(eventName, (event) => {
@@ -685,16 +688,7 @@ export class WorkflowEngine {
       const shouldCleanup =
         this.status !== 'done' || nodes.some(n => n.data.type === 'output-folder');
       if (shouldCleanup) {
-        const firstImageFolder = nodes.find(n => n.data.type === 'image-folder');
-        const baseDir = firstImageFolder?.data.params.path as string | undefined;
-        if (baseDir) {
-          try {
-            await invoke('cleanup_workflow_temp', { dir: baseDir });
-          } catch (e) {
-            // 清理失败不影响主流程
-            console.warn('清理临时目录失败:', e);
-          }
-        }
+        await cleanupWorkflowTemp(nodes);
       }
     }
   }

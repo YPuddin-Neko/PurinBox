@@ -21,8 +21,8 @@ pub struct PerspectiveOptions {
 }
 
 #[tauri::command]
-pub async fn perspective_transform(
-    app: tauri::AppHandle,
+pub async fn perspective_transform<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: PerspectiveOptions,
 ) -> Result<ProcessResult, String> {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
@@ -36,8 +36,8 @@ pub fn cancel_perspective() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
-fn perspective_sync(
-    app: &tauri::AppHandle,
+fn perspective_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     options: &PerspectiveOptions,
 ) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);
@@ -257,8 +257,20 @@ fn process_perspective(
         file_name.as_ref(),
         options.recursive,
     )?;
-    out.save(&output_path)
-        .map_err(|e| format!("无法保存图片: {}", e))?;
+    // JPEG/BMP 不支持透明通道，保存前拍平为 RGB（越界区域呈黑边，符合数据增强惯例）
+    let out_ext = output_path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if matches!(out_ext.as_str(), "jpg" | "jpeg" | "bmp") {
+        image::DynamicImage::ImageRgba8(out)
+            .to_rgb8()
+            .save(&output_path)
+            .map_err(|e| format!("无法保存图片: {}", e))?;
+    } else {
+        out.save(&output_path)
+            .map_err(|e| format!("无法保存图片: {}", e))?;
+    }
     Ok(())
 }
 

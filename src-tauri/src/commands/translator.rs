@@ -6,32 +6,8 @@ use std::sync::Mutex;
 /// 翻译缓存数据库路径（可运行时修改）
 static DB_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// 获取软件根目录（exe 所在目录，macOS .app 则取 bundle 外层）
-fn get_exe_root() -> PathBuf {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    let exe_dir = exe
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
-    // macOS .app bundle: …/Foo.app/Contents/MacOS/exe → 取 Foo.app 所在目录
-    if cfg!(target_os = "macos") {
-        if let Some(contents) = exe_dir.parent() {
-            if let Some(app_bundle) = contents.parent() {
-                if app_bundle.extension().map(|e| e == "app").unwrap_or(false) {
-                    return app_bundle.parent().unwrap_or(&exe_dir).to_path_buf();
-                }
-            }
-        }
-    }
-    exe_dir
-}
-
 fn default_cache_dir() -> PathBuf {
-    if cfg!(target_os = "windows") {
-        get_exe_root().join("data").join("tagcache")
-    } else {
-        get_exe_root().join("tagcache")
-    }
+    super::config_paths::default_tagcache_dir()
 }
 
 fn get_db_path() -> PathBuf {

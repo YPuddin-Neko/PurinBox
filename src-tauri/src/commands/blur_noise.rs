@@ -23,8 +23,8 @@ pub struct BlurNoiseOptions {
 }
 
 #[tauri::command]
-pub async fn blur_noise_images(
-    app: tauri::AppHandle,
+pub async fn blur_noise_images<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: BlurNoiseOptions,
 ) -> Result<ProcessResult, String> {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
@@ -38,8 +38,8 @@ pub fn cancel_blur_noise() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
-fn blur_noise_sync(
-    app: &tauri::AppHandle,
+fn blur_noise_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     options: &BlurNoiseOptions,
 ) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);

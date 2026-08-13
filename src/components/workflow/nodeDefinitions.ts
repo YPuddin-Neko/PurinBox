@@ -52,6 +52,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'scale_images',
     cancelCommand: 'cancel_scale',
+    progressEvent: 'scale-progress',
   },
   {
     type: 'crop',
@@ -73,6 +74,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'crop_images',
     cancelCommand: 'cancel_crop',
+    progressEvent: 'crop-progress',
   },
   {
     type: 'flip',
@@ -92,6 +94,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'flip_images',
     cancelCommand: 'cancel_flip',
+    progressEvent: 'flip-progress',
   },
   {
     type: 'format-convert',
@@ -113,6 +116,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'convert_format',
     cancelCommand: 'cancel_convert',
+    progressEvent: 'convert-progress',
   },
   {
     type: 'alpha-convert',
@@ -132,6 +136,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'convert_alpha',
     cancelCommand: 'cancel_alpha',
+    progressEvent: 'alpha-progress',
   },
   {
     type: 'blur-noise',
@@ -149,6 +154,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'blur_noise_images',
     cancelCommand: 'cancel_blur_noise',
+    progressEvent: 'blur-noise-progress',
   },
   {
     type: 'perspective',
@@ -165,6 +171,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'perspective_transform',
     cancelCommand: 'cancel_perspective',
+    progressEvent: 'perspective-progress',
   },
 
   // ── AI 处理 ──
@@ -192,6 +199,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'start_upscale',
     cancelCommand: 'force_cancel_upscale',
+    progressEvent: 'upscale-progress',
   },
   {
     type: 'person-crop',
@@ -211,6 +219,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'start_person_crop',
     cancelCommand: 'force_cancel_person_crop',
+    progressEvent: 'person-crop-progress',
   },
   {
     type: 'aesthetic',
@@ -227,6 +236,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'start_aesthetic_scoring',
     cancelCommand: 'force_cancel_aesthetic_scoring',
+    progressEvent: 'aesthetic-progress',
   },
 
   // ── 标签 ──
@@ -279,6 +289,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'start_tagging',
     cancelCommand: 'force_cancel_tagging',
+    progressEvent: 'tagger-progress',
   },
   {
     type: 'llm-tagger',
@@ -309,6 +320,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'start_llm_tagging',
     cancelCommand: 'cancel_llm_tagging',
+    progressEvent: 'llm-tagger-progress',
   },
 
   // ── 分析/条件 ──
@@ -337,6 +349,8 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.branchUniform',
     outputBLabelKey: 'workflow.branchScattered',
     tauriCommand: 'analyze_buckets',
+    cancelCommand: 'cancel_bucket_analysis',
+    progressEvent: 'bucket-progress',
   },
 
   // ── 文件操作 ──
@@ -366,6 +380,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'filter_by_resolution',
     cancelCommand: 'cancel_filter',
+    progressEvent: 'filter-progress',
   },
   {
     type: 'rename',
@@ -385,6 +400,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
     tauriCommand: 'execute_rename',
+    progressEvent: 'rename-progress',
   },
 
   // ── 输出 ──

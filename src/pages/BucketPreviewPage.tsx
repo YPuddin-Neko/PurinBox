@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, type WheelEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import ThumbImage from '../components/ThumbImage';
 import {
   Grid3X3,
   FolderOpen,
@@ -355,6 +355,15 @@ export default function BucketPreviewPage() {
     clearAnalysisResult();
   };
 
+  // 取消进行中的分析/推荐：后端命中取消标志后以 "已取消" 错误返回，走各自的 catch 分支收尾
+  const cancelAnalyze = () => {
+    invoke('cancel_bucket_analysis').catch(() => {});
+  };
+
+  const cancelRecommend = () => {
+    invoke('cancel_bucket_recommend').catch(() => {});
+  };
+
   const handleRecommend = async () => {
     if (!inputPath) return;
     setRecommending(true);
@@ -663,12 +672,12 @@ export default function BucketPreviewPage() {
             </div>}
             {!analyzing && <div style={{ flex: 1 }} />}
             {isDpMode && (
-              <button className="btn btn-secondary" style={{ height: 34, padding: '0 16px', flexShrink: 0, gap: 6 }} onClick={handleRecommend} disabled={recommending || analyzing || !inputPath}>
-                {recommending ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('bucketPreview.recommending')}</> : <><Sparkles style={{ width: 14, height: 14 }} /> {t('bucketPreview.recommendParams')}</>}
+              <button className="btn btn-secondary" style={{ height: 34, padding: '0 16px', flexShrink: 0, gap: 6 }} onClick={recommending ? cancelRecommend : handleRecommend} disabled={!recommending && (analyzing || !inputPath)}>
+                {recommending ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('common.cancel')}</> : <><Sparkles style={{ width: 14, height: 14 }} /> {t('bucketPreview.recommendParams')}</>}
               </button>
             )}
-            <button className="btn btn-primary" style={{ height: 34, padding: '0 20px', flexShrink: 0 }} onClick={handleAnalyze} disabled={analyzing || !inputPath || resError || stepsError || dpArError || dpBucketError || batchSizeError}>
-              {analyzing ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('bucketPreview.previewing')}</> : <><Play style={{ width: 14, height: 14 }} /> {t('bucketPreview.startPreview')}</>}
+            <button className="btn btn-primary" style={{ height: 34, padding: '0 20px', flexShrink: 0 }} onClick={analyzing ? cancelAnalyze : handleAnalyze} disabled={!analyzing && (!inputPath || resError || stepsError || dpArError || dpBucketError || batchSizeError)}>
+              {analyzing ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('common.cancel')}</> : <><Play style={{ width: 14, height: 14 }} /> {t('bucketPreview.startPreview')}</>}
             </button>
           </div>
 
@@ -855,7 +864,7 @@ export default function BucketPreviewPage() {
                             background: '#0a0a0a',
                             flexShrink: 0,
                           }}>
-                            <img src={convertFileSrc(item.path)} alt={item.name} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                            <ThumbImage path={item.path} alt={item.name} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
                           </div>
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div title={item.name} style={{
@@ -1044,14 +1053,13 @@ export default function BucketPreviewPage() {
                               flex: 1, overflow: 'hidden', minHeight: 0,
                               display: 'flex', alignItems: 'center', justifyContent: 'center',
                             }}>
-                              <img src={convertFileSrc(img.path)} alt={img.name}
+                              <ThumbImage path={img.path} alt={img.name}
                                 draggable={false}
                                 onDragStart={e => e.preventDefault()}
                                 style={{
                                   maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
                                   userSelect: 'none', pointerEvents: 'none',
-                                }}
-                                loading="lazy" />
+                                }} />
                             </div>
                             <div style={{
                               padding: '2px 4px', background: 'var(--color-bg-secondary)',

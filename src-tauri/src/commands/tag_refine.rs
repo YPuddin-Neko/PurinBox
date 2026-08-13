@@ -31,6 +31,13 @@ pub struct TagRefineOptions {
     pub concurrency: u32,
     #[serde(default)]
     pub recursive: bool,
+    /// 标签文件格式: "txt"（默认）| "json"（完整/简化格式自动识别，差量写回保留原分类）
+    #[serde(default = "default_file_format")]
+    pub file_format: String,
+}
+
+fn default_file_format() -> String {
+    "txt".to_string()
 }
 
 fn default_image_size() -> u32 {
@@ -397,6 +404,161 @@ pub async fn start_tag_refining(
     })
 }
 
+
+/// JSON 标签字段布局（完整格式 vs 简化格式）
+/// string 字段是逗号分隔的标签串，array 字段是标签数组；新增标签落入 added_to
+struct JsonTagLayout {
+    string_fields: &'static [&'static [&'static str]],
+    array_fields: &'static [&'static [&'static str]],
+    added_to: &'static [&'static str],
+}
+
+const FULL_LAYOUT: JsonTagLayout = JsonTagLayout {
+    string_fields: &[
+        &["fixed", "quality"],
+        &["fixed", "series"],
+        &["fixed", "artist"],
+        &["character", "name"],
+        &["character", "variant"],
+        &["ai_output", "count"],
+    ],
+    array_fields: &[
+        &["ai_output", "appearance"],
+        &["ai_output", "tags"],
+        &["ai_output", "environment"],
+        &["from_path", "appearance"],
+    ],
+    added_to: &["ai_output", "tags"],
+};
+
+const SIMPLIFIED_LAYOUT: JsonTagLayout = JsonTagLayout {
+    string_fields: &[&["quality"], &["series"], &["artist"], &["character"], &["count"]],
+    array_fields: &[&["appearance"], &["tags"], &["environment"]],
+    added_to: &["tags"],
+};
+
+fn json_layout(data: &serde_json::Value) -> &'static JsonTagLayout {
+    let is_full = ["ai_output", "fixed", "from_path"]
+        .iter()
+        .any(|k| data.get(k).map(|v| v.is_object()).unwrap_or(false))
+        || data.get("character").map(|v| v.is_object()).unwrap_or(false);
+    if is_full {
+        &FULL_LAYOUT
+    } else {
+        &SIMPLIFIED_LAYOUT
+    }
+}
+
+fn json_get_path<'a>(data: &'a serde_json::Value, path: &[&str]) -> Option<&'a serde_json::Value> {
+    let mut cur = data;
+    for key in path {
+        cur = cur.get(key)?;
+    }
+    Some(cur)
+}
+
+fn json_get_path_mut<'a>(
+    data: &'a mut serde_json::Value,
+    path: &[&str],
+) -> Option<&'a mut serde_json::Value> {
+    let mut cur = data;
+    for key in path {
+        cur = cur.get_mut(key)?;
+    }
+    Some(cur)
+}
+
+/// 从 JSON 标签文件展开扁平标签列表（供 LLM 提示词使用）
+fn flatten_json_tags(data: &serde_json::Value) -> Vec<String> {
+    let layout = json_layout(data);
+    let mut tags = Vec::new();
+    for path in layout.string_fields {
+        if let Some(v) = json_get_path(data, path).and_then(|v| v.as_str()) {
+            tags.extend(v.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()));
+        }
+    }
+    for path in layout.array_fields {
+        if let Some(arr) = json_get_path(data, path).and_then(|v| v.as_array()) {
+            tags.extend(
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty()),
+            );
+        }
+    }
+    tags
+}
+
+/// 将 LLM 调优结果差量写回 JSON：
+/// 保留的标签留在原字段（保序），被删除的从原字段移除，新增标签追加到通用 tags 数组。
+/// 这样无需重新分类即可保持本地打标器给出的字段归属。
+fn apply_refined_tags_to_json(data: &mut serde_json::Value, refined: &[String]) {
+    let layout = json_layout(data);
+    let refined_set: HashSet<&str> = refined.iter().map(|s| s.as_str()).collect();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for path in layout.string_fields {
+        if let Some(slot) = json_get_path_mut(data, path) {
+            if let Some(v) = slot.as_str() {
+                let kept: Vec<String> = v
+                    .split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty() && refined_set.contains(t.as_str()))
+                    .collect();
+                for t in &kept {
+                    seen.insert(t.clone());
+                }
+                *slot = serde_json::Value::String(kept.join(", "));
+            }
+        }
+    }
+    for path in layout.array_fields {
+        if let Some(slot) = json_get_path_mut(data, path) {
+            if let Some(arr) = slot.as_array() {
+                let kept: Vec<serde_json::Value> = arr
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty() && refined_set.contains(t.as_str()))
+                    .inspect(|t| {
+                        seen.insert(t.clone());
+                    })
+                    .map(serde_json::Value::String)
+                    .collect();
+                *slot = serde_json::Value::Array(kept);
+            }
+        }
+    }
+
+    // 新增标签（按 LLM 返回顺序）追加到通用 tags 数组，路径缺失时逐级补建
+    let added: Vec<&String> = refined.iter().filter(|t| !seen.contains(t.as_str())).collect();
+    if added.is_empty() {
+        return;
+    }
+    let mut cur = data;
+    for (i, key) in layout.added_to.iter().enumerate() {
+        if !cur.get(*key).map(|v| if i == layout.added_to.len() - 1 { v.is_array() } else { v.is_object() }).unwrap_or(false) {
+            let empty = if i == layout.added_to.len() - 1 {
+                serde_json::Value::Array(Vec::new())
+            } else {
+                serde_json::Value::Object(serde_json::Map::new())
+            };
+            if let Some(obj) = cur.as_object_mut() {
+                obj.insert((*key).to_string(), empty);
+            } else {
+                return;
+            }
+        }
+        cur = cur.get_mut(*key).unwrap();
+    }
+    if let Some(arr) = cur.as_array_mut() {
+        for t in added {
+            arr.push(serde_json::Value::String(t.clone()));
+        }
+    }
+}
+
 /// 处理单个文件：读取图片 + 对应标签 → LLM 细化
 async fn process_single_file(
     client: &reqwest::Client,
@@ -419,12 +581,14 @@ async fn process_single_file(
         .to_string();
     let parent = img_path.parent().unwrap_or(Path::new("."));
 
-    // 查找对应的 .txt 标签文件
-    let tag_path = parent.join(format!("{}.txt", stem));
+    // 查找对应的标签文件（txt 或 json）
+    let is_json = options.file_format == "json";
+    let tag_ext = if is_json { "json" } else { "txt" };
+    let tag_path = parent.join(format!("{}.{}", stem, tag_ext));
     if !tag_path.exists() {
         return FileResult::Skipped {
             filename,
-            reason: "无对应 .txt 标签文件".to_string(),
+            reason: format!("无对应 .{} 标签文件", tag_ext),
         };
     }
 
@@ -445,11 +609,28 @@ async fn process_single_file(
         };
     }
 
-    let original_tags: Vec<String> = tag_content
-        .split(',')
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
+    // json 模式：解析并扁平化标签；txt 模式：逗号拆分
+    let mut json_data: Option<serde_json::Value> = None;
+    let original_tags: Vec<String> = if is_json {
+        let parsed: serde_json::Value = match serde_json::from_str(&tag_content) {
+            Ok(v) => v,
+            Err(e) => {
+                return FileResult::Error {
+                    filename,
+                    message: format!("解析 JSON 标签失败: {}", e),
+                }
+            }
+        };
+        let tags = flatten_json_tags(&parsed);
+        json_data = Some(parsed);
+        tags
+    } else {
+        tag_content
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect()
+    };
 
     if original_tags.is_empty() {
         return FileResult::Skipped {
@@ -493,7 +674,7 @@ async fn process_single_file(
                 warnings.push(format!("新增: {}{}", display.join(", "), suffix));
             }
 
-            let output_name = format!("{}.txt", stem);
+            let output_name = format!("{}.{}", stem, tag_ext);
             let output_path = match output_path_for_input(
                 input_root,
                 img_path,
@@ -509,7 +690,21 @@ async fn process_single_file(
                     }
                 }
             };
-            let output_content = refined_tags.join(", ");
+            let output_content = if let Some(mut data) = json_data {
+                // 差量写回：保留原字段归属，仅应用增删
+                apply_refined_tags_to_json(&mut data, &refined_tags);
+                match serde_json::to_string_pretty(&data) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return FileResult::Error {
+                            filename,
+                            message: format!("序列化 JSON 失败: {}", e),
+                        }
+                    }
+                }
+            } else {
+                refined_tags.join(", ")
+            };
             match std::fs::write(&output_path, &output_content) {
                 Ok(_) => FileResult::Success {
                     filename,

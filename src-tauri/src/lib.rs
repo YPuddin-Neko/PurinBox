@@ -7,7 +7,10 @@ use commands::alpha_convert::{cancel_alpha, convert_alpha};
 use commands::api_config::{load_api_config, save_api_config};
 use commands::batch_rename::{execute_rename, preview_rename};
 use commands::blur_noise::{blur_noise_images, cancel_blur_noise};
-use commands::bucket_preview::{analyze_buckets, export_buckets, recommend_bucket_params};
+use commands::bucket_preview::{
+    analyze_buckets, cancel_bucket_analysis, cancel_bucket_recommend, export_buckets,
+    recommend_bucket_params,
+};
 use commands::dedup_rename::{
     cancel_dedup_rename, execute_dedup_rename, export_unmatched_files, scan_dedup_rename,
 };
@@ -30,7 +33,8 @@ use commands::perspective::{cancel_perspective, perspective_transform};
 use commands::proxy_config::{load_proxy_config, save_proxy_config};
 use commands::python_env::{deploy_python_env, get_python_env_info, reset_python_env};
 use commands::resolution_analyze::{
-    analyze_resolutions, cancel_resolution_analyze, export_resolution_report,
+    analyze_resolutions, cancel_resolution_aggregate, cancel_resolution_analyze,
+    export_resolution_aggregation,
 };
 use commands::resolution_filter::{cancel_filter, filter_by_resolution};
 use commands::sd_metadata::{export_sd_tags, read_single_sd_metadata, scan_sd_metadata};
@@ -45,10 +49,11 @@ use commands::tag_manager::{
 };
 use commands::tag_refine::{cancel_tag_refining, start_tag_refining};
 use commands::tag_sort::{cancel_tag_sorting, start_tag_sorting};
+use commands::thumbnail::get_image_thumbnail;
 use commands::tagger::llm_tagger::{cancel_llm_tagging, fetch_llm_models, start_llm_tagging};
 use commands::tagger::{
     cancel_gpu_runtime_download, cancel_tagger_download, cancel_tagging, check_cuda_available,
-    force_cancel_tagging,
+    convert_tags_to_json, force_cancel_tagging,
     detect_onnx_model_info, download_gpu_runtime, get_gpu_runtime_status, get_tagger_models,
     import_local_tagger_model, remove_custom_tagger_model, start_tagging,
 };
@@ -96,7 +101,8 @@ pub fn run() {
             cancel_filter,
             analyze_resolutions,
             cancel_resolution_analyze,
-            export_resolution_report,
+            export_resolution_aggregation,
+            cancel_resolution_aggregate,
             keep_specified_files,
             cancel_keeper,
             convert_format,
@@ -117,6 +123,7 @@ pub fn run() {
             cancel_gpu_runtime_download,
             cancel_tagging,
             force_cancel_tagging,
+            convert_tags_to_json,
             reset_python_env,
             deploy_python_env,
             get_python_env_info,
@@ -152,8 +159,10 @@ pub fn run() {
             save_huggingface_config,
             load_huggingface_config,
             analyze_buckets,
+            cancel_bucket_analysis,
             export_buckets,
             recommend_bucket_params,
+            cancel_bucket_recommend,
             perspective_transform,
             cancel_perspective,
             blur_noise_images,
@@ -194,6 +203,7 @@ pub fn run() {
             load_workflow,
             list_workflows,
             cleanup_workflow_temp,
+            get_image_thumbnail,
         ])
         .setup(|app| {
             // 初始化翻译缓存数据库路径（默认使用 exe 根目录/tagcache/）

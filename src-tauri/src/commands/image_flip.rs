@@ -21,8 +21,8 @@ pub struct FlipOptions {
 }
 
 #[tauri::command]
-pub async fn flip_images(
-    app: tauri::AppHandle,
+pub async fn flip_images<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: FlipOptions,
 ) -> Result<ProcessResult, String> {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
@@ -36,8 +36,8 @@ pub fn cancel_flip() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
-fn flip_images_sync(
-    app: &tauri::AppHandle,
+fn flip_images_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     options: &FlipOptions,
 ) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);

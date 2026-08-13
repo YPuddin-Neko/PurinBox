@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { listen } from '../utils/tauriRuntime';
 import i18next from 'i18next';
+import { EVENT_TASK_MAP } from '../appRegistry';
 
 export interface TaskInfo {
   id: string;
@@ -32,30 +33,6 @@ const TaskContext = createContext<TaskContextType>({
 export function useTaskQueue() {
   return useContext(TaskContext);
 }
-
-// 事件名 → 任务 ID 映射
-const EVENT_TASK_MAP: Record<string, string> = {
-  'scale-progress': 'scale',
-  'flip-progress': 'flip',
-  'filter-progress': 'filter',
-  'keeper-progress': 'keeper',
-  'convert-progress': 'convert',
-  'alpha-progress': 'alpha',
-  'rename-progress': 'rename',
-  'crop-progress': 'crop',
-  'person-crop-progress': 'person-crop',
-  'tagger-progress': 'tagger',
-  'python-env-progress': 'tagger',
-  'llm-tagger-progress': 'llm-tagger',
-  'tag-sort-progress': 'tag-sort',
-  'tag-refine-progress': 'tag-refine',
-  'perspective-progress': 'perspective',
-  'blur-noise-progress': 'blur-noise',
-  'upscale-progress': 'upscale',
-  'cluster-progress': 'image-cluster',
-  'dedup-rename-progress': 'dedup-rename',
-  'sd-metadata-progress': 'sd-metadata',
-};
 
 export function TaskProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);

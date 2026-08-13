@@ -29,25 +29,7 @@ pub struct ClusterOptions {
 
 /// 获取聚类脚本路径
 fn get_cluster_script() -> Result<PathBuf, String> {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let candidates = vec![
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/image_cluster.py"),
-        exe_dir.join("scripts/image_cluster.py"),
-        exe_dir.join("image_cluster.py"),
-        #[cfg(target_os = "macos")]
-        exe_dir.join("../Resources/scripts/image_cluster.py"),
-    ];
-
-    for path in &candidates {
-        if path.exists() {
-            return Ok(path.canonicalize().unwrap_or_else(|_| path.clone()));
-        }
-    }
-    Err("聚类脚本 image_cluster.py 未找到".into())
+    super::python_proc::find_script("image_cluster.py")
 }
 
 /// 获取聚类模型缓存目录 (models/cluster_models/)

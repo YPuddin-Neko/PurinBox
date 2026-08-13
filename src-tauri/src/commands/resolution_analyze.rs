@@ -7,9 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
-use super::{collect_image_files_with_recursive, ProgressEvent};
+use super::{
+    collect_image_files_with_recursive, collect_image_files_with_recursive_excluding,
+    ProgressEvent,
+};
 
 static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+static AGGREGATE_CANCEL: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolutionAnalyzeOptions {
@@ -253,100 +257,162 @@ where
     })
 }
 
-/// 导出分析结果到文件（支持 txt / csv / json）
+// ═══════════════ 分辨率聚合导出 ═══════════════
+
+/// 聚合计划中的一个目标文件夹：命中 resolutions 中任一分辨率的图片会被复制进 folder
+#[derive(Debug, Clone, Deserialize)]
+pub struct AggregatePlanEntry {
+    /// 目标文件夹名（通常为 "宽x高"，如 "1920x1080"）
+    pub folder: String,
+    /// 归入该文件夹的成员分辨率列表
+    pub resolutions: Vec<(u32, u32)>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResolutionAggregateOptions {
+    pub input_path: String,
+    pub recursive: bool,
+    pub output_path: String,
+    pub plan: Vec<AggregatePlanEntry>,
+}
+
 #[tauri::command]
-pub async fn export_resolution_report(
-    result: ResolutionAnalyzeResult,
-    format: String,
-    save_path: String,
-    input_path: String,
+pub fn cancel_resolution_aggregate() {
+    AGGREGATE_CANCEL.store(true, Ordering::SeqCst);
+}
+
+/// 按聚合计划把图片复制到以目标分辨率命名的文件夹。
+///
+/// 分析结果为控制体积只保留稀有分组的文件路径，因此导出时重新扫描目录、
+/// 逐图读取尺寸（仅解析文件头，开销小）后按计划归组。
+#[tauri::command]
+pub async fn export_resolution_aggregation(
+    app: tauri::AppHandle,
+    options: ResolutionAggregateOptions,
 ) -> Result<String, String> {
-    let content = match format.as_str() {
-        "json" => serde_json::to_string_pretty(&result)
-            .map_err(|e| format!("序列化失败: {}", e))?,
-        "csv" => build_csv(&result),
-        _ => build_txt(&result, &input_path),
+    AGGREGATE_CANCEL.store(false, Ordering::SeqCst);
+    tokio::task::spawn_blocking(move || aggregate_sync(&app, &options))
+        .await
+        .map_err(|e| format!("聚合导出任务执行失败: {}", e))?
+}
+
+fn aggregate_sync(
+    app: &tauri::AppHandle,
+    options: &ResolutionAggregateOptions,
+) -> Result<String, String> {
+    let input = Path::new(&options.input_path);
+    if !input.exists() || !input.is_dir() {
+        return Err(format!("输入目录不存在: {}", options.input_path));
+    }
+    if options.plan.is_empty() {
+        return Err("聚合计划为空".into());
+    }
+
+    let out_root = Path::new(&options.output_path);
+    std::fs::create_dir_all(out_root).map_err(|e| format!("创建输出目录失败: {}", e))?;
+
+    // 分辨率 → 计划条目索引；文件夹名剥掉路径分隔符防止逃逸
+    let mut lookup: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut folder_names: Vec<String> = Vec::with_capacity(options.plan.len());
+    for (idx, entry) in options.plan.iter().enumerate() {
+        let safe: String = entry
+            .folder
+            .chars()
+            .map(|c| if matches!(c, '/' | '\\' | ':') { '_' } else { c })
+            .collect();
+        let safe = safe.trim().trim_matches('.').to_string();
+        if safe.is_empty() {
+            return Err(format!("非法的文件夹名: {}", entry.folder));
+        }
+        folder_names.push(safe);
+        for &(w, h) in &entry.resolutions {
+            lookup.insert((w, h), idx);
+        }
+    }
+
+    // 输出目录可能位于输入目录内，收集时排除，避免把导出产物再当输入
+    let files =
+        collect_image_files_with_recursive_excluding(input, options.recursive, Some(out_root))?;
+    if files.is_empty() {
+        return Err("未找到图片文件".into());
+    }
+    let total = files.len() as u32;
+
+    let emit = |current: u32, status: &str, message: String| {
+        let _ = app.emit(
+            "resolution-analyze-progress",
+            ProgressEvent {
+                current,
+                total,
+                filename: String::new(),
+                status: status.to_string(),
+                message,
+                ..Default::default()
+            },
+        );
     };
 
-    std::fs::write(&save_path, content).map_err(|e| format!("写入失败: {}", e))?;
-    Ok(save_path)
-}
+    let mut copied = 0u32;
+    let mut unmatched = 0u32;
+    let mut failed: Vec<String> = Vec::new();
+    let mut used_folders: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-fn build_csv(r: &ResolutionAnalyzeResult) -> String {
-    let mut out = String::from("width,height,count,percent,aspect_ratio,aspect_label,is_rare\n");
-    for g in &r.groups {
-        out.push_str(&format!(
-            "{},{},{},{:.2},{:.2},{},{}\n",
-            g.width,
-            g.height,
-            g.count,
-            g.percent,
-            g.aspect_ratio,
-            g.aspect_label,
-            g.is_rare
-        ));
-    }
-    // 稀有分辨率的文件清单单独附在末尾，保持主表可直接导入表格软件
-    let rare: Vec<&ResolutionGroup> = r.groups.iter().filter(|g| g.is_rare).collect();
-    if !rare.is_empty() {
-        out.push_str("\n# rare resolution files\n");
-        out.push_str("width,height,file\n");
-        for g in rare {
-            for f in &g.files {
-                // CSV 转义：路径可能含逗号或引号
-                let escaped = f.replace('"', "\"\"");
-                out.push_str(&format!("{},{},\"{}\"\n", g.width, g.height, escaped));
+    for (i, path) in files.iter().enumerate() {
+        if AGGREGATE_CANCEL.load(Ordering::SeqCst) {
+            // 汇总信息放进错误消息（前端 catch 统一记录，避免与事件日志重复）
+            return Err(format!("已取消，已复制 {} 个文件", copied));
+        }
+
+        match read_image_dimensions(path) {
+            Ok((w, h)) => {
+                if let Some(&idx) = lookup.get(&(w, h)) {
+                    let dir = out_root.join(&folder_names[idx]);
+                    if !used_folders.contains(&idx) {
+                        std::fs::create_dir_all(&dir)
+                            .map_err(|e| format!("创建目录失败 {}: {}", dir.display(), e))?;
+                        used_folders.insert(idx);
+                    }
+                    let filename = path
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| format!("image_{}", i));
+                    let dst = super::bucket_preview::unique_copy_destination(&dir, &filename);
+                    match std::fs::copy(path, &dst) {
+                        Ok(_) => copied += 1,
+                        Err(e) => failed.push(format!("{}: {}", path.display(), e)),
+                    }
+                } else {
+                    // 分析之后新增/变动的分辨率不在计划内，跳过
+                    unmatched += 1;
+                }
             }
+            Err(_) => unmatched += 1,
+        }
+
+        let current = i as u32 + 1;
+        if current % 20 == 0 || current == total {
+            emit(current, "processing", format!("正在聚合 {}/{}", current, total));
         }
     }
-    out
-}
 
-fn build_txt(r: &ResolutionAnalyzeResult, input_path: &str) -> String {
-    let mut out = String::new();
-    out.push_str(&"=".repeat(56));
-    out.push_str("\n 图片分辨率分布统计\n");
-    out.push_str(&"=".repeat(56));
-    out.push('\n');
-    if !input_path.is_empty() {
-        out.push_str(&format!("\n扫描目录: {}\n", input_path));
-    }
-    out.push_str(&format!(
-        "\n共 {} 张图片，{} 种分辨率\n",
-        r.total_images, r.distinct_count
-    ));
-    out.push_str(&format!(
-        "宽度范围: {} - {} px    高度范围: {} - {} px\n",
-        r.min_width, r.max_width, r.min_height, r.max_height
-    ));
-
-    for g in &r.groups {
-        let label = if g.aspect_label.is_empty() {
-            format!("{:.2}", g.aspect_ratio)
+    let summary = format!(
+        "聚合导出完成：{} 个文件 → {} 个文件夹{}{}",
+        copied,
+        used_folders.len(),
+        if unmatched > 0 {
+            format!("，跳过 {} 个未匹配", unmatched)
         } else {
-            g.aspect_label.clone()
-        };
-        out.push_str(&format!(
-            "\n▶ {} x {}  =>  {} 张  ({:.1}%, {})\n",
-            g.width, g.height, g.count, g.percent, label
-        ));
-        if g.is_rare && !g.files.is_empty() {
-            out.push_str("  [数量偏少，文件路径如下：]\n");
-            for f in &g.files {
-                out.push_str(&format!("    - {}\n", f));
-            }
-        }
-    }
-
-    if r.failed_count > 0 {
-        out.push_str(&format!("\n\n无法读取的文件 ({}):\n", r.failed_count));
-        for f in &r.failed_files {
-            out.push_str(&format!("    - {}\n", f));
-        }
-    }
-
-    out.push_str(&format!("\n{}\n", "=".repeat(56)));
-    out
+            String::new()
+        },
+        if failed.is_empty() {
+            String::new()
+        } else {
+            format!("，{} 个复制失败", failed.len())
+        },
+    );
+    // 汇总由命令返回值带回前端记录日志；这里只把进度条推满（processing 状态不会重复记日志）
+    emit(total, "processing", format!("正在聚合 {}/{}", total, total));
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -441,52 +507,5 @@ mod tests {
         assert_eq!(aspect_label_for(100, 0), "");
     }
 
-    #[test]
-    fn csv_escapes_quotes_in_paths() {
-        let r = ResolutionAnalyzeResult {
-            total_images: 1,
-            failed_count: 0,
-            failed_files: vec![],
-            distinct_count: 1,
-            groups: vec![ResolutionGroup {
-                width: 10,
-                height: 20,
-                count: 1,
-                percent: 100.0,
-                aspect_ratio: 0.5,
-                aspect_label: "1:2".into(),
-                is_rare: true,
-                files: vec!["/a/we\"ird,name.png".into()],
-            }],
-            min_width: 10,
-            max_width: 10,
-            min_height: 20,
-            max_height: 20,
-        };
-        let csv = build_csv(&r);
-        assert!(csv.contains("\"/a/we\"\"ird,name.png\""), "引号需转义为双引号");
-        assert!(csv.starts_with("width,height,count"));
-    }
 
-    #[test]
-    fn txt_lists_rare_files_only() {
-        let r = ResolutionAnalyzeResult {
-            total_images: 5,
-            failed_count: 0,
-            failed_files: vec![],
-            distinct_count: 2,
-            groups: vec![
-                ResolutionGroup { width:100,height:100,count:4,percent:80.0,aspect_ratio:1.0,
-                    aspect_label:"1:1".into(),is_rare:false,files:vec![] },
-                ResolutionGroup { width:7,height:9,count:1,percent:20.0,aspect_ratio:0.78,
-                    aspect_label:String::new(),is_rare:true,files:vec!["/x/rare.png".into()] },
-            ],
-            min_width: 7, max_width: 100, min_height: 9, max_height: 100,
-        };
-        let txt = build_txt(&r, "/data/set");
-        assert!(txt.contains("/data/set"));
-        assert!(txt.contains("100 x 100"));
-        assert!(txt.contains("/x/rare.png"), "稀有分组应列出文件");
-        assert!(txt.contains("0.78"), "无常见比例标签时回退显示数值");
-    }
 }

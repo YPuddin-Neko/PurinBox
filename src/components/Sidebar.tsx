@@ -2,91 +2,15 @@ import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
-import {
-  Home,
-  Crop,
-  ScanFace,
-  Scaling,
-  FlipHorizontal2,
-  ScanSearch,
-  FileCheck2,
-  FileType,
-  Layers,
-  TextCursorInput,
-  Tags,
-  List,
-  
-  Grid3X3,
-  Settings,
-  PanelLeftClose,
-  Move3D,
-  Sparkles,
-  ZoomIn,
-  Network,
-  Copy,
-  Scale,
-  FileCode2,
-  Star,
-  Wand2,
-  BarChart3,
-  Workflow,
-} from 'lucide-react';
+import { PanelLeftClose } from 'lucide-react';
 import '../styles/sidebar.css';
 import { getAppVersion, packageAppVersion } from '../utils/appVersion';
-
-interface NavItem { id: string; labelKey: string; icon: React.ReactNode; path: string; }
-interface NavSection { titleKey: string; items: NavItem[]; }
-
-const homeItem: NavItem = { id: 'home', labelKey: 'sidebar.home', icon: <Home />, path: '/' };
-
-const navSections: NavSection[] = [
-  {
-    titleKey: 'sidebar.sectionPreprocess',
-    items: [
-      { id: 'aesthetic', labelKey: 'sidebar.aesthetic', icon: <Star />, path: '/aesthetic' },
-      { id: 'crop', labelKey: 'sidebar.crop', icon: <Crop />, path: '/crop' },
-      { id: 'person-crop', labelKey: 'sidebar.personCrop', icon: <ScanFace />, path: '/person-crop' },
-      { id: 'scale', labelKey: 'sidebar.scale', icon: <Scaling />, path: '/scale' },
-      { id: 'flip', labelKey: 'sidebar.imageProcess', icon: <FlipHorizontal2 />, path: '/flip' },
-      { id: 'filter', labelKey: 'sidebar.filter', icon: <ScanSearch />, path: '/filter' },
-      { id: 'resolution-analyze', labelKey: 'sidebar.resolutionAnalyze', icon: <BarChart3 />, path: '/resolution-analyze' },
-      { id: 'file-keeper', labelKey: 'sidebar.fileKeeper', icon: <FileCheck2 />, path: '/file-keeper' },
-      { id: 'format-convert', labelKey: 'sidebar.formatConvert', icon: <FileType />, path: '/format-convert' },
-      { id: 'alpha-convert', labelKey: 'sidebar.alphaConvert', icon: <Layers />, path: '/alpha-convert' },
-      { id: 'batch-rename', labelKey: 'sidebar.batchRename', icon: <TextCursorInput />, path: '/batch-rename' },
-      { id: 'perspective', labelKey: 'sidebar.perspective', icon: <Move3D />, path: '/perspective' },
-      { id: 'blur-noise', labelKey: 'sidebar.blurNoise', icon: <Sparkles />, path: '/blur-noise' },
-    ],
-  },
-  {
-    titleKey: 'sidebar.sectionDataset',
-    items: [
-      { id: 'tagger', labelKey: 'sidebar.tagger', icon: <Tags />, path: '/tagger' },
-      { id: 'tag-manager', labelKey: 'sidebar.tagManager', icon: <List />, path: '/tag-manager' },
-    ],
-  },
-  {
-    titleKey: 'sidebar.sectionAdvanced',
-    items: [
-      { id: 'tag-sort', labelKey: 'sidebar.tagOptimize', icon: <Wand2 />, path: '/tag-sort' },
-      { id: 'bucket-preview', labelKey: 'sidebar.bucketPreview', icon: <Grid3X3 />, path: '/bucket-preview' },
-      { id: 'upscale', labelKey: 'sidebar.upscale', icon: <ZoomIn />, path: '/upscale' },
-      { id: 'image-cluster', labelKey: 'sidebar.imageCluster', icon: <Network />, path: '/image-cluster' },
-      { id: 'image-dedup', labelKey: 'sidebar.imageDedup', icon: <Copy />, path: '/image-dedup' },
-      { id: 'dataset-balancer', labelKey: 'sidebar.datasetBalancer', icon: <Scale />, path: '/dataset-balancer' },
-      { id: 'sd-metadata', labelKey: 'sidebar.sdMetadata', icon: <FileCode2 />, path: '/sd-metadata' },
-    ],
-  },
-  {
-    titleKey: 'sidebar.sectionAutomation',
-    items: [
-      { id: 'workflow', labelKey: 'sidebar.workflow', icon: <Workflow />, path: '/workflow' },
-    ],
-  },
-];
+import { navSections, homePage, settingsPage } from '../appRegistry';
+import { useAppSettings } from './ThemeProvider';
 
 export default function Sidebar() {
   const { t } = useTranslation();
+  const { workflowEnabled } = useAppSettings();
   const [collapsed, setCollapsed] = useState(false);
   const [appVersion, setAppVersion] = useState(packageAppVersion);
   // update status: 'checking' | 'latest' | 'update' | 'error'
@@ -134,22 +58,41 @@ export default function Sidebar() {
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
       <nav className="sidebar-nav">
         <div className="sidebar-section">
-          <NavLink to={homeItem.path}
+          <NavLink to={homePage.path}
             className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
             end>
-            <span className="sidebar-item-icon">{homeItem.icon}</span>
-            <span className="sidebar-item-label">{t(homeItem.labelKey)}</span>
+            <span className="sidebar-item-icon"><homePage.icon /></span>
+            <span className="sidebar-item-label">{t(homePage.i18nKey)}</span>
           </NavLink>
         </div>
-        {navSections.map((section) => (
+        {navSections
+          .map((section) => ({
+            ...section,
+            // 实验性功能（测试版）由设置中的开关控制是否显示
+            items: section.items.filter(item => !item.experimental || workflowEnabled),
+          }))
+          .filter((section) => section.items.length > 0)
+          .map((section) => (
           <div key={section.titleKey} className="sidebar-section">
             <div className="sidebar-section-title">{t(section.titleKey)}</div>
             {section.items.map((item) => (
-              <NavLink key={item.id} to={item.path}
+              <NavLink key={item.path} to={item.path}
                 className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
                 end={item.path === '/'}>
-                <span className="sidebar-item-icon">{item.icon}</span>
-                <span className="sidebar-item-label">{t(item.labelKey)}</span>
+                <span className="sidebar-item-icon"><item.icon /></span>
+                <span className="sidebar-item-label">
+                  {t(item.i18nKey)}
+                  {item.experimental && (
+                    <span style={{
+                      marginLeft: 6, padding: '0 4px', borderRadius: 3,
+                      fontSize: 9, fontWeight: 700, letterSpacing: '0.02em',
+                      color: '#fbbf24', border: '1px solid rgba(251, 191, 36, 0.45)',
+                      verticalAlign: 'middle',
+                    }}>
+                      Beta
+                    </span>
+                  )}
+                </span>
               </NavLink>
             ))}
           </div>
@@ -159,11 +102,11 @@ export default function Sidebar() {
         <button className="sidebar-toggle-btn" onClick={() => setCollapsed(!collapsed)} title={collapsed ? t('sidebar.expandMenu') : t('sidebar.collapseMenu')}><PanelLeftClose /><span className="sidebar-item-label">{collapsed ? t('sidebar.expand') : t('sidebar.collapse')}</span></button>
       </div>
       <div className="sidebar-toggle" style={{borderTop: 'none', paddingTop: 0}}>
-        <NavLink to="/settings"
+        <NavLink to={settingsPage.path}
           className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
           style={{margin: 0, width: '100%'}}>
-          <span className="sidebar-item-icon"><Settings /></span>
-          <span className="sidebar-item-label">{t('sidebar.settings')}</span>
+          <span className="sidebar-item-icon"><settingsPage.icon /></span>
+          <span className="sidebar-item-label">{t(settingsPage.i18nKey)}</span>
         </NavLink>
       </div>
       <div className="sidebar-version" title={dotTitle} onClick={handleVersionClick}

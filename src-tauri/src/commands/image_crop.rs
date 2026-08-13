@@ -71,8 +71,8 @@ fn crop_anchor_label(anchor: &str) -> &'static str {
 }
 
 #[tauri::command]
-pub async fn crop_images(
-    app: tauri::AppHandle,
+pub async fn crop_images<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: CropOptions,
 ) -> Result<ProcessResult, String> {
     CANCEL_FLAG.store(false, Ordering::SeqCst);
@@ -86,8 +86,8 @@ pub fn cancel_crop() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
 }
 
-fn crop_images_sync(
-    app: &tauri::AppHandle,
+fn crop_images_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     options: &CropOptions,
 ) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);

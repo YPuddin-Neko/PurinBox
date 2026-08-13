@@ -90,8 +90,8 @@ fn preview_rename_sync(options: &RenameOptions) -> Result<Vec<RenamePreviewItem>
 
 /// 执行批量重命名
 #[tauri::command]
-pub async fn execute_rename(
-    app: tauri::AppHandle,
+pub async fn execute_rename<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: RenameOptions,
 ) -> Result<ProcessResult, String> {
     tokio::task::spawn_blocking(move || execute_rename_sync(&app, &options))
@@ -99,8 +99,8 @@ pub async fn execute_rename(
         .map_err(|e| format!("任务执行失败: {}", e))?
 }
 
-fn execute_rename_sync(
-    app: &tauri::AppHandle,
+fn execute_rename_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     options: &RenameOptions,
 ) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);

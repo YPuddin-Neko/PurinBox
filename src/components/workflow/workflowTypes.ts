@@ -39,6 +39,7 @@ export interface NodeTypeDef {
   outputBLabelKey?: string;    // i18n key for second output slot label
   tauriCommand?: string;       // mapped Tauri command name
   cancelCommand?: string;      // 取消命令（停止工作流时用于终止该节点的子进程）
+  progressEvent?: string;      // 后端进度事件名（运行该节点时桥接到画布进度显示）
 }
 
 /** 节点运行时数据 */

@@ -694,3 +694,170 @@ pub async fn start_tagging(
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
 }
+
+// ═══════════════ txt → JSON 标签格式转换 ═══════════════
+
+/// txt → JSON 标签转换选项（辅助打标流水线的最后一步，也可独立使用）
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ConvertTagsOptions {
+    pub input_path: String,
+    /// 提供标签分类的词表来源模型（须已下载）
+    pub model_id: String,
+    #[serde(default)]
+    pub json_simplified: bool,
+    /// 转换成功后删除源 .txt
+    #[serde(default)]
+    pub remove_txt: bool,
+    #[serde(default)]
+    pub recursive: bool,
+}
+
+/// 将图片旁的 .txt 标签按模型词表分类后转换为 JSON。
+/// 复用 Python 端的分类与 JSON 构建逻辑（--convert 模式，不加载 ONNX，速度快）。
+#[tauri::command]
+pub async fn convert_tags_to_json(
+    app: tauri::AppHandle,
+    options: ConvertTagsOptions,
+) -> Result<ProcessResult, String> {
+    let model_def = models::find_model(&options.model_id)
+        .ok_or_else(|| format!("模型不存在: {}", options.model_id))?;
+    let tags_path = get_model_dir(&model_def.id).join(model_def.tags_basename());
+    if !tags_path.exists() {
+        return Err(format!("模型词表未下载: {}", tags_path.display()));
+    }
+    tokio::task::spawn_blocking(move || run_convert_tags(&app, &options, &tags_path))
+        .await
+        .map_err(|e| format!("转换任务执行失败: {}", e))?
+}
+
+fn run_convert_tags(
+    app: &tauri::AppHandle,
+    options: &ConvertTagsOptions,
+    tags_path: &std::path::Path,
+) -> Result<ProcessResult, String> {
+    use std::io::BufRead;
+    use tauri::Emitter;
+
+    let python = inference::find_python()?;
+    let script = crate::commands::python_proc::find_script("tagger_inference.py")?;
+
+    let mut cmd = std::process::Command::new(&python);
+    cmd.arg(script.to_string_lossy().as_ref())
+        .arg("--convert")
+        .arg("--input")
+        .arg(&options.input_path)
+        .arg("--tags-path")
+        .arg(tags_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONIOENCODING", "utf-8");
+    if options.json_simplified {
+        cmd.arg("--simplified");
+    }
+    if options.remove_txt {
+        cmd.arg("--remove-txt");
+    }
+    if options.recursive {
+        cmd.arg("--recursive");
+    }
+    crate::commands::python_proc::configure_python_command(&mut cmd, false);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("启动转换进程失败: {}", e))?;
+    let stdout = child.stdout.take().ok_or("无法获取转换进程输出")?;
+
+    let mut converted = 0u32;
+    let mut failed = 0u32;
+    let mut skipped = 0u32;
+    let mut total = 0u32;
+    for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        match msg.get("type").and_then(|t| t.as_str()) {
+            Some("progress") => {
+                let current = msg.get("current").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                total = msg.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let filename = msg
+                    .get("filename")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let _ = app.emit(
+                    "tagger-progress",
+                    ProgressEvent {
+                        current,
+                        total,
+                        filename: filename.clone(),
+                        status: "processing".to_string(),
+                        message: format!("正在转换 JSON: {}", filename),
+                        ..Default::default()
+                    },
+                );
+            }
+            Some("log") => {
+                let message = msg
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let _ = app.emit(
+                    "tagger-progress",
+                    ProgressEvent {
+                        current: 0,
+                        total,
+                        filename: String::new(),
+                        status: "warning".to_string(),
+                        message,
+                        ..Default::default()
+                    },
+                );
+            }
+            Some("done") => {
+                converted = msg.get("converted").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                failed = msg.get("failed").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                skipped = msg.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                total = msg.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            }
+            Some("error") => {
+                let message = msg
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("转换失败")
+                    .to_string();
+                let _ = child.wait();
+                return Err(message);
+            }
+            _ => {}
+        }
+    }
+    let status = child.wait().map_err(|e| format!("等待转换进程失败: {}", e))?;
+    if !status.success() && converted == 0 {
+        return Err("转换进程异常退出".to_string());
+    }
+
+    let _ = app.emit(
+        "tagger-progress",
+        ProgressEvent {
+            current: total,
+            total,
+            filename: String::new(),
+            status: "done".to_string(),
+            message: format!(
+                "JSON 转换完成：{} 个转换，{} 个无标签跳过，{} 个失败",
+                converted, skipped, failed
+            ),
+            ..Default::default()
+        },
+    );
+
+    Ok(ProcessResult {
+        success_count: converted,
+        fail_count: failed,
+        total,
+        errors: Vec::new(),
+    })
+}

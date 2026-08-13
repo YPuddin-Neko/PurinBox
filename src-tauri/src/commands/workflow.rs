@@ -100,21 +100,38 @@ pub async fn list_workflows(dir: String) -> Result<Vec<WorkflowInfo>, String> {
     Ok(workflows)
 }
 
-/// 清理工作流临时目录，返回释放的字节数
+/// 清理工作流临时目录（{dir}/.workflow_temp），返回释放的字节数。
+///
+/// 取消工作流时刚强杀完当前节点的子进程（Python/NCNN），Windows 上其打开的
+/// 文件句柄可能尚未释放，首次删除会报拒绝访问——失败后短暂等待并重试。
 #[tauri::command]
 pub async fn cleanup_workflow_temp(dir: String) -> Result<u64, String> {
-    let temp_dir = Path::new(&dir).join(".workflow_temp");
+    tokio::task::spawn_blocking(move || {
+        let temp_dir = Path::new(&dir).join(".workflow_temp");
 
-    if !temp_dir.exists() {
-        return Ok(0);
-    }
+        if !temp_dir.exists() {
+            return Ok(0);
+        }
 
-    let bytes_freed = dir_size(&temp_dir);
+        let bytes_freed = dir_size(&temp_dir);
 
-    std::fs::remove_dir_all(&temp_dir)
-        .map_err(|e| format!("清理临时目录失败: {}", e))?;
-
-    Ok(bytes_freed)
+        let mut last_err = String::new();
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+            }
+            match std::fs::remove_dir_all(&temp_dir) {
+                Ok(_) => return Ok(bytes_freed),
+                Err(e) => last_err = e.to_string(),
+            }
+            if !temp_dir.exists() {
+                return Ok(bytes_freed);
+            }
+        }
+        Err(format!("清理临时目录失败: {}", last_err))
+    })
+    .await
+    .map_err(|e| format!("清理任务执行失败: {}", e))?
 }
 
 /// 递归计算目录大小（字节）

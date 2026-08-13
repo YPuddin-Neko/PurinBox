@@ -3,6 +3,7 @@ import { Tags } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import AiTaggerTab from '../components/AiTaggerTab';
 import LlmTaggerTab from '../components/LlmTaggerTab';
+import HybridTaggerTab from '../components/HybridTaggerTab';
 
 export default function TaggerPage() {
   const { t } = useTranslation();
@@ -11,6 +12,7 @@ export default function TaggerPage() {
   const tabs = [
     { id: 'ai', label: t('tagger.aiTab') },
     { id: 'llm', label: t('tagger.llmTab') },
+    { id: 'hybrid', label: t('tagger.hybridTab') },
   ];
 
   return (
@@ -41,7 +43,7 @@ export default function TaggerPage() {
         ))}
       </div>
 
-      {activeTab === 'ai' ? <AiTaggerTab /> : <LlmTaggerTab />}
+      {activeTab === 'ai' ? <AiTaggerTab /> : activeTab === 'llm' ? <LlmTaggerTab /> : <HybridTaggerTab />}
     </div>
   );
 }
