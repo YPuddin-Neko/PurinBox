@@ -1,19 +1,27 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Tags } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import AiTaggerTab from '../components/AiTaggerTab';
 import LlmTaggerTab from '../components/LlmTaggerTab';
 import HybridTaggerTab from '../components/HybridTaggerTab';
+import { useAppSettings } from '../components/ThemeProvider';
 
 export default function TaggerPage() {
   const { t } = useTranslation();
+  const { hybridTaggerEnabled } = useAppSettings();
   const [activeTab, setActiveTab] = useState('ai');
 
   const tabs = [
     { id: 'ai', label: t('tagger.aiTab') },
     { id: 'llm', label: t('tagger.llmTab') },
-    { id: 'hybrid', label: t('tagger.hybridTab') },
+    ...(hybridTaggerEnabled ? [{ id: 'hybrid', label: t('tagger.hybridTab') }] : []),
   ];
+
+  useEffect(() => {
+    if (!hybridTaggerEnabled && activeTab === 'hybrid') {
+      setActiveTab('ai');
+    }
+  }, [activeTab, hybridTaggerEnabled]);
 
   return (
     <div className="page">
@@ -43,7 +51,13 @@ export default function TaggerPage() {
         ))}
       </div>
 
-      {activeTab === 'ai' ? <AiTaggerTab /> : activeTab === 'llm' ? <LlmTaggerTab /> : <HybridTaggerTab />}
+      {activeTab === 'ai'
+        ? <AiTaggerTab />
+        : activeTab === 'llm'
+          ? <LlmTaggerTab />
+          : hybridTaggerEnabled
+            ? <HybridTaggerTab />
+            : <AiTaggerTab />}
     </div>
   );
 }

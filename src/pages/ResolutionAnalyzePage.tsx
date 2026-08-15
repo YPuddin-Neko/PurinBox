@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { BarChart3, FolderOpen, FolderInput } from 'lucide-react';
+import { BarChart3, Download, FolderOpen, FolderInput } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
@@ -99,6 +99,7 @@ export default function ResolutionAnalyzePage() {
   const [arTolerance, setArTolerance] = useState(5);
   const [aggExportPath, setAggExportPath] = useState('');
   const [aggExporting, setAggExporting] = useState(false);
+  const [resultExporting, setResultExporting] = useState(false);
   const [enableAggExport, setEnableAggExport] = useState(false);
   /** 多成员组的目标分辨率选择（key = 组序号，value = "宽x高"） */
   const [clusterTargets, setClusterTargets] = useState<Record<number, string>>({});
@@ -236,7 +237,7 @@ export default function ResolutionAnalyzePage() {
   };
 
   const handleAggregateExport = async () => {
-    if (!result || !inputPath || !aggExportPath || clusters.length === 0) return;
+    if (!result || !inputPath || !aggExportPath || clusters.length === 0 || resultExporting) return;
     setAggExporting(true);
     setLogs((prev) => [...prev, {
       time: getTimeStr(),
@@ -273,6 +274,46 @@ export default function ResolutionAnalyzePage() {
       }]);
     } finally {
       setAggExporting(false);
+    }
+  };
+
+  const handleResultExport = async () => {
+    if (!result || !inputPath || result.groups.length === 0 || aggExporting) return;
+    const outputPath = await open({
+      directory: true,
+      multiple: false,
+      title: t('resolutionAnalyze.selectResultExportFolder'),
+    });
+    if (!outputPath) return;
+
+    setResultExporting(true);
+    setLogs((prev) => [...prev, {
+      time: getTimeStr(),
+      message: t('resolutionAnalyze.resultExportStart'),
+      status: 'info',
+    }]);
+    try {
+      const msg = await invoke<string>('export_resolution_aggregation', {
+        options: {
+          input_path: inputPath,
+          recursive,
+          output_path: outputPath as string,
+          plan: result.groups.map((group) => ({
+            folder: resKey(group.width, group.height),
+            resolutions: [[group.width, group.height]],
+          })),
+        },
+      });
+      setLogs((prev) => [...prev, { time: getTimeStr(), message: msg, status: 'success' }]);
+    } catch (e: any) {
+      const errStr = typeof e === 'string' ? e : e?.message || String(e);
+      setLogs((prev) => [...prev, {
+        time: getTimeStr(),
+        message: errStr,
+        status: /已取消|cancel/i.test(errStr) ? 'warning' : 'error',
+      }]);
+    } finally {
+      setResultExporting(false);
     }
   };
 
@@ -463,7 +504,7 @@ export default function ResolutionAnalyzePage() {
                           {t('common.cancel')}
                         </button>
                       ) : (
-                        <button className="btn btn-primary" style={{ height: 32, padding: '0 16px', fontSize: 12, whiteSpace: 'nowrap' }} onClick={handleAggregateExport} disabled={!aggExportPath || processing}>
+                        <button className="btn btn-primary" style={{ height: 32, padding: '0 16px', fontSize: 12, whiteSpace: 'nowrap' }} onClick={handleAggregateExport} disabled={!aggExportPath || processing || resultExporting}>
                           <FolderInput style={{ width: 14, height: 14 }} /> {t('resolutionAnalyze.export')}
                         </button>
                       )}
@@ -501,8 +542,19 @@ export default function ResolutionAnalyzePage() {
           {/* 分析结果：统计条 + 分布环形图 + 稀有分辨率（利用日志下方空间） */}
           {result && (
             <div className="tool-panel">
-              <div className="tool-panel-header">
+              <div className="tool-panel-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span className="tool-panel-title">{t('resolutionAnalyze.analysisResults')}</span>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  type="button"
+                  onClick={handleResultExport}
+                  disabled={resultExporting || aggExporting}
+                  title={t('resolutionAnalyze.exportResultTip')}
+                  style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11 }}
+                >
+                  <Download style={{ width: 13, height: 13 }} />
+                  {resultExporting ? t('resolutionAnalyze.exportingResult') : t('resolutionAnalyze.exportResult')}
+                </button>
               </div>
               <div className="tool-panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
                 {/* 概览统计：窄栏内自动换行 */}

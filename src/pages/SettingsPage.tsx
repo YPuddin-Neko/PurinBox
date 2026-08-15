@@ -38,7 +38,14 @@ const LinkButton = ({ href, text }: { href: string; text: string }) => (
 
 export default function SettingsPage() {
   const { t } = useTranslation();
-  const { monitorInterval, setMonitorInterval, workflowEnabled, setWorkflowEnabled } = useTheme();
+  const {
+    monitorInterval,
+    setMonitorInterval,
+    workflowEnabled,
+    setWorkflowEnabled,
+    hybridTaggerEnabled,
+    setHybridTaggerEnabled,
+  } = useTheme();
   const isDesktopRuntime = hasTauriRuntime();
   const desktopOnlyText = t('settings.desktopOnly');
 
@@ -379,38 +386,61 @@ export default function SettingsPage() {
                 <span className="tool-panel-title">{t('settings.experimental')}</span>
               </div>
             </div>
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
-              padding: '10px 12px', borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--color-border)', background: 'var(--color-bg-input)',
-            }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-                  {t('settings.workflowToggle')}
-                  <span style={{
-                    marginLeft: 8, padding: '1px 5px', borderRadius: 3,
-                    fontSize: 9, fontWeight: 700, letterSpacing: '0.02em',
-                    color: '#fbbf24', border: '1px solid rgba(251, 191, 36, 0.45)',
-                    verticalAlign: 'middle',
-                  }}>
-                    Beta
-                  </span>
-                </span>
-                <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
-                  {t('settings.workflowToggleDesc')}
-                </span>
-              </div>
-              <div onClick={() => setWorkflowEnabled(!workflowEnabled)} style={{
-                width: 36, height: 20, borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s',
-                background: workflowEnabled ? 'var(--color-accent-primary)' : 'var(--color-border)',
-                position: 'relative', flexShrink: 0,
-              }}>
-                <div style={{
-                  width: 14, height: 14, borderRadius: '50%', background: '#fff',
-                  position: 'absolute', top: 3,
-                  left: workflowEnabled ? 19 : 3, transition: 'left 0.2s',
-                }} />
-              </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[
+                {
+                  enabled: workflowEnabled,
+                  setEnabled: setWorkflowEnabled,
+                  title: t('settings.workflowToggle'),
+                  description: t('settings.workflowToggleDesc'),
+                },
+                {
+                  enabled: hybridTaggerEnabled,
+                  setEnabled: setHybridTaggerEnabled,
+                  title: t('settings.hybridTaggerToggle'),
+                  description: t('settings.hybridTaggerToggleDesc'),
+                },
+              ].map((feature) => (
+                <div key={feature.title} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+                  padding: '10px 12px', borderRadius: 'var(--radius-sm)',
+                  border: '1px solid var(--color-border)', background: 'var(--color-bg-input)',
+                }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                      {feature.title}
+                      <span style={{
+                        marginLeft: 8, padding: '1px 5px', borderRadius: 3,
+                        fontSize: 9, fontWeight: 700, letterSpacing: '0.02em',
+                        color: '#fbbf24', border: '1px solid rgba(251, 191, 36, 0.45)',
+                        verticalAlign: 'middle',
+                      }}>
+                        Beta
+                      </span>
+                    </span>
+                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
+                      {feature.description}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={feature.enabled}
+                    onClick={() => feature.setEnabled(!feature.enabled)}
+                    style={{
+                      width: 36, height: 20, borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s',
+                      background: feature.enabled ? 'var(--color-accent-primary)' : 'var(--color-border)',
+                      position: 'relative', flexShrink: 0, border: 'none', padding: 0,
+                    }}
+                  >
+                    <span style={{
+                      width: 14, height: 14, borderRadius: '50%', background: '#fff',
+                      position: 'absolute', top: 3,
+                      left: feature.enabled ? 19 : 3, transition: 'left 0.2s',
+                    }} />
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
 
