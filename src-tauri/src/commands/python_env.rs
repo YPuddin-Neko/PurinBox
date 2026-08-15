@@ -764,7 +764,7 @@ fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
 /// 老版本（<= v0.3.22）的基础依赖装的是 `onnxruntime`（CPU-only），
 /// 现在基础依赖已改为 `onnxruntime-gpu`，但既有用户的 venv 里仍是旧包。
 /// 两个包会争抢同一个 `onnxruntime` 模块名，必须先卸载再装。
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub fn upgrade_onnxruntime_to_gpu(app: &tauri::AppHandle, python: &str) -> Result<(), String> {
     SETUP_CANCELLED.store(false, Ordering::SeqCst);
 
@@ -795,7 +795,7 @@ pub fn upgrade_onnxruntime_to_gpu(app: &tauri::AppHandle, python: &str) -> Resul
 }
 
 /// 本会话是否已尝试过把 CPU-only onnxruntime 升级为 GPU 包（避免反复重装）
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 static ORT_UPGRADE_TRIED: AtomicBool = AtomicBool::new(false);
 
 /// 本会话是否已尝试过把 CPU-only torch 升级为 CUDA 构建（避免反复下载 ~2GB）
@@ -860,7 +860,7 @@ else:
     print('1|' + cuda_build + '|' + cuda_ok + '|' + mps_ok)";
 
 /// 检测机器上是否存在 NVIDIA GPU
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 async fn has_nvidia_gpu() -> bool {
     tokio::task::spawn_blocking(|| {
         let mut lines = Vec::new();
@@ -893,7 +893,7 @@ pub async fn ensure_onnx_gpu_runtime(
     }
 
     // 装的是 CPU-only 包（旧版本遗留），且本机确有 NVIDIA GPU → 换成 GPU 包
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         let is_cpu_only_pkg = gpu_pkg.trim() != "1";
         if is_cpu_only_pkg
@@ -914,7 +914,7 @@ pub async fn ensure_onnx_gpu_runtime(
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     let _ = gpu_pkg;
 
     Ok(false)
