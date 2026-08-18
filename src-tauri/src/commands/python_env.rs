@@ -759,10 +759,11 @@ fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
     pip_install_with_python(app, &python_str, &["onnxruntime==1.25.1", "numpy==2.2.6", "pillow==11.3.0"])
 }
 
-/// 修复历史环境：把旧版遗留的 CPU-only onnxruntime 换成 onnxruntime-gpu。
+/// 把 CPU-only onnxruntime 换成 onnxruntime-gpu。
 ///
-/// 老版本（<= v0.3.22）的基础依赖装的是 `onnxruntime`（CPU-only），
-/// 现在基础依赖已改为 `onnxruntime-gpu`，但既有用户的 venv 里仍是旧包。
+/// 基础依赖（install_deps）装的是 CPU 版 `onnxruntime`——GPU 包在缺 CUDA 库时
+/// import 直接报错，不适合做默认依赖。检测到 NVIDIA GPU 的机器由
+/// `ensure_onnx_gpu_runtime` 调用本函数按需替换为 GPU 包。
 /// 两个包会争抢同一个 `onnxruntime` 模块名，必须先卸载再装。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub fn upgrade_onnxruntime_to_gpu(app: &tauri::AppHandle, python: &str) -> Result<(), String> {
