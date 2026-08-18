@@ -701,6 +701,8 @@ const en = {
     promptLabel: 'Refinement Prompt',
     promptHint: '{tags} is replaced with the image\'s current tag list. Write add/remove/fix rules directly in the prompt.',
     catUnsupported: 'Not supported by the selected model',
+    preferExisting: 'Prefer existing tags',
+    preferExistingTip: 'Images that already have a tag file in the chosen format skip local tagging and go straight to LLM refinement; when off, the local model re-tags and overwrites',
     outputFormat: 'Output Format',
     formatTxt: 'TXT (comma-separated tags)',
     formatJson: 'JSON (full)',

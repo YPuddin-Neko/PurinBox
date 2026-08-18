@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
 import {
   Key, Bot, RefreshCw, Loader2, Eye, EyeOff, Save, Thermometer, Image as ImageIcon,
+  Check, Cpu, Gpu,
 } from 'lucide-react';
 import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
 import ProcessButton from './ProcessButton';
@@ -64,6 +65,8 @@ export default function HybridTaggerTab() {
   const [useGpu, setUseGpu] = useState(true);
   const [replaceUnderscore, setReplaceUnderscore] = useState(true);
   const [escapeParentheses, setEscapeParentheses] = useState(false);
+  /** 图片已有同格式标签文件时跳过本地打标（保留现成标签，直接进入 LLM 调优） */
+  const [preferExisting, setPreferExisting] = useState(true);
   const [enabledCats, setEnabledCats] = useState<Set<string>>(new Set(cats.filter(c => c.default).map(c => c.key)));
 
   // ── LLM 调优 ──
@@ -222,7 +225,7 @@ export default function HybridTaggerTab() {
           json_simplified: outputFormat === 'json_simplified',
           escape_parentheses: escapeParentheses,
           sort_by: 'confidence',
-          existing_tags_action: 'overwrite',
+          existing_tags_action: preferExisting ? 'skip' : 'overwrite',
           batch_size: 1,
           recursive,
         },
@@ -298,18 +301,35 @@ export default function HybridTaggerTab() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-4)', alignItems: 'stretch' }}>
         {/* 本地打标 */}
         <div className="tool-panel" style={{ marginBottom: 0 }}>
-          <div className="tool-panel-header"><span className="tool-panel-title">{t('hybridTagger.localPhase')}</span></div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            <div style={{ display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>
-              <div style={{ flex: 1 }}>
-                <CustomSelect
-                  value={selectedModel}
-                  onChange={setSelectedModel}
-                  options={models.map(m => ({ value: m.id, label: m.is_downloaded ? m.name : `${m.name} (${t('hybridTagger.notDownloaded')})` }))}
-                />
-              </div>
-              <Checkbox checked={useGpu} onChange={setUseGpu} label="GPU" size={14} />
+          <div className="tool-panel-header">
+            <span className="tool-panel-title">{t('hybridTagger.localPhase')}</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              {(['cpu', 'gpu'] as const).map(hw => {
+                const isGpu = hw === 'gpu';
+                const active = isGpu === useGpu;
+                const Icon = isGpu ? Gpu : Cpu;
+                const color = isGpu ? '#4ade80' : '#fbbf24';
+                return (
+                  <button key={hw} onClick={() => setUseGpu(isGpu)} style={{
+                    display: 'flex', alignItems: 'center', gap: 4, padding: '3px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: `1.5px solid ${active ? color : 'var(--color-border)'}`,
+                    background: active ? (isGpu ? 'rgba(74,222,128,0.07)' : 'rgba(251,191,36,0.07)') : 'transparent',
+                    cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                    color: active ? color : 'var(--color-text-tertiary)',
+                  }}>
+                    <Icon style={{ width: 13, height: 13 }} /> {hw.toUpperCase()}
+                  </button>
+                );
+              })}
             </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <CustomSelect
+              value={selectedModel}
+              onChange={setSelectedModel}
+              options={models.map(m => ({ value: m.id, label: m.is_downloaded ? m.name : `${m.name} (${t('hybridTagger.notDownloaded')})` }))}
+            />
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
               {(() => {
                 const curModel = models.find(m => m.id === selectedModel);
@@ -321,7 +341,7 @@ export default function HybridTaggerTab() {
                     <div key={c.key} onClick={() => { if (avail) toggleCat(c.key); }}
                       title={avail ? undefined : t('hybridTagger.catUnsupported')}
                       style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${on && avail ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: !avail ? 'rgba(0,0,0,0.04)' : on ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: avail ? 'pointer' : 'not-allowed', transition: 'all 0.15s', opacity: avail ? 1 : 0.35, minWidth: 0 }}>
-                      <div style={{ width: 14, height: 14, borderRadius: 3, minWidth: 14, border: `2px solid ${on && avail ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: on && avail ? 'var(--color-accent-primary)' : 'transparent' }} />
+                      <div style={{ width: 14, height: 14, borderRadius: 3, minWidth: 14, border: `2px solid ${on && avail ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: on && avail ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{on && avail && <Check style={{ width: 9, height: 9, color: '#fff' }} />}</div>
                       <span style={{ fontSize: 12, fontWeight: 600, color: avail ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.label}</span>
                     </div>
                   );
@@ -348,6 +368,9 @@ export default function HybridTaggerTab() {
               <Checkbox checked={replaceUnderscore} onChange={setReplaceUnderscore} label={t('aiTagger.replaceUnderscore')} size={14} />
               <span title={t('aiTagger.escapeParenthesesTip')}>
                 <Checkbox checked={escapeParentheses} onChange={setEscapeParentheses} label={t('aiTagger.escapeParentheses')} size={14} />
+              </span>
+              <span title={t('hybridTagger.preferExistingTip')}>
+                <Checkbox checked={preferExisting} onChange={setPreferExisting} label={t('hybridTagger.preferExisting')} size={14} />
               </span>
             </div>
           </div>
