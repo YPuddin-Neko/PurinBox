@@ -913,12 +913,36 @@ else:
         mps_ok = '0'
     print('1|' + cuda_build + '|' + cuda_ok + '|' + mps_ok)";
 
-/// 检测机器上是否存在 NVIDIA GPU
+/// 检测机器上是否存在 NVIDIA GPU（nvidia-smi 探测）。
+/// 自包含实现：不再依赖 tagger 的诊断函数簇（该簇随死代码清理删除）。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 async fn has_nvidia_gpu() -> bool {
     tokio::task::spawn_blocking(|| {
-        let mut lines = Vec::new();
-        super::tagger::inference::detect_nvidia_env_pub(&mut lines)
+        // Windows GUI 进程的 PATH 未必包含 nvidia-smi，逐个候选路径尝试
+        let candidates: &[&str] = if cfg!(target_os = "windows") {
+            &[
+                "nvidia-smi",
+                "C:\\Windows\\System32\\nvidia-smi.exe",
+                "C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe",
+            ]
+        } else {
+            &["nvidia-smi"]
+        };
+        for exe in candidates {
+            let mut cmd = std::process::Command::new(exe);
+            cmd.arg("-L");
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            if let Ok(out) = cmd.output() {
+                if out.status.success() {
+                    return true;
+                }
+            }
+        }
+        false
     })
     .await
     .unwrap_or(false)
