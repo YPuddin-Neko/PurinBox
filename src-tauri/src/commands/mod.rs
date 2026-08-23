@@ -149,49 +149,20 @@ pub async fn wait_for_global_llm_slot(
     true
 }
 
-/// 扫描指定目录下的所有图片文件，返回文件路径列表
+/// 运行时放行 asset 协议目录。assetProtocol scope 已从 `**` 收窄为空，
+/// 渲染进程只能读取显式放行的目录——前端在用户选择/加载数据集目录时调用。
 #[tauri::command]
-pub fn scan_images(dir: String) -> Result<Vec<ImageInfo>, String> {
-    let path = Path::new(&dir);
-    if !path.exists() || !path.is_dir() {
-        return Err(format!("目录不存在: {}", dir));
-    }
-
-    let mut images = Vec::new();
-    let supported_exts = ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"];
-
-    for entry in walkdir::WalkDir::new(path)
-        .max_depth(1)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let p = entry.path();
-        if p.is_file() {
-            if let Some(ext) = p.extension() {
-                let ext_lower = ext.to_string_lossy().to_lowercase();
-                if supported_exts.contains(&ext_lower.as_str()) {
-                    let (width, height) = match image::image_dimensions(p) {
-                        Ok((w, h)) => (w, h),
-                        Err(_) => (0, 0),
-                    };
-                    images.push(ImageInfo {
-                        path: p.to_string_lossy().to_string(),
-                        name: p
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string(),
-                        width,
-                        height,
-                        size_bytes: p.metadata().map(|m| m.len()).unwrap_or(0),
-                    });
-                }
-            }
-        }
-    }
-
-    images.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(images)
+pub fn allow_asset_dir(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri::Manager;
+    let p = std::path::PathBuf::from(&path);
+    let dir = if p.is_file() {
+        p.parent().map(|x| x.to_path_buf()).unwrap_or(p)
+    } else {
+        p
+    };
+    app.asset_protocol_scope()
+        .allow_directory(&dir, true)
+        .map_err(|e| format!("放行目录失败: {}", e))
 }
 
 fn is_supported_image_file(path: &Path) -> bool {
@@ -205,6 +176,72 @@ fn is_supported_image_file(path: &Path) -> bool {
 }
 
 /// 收集目录中的图片文件路径
+/// 把任意像素格式按白底拍平成 RGB8（JPEG 编码器不接受 RGBA；直接丢 alpha 会让透明区变成脏色）
+pub(crate) fn flatten_to_rgb_white(img: image::DynamicImage) -> image::DynamicImage {
+    if matches!(img, image::DynamicImage::ImageRgb8(_)) {
+        return img;
+    }
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut rgb = image::RgbImage::new(w, h);
+    for (dst, src) in rgb.pixels_mut().zip(rgba.pixels()) {
+        let a = src[3] as u32;
+        let blend = |c: u8| ((c as u32 * a + 255 * (255 - a)) / 255) as u8;
+        *dst = image::Rgb([blend(src[0]), blend(src[1]), blend(src[2])]);
+    }
+    image::DynamicImage::ImageRgb8(rgb)
+}
+
+/// 大小写不敏感的路径键。Windows/macOS 默认文件系统大小写不敏感，
+/// 路径相等/包含判定用它，防止 `C:\Data` vs `c:\data` 之类的变体绕过防覆盖守卫。
+/// Linux 上偏保守：大小写变体被视为同一路径——宁可误跳过也不误覆盖。
+pub(crate) fn path_key_ci(p: &Path) -> String {
+    p.to_string_lossy().to_lowercase()
+}
+
+/// 复制文件到输出位置；目标与源是同一文件（含大小写变体）时安全跳过。
+/// "未修改直接复制"的原地模式里，fs::copy 自拷贝会先截断目标，
+/// 把源文件清成 0 字节（macOS/Linux；Windows 报共享冲突错误）。
+pub(crate) fn copy_file_safe(src: &Path, dest: &Path) -> Result<(), String> {
+    if path_key_ci(src) == path_key_ci(dest) {
+        return Ok(());
+    }
+    std::fs::copy(src, dest)
+        .map(|_| ())
+        .map_err(|e| format!("复制失败: {}", e))
+}
+
+/// 命令级互斥闸：多数批处理命令用全局静态存取消标志/子进程句柄，
+/// 并发启动（页面 + 工作流节点）会互相覆盖甚至互杀进程。
+/// RAII：guard 存活期间占用，任何退出路径（含 ? 与 panic 展开）自动释放。
+pub(crate) struct BusyGuard(&'static std::sync::atomic::AtomicBool);
+
+impl BusyGuard {
+    pub(crate) fn acquire(
+        flag: &'static std::sync::atomic::AtomicBool,
+        what: &str,
+    ) -> Result<Self, String> {
+        use std::sync::atomic::Ordering;
+        // 并行单测会撞闸；互斥不是单测的被测对象，测试构型直接放行
+        if cfg!(test) {
+            return Ok(BusyGuard(flag));
+        }
+        if flag
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(format!("已有{}任务正在进行，请先等待完成或取消", what));
+        }
+        Ok(BusyGuard(flag))
+    }
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 pub fn collect_image_files(input: &Path) -> Result<Vec<std::path::PathBuf>, String> {
     let supported_exts = ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"];
     let mut files = Vec::new();
@@ -456,15 +493,6 @@ pub fn apply_concept_repeats(
     }
 
     Ok(renamed)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImageInfo {
-    pub path: String,
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    pub size_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -204,7 +204,7 @@ export default function LlmTaggerTab() {
         options: {
           input_path: inputPath, api_endpoint: endpoint, api_key: apiKey, model_name: modelName,
           system_prompt: sysPrompt, user_prompt: userPrompt,
-          temperature: parseFloat(temperature) || 0.2, max_tokens: parseInt(maxTokens) || -1,
+          temperature: Number.isFinite(parseFloat(temperature)) ? parseFloat(temperature) : 0.2, max_tokens: parseInt(maxTokens) || -1,
           image_size: parseInt(imageSize) || 1024,
           top_p: parseFloat(topP) || 0,
           skip_existing: skipExisting,

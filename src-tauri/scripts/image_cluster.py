@@ -40,7 +40,10 @@ def _is_under(path, parent):
     if not parent:
         return False
     try:
-        return os.path.commonpath([os.path.abspath(path), os.path.abspath(parent)]) == os.path.abspath(parent)
+        # Windows 路径大小写不敏感，必须 normcase 后比对，否则手输的大小写变体会让排除失效
+        p = os.path.normcase(os.path.abspath(path))
+        base = os.path.normcase(os.path.abspath(parent))
+        return os.path.commonpath([p, base]) == base
     except ValueError:
         return False
 
@@ -105,11 +108,12 @@ def extract_color_histogram(img_path, bins=64):
     """提取 HSV 颜色直方图作为颜色特征"""
     from PIL import Image
     try:
+        # PIL 懒解码：截断图片的异常在 resize 时才抛出，必须一并纳入 try
         img = Image.open(img_path).convert("RGB")
+        img = img.resize((224, 224))
     except Exception:
         return None
 
-    img = img.resize((224, 224))
     arr = np.array(img, dtype=np.float32) / 255.0
 
     # 简易 RGB → HSV
@@ -230,11 +234,12 @@ class FeatureExtractor:
 
         from PIL import Image
         try:
+            # transform 触发实际解码，截断图片的异常必须一并捕获（否则冲到顶层 fatal 整批报废）
             img = Image.open(img_path).convert("RGB")
+            tensor = self.transform(img).unsqueeze(0).to(self.device)
         except Exception:
             return None
 
-        tensor = self.transform(img).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
             self.model(tensor)
@@ -480,7 +485,9 @@ def main():
 
         step += 1
         try:
-            shutil.copy2(fpath, dest_path)
+            tmp_dest = dest_path + ".tmp"
+            shutil.copy2(fpath, tmp_dest)
+            os.replace(tmp_dest, dest_path)
             success_count += 1
             emit_progress(step, phase_total, fname, "success",
                           f"[{i+1}/{len(valid_files)}] ✓ {fname} → {folder_name}/")
@@ -493,8 +500,11 @@ def main():
 
     emit_done(f"完成: {n_clusters} 个分组, 成功 {success_count}, 失败 {fail_count}, 共 {len(valid_files)}")
 
-    emit({"type": "result", "success_count": success_count, "fail_count": fail_count,
-          "total": len(valid_files), "n_clusters": n_clusters, "errors": errors})
+    # 统计并入提取阶段的失败数，否则 result 行会把不可读文件从最终统计里抹掉
+    extract_failed = total - len(valid_files)
+    emit({"type": "result", "success_count": success_count,
+          "fail_count": fail_count + extract_failed,
+          "total": total, "n_clusters": n_clusters, "errors": errors})
 
 
 def generate_distribution_map(features, labels, file_paths, output_dir, theme="light"):

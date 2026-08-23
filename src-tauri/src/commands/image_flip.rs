@@ -25,6 +25,10 @@ pub async fn flip_images<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: FlipOptions,
 ) -> Result<ProcessResult, String> {
+    // 互斥：页面与工作流节点共用全局取消标志，并发会互吞取消
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let _busy = crate::commands::BusyGuard::acquire(&RUNNING, "翻转")?;
+
     CANCEL_FLAG.store(false, Ordering::SeqCst);
     tokio::task::spawn_blocking(move || flip_images_sync(&app, &options))
         .await
@@ -128,20 +132,23 @@ fn flip_images_sync<R: tauri::Runtime>(
         }
     }
 
-    let _ = app.emit(
-        "flip-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
-                "处理完成: 成功 {}, 失败 {}, 共 {}",
-                success_count, fail_count, total
-            ),
-            ..Default::default()
-        },
-    );
+    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
+    if !CANCEL_FLAG.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "flip-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: "done".to_string(),
+                message: format!(
+                    "处理完成: 成功 {}, 失败 {}, 共 {}",
+                    success_count, fail_count, total
+                ),
+                ..Default::default()
+            },
+        );
+    }
 
     Ok(ProcessResult {
         success_count,

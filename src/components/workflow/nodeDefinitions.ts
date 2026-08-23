@@ -163,7 +163,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
     icon: 'Move3D',
     color: CATEGORY_COLORS.process,
     params: [
-      { key: 'intensity', labelKey: 'perspective.intensity', type: 'number', default: 10, min: 1, max: 50 },
+      { key: 'intensity', labelKey: 'perspective.intensity', type: 'number', default: 0.1, min: 0.02, max: 0.3, step: 0.01 },
     ],
     hasInput: true,
     hasOutput: true,

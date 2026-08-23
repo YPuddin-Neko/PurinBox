@@ -36,6 +36,8 @@ export default function TagSortTab() {
   const [preset, setPreset] = useState('openai');
   const [customEndpoint, setCustomEndpoint] = useState('');
   const [apiKey, setApiKey] = useState('');
+  // 各预设的 key 暂存：切换预设时换入对应的 key，而不是沿用上一家的
+  const apiKeysRef = useRef<Record<string, string>>({});
   const [modelName, setModelName] = useState('');
   const [modelList, setModelList] = useState<string[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
@@ -77,6 +79,7 @@ export default function TagSortTab() {
     invoke<{ preset: string; custom_endpoint: string; api_keys: Record<string, string> }>('load_api_config').then((cfg) => {
       if (cfg.preset) setPreset(cfg.preset);
       if (cfg.custom_endpoint) setCustomEndpoint(cfg.custom_endpoint);
+      apiKeysRef.current = cfg.api_keys || {};
       const key = cfg.api_keys?.[cfg.preset] || '';
       if (key) setApiKey(key);
     }).catch(() => {});
@@ -285,7 +288,12 @@ export default function TagSortTab() {
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   {Object.entries(PRESETS).map(([key, { label }]) => (
                     <button key={key} className={`btn btn-sm ${preset === key ? 'btn-primary' : 'btn-secondary'}`}
-                      onClick={() => setPreset(key)} style={{ flex: 1, fontSize: 11 }}>{label}</button>
+                      onClick={() => {
+                        // 切预设必须同步换 Key，否则会把 A 家的 key 发给/存到 B 家
+                        apiKeysRef.current[preset] = apiKey;
+                        setPreset(key);
+                        setApiKey(apiKeysRef.current[key] || '');
+                      }} style={{ flex: 1, fontSize: 11 }}>{label}</button>
                   ))}
                 </div>
                 {preset === 'custom' && (
@@ -436,8 +444,8 @@ export default function TagSortTab() {
               <div className="log-content" ref={logContainerRef} onScroll={handleLogScroll}>
                 {logs.length === 0 ? (
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>{t('tagSort.noLogs')}</div>
-                ) : logs.map((log, i) => (
-                  <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
+                ) : logs.slice(-500).map((log, i) => (
+                  <div key={Math.max(0, logs.length - 500) + i} className={`log-entry ${Math.max(0, logs.length - 500) + i === logs.length - 1 ? 'log-entry-new' : ''}`}>
                     <span className="log-entry-time">{log.time}</span>
                     {statusIcon(log.status)}
                     <span className={`log-entry-message ${log.status}`}

@@ -231,6 +231,9 @@ pub struct JsonFixed {
     pub series: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artist: Option<String>,
+    /// schema 外的未知字段原样保留，整文件重写时不丢用户自定义内容
+    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// character: 角色信息
@@ -240,6 +243,8 @@ pub struct JsonCharacter {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub variant: String,
+    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// from_path: 从目录路径自动提取的外观标签
@@ -251,6 +256,8 @@ pub struct JsonFromPath {
         deserialize_with = "deserialize_string_or_array"
     )]
     pub appearance: Vec<String>,
+    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// 自定义反序列化：支持 JSON 数组 ["a","b"] 或逗号字符串 "a, b"
@@ -307,6 +314,8 @@ pub struct JsonAiOutput {
     pub environment: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nl: Option<String>,
+    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// 完整 JSON 标签结构
@@ -320,6 +329,9 @@ pub struct JsonTagData {
     pub from_path: JsonFromPath,
     #[serde(default)]
     pub ai_output: JsonAiOutput,
+    /// 顶层未知字段（如用户自定义 rating 等）随读随写，不因编辑而丢失
+    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,6 +340,9 @@ pub struct JsonImageItem {
     pub filename: String,
     pub data: JsonTagData,
     pub has_json: bool,
+    /// JSON 存在但解析失败：data 是空默认值，前端必须排除在批量操作/保存之外
+    #[serde(default)]
+    pub parse_failed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -354,7 +369,7 @@ pub fn load_json_dataset(folder: String, recursive: Option<bool>) -> Result<Json
         let filename = image_display_name(dir, &p, recursive);
         let json_path = p.with_extension("json");
 
-        let (data, has_json, fmt) = if json_path.exists() {
+        let (data, has_json, fmt, parse_failed) = if json_path.exists() {
             match std::fs::read_to_string(&json_path) {
                 Ok(content) => {
                     // 先检查顶层 keys 判断格式
@@ -373,20 +388,21 @@ pub fn load_json_dataset(folder: String, recursive: Option<bool>) -> Result<Json
 
                     if is_full {
                         match serde_json::from_str::<JsonTagData>(&content) {
-                            Ok(d) => (d, true, "full"),
-                            Err(_) => (JsonTagData::default(), true, "unknown"),
+                            Ok(d) => (d, true, "full", false),
+                            Err(_) => (JsonTagData::default(), true, "unknown", true),
                         }
                     } else {
                         match parse_simplified_format(&content) {
-                            Some(d) => (d, true, "simplified"),
-                            None => (JsonTagData::default(), true, "unknown"),
+                            Some(d) => (d, true, "simplified", false),
+                            None => (JsonTagData::default(), true, "unknown", true),
                         }
                     }
                 }
-                Err(_) => (JsonTagData::default(), false, "unknown"),
+                // 文件存在但读不了：同样按解析失败保护，避免空数据反写覆盖
+                Err(_) => (JsonTagData::default(), false, "unknown", true),
             }
         } else {
-            (JsonTagData::default(), false, "unknown")
+            (JsonTagData::default(), false, "unknown", false)
         };
 
         if has_json && detected_format == "unknown" {
@@ -398,6 +414,7 @@ pub fn load_json_dataset(folder: String, recursive: Option<bool>) -> Result<Json
             filename,
             data,
             has_json,
+            parse_failed,
         });
     }
 
@@ -586,4 +603,33 @@ pub fn save_all_json_files(items: Vec<SaveJsonItem>, simplified: bool) -> Result
         saved += 1;
     }
     Ok(saved)
+}
+
+#[cfg(test)]
+mod json_extra_tests {
+    use super::*;
+
+    /// schema 外字段必须原样往返：整文件重写曾经会把用户自定义字段静默丢掉
+    #[test]
+    fn full_json_roundtrip_preserves_unknown_fields() {
+        let raw = r#"{
+            "fixed": {"quality": "masterpiece", "custom_note": "keep me"},
+            "character": {"name": "miku"},
+            "from_path": {"appearance": ["blue hair"]},
+            "ai_output": {"tags": ["1girl"], "rating": "safe"},
+            "my_extension": {"a": 1}
+        }"#;
+        let data: JsonTagData = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            data.fixed.extra.get("custom_note").and_then(|v| v.as_str()),
+            Some("keep me")
+        );
+        assert!(data.extra.contains_key("my_extension"));
+        let out = serde_json::to_string(&data).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["fixed"]["custom_note"], "keep me");
+        assert_eq!(v["ai_output"]["rating"], "safe");
+        assert_eq!(v["my_extension"]["a"], 1);
+        assert_eq!(v["ai_output"]["tags"][0], "1girl");
+    }
 }

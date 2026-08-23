@@ -80,6 +80,7 @@ export default function BatchRenamePage() {
         options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: shuffleOrder, rename_tags: renameTags },
       });
       setPreviews(result);
+      setPreviewPage(0); // 新预览可能页数更少，沿用旧页码会显示空表
     } catch (e: any) {
       setPreviews([]);
       setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('batchRename.previewFailed')}: ${String(e)}`, status: 'error' }]);
@@ -97,6 +98,7 @@ export default function BatchRenamePage() {
         options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: true, rename_tags: renameTags },
       });
       setPreviews(result);
+      setPreviewPage(0);
       setShuffleOrder(true);
     } catch (e: any) {
       setPreviews([]);

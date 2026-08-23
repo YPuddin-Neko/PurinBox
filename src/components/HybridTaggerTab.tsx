@@ -93,6 +93,8 @@ export default function HybridTaggerTab() {
   const [processing, setProcessing] = useState(false);
   const [phase, setPhase] = useState<Phase>('');
   const phaseRef = useRef<Phase>('');
+  // 用户是否点过取消：start_tagging 被取消后仍返回 Ok，靠它拦住阶段二
+  const cancelRequestedRef = useRef(false);
   phaseRef.current = phase;
   const [progress, setProgress] = useState(0);
   const [pCur, setPCur] = useState(0);
@@ -199,6 +201,7 @@ export default function HybridTaggerTab() {
 
   const handleStart = async () => {
     if (!canStart) return;
+    cancelRequestedRef.current = false;
     setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
     addTask('tagger', t('hybridTagger.taskName'));
     const sec = parseFloat(intervalSec);
@@ -231,11 +234,17 @@ export default function HybridTaggerTab() {
         },
       });
 
+      // 阶段一期间点了取消：start_tagging 被取消后仍返回 Ok，
+      // 绝不能继续进入 LLM 精修——那会照样烧 API 并就地改写数据集标签
+      if (cancelRequestedRef.current) throw '已取消';
+
       // LLM 二次确认与调优（就地更新标签文件）
       setPhase('refining');
       setProgress(0); setPCur(0); setPTot(0);
       updateTask('tagger', { status: 'running', message: t('hybridTagger.phaseRefining') });
       taskLogs.appendLog(t('hybridTagger.phaseRefining'), 'info');
+      // 二次确认：上面那次检查到这里之间点的取消仍会指向已结束的阶段一，尽量收窄窗口
+      if (cancelRequestedRef.current) throw '已取消';
       await invoke<ProcessResult>('start_tag_refining', {
         options: {
           input_path: inputPath,
@@ -244,7 +253,7 @@ export default function HybridTaggerTab() {
           api_key: apiKey,
           model_name: modelName,
           prompt,
-          temperature: parseFloat(temperature) || 0.3,
+          temperature: Number.isFinite(parseFloat(temperature)) ? parseFloat(temperature) : 0.3,
           max_tokens: -1,
           image_size: parseInt(imageSize) || 1024,
           top_p: parseFloat(topP) || 0,
@@ -499,7 +508,10 @@ export default function HybridTaggerTab() {
           : phase === 'refining' ? t('hybridTagger.phaseShortRefining')
           : t('pages.processing')
         }
-        onCancelLog={(msg) => setLogs(prev => [...prev, { time: getTimeStr(), message: msg, status: 'warning' }])}
+        onCancelLog={(msg) => {
+          cancelRequestedRef.current = true;
+          setLogs(prev => [...prev, { time: getTimeStr(), message: msg, status: 'warning' }]);
+        }}
       />
       <ProgressLog
         progress={progress}

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Play, Loader2, X, AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -47,6 +47,10 @@ export default function ProcessButton({
   const resolvedProcessingText = processingText || t('processButton.processing');
   const [hovered, setHovered] = useState(false);
   const [cancelStage, setCancelStage] = useState(0); // 0=none, 1=graceful, 2=force
+  const processingSinceRef = useRef(0);
+  useEffect(() => {
+    if (processing) processingSinceRef.current = Date.now();
+  }, [processing]);
 
   const handleClick = useCallback(async () => {
     if (!processing) {
@@ -54,6 +58,9 @@ export default function ProcessButton({
       onStart();
       return;
     }
+
+    // 双击"开始"防抖：processing 刚翻转时按钮已原地变成取消，第二击不应立刻取消刚启动的任务
+    if (Date.now() - processingSinceRef.current < 400) return;
 
     if (cancelStage === 0) {
       // 第一次取消 → 优雅取消

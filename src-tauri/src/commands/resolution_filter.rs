@@ -29,6 +29,10 @@ pub async fn filter_by_resolution<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: FilterOptions,
 ) -> Result<ProcessResult, String> {
+    // 互斥：页面与工作流节点共用全局取消标志，并发会互吞取消
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let _busy = crate::commands::BusyGuard::acquire(&RUNNING, "分辨率筛选")?;
+
     CANCEL_FLAG.store(false, Ordering::SeqCst);
     tokio::task::spawn_blocking(move || filter_sync(&app, &options))
         .await
@@ -179,20 +183,23 @@ fn filter_sync<R: tauri::Runtime>(app: &tauri::AppHandle<R>, options: &FilterOpt
         }
     }
 
-    let _ = app.emit(
-        "filter-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
-                "筛选完成: 匹配并{} {} 张, 失败 {} 张, 共扫描 {} 张",
-                action_label, success_count, fail_count, total
-            ),
-            ..Default::default()
-        },
-    );
+    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
+    if !CANCEL_FLAG.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "filter-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: "done".to_string(),
+                message: format!(
+                    "筛选完成: 匹配并{} {} 张, 失败 {} 张, 共扫描 {} 张",
+                    action_label, success_count, fail_count, total
+                ),
+                ..Default::default()
+            },
+        );
+    }
 
     Ok(ProcessResult {
         success_count,
@@ -233,7 +240,7 @@ fn process_filter(
                     file_name.as_ref(),
                     options.recursive,
                 )?;
-                std::fs::copy(file_path, dest).map_err(|e| format!("复制失败: {}", e))?;
+                crate::commands::copy_file_safe(file_path, &dest)?;
             }
             "delete" => {
                 std::fs::remove_file(file_path).map_err(|e| format!("删除失败: {}", e))?;

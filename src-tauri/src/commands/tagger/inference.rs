@@ -86,31 +86,6 @@ pub fn kill_python_process() {
     crate::commands::kill_child_tree(&PYTHON_PROCESS);
 }
 
-/// 在 Windows 上获取 nvidia-smi 的完整路径
-fn get_nvidia_smi_path() -> String {
-    #[cfg(target_os = "windows")]
-    {
-        let candidates = [
-            r"C:\Windows\System32\nvidia-smi.exe",
-            r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
-        ];
-        for path in &candidates {
-            if std::path::Path::new(path).exists() {
-                return path.to_string();
-            }
-        }
-        if let Ok(output) = run_hidden_cmd("where", &["nvidia-smi"]) {
-            if let Some(first_line) = output.lines().next() {
-                let trimmed = first_line.trim();
-                if !trimmed.is_empty() && std::path::Path::new(trimmed).exists() {
-                    return trimmed.to_string();
-                }
-            }
-        }
-    }
-    "nvidia-smi".to_string()
-}
-
 /// 运行命令并隐藏 Windows 控制台窗口，返回 stdout 或错误信息
 fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new(program);
@@ -138,126 +113,21 @@ fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// 公开接口：检测 NVIDIA 环境
-pub fn detect_nvidia_env_pub(lines: &mut Vec<String>) -> bool {
-    detect_nvidia_env(lines)
-}
-
-/// 公开接口：检测 CUDA Toolkit
-pub fn detect_cuda_toolkit_pub(lines: &mut Vec<String>) {
-    detect_cuda_toolkit(lines)
-}
-
-/// 公开接口：检测 Apple GPU (macOS)
-pub fn detect_apple_gpu_pub(lines: &mut Vec<String>) {
-    detect_apple_gpu(lines)
-}
-
-/// 检测 Apple Silicon GPU 信息 (macOS)
-fn detect_apple_gpu(lines: &mut Vec<String>) {
-    // 获取芯片型号
-    if let Ok(output) = Command::new("sysctl")
-        .args(["-n", "machdep.cpu.brand_string"])
-        .output()
-    {
-        if output.status.success() {
-            let chip = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            lines.push(format!("GPU: {} (Metal/MPS)", chip));
-            return;
-        }
-    }
-    lines.push("GPU: Apple Silicon (Metal/MPS)".into());
-}
-
-/// 检测 NVIDIA 驱动和 GPU 信息
-fn detect_nvidia_env(lines: &mut Vec<String>) -> bool {
-    let smi_path = get_nvidia_smi_path();
-
-    match run_hidden_cmd(
-        &smi_path,
-        &[
-            "--query-gpu=name,driver_version",
-            "--format=csv,noheader,nounits",
-        ],
-    ) {
-        Ok(stdout) => {
-            for line in stdout.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-                let gpu_name = parts.first().unwrap_or(&"Unknown");
-                let driver_ver = parts.get(1).unwrap_or(&"Unknown");
-                lines.push(format!("GPU: {} (驱动 v{})", gpu_name, driver_ver));
-            }
-            true
-        }
-        Err(err) => {
-            lines.push(format!("GPU: 未检测到 ({})", err));
-            false
-        }
-    }
-}
-
-/// 检测 CUDA Toolkit (nvcc)
-fn detect_cuda_toolkit(lines: &mut Vec<String>) {
-    // 1. 尝试 PATH 中的 nvcc
-    if let Some(ver) = try_nvcc_version("nvcc") {
-        lines.push(format!("CUDA Toolkit: v{}", ver));
-        return;
-    }
-
-    // 2. 尝试从 CUDA 环境变量（含注册表回退）中找 nvcc
-    #[cfg(target_os = "windows")]
-    {
-        for (_key, val) in python_proc::get_cuda_env_vars() {
-            let nvcc = format!(r"{}\bin\nvcc.exe", val);
-            if std::path::Path::new(&nvcc).exists() {
-                if let Some(ver) = try_nvcc_version(&nvcc) {
-                    lines.push(format!("CUDA Toolkit: v{}", ver));
-                    return;
-                }
-            }
-            // 也记录一下找到了 CUDA 但 nvcc 不在
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        for (key, val) in std::env::vars() {
-            if key == "CUDA_PATH" || key == "CUDA_HOME" {
-                let nvcc = format!("{}/bin/nvcc", val);
-                if std::path::Path::new(&nvcc).exists() {
-                    if let Some(ver) = try_nvcc_version(&nvcc) {
-                        lines.push(format!("CUDA Toolkit: v{}", ver));
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    lines.push("CUDA Toolkit: 未检测到".into());
-}
-
-/// 运行 nvcc --version 提取版本号
-fn try_nvcc_version(nvcc_path: &str) -> Option<String> {
-    let output = run_hidden_cmd(nvcc_path, &["--version"]).ok()?;
-    let pos = output.find("release ")?;
-    Some(output[pos + 8..].split(',').next()?.trim().to_string())
-}
-
 /// 自动检测 ONNX 模型的输入信息（使用 Python 调用）
 pub fn detect_model_info(model_path: &str) -> Result<OnnxModelInfo, String> {
     // 使用 Python 快速检测模型信息
     let python = find_python()?;
     let script = get_script_path()?;
 
-    let child = Command::new(&python)
-        .args([script.to_string_lossy().as_ref(), "--detect", model_path])
+    let mut cmd = Command::new(&python);
+    cmd.args([script.to_string_lossy().as_ref(), "--detect", model_path])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .env("PYTHONIOENCODING", "utf-8");
+    // Windows 下隐藏控制台窗口（此前漏配，点"自动检测"会闪黑框）
+    python_proc::configure_python_command(&mut cmd, false);
+    let child = cmd
         .spawn()
         .map_err(|e| format!("启动 Python 失败: {}", e))?;
 
@@ -760,6 +630,8 @@ pub fn run_tagging(
     let total = files.len() as u32;
     let mut success_count = 0u32;
     let mut fail_count = 0u32;
+    // 保护性跳过（已有标签 / 原标签文件不可读时拒写）单独计数，别伪装成"完成"
+    let mut skip_count = 0u32;
     let mut errors = Vec::new();
 
     let enabled_cats: Vec<&str> = options
@@ -880,6 +752,13 @@ pub fn run_tagging(
                                 "result" => {
                                     let tag_count =
                                         msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let was_skipped = msg
+                                        .get("skipped")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
+                                    if was_skipped {
+                                        skip_count += 1;
+                                    }
                                     success_count += 1;
                                     let _ = app.emit(
                                         "tagger-progress",
@@ -888,10 +767,11 @@ pub fn run_tagging(
                                             total,
                                             filename: filename.clone(),
                                             status: "success".to_string(),
-                                            message: format!(
-                                                "[完成] {} → {} 个标签",
-                                                filename, tag_count
-                                            ),
+                                            message: if was_skipped {
+                                                format!("[跳过] {}（已有标签或原文件受保护）", filename)
+                                            } else {
+                                                format!("[完成] {} → {} 个标签", filename, tag_count)
+                                            },
                                             ..Default::default()
                                         },
                                     );
@@ -1006,6 +886,13 @@ pub fn run_tagging(
                                         .to_string();
                                     let tag_count =
                                         msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let was_skipped = msg
+                                        .get("skipped")
+                                        .and_then(|v| v.as_bool())
+                                        .unwrap_or(false);
+                                    if was_skipped {
+                                        skip_count += 1;
+                                    }
                                     success_count += 1;
                                     results_read += 1;
                                     let _ = app.emit(
@@ -1015,10 +902,11 @@ pub fn run_tagging(
                                             total,
                                             filename: fname.clone(),
                                             status: "success".to_string(),
-                                            message: format!(
-                                                "[完成] {} → {} 个标签",
-                                                fname, tag_count
-                                            ),
+                                            message: if was_skipped {
+                                                format!("[跳过] {}（已有标签或原文件受保护）", fname)
+                                            } else {
+                                                format!("[完成] {} → {} 个标签", fname, tag_count)
+                                            },
                                             ..Default::default()
                                         },
                                     );
@@ -1105,20 +993,30 @@ pub fn run_tagging(
         let _ = child.wait();
     }
 
-    let _ = app.emit(
-        "tagger-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
-                "打标完成: 成功 {}, 失败 {}, 共 {}",
-                success_count, fail_count, total
-            ),
-            ..Default::default()
-        },
-    );
+    // 取消路径已发过"打标已取消"的 done 事件，这里不再发"完成"覆盖它
+    if !is_tagging_cancelled() {
+        let _ = app.emit(
+            "tagger-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: "done".to_string(),
+                message: if skip_count > 0 {
+                    format!(
+                        "打标完成: 成功 {}（含跳过 {}）, 失败 {}, 共 {}",
+                        success_count, skip_count, fail_count, total
+                    )
+                } else {
+                    format!(
+                        "打标完成: 成功 {}, 失败 {}, 共 {}",
+                        success_count, fail_count, total
+                    )
+                },
+                ..Default::default()
+            },
+        );
+    }
 
     Ok(ProcessResult {
         success_count,

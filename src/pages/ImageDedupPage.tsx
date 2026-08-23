@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { ensureAssetScope } from '../utils/assetScope';
 import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -78,6 +79,7 @@ export default function ImageDedupPage() {
     setCurrentPage(0);
     setLogs([{ time: getTimeStr(), message: t('imageDedup.scanStart'), status: 'info' }]);
     try {
+      await ensureAssetScope(inputPath);
       const result = await invoke<DedupResult>('start_image_dedup', {
         options: {
           folder_path: inputPath,
@@ -300,7 +302,7 @@ export default function ImageDedupPage() {
                           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(3, group.paths.length)}, 1fr)`, gap: 4 }}>
                             {group.paths.map((p, pi) => {
                               const isSelected = selectedForDelete.has(p);
-                              const fname = p.split('/').pop() || p.split('\\').pop() || p;
+                              const fname = p.split(/[\\/]/).pop() || p;
                               return (
                                 <div key={pi} style={{
                                   position: 'relative', borderRadius: 6, overflow: 'hidden',
@@ -387,7 +389,7 @@ export default function ImageDedupPage() {
         const group = dupGroups[lightbox.groupIdx];
         const idx = lightbox.imgIdx;
         const p = group.paths[idx];
-        const fname = p.split('/').pop() || p.split('\\').pop() || p;
+        const fname = p.split(/[\\/]/).pop() || p;
         const isSelected = selectedForDelete.has(p);
         return (
           <div onClick={() => setLightbox(null)} style={{

@@ -21,6 +21,37 @@ import traceback
 import numpy as np
 from pathlib import Path
 
+
+def _finite(x, default=0.0):
+    """NaN/Inf 会让 json.dumps 输出非法 JSON（裸 NaN），Rust 侧解析失败后两端互等挂死"""
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return default
+    return x if x == x and x != float("inf") and x != float("-inf") else default
+
+
+def _safe_move(src_p, dest_p, keep_src=False):
+    """移动：同盘直接 os.rename（O(1) 且本身原子，永不产生半截文件）；
+    跨盘（EXDEV）或复制模式才走 copy → 原子 replace →（可选）删源，
+    中途被取消杀死时最坏留一份重复，而不是半截损坏文件。
+    keep_src=True 为复制模式：工作流输出到临时目录时必须保留原图，否则清理临时目录=删数据集。"""
+    if not keep_src:
+        try:
+            os.rename(str(src_p), str(dest_p))
+            return
+        except OSError:
+            pass  # 跨设备等情形回退到拷贝路径
+    tmp = str(dest_p) + ".tmp"
+    shutil.copy2(str(src_p), tmp)
+    os.replace(tmp, str(dest_p))
+    if not keep_src:
+        try:
+            os.unlink(str(src_p))
+        except OSError:
+            pass
+
+
 def _emit(data):
     """输出 JSON line 到 stdout (Windows GBK 安全)"""
     line = json.dumps(data, ensure_ascii=False) + "\n"
@@ -194,6 +225,7 @@ def main():
 
             image_path = cmd.get("image_path", "")
             move_files = cmd.get("move_files", True)
+            copy_files = cmd.get("copy_files", False)
             output_path = cmd.get("output_path", "")
             relative_dir = cmd.get("relative_dir", "")
 
@@ -226,7 +258,7 @@ def main():
                 # 最高分标签
                 top_idx = int(np.argmax(probs))
                 top_label = labels[top_idx] if top_idx < len(labels) else "unknown"
-                top_prob = float(probs[top_idx])
+                top_prob = _finite(probs[top_idx])
 
                 # 加权分数 (0-6)
                 weighted_score = sum(
@@ -238,7 +270,7 @@ def main():
                 probs_dict = {}
                 for i, label in enumerate(labels):
                     if i < len(probs):
-                        probs_dict[label] = round(float(probs[i]), 4)
+                        probs_dict[label] = round(_finite(probs[i]), 4)
 
                 # 移动文件到对应文件夹
                 moved_to = ""
@@ -264,7 +296,7 @@ def main():
                             dest_path = dest_dir / f"{stem}_{counter}{ext}"
                             counter += 1
 
-                    shutil.move(str(src), str(dest_path))
+                    _safe_move(src, dest_path, keep_src=copy_files)
                     moved_to = str(dest_path)
 
                     # 同时移动关联的标签文件 (.txt, .json, .caption)
@@ -280,13 +312,13 @@ def main():
                                 while tag_dest.exists():
                                     tag_dest = dest_dir / f"{actual_stem}_{tc}{tag_ext}"
                                     tc += 1
-                            shutil.move(str(tag_src), str(tag_dest))
+                            _safe_move(tag_src, tag_dest, keep_src=copy_files)
 
                 result({
                     "type": "result",
                     "image_path": image_path,
                     "label": top_label,
-                    "score": round(weighted_score, 2),
+                    "score": round(_finite(weighted_score), 2),
                     "confidence": round(top_prob, 4),
                     "probs": probs_dict,
                     "moved_to": moved_to,
@@ -375,6 +407,7 @@ def main():
                 img_cmd = images[orig_idx]
                 image_path = img_cmd.get("image_path", "")
                 move_files = img_cmd.get("move_files", True)
+                copy_files = img_cmd.get("copy_files", False)
                 output_path = img_cmd.get("output_path", "")
                 relative_dir = img_cmd.get("relative_dir", "")
 
@@ -386,7 +419,7 @@ def main():
 
                     top_idx = int(np.argmax(probs))
                     top_label = labels[top_idx] if top_idx < len(labels) else "unknown"
-                    top_prob = float(probs[top_idx])
+                    top_prob = _finite(probs[top_idx])
 
                     weighted_score = sum(
                         float(probs[i]) * LABEL_SCORES.get(labels[i], 0)
@@ -396,7 +429,7 @@ def main():
                     probs_dict = {}
                     for i, label in enumerate(labels):
                         if i < len(probs):
-                            probs_dict[label] = round(float(probs[i]), 4)
+                            probs_dict[label] = round(_finite(probs[i]), 4)
 
                     moved_to = ""
                     if move_files:
@@ -419,7 +452,7 @@ def main():
                                 dest_path = dest_dir / f"{stem}_{counter}{ext}"
                                 counter += 1
 
-                        shutil.move(str(src), str(dest_path))
+                        _safe_move(src, dest_path, keep_src=copy_files)
                         moved_to = str(dest_path)
 
                         actual_stem = dest_path.stem
@@ -432,13 +465,13 @@ def main():
                                     while tag_dest.exists():
                                         tag_dest = dest_dir / f"{actual_stem}_{tc}{tag_ext}"
                                         tc += 1
-                                shutil.move(str(tag_src), str(tag_dest))
+                                _safe_move(tag_src, tag_dest, keep_src=copy_files)
 
                     result({
                         "type": "result",
                         "image_path": image_path,
                         "label": top_label,
-                        "score": round(weighted_score, 2),
+                        "score": round(_finite(weighted_score), 2),
                         "confidence": round(top_prob, 4),
                         "probs": probs_dict,
                         "moved_to": moved_to,

@@ -52,9 +52,9 @@ use commands::tag_sort::{cancel_tag_sorting, start_tag_sorting};
 use commands::thumbnail::get_image_thumbnail;
 use commands::tagger::llm_tagger::{cancel_llm_tagging, fetch_llm_models, start_llm_tagging};
 use commands::tagger::{
-    cancel_gpu_runtime_download, cancel_tagger_download, cancel_tagging, check_cuda_available,
+    cancel_tagger_download, cancel_tagging,
     convert_tags_to_json, force_cancel_tagging,
-    detect_onnx_model_info, download_gpu_runtime, get_gpu_runtime_status, get_tagger_models,
+    detect_onnx_model_info, get_tagger_models,
     import_local_tagger_model, remove_custom_tagger_model, start_tagging,
 };
 use commands::translator::{
@@ -66,11 +66,11 @@ use commands::upscale::{
     get_upscale_engines, start_upscale,
 };
 use commands::workflow::{
-    cleanup_workflow_temp, list_workflows, load_workflow, save_workflow,
+    carry_tag_sidecars, cleanup_workflow_temp, load_workflow, save_workflow,
 };
 use commands::{
     apply_concept_repeats, check_for_updates, frontend_ready, get_system_stats,
-    scan_concept_folders, scan_images,
+    allow_asset_dir, scan_concept_folders,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -82,7 +82,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
-            scan_images,
+            allow_asset_dir,
             scan_concept_folders,
             apply_concept_repeats,
             scale_images,
@@ -115,12 +115,8 @@ pub fn run() {
             detect_onnx_model_info,
             import_local_tagger_model,
             remove_custom_tagger_model,
-            check_cuda_available,
             start_tagging,
             cancel_tagger_download,
-            get_gpu_runtime_status,
-            download_gpu_runtime,
-            cancel_gpu_runtime_download,
             cancel_tagging,
             force_cancel_tagging,
             convert_tags_to_json,
@@ -201,11 +197,20 @@ pub fn run() {
             force_cancel_aesthetic_scoring,
             save_workflow,
             load_workflow,
-            list_workflows,
             cleanup_workflow_temp,
+            carry_tag_sidecars,
             get_image_thumbnail,
         ])
         .setup(|app| {
+            // assetProtocol scope 已收窄为空：应用自身的缩略图缓存目录启动时放行，
+            // 用户数据集目录由前端选择/加载时按需放行（allow_asset_dir 命令）
+            {
+                use tauri::Manager;
+                let _ = app
+                    .asset_protocol_scope()
+                    .allow_directory(commands::thumbnail::thumb_cache_dir(), true);
+            }
+
             // 初始化翻译缓存数据库路径（默认使用 exe 根目录/tagcache/）
             commands::translator::init_db_path(None);
 

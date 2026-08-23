@@ -75,6 +75,10 @@ pub async fn crop_images<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: CropOptions,
 ) -> Result<ProcessResult, String> {
+    // 互斥：页面与工作流节点共用全局取消标志，并发会互吞取消
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let _busy = crate::commands::BusyGuard::acquire(&RUNNING, "裁剪")?;
+
     CANCEL_FLAG.store(false, Ordering::SeqCst);
     tokio::task::spawn_blocking(move || crop_images_sync(&app, &options))
         .await
@@ -171,20 +175,23 @@ fn crop_images_sync<R: tauri::Runtime>(
         }
     }
 
-    let _ = app.emit(
-        "crop-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
-                "处理完成: 成功 {}, 失败 {}, 共 {}",
-                success_count, fail_count, total
-            ),
-            ..Default::default()
-        },
-    );
+    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
+    if !CANCEL_FLAG.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "crop-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: "done".to_string(),
+                message: format!(
+                    "处理完成: 成功 {}, 失败 {}, 共 {}",
+                    success_count, fail_count, total
+                ),
+                ..Default::default()
+            },
+        );
+    }
 
     Ok(ProcessResult {
         success_count,
@@ -227,8 +234,7 @@ fn process_crop(
             let th = options.target_height.min(orig_h);
             if tw == orig_w && th == orig_h {
                 // 无需裁切
-                std::fs::copy(file_path, &output_path)
-                    .map_err(|e| format!("无法复制图片: {}", e))?;
+                crate::commands::copy_file_safe(file_path, &output_path)?;
                 return Ok(format!(
                     "[跳过] {} ({}x{}, 无需裁切)",
                     filename, orig_w, orig_h
@@ -283,8 +289,7 @@ fn process_crop(
             let current_ratio = orig_w as f64 / orig_h as f64;
 
             if (current_ratio - target_ratio).abs() < 0.01 {
-                std::fs::copy(file_path, &output_path)
-                    .map_err(|e| format!("无法复制图片: {}", e))?;
+                crate::commands::copy_file_safe(file_path, &output_path)?;
                 return Ok(format!(
                     "[跳过] {} ({}x{}, 比例已匹配)",
                     filename, orig_w, orig_h
@@ -323,8 +328,7 @@ fn process_crop(
             }
 
             if ct == 0 && cb == 0 && cl == 0 && cr == 0 {
-                std::fs::copy(file_path, &output_path)
-                    .map_err(|e| format!("无法复制图片: {}", e))?;
+                crate::commands::copy_file_safe(file_path, &output_path)?;
                 return Ok(format!(
                     "[跳过] {} ({}x{}, 无需裁切)",
                     filename, orig_w, orig_h

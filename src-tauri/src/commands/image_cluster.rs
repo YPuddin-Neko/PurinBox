@@ -67,7 +67,7 @@ async fn ensure_cluster_deps(app: &tauri::AppHandle) -> Result<(), String> {
     };
 
     emit_log("正在检查 Python 环境...");
-    let python = super::python_env::setup_python_env(app).await?;
+    let python = super::python_env::setup_python_env(app, "cluster").await?;
 
     // 检查 torch（聚类的 ResNet50 特征提取依赖它）
     let has_torch = {
@@ -101,7 +101,7 @@ async fn ensure_cluster_deps(app: &tauri::AppHandle) -> Result<(), String> {
     }
 
     // 探测 torch 能用的加速后端（只读，不安装）
-    let _has_gpu = super::python_env::ensure_torch_gpu_runtime(app, &python).await?;
+    let _has_gpu = super::python_env::ensure_torch_gpu_runtime(app, &python, "cluster").await?;
 
     // 检查 sklearn
     let has_sklearn = {
@@ -365,6 +365,7 @@ pub async fn start_image_cluster(
         let mut fail_count = 0u32;
         let mut total = 0u32;
         let mut errors = Vec::new();
+        let mut got_result = false;
 
         for line in reader.lines().map_while(Result::ok) {
             if CANCEL_FLAG.load(Ordering::SeqCst) {
@@ -455,6 +456,7 @@ pub async fn start_image_cluster(
                         );
                     }
                     "result" => {
+                        got_result = true;
                         success_count = msg
                             .get("success_count")
                             .and_then(|v| v.as_u64())
@@ -475,9 +477,19 @@ pub async fn start_image_cluster(
             }
         }
 
-        let _ = child.wait();
+        let exit_status = child.wait();
         if let Ok(mut guard) = CHILD_PID.lock() {
             *guard = None;
+        }
+
+        // Python 没发 result 行就退出（import 失败/崩溃/被杀）时，
+        // 不能默默返回"成功 0/0"——按取消或失败如实上报
+        if !got_result && !CANCEL_FLAG.load(Ordering::SeqCst) {
+            let code = exit_status.ok().and_then(|s| s.code());
+            return Err(format!(
+                "聚类进程异常退出（退出码 {:?}），未返回结果；详见日志",
+                code
+            ));
         }
 
         Ok(ProcessResult {

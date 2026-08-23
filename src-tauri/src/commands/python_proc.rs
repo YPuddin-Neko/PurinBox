@@ -60,7 +60,12 @@ pub fn configure_python_command(cmd: &mut Command, use_gpu: bool) {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn configure_python_command(_cmd: &mut Command, _use_gpu: bool) {}
+pub fn configure_python_command(cmd: &mut Command, _use_gpu: bool) {
+    // 让子进程自成进程组：kill_process_tree 的 `kill -9 -PID` 需要 PGID==PID 才能
+    // 连同 torch/onnxruntime 派生的 worker 一起杀掉，否则永远走单杀回退留下孤儿
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
 
 /// 从 Windows 注册表读取系统环境变量（GUI 进程可能没有最新环境变量）
 #[cfg(target_os = "windows")]

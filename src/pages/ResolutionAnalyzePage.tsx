@@ -116,6 +116,13 @@ export default function ResolutionAnalyzePage() {
     setClusterTargets({});
   }, [clusters]);
 
+  // 输入目录/递归开关变化后，屏幕上的分析结果与当前设置不再对应；
+  // 两个导出入口都按"点击时刻的 inputPath+recursive"重扫，必须让旧结果失效
+  useEffect(() => {
+    setResult(null);
+    setSelectedRare(null);
+  }, [inputPath, recursive]);
+
   /** 组的默认目标：计算推荐值；若与某成员相同则直接用该成员 */
   const defaultClusterTarget = (c: ResolutionCluster) => resKey(c.computed.w, c.computed.h);
 
@@ -160,7 +167,8 @@ export default function ResolutionAnalyzePage() {
   };
 
   const handleAnalyze = async () => {
-    if (!inputPath) return;
+    // 导出与分析共用同一事件通道，并发会让进度/任务状态互相打架
+    if (!inputPath || aggExporting || resultExporting) return;
     // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
     const threshold = Number.isFinite(rareThreshold) && rareThreshold >= 1 ? Math.floor(rareThreshold) : 10;
     if (threshold !== rareThreshold) setRareThreshold(threshold);
@@ -522,7 +530,7 @@ export default function ResolutionAnalyzePage() {
           <ProcessButton
             processing={processing}
             onStart={handleAnalyze}
-            disabled={!inputPath}
+            disabled={!inputPath || aggExporting || resultExporting}
             cancelCommand="cancel_resolution_analyze"
             startText={t('resolutionAnalyze.startAnalyze')}
             processingText={t('pages.processing')}

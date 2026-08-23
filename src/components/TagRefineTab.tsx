@@ -166,7 +166,7 @@ export default function TagRefineTab() {
           api_key: apiKey,
           model_name: modelName,
           prompt: prompt,
-          temperature: parseFloat(temperature) || 0.3,
+          temperature: Number.isFinite(parseFloat(temperature)) ? parseFloat(temperature) : 0.3,
           max_tokens: -1,
           image_size: parseInt(imageSize) || 1024,
           request_interval_ms: intervalMs,

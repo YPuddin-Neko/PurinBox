@@ -98,6 +98,7 @@ export default function CustomSelect({
       setOpen(false);
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
+      if (options.length === 0) return; // 空列表按方向键会取 options[-1] 抛异常
       const idx = options.findIndex(o => o.value === value);
       const next = e.key === 'ArrowDown'
         ? Math.min(idx + 1, options.length - 1)

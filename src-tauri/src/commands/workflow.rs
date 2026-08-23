@@ -1,16 +1,4 @@
-use serde::{Deserialize, Serialize};
 use std::path::Path;
-
-/// Workflow 文件信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowInfo {
-    /// 工作流名称（不含扩展名）
-    pub name: String,
-    /// 文件完整路径
-    pub path: String,
-    /// 最后修改时间（Unix 时间戳，秒）
-    pub modified: u64,
-}
 
 /// 保存工作流 JSON 到指定路径
 #[tauri::command]
@@ -40,64 +28,6 @@ pub async fn load_workflow(path: String) -> Result<String, String> {
 
     std::fs::read_to_string(file_path)
         .map_err(|e| format!("读取工作流失败: {}", e))
-}
-
-/// 列出目录中的 .purin 工作流文件
-#[tauri::command]
-pub async fn list_workflows(dir: String) -> Result<Vec<WorkflowInfo>, String> {
-    let dir_path = Path::new(&dir);
-
-    if !dir_path.exists() || !dir_path.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let mut workflows = Vec::new();
-
-    let entries = std::fs::read_dir(dir_path)
-        .map_err(|e| format!("读取目录失败: {}", e))?;
-
-    for entry in entries.filter_map(|e| e.ok()) {
-        let p = entry.path();
-        if !p.is_file() {
-            continue;
-        }
-
-        let ext_match = p
-            .extension()
-            .map(|ext| ext.to_string_lossy().to_lowercase() == "purin")
-            .unwrap_or(false);
-
-        if !ext_match {
-            continue;
-        }
-
-        let name = p
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        let modified = p
-            .metadata()
-            .and_then(|m| m.modified())
-            .map(|t| {
-                t.duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-            })
-            .unwrap_or(0);
-
-        workflows.push(WorkflowInfo {
-            name,
-            path: p.to_string_lossy().to_string(),
-            modified,
-        });
-    }
-
-    // 按修改时间倒序排列（最新的在前）
-    workflows.sort_by(|a, b| b.modified.cmp(&a.modified));
-
-    Ok(workflows)
 }
 
 /// 清理工作流临时目录（{dir}/.workflow_temp），返回释放的字节数。
@@ -147,4 +77,63 @@ fn dir_size(path: &Path) -> u64 {
         }
     }
     total
+}
+
+/// 把输入目录里与输出目录图片同名（stem）的标签文件（.txt/.json/.caption）带到输出目录。
+/// 图像处理节点只搬图片；打标节点在上游时，标签会被留在临时目录里随清理丢失。
+/// 幂等：目标已存在则跳过；失败不阻断工作流（调用方 catch）。
+#[tauri::command]
+pub fn carry_tag_sidecars(
+    input_path: String,
+    output_path: String,
+    recursive: bool,
+) -> Result<u32, String> {
+    let input = Path::new(&input_path);
+    let output = Path::new(&output_path);
+    if !input.is_dir() || !output.is_dir() {
+        return Ok(0);
+    }
+    // 先给输入侧的标签文件按相对路径建索引：纯图片数据集（最常见）直接零开销返回，
+    // 避免对输出目录每张图做 3 次存在性探测
+    let mut avail: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+    let walker = if recursive {
+        walkdir::WalkDir::new(input)
+    } else {
+        walkdir::WalkDir::new(input).max_depth(1)
+    };
+    for entry in walker.into_iter().filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if p.is_file()
+            && matches!(
+                p.extension().and_then(|e| e.to_str()),
+                Some("txt") | Some("json") | Some("caption")
+            )
+        {
+            if let Ok(rel) = p.strip_prefix(input) {
+                avail.insert(rel.to_path_buf());
+            }
+        }
+    }
+    if avail.is_empty() {
+        return Ok(0);
+    }
+
+    let images = super::collect_image_files_with_recursive(output, recursive)?;
+    let mut copied = 0u32;
+    for img in images {
+        // 输出图片相对输出根的位置，映射回输入根找同名标签
+        let rel = img.strip_prefix(output).unwrap_or(&img);
+        for ext in ["txt", "json", "caption"] {
+            let rel_sc = rel.with_extension(ext);
+            if !avail.contains(&rel_sc) {
+                continue;
+            }
+            let src = input.join(&rel_sc);
+            let dst = img.with_extension(ext);
+            if !dst.exists() && src != dst && std::fs::copy(&src, &dst).is_ok() {
+                copied += 1;
+            }
+        }
+    }
+    Ok(copied)
 }

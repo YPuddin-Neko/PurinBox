@@ -173,6 +173,33 @@ fn apply_proxy(builder: reqwest::ClientBuilder, cfg: &ProxyConfig) -> reqwest::C
     }
 }
 
+/// 给需要联网的子进程（pip 等）注入应用内代理环境变量。
+/// 应用内代理≠系统代理：clash 非系统代理模式下 reqwest 下载都正常，
+/// pip 直连 PyPI 却会失败，表现为"下载都行、装依赖必挂"。
+/// SOCKS5 不注入：pip 需要 pysocks 才认 socks 代理，注入反而让它报缺依赖错误。
+pub fn apply_proxy_env(cmd: &mut std::process::Command) {
+    let cfg = load_proxy_config_internal();
+    if !cfg.enabled || cfg.host.is_empty() || cfg.port == 0 || cfg.proxy_type == "socks5" {
+        return;
+    }
+    let url = if cfg.username.is_empty() {
+        format!("http://{}:{}", cfg.host, cfg.port)
+    } else {
+        let password = decode(&cfg.password_encoded);
+        format!(
+            "http://{}:{}@{}:{}",
+            urlencoding::encode(&cfg.username),
+            urlencoding::encode(&password),
+            cfg.host,
+            cfg.port
+        )
+    };
+    cmd.env("HTTP_PROXY", &url)
+        .env("HTTPS_PROXY", &url)
+        .env("http_proxy", &url)
+        .env("https_proxy", &url);
+}
+
 /// 构建带代理的 reqwest Client（通用：翻译、模型下载等）
 pub fn build_http_client() -> reqwest::ClientBuilder {
     let cfg = load_proxy_config_internal();
@@ -180,11 +207,19 @@ pub fn build_http_client() -> reqwest::ClientBuilder {
 }
 
 /// 构建带代理的 reqwest Client（LLM 专用：仅当 llm_proxy 开启时使用代理）
+///
+/// 必须设置超时：reqwest 默认无限等待，网关/代理接受连接后不回包时
+/// 请求会永久挂起，并发为 1 时整条打标/精修管线就此停摆。
+/// read_timeout 取 300s 是因为非流式 LLM 请求在服务端生成完之前不回首字节。
 pub fn build_http_client_for_llm() -> reqwest::ClientBuilder {
     let cfg = load_proxy_config_internal();
+    let builder = reqwest::Client::builder()
+        .user_agent("PurinBox")
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .read_timeout(std::time::Duration::from_secs(300));
     if cfg.llm_proxy {
-        apply_proxy(reqwest::Client::builder().user_agent("PurinBox"), &cfg)
+        apply_proxy(builder, &cfg)
     } else {
-        reqwest::Client::builder().user_agent("PurinBox")
+        builder
     }
 }

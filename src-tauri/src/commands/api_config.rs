@@ -74,12 +74,20 @@ pub fn save_api_config(
     let dir = super::config_paths::user_config_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
 
-    // 编码所有 key
-    let encoded_keys: HashMap<String, String> = api_keys
-        .into_iter()
-        .filter(|(_, v)| !v.is_empty())
-        .map(|(k, v)| (k, encode_key(&v)))
-        .collect();
+    // 与已存储的 key 合并：调用方（如精修/辅助打标 Tab）可能只传当前预设一把 key，
+    // 整体替换会抹掉其他预设已保存的 key。传空字符串表示显式清除该预设。
+    let mut encoded_keys: HashMap<String, String> = std::fs::read_to_string(config_path())
+        .ok()
+        .and_then(|c| serde_json::from_str::<ApiConfig>(&c).ok())
+        .map(|old| old.api_keys)
+        .unwrap_or_default();
+    for (k, v) in api_keys {
+        if v.is_empty() {
+            encoded_keys.remove(&k);
+        } else {
+            encoded_keys.insert(k, encode_key(&v));
+        }
+    }
 
     let config = ApiConfig {
         preset,

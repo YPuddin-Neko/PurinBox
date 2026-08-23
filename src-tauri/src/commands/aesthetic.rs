@@ -20,6 +20,9 @@ pub struct AestheticOptions {
     pub use_gpu: bool,
     #[serde(default = "default_true")]
     pub move_files: bool,
+    /// 复制而非移动（工作流用：输出是临时目录时移动会让原图随清理被删）
+    #[serde(default)]
+    pub copy_files: bool,
     #[serde(default = "default_batch_size")]
     pub batch_size: u32,
     #[serde(default)]
@@ -78,7 +81,14 @@ fn find_python() -> Result<String, String> {
     }
 
     for name in &["python3", "python"] {
-        if let Ok(output) = Command::new(name).args(["--version"]).output() {
+        let mut cmd = Command::new(name);
+        cmd.args(["--version"]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // 探测也要隐藏控制台窗口
+        }
+        if let Ok(output) = cmd.output() {
             if output.status.success() {
                 let ver = String::from_utf8_lossy(&output.stdout);
                 if ver.contains("Python 3") {
@@ -455,10 +465,55 @@ fn run_aesthetic_scoring(
     let mut reader = BufReader::new(stdout);
 
     let mut ready = false;
-    let timeout = std::time::Instant::now();
+    // 超时看门狗：阻塞读期间 elapsed 检查永远不执行（Python 静默挂死时 read 永久阻塞），
+    // 改由独立线程到点杀进程 → stdout 关闭 → 阻塞读解除 → 走 !ready 错误路径。
+    // 就绪后看门狗自行退出，加载慢于超时上限但已发出 ready 的情况不会被误杀。
+    let ready_flag = std::sync::Arc::new(AtomicBool::new(false));
+    // 按"静默时长"判死：加载中 Python 会持续吐 log 行，只要有输出就不算挂死——
+    // 冷盘上加载超过 180s 的大模型不会被误杀；真正静默 180s 才终止
+    let last_activity = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let watch_start = std::time::Instant::now();
+    {
+        let ready_flag = ready_flag.clone();
+        let last_activity = last_activity.clone();
+        std::thread::spawn(move || loop {
+            if ready_flag.load(Ordering::SeqCst) {
+                return;
+            }
+            let idle = watch_start
+                .elapsed()
+                .as_secs()
+                .saturating_sub(last_activity.load(std::sync::atomic::Ordering::SeqCst));
+            if idle > 180 {
+                if !ready_flag.load(Ordering::SeqCst) {
+                    kill_process();
+                }
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+    }
     while let Some(line) = read_utf8_line(&mut reader) {
+        last_activity.store(
+            watch_start.elapsed().as_secs(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
+            // 必须解除看门狗：否则它在静默期满后对全局句柄补刀，误杀重启后新一轮的进程
+            ready_flag.store(true, Ordering::SeqCst);
             kill_process();
+            // 加载期取消也必须发终态事件——页面只在 done 事件里复位按钮/任务状态
+            let _ = app.emit(
+                "aesthetic-progress",
+                ProgressEvent {
+                    current: 0,
+                    total: 0,
+                    filename: String::new(),
+                    status: "done".to_string(),
+                    message: "已取消".to_string(),
+                    ..Default::default()
+                },
+            );
             return Ok(ProcessResult {
                 success_count: 0,
                 fail_count: 0,
@@ -496,26 +551,35 @@ fn run_aesthetic_scoring(
                 }
                 "error" => {
                     let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    ready_flag.store(true, Ordering::SeqCst); // 让看门狗退出
                     kill_process();
                     return Err(format!("初始化失败: {}", text));
                 }
                 "ready" => {
                     ready = true;
+                    ready_flag.store(true, Ordering::SeqCst);
                     break;
                 }
                 _ => {}
             }
         }
-
-        if timeout.elapsed() > std::time::Duration::from_secs(120) {
-            kill_process();
-            return Err("模型加载超时(120秒)".into());
-        }
     }
 
     if !ready {
+        ready_flag.store(true, Ordering::SeqCst);
         kill_process();
         if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
+            let _ = app.emit(
+                "aesthetic-progress",
+                ProgressEvent {
+                    current: 0,
+                    total: 0,
+                    filename: String::new(),
+                    status: "done".to_string(),
+                    message: "已取消".to_string(),
+                    ..Default::default()
+                },
+            );
             return Ok(ProcessResult {
                 success_count: 0,
                 fail_count: 0,
@@ -523,7 +587,7 @@ fn run_aesthetic_scoring(
                 errors: vec![],
             });
         }
-        return Err("Python 进程未能成功初始化".into());
+        return Err("Python 进程未能成功初始化（退出或加载超时 180 秒）".into());
     }
 
     // 收集图片（失败时杀掉已启动的 Python 进程，避免泄漏）
@@ -630,6 +694,7 @@ fn run_aesthetic_scoring(
                 "cmd": "score",
                 "image_path": file_path.to_string_lossy(),
                 "move_files": options.move_files,
+                "copy_files": options.copy_files,
                 "output_path": if options.output_path.is_empty() { "" } else { &options.output_path },
                 "relative_dir": relative_dir,
             });
@@ -743,6 +808,7 @@ fn run_aesthetic_scoring(
                 serde_json::json!({
                     "image_path": fp.to_string_lossy(),
                     "move_files": options.move_files,
+                    "copy_files": options.copy_files,
                     "output_path": if options.output_path.is_empty() { "" } else { &options.output_path },
                     "relative_dir": relative_dir,
                 })
@@ -874,20 +940,23 @@ fn run_aesthetic_scoring(
         let _ = child.wait();
     }
 
-    let _ = app.emit(
-        "aesthetic-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
-                "美学评分完成: 成功 {}, 失败 {}, 共 {}",
-                success_count, fail_count, total
-            ),
-            ..Default::default()
-        },
-    );
+    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
+    if !AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "aesthetic-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: "done".to_string(),
+                message: format!(
+                    "美学评分完成: 成功 {}, 失败 {}, 共 {}",
+                    success_count, fail_count, total
+                ),
+                ..Default::default()
+            },
+        );
+    }
 
     Ok(ProcessResult {
         success_count,
@@ -905,12 +974,17 @@ pub async fn start_aesthetic_scoring(
     app: tauri::AppHandle,
     options: AestheticOptions,
 ) -> Result<ProcessResult, String> {
+    // 互斥：全局子进程句柄/取消标志不允许并发运行（页面 + 工作流节点会互杀进程）
+    static AESTHETIC_RUNNING: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    let _busy = crate::commands::BusyGuard::acquire(&AESTHETIC_RUNNING, "美学评分")?;
+
     // 重置取消标志
     AESTHETIC_CANCELLED.store(false, Ordering::SeqCst);
 
     // 确保 Python 环境 + onnxruntime GPU 运行时
-    let python = super::python_env::setup_python_env(&app).await?;
-    let _has_gpu = super::python_env::ensure_onnx_gpu_runtime(&app, &python).await?;
+    let python = super::python_env::setup_python_env(&app, "aesthetic").await?;
+    let _has_gpu = super::python_env::ensure_onnx_gpu_runtime(&app, &python, "aesthetic").await?;
 
     // 下载模型
     if !is_model_downloaded() {

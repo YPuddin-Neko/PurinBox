@@ -508,7 +508,11 @@ def run_convert_mode():
             skipped += 1
         else:
             try:
-                raw = txt.read_text(encoding="utf-8")
+                try:
+                    raw = txt.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    # 中文 Windows 老工具产出的 ANSI/GBK 标签文件
+                    raw = txt.read_text(encoding="gbk")
                 tag_list = [t.strip() for t in raw.replace("\n", ",").split(",") if t.strip()]
                 selected = []
                 for t in tag_list:
@@ -517,8 +521,7 @@ def run_convert_mode():
                     selected.append((plain, cat))
                 data = _build_simplified_json(selected) if args.simplified else _build_structured_json(selected)
                 json_path = img.parent / f"{img.stem}.json"
-                with open(json_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                _write_json_atomic(json_path, data)
                 if args.remove_txt:
                     txt.unlink()
                 converted += 1
@@ -536,7 +539,79 @@ def run_convert_mode():
     })
 
 
+def _write_json_atomic(path, obj):
+    """先写临时文件再原子替换：进程可能被取消杀在写盘中途，避免半截文件顶着原名。"""
+    tmp = Path(str(path) + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _write_text_atomic(path, text):
+    tmp = Path(str(path) + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def _merge_append_tags_json(data, append_list, simplified, position):
+    """JSON 输出合并追加标签（触发词）。txt 分支一直有此逻辑，json 分支此前直接丢弃。"""
+    if simplified:
+        container, key = data, "tags"
+    else:
+        container, key = data.setdefault("ai_output", {}), "tags"
+    arr = container.get(key)
+    if isinstance(arr, str):
+        # 逗号字符串形式（tag_manager 同样支持）——拆成列表合并，不能整个丢弃
+        arr = [t.strip() for t in arr.split(",") if t.strip()]
+    elif not isinstance(arr, list):
+        arr = []
+    append_set = set(append_list)
+    arr = [t for t in arr if t not in append_set]
+    container[key] = (append_list + arr) if position == "prepend" else (arr + append_list)
+    return data
+
+
+def run_detect_mode():
+    """--detect 一次性模式：加载 ONNX 模型输出输入信息后退出（Rust detect_model_info 调用）。"""
+    try:
+        idx = sys.argv.index("--detect")
+        model_path = sys.argv[idx + 1]
+    except (ValueError, IndexError):
+        sys.stderr.write("--detect 需要模型路径参数\n")
+        sys.exit(1)
+    try:
+        import onnxruntime as ort
+        sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        inp = sess.get_inputs()[0]
+        shape = [int(d) if isinstance(d, int) else -1 for d in inp.shape]
+        if len(shape) == 4 and shape[1] in (1, 3, 4):
+            fmt, size, channels = "NCHW", shape[2], shape[1]
+        elif len(shape) == 4:
+            fmt, size, channels = "NHWC", shape[1], shape[3]
+        else:
+            fmt, size, channels = "NHWC", 0, 3
+        if not isinstance(size, int) or size <= 0:
+            size = 448
+        if not isinstance(channels, int) or channels <= 0:
+            channels = 3
+        print(json.dumps({
+            "type": "model_info",
+            "input_size": size,
+            "input_format": fmt,
+            "input_shape": shape,
+            "channels": channels,
+        }, ensure_ascii=False), flush=True)
+    except Exception as e:
+        sys.stderr.write(f"模型检测失败: {e}\n")
+        sys.exit(1)
+
+
 def main():
+    # --detect：一次性模型检测模式（Rust detect_model_info 调用），输出 model_info 后退出
+    if "--detect" in sys.argv:
+        run_detect_mode()
+        return
     # --convert：txt → JSON 转换模式（无需 ONNX，处理完直接退出）
     if "--convert" in sys.argv:
         run_convert_mode()
@@ -714,7 +789,7 @@ def main():
                         tag_name = tag_name.replace("_", " ")
                     if escape_parentheses:
                         tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
-                    if tag_name in exclude_set or tags[best_idx]["name"] in exclude_set:
+                    if tag_name in exclude_set or tag_name.replace("\\", "") in exclude_set or tags[best_idx]["name"] in exclude_set:
                         continue
                     selected_tags.append((tag_name, argmax_cat, best_prob, tag_count))
                     selected_flat.append(tag_name)
@@ -743,7 +818,7 @@ def main():
                             tag_name = tag_name.replace("_", " ")
                         if escape_parentheses:
                             tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
-                        if tag_name in exclude_set or tags[idx]["name"] in exclude_set:
+                        if tag_name in exclude_set or tag_name.replace("\\", "") in exclude_set or tags[idx]["name"] in exclude_set:
                             continue
                         selected_tags.append((tag_name, cat, prob, tag_count))
                         selected_flat.append(tag_name)
@@ -825,8 +900,9 @@ def main():
                                     elif isinstance(v, list) and isinstance(merged[k], list):
                                         existing_set = set(merged[k])
                                         merged[k] = merged[k] + [t for t in v if t not in existing_set]
-                            with open(json_path, "w", encoding="utf-8") as f:
-                                json.dump(merged, f, ensure_ascii=False, indent=2)
+                            if append_list:
+                                merged = _merge_append_tags_json(merged, append_list, json_simplified, append_position)
+                            _write_json_atomic(json_path, merged)
                         except Exception as merge_err:
                             # 合并失败时不覆盖用户原文件：仅警告并跳过写入
                             log(f"⚠ JSON 合并失败，跳过写入以保护原文件 [{json_path.name}]: {merge_err}")
@@ -836,8 +912,9 @@ def main():
                             data = _build_simplified_json(selected_tags)
                         else:
                             data = _build_structured_json(selected_tags)
-                        with open(json_path, "w", encoding="utf-8") as f:
-                            json.dump(data, f, ensure_ascii=False, indent=2)
+                        if append_list:
+                            data = _merge_append_tags_json(data, append_list, json_simplified, append_position)
+                        _write_json_atomic(json_path, data)
                 else:
                     txt_path = parent / f"{stem}.txt"
 
@@ -854,8 +931,13 @@ def main():
 
                     if existing_tags_action in ("prepend", "append") and txt_path.exists():
                         try:
-                            with open(txt_path, "r", encoding="utf-8") as f:
-                                existing_text = f.read().strip()
+                            try:
+                                with open(txt_path, "r", encoding="utf-8") as f:
+                                    existing_text = f.read().strip()
+                            except UnicodeDecodeError:
+                                # 中文 Windows 老工具产出的 ANSI/GBK 标签文件
+                                with open(txt_path, "r", encoding="gbk") as f:
+                                    existing_text = f.read().strip()
                             existing_list = [t.strip() for t in existing_text.split(",") if t.strip()]
                             # 去重合并
                             if existing_tags_action == "append":
@@ -867,8 +949,11 @@ def main():
                                 existing_set = set(existing_list)
                                 merged = [t for t in selected_flat if t not in existing_set] + existing_list
                             selected_flat = merged
-                        except Exception:
-                            pass  # 读取失败，使用新标签覆盖
+                        except Exception as read_err:
+                            # 读取失败时不能静默用新标签覆盖用户原文件（与 JSON 分支的保护一致）
+                            log(f"⚠ 读取已有标签失败，跳过写入以保护原文件 [{txt_path.name}]: {read_err}")
+                            result({"type": "result", "image_path": image_path, "tags": [], "tag_count": 0, "skipped": True})
+                            continue
 
                     # 追加标签最后处理（优先级最高，确保触发词始终在指定位置）
                     if append_list:
@@ -879,8 +964,7 @@ def main():
                         else:
                             selected_flat = selected_flat + append_list
 
-                    with open(txt_path, "w", encoding="utf-8") as f:
-                        f.write(", ".join(selected_flat))
+                    _write_text_atomic(txt_path, ", ".join(selected_flat))
 
                 result({
                     "type": "result",
@@ -1005,7 +1089,7 @@ def main():
                                 tag_name = tag_name.replace("_", " ")
                             if escape_parentheses:
                                 tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
-                            if tag_name in exclude_set or tags[best_idx]["name"] in exclude_set:
+                            if tag_name in exclude_set or tag_name.replace("\\", "") in exclude_set or tags[best_idx]["name"] in exclude_set:
                                 continue
                             selected_tags.append((tag_name, argmax_cat, best_prob, tag_count))
                             selected_flat.append(tag_name)
@@ -1032,7 +1116,7 @@ def main():
                                     tag_name = tag_name.replace("_", " ")
                                 if escape_parentheses:
                                     tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
-                                if tag_name in exclude_set or tags[idx]["name"] in exclude_set:
+                                if tag_name in exclude_set or tag_name.replace("\\", "") in exclude_set or tags[idx]["name"] in exclude_set:
                                     continue
                                 selected_tags.append((tag_name, cat, prob, tag_count))
                                 selected_flat.append(tag_name)
@@ -1075,15 +1159,17 @@ def main():
                                         elif isinstance(v, list) and isinstance(merged[k], list):
                                             existing_set = set(merged[k])
                                             merged[k] = merged[k] + [t_val for t_val in v if t_val not in existing_set]
-                                    with open(json_path, "w", encoding="utf-8") as f:
-                                        json.dump(merged, f, ensure_ascii=False, indent=2)
+                                    if append_list:
+                                        merged = _merge_append_tags_json(merged, append_list, json_simplified, append_position)
+                                    _write_json_atomic(json_path, merged)
                                 except Exception as merge_err:
                                     # 合并失败时不覆盖用户原文件：仅警告并跳过写入
                                     log(f"⚠ JSON 合并失败，跳过写入以保护原文件 [{json_path.name}]: {merge_err}")
                             else:
                                 data = _build_simplified_json(selected_tags) if json_simplified else _build_structured_json(selected_tags)
-                                with open(json_path, "w", encoding="utf-8") as f:
-                                    json.dump(data, f, ensure_ascii=False, indent=2)
+                                if append_list:
+                                    data = _merge_append_tags_json(data, append_list, json_simplified, append_position)
+                                _write_json_atomic(json_path, data)
                         else:
                             txt_path = parent / f"{stem}.txt"
 
@@ -1093,8 +1179,12 @@ def main():
 
                             if existing_tags_action in ("prepend", "append") and txt_path.exists():
                                 try:
-                                    with open(txt_path, "r", encoding="utf-8") as f:
-                                        existing_text = f.read().strip()
+                                    try:
+                                        with open(txt_path, "r", encoding="utf-8") as f:
+                                            existing_text = f.read().strip()
+                                    except UnicodeDecodeError:
+                                        with open(txt_path, "r", encoding="gbk") as f:
+                                            existing_text = f.read().strip()
                                     existing_list = [t_str.strip() for t_str in existing_text.split(",") if t_str.strip()]
                                     if existing_tags_action == "append":
                                         existing_set = set(existing_list)
@@ -1103,8 +1193,10 @@ def main():
                                         existing_set = set(existing_list)
                                         merged = [t_str for t_str in selected_flat if t_str not in existing_set] + existing_list
                                     selected_flat = merged
-                                except Exception:
-                                    pass
+                                except Exception as read_err:
+                                    log(f"⚠ 读取已有标签失败，跳过写入以保护原文件 [{txt_path.name}]: {read_err}")
+                                    result({"type": "result", "image_path": image_path, "tags": [], "tag_count": 0, "skipped": True})
+                                    continue
 
                             if append_list:
                                 append_set = set(append_list)
@@ -1114,8 +1206,7 @@ def main():
                                 else:
                                     selected_flat = selected_flat + append_list
 
-                            with open(txt_path, "w", encoding="utf-8") as f:
-                                f.write(", ".join(selected_flat))
+                            _write_text_atomic(txt_path, ", ".join(selected_flat))
 
                         result({
                             "type": "result",

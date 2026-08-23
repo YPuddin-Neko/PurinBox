@@ -25,6 +25,10 @@ pub async fn perspective_transform<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: PerspectiveOptions,
 ) -> Result<ProcessResult, String> {
+    // 互斥：页面与工作流节点共用全局取消标志，并发会互吞取消
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let _busy = crate::commands::BusyGuard::acquire(&RUNNING, "透视变换")?;
+
     CANCEL_FLAG.store(false, Ordering::SeqCst);
     tokio::task::spawn_blocking(move || perspective_sync(&app, &options))
         .await
@@ -42,6 +46,15 @@ fn perspective_sync<R: tauri::Runtime>(
 ) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
+
+    // intensity 是 0.0~0.5 的比例值（UI 滑杆 0.02~0.30）。
+    // 量纲错误的值（如旧工作流默认的 10）会让几乎所有像素反查越界，输出全黑图
+    if !(0.0..=0.5).contains(&options.intensity) {
+        return Err(format!(
+            "透视强度 {} 超出有效范围 0.0~0.5（该值为比例，不是百分比）",
+            options.intensity
+        ));
+    }
 
     if !output_dir.exists() {
         std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
@@ -122,20 +135,23 @@ fn perspective_sync<R: tauri::Runtime>(
         }
     }
 
-    let _ = app.emit(
-        "perspective-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
-                "处理完成: 成功 {}, 失败 {}, 共 {}",
-                success_count, fail_count, total
-            ),
-            ..Default::default()
-        },
-    );
+    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
+    if !CANCEL_FLAG.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "perspective-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: "done".to_string(),
+                message: format!(
+                    "处理完成: 成功 {}, 失败 {}, 共 {}",
+                    success_count, fail_count, total
+                ),
+                ..Default::default()
+            },
+        );
+    }
 
     Ok(ProcessResult {
         success_count,
@@ -257,6 +273,10 @@ fn process_perspective(
         file_name.as_ref(),
         options.recursive,
     )?;
+    // 输出目录==输入目录时输出与输入同路径（大小写不敏感判定），保存会把原图就地替换
+    if crate::commands::path_key_ci(&output_path) == crate::commands::path_key_ci(file_path) {
+        return Err("输出与输入为同一文件，已跳过（请更换输出目录）".to_string());
+    }
     // JPEG/BMP 不支持透明通道，保存前拍平为 RGB（越界区域呈黑边，符合数据增强惯例）
     let out_ext = output_path
         .extension()

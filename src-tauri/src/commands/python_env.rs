@@ -32,8 +32,39 @@ static SETUP_CANCELLED: AtomicBool = AtomicBool::new(false);
 /// 防止多个功能（tagger/upscale/cluster 等）并发触发 setup 导致两个 pip install 互相踩踏
 static SETUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-pub fn cancel_setup() {
-    SETUP_CANCELLED.store(true, Ordering::SeqCst);
+/// 当前环境部署/升级的发起方（在 SETUP_LOCK 内登记）。
+/// 取消按归属隔离：取消打标不再连带中止其他功能正在进行的环境部署。
+static SETUP_OWNER: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+struct SetupOwnerGuard;
+
+impl Drop for SetupOwnerGuard {
+    fn drop(&mut self) {
+        *SETUP_OWNER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+fn claim_setup_owner(owner: &'static str) -> SetupOwnerGuard {
+    *SETUP_OWNER.lock().unwrap_or_else(|e| e.into_inner()) = Some(owner);
+    SetupOwnerGuard
+}
+
+/// 排队中的取消：目标 setup 还在等别人的 SETUP_LOCK 时，取消要记账，
+/// 等它拿到锁后直接退出，而不是照跑几分钟的部署
+static PENDING_CANCELS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+
+/// 仅当 owner 正是当前部署/升级的发起方时才置取消标志；
+/// owner 的 setup 还在排队时记入 PENDING_CANCELS（拿到锁后自查退出）
+pub fn cancel_setup_for(owner: &'static str) {
+    let owned = *SETUP_OWNER.lock().unwrap_or_else(|e| e.into_inner());
+    if owned == Some(owner) {
+        SETUP_CANCELLED.store(true, Ordering::SeqCst);
+    } else {
+        let mut pending = PENDING_CANCELS.lock().unwrap_or_else(|e| e.into_inner());
+        if !pending.contains(&owner) {
+            pending.push(owner);
+        }
+    }
 }
 
 fn is_cancelled() -> bool {
@@ -183,7 +214,7 @@ pub fn reset_python_env() -> Result<String, String> {
 /// 手动部署 Python 环境（设置页按钮）
 #[tauri::command]
 pub async fn deploy_python_env(app: tauri::AppHandle) -> Result<String, String> {
-    setup_python_env(&app).await
+    setup_python_env(&app, "manual").await
 }
 
 /// 获取 Python 环境信息（供设置页显示）
@@ -372,9 +403,26 @@ fn resolve_python_path(name: &str) -> String {
 }
 
 /// 完整的 Python 环境设置流程（入口，全局串行化）
-pub async fn setup_python_env(app: &tauri::AppHandle) -> Result<String, String> {
+pub async fn setup_python_env(app: &tauri::AppHandle, owner: &'static str) -> Result<String, String> {
+    // 本次是全新调用：清掉同名 owner 的陈旧排队取消（上一次的取消不该击中这一次）
+    PENDING_CANCELS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|o| *o != owner);
     // 串行化整个 setup 流程；tokio::sync::Mutex 的 guard 可安全地跨 await 持有
     let _setup_guard = SETUP_LOCK.lock().await;
+    // 排队等待期间被取消：拿到锁后直接退出
+    let was_cancelled_while_queued = {
+        let mut pending = PENDING_CANCELS.lock().unwrap_or_else(|e| e.into_inner());
+        let hit = pending.contains(&owner);
+        pending.retain(|o| *o != owner);
+        hit
+    };
+    if was_cancelled_while_queued {
+        return Err("已取消".into());
+    }
+    // 归属登记：cancel_setup_for 只命中当前登记者
+    let _owner = claim_setup_owner(owner);
     setup_python_env_inner(app).await
 }
 
@@ -477,8 +525,13 @@ async fn setup_with_standalone(app: &tauri::AppHandle) -> Result<String, String>
         return Err("已取消".into());
     }
 
-    // 创建 venv（内部 cmd.output() 可能耗时，放入 blocking 线程）
-    if !venv_python.exists() {
+    // 创建 venv（内部 cmd.output() 可能耗时，放入 blocking 线程）。
+    // 能走进 setup 就说明环境未就绪：已存在的 venv 是残骸（如 base 解释器被卸载后的存根，
+    // 此时 pip 永远报 "No Python at ..."），必须与系统 Python 分支一样总是重建
+    {
+        if venv_python.exists() {
+            let _ = std::fs::remove_dir_all(get_venv_dir());
+        }
         let app2 = app.clone();
         tokio::task::spawn_blocking(move || create_venv(&app2))
             .await
@@ -767,7 +820,7 @@ fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
 /// 两个包会争抢同一个 `onnxruntime` 模块名，必须先卸载再装。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub fn upgrade_onnxruntime_to_gpu(app: &tauri::AppHandle, python: &str) -> Result<(), String> {
-    SETUP_CANCELLED.store(false, Ordering::SeqCst);
+    // 取消标志的复位在 ensure_onnx_gpu_runtime 的归属登记段完成（这里复位会吞掉别人的取消）
 
     emit_progress(app, "@pythonEnv.installGpu", "info");
     emit_progress(app, "@pythonEnv.uninstallCpu", "info");
@@ -883,8 +936,10 @@ async fn has_nvidia_gpu() -> bool {
 pub async fn ensure_onnx_gpu_runtime(
     app: &tauri::AppHandle,
     python: &str,
+    owner: &'static str,
 ) -> Result<bool, String> {
     let _ = app;
+    let _ = owner; // 非 Windows/Linux 构型不触发升级，参数仅在 cfg 块内使用
     let probe = probe_python(python, ONNX_PROBE).await.unwrap_or_default();
     let (providers, gpu_pkg) = probe.split_once('|').unwrap_or(("", "0"));
 
@@ -901,13 +956,23 @@ pub async fn ensure_onnx_gpu_runtime(
             && !ORT_UPGRADE_TRIED.load(Ordering::SeqCst)
             && has_nvidia_gpu().await
         {
-            ORT_UPGRADE_TRIED.store(true, Ordering::SeqCst);
-
-            let p = python.to_string();
-            let app2 = app.clone();
-            tokio::task::spawn_blocking(move || upgrade_onnxruntime_to_gpu(&app2, &p))
-                .await
-                .map_err(|e| format!("安装线程异常: {}", e))??;
+            // 持 SETUP_LOCK：pip 换装期间 import 探测会失败，若放任 setup_python_env
+            // 并发进来会把正在写入的 venv 整个删除重建，环境半 CPU 半 GPU 或彻底损坏。
+            // 锁内 CAS：并发调用只有一个执行升级，其余等锁释放后直接复检。
+            let _setup_guard = SETUP_LOCK.lock().await;
+            if ORT_UPGRADE_TRIED
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                // 归属登记 + 清掉他人残留的取消标志（只有 owner 自己的取消能中止升级）
+                let _owner = claim_setup_owner(owner);
+                SETUP_CANCELLED.store(false, Ordering::SeqCst);
+                let p = python.to_string();
+                let app2 = app.clone();
+                tokio::task::spawn_blocking(move || upgrade_onnxruntime_to_gpu(&app2, &p))
+                    .await
+                    .map_err(|e| format!("安装线程异常: {}", e))??;
+            }
 
             let probe = probe_python(python, ONNX_PROBE).await.unwrap_or_default();
             let providers = probe.split('|').next().unwrap_or("");
@@ -932,6 +997,7 @@ pub async fn ensure_onnx_gpu_runtime(
 pub async fn ensure_torch_gpu_runtime(
     app: &tauri::AppHandle,
     python: &str,
+    owner: &'static str,
 ) -> Result<bool, String> {
     let probe = probe_python(python, TORCH_PROBE).await.unwrap_or_default();
     let f: Vec<&str> = probe.split('|').map(|s| s.trim()).collect();
@@ -942,6 +1008,7 @@ pub async fn ensure_torch_gpu_runtime(
     let cuda_ok     = f.get(2).is_some_and(|v| *v == "1");
     let mps_ok      = f.get(3).is_some_and(|v| *v == "1");
     let _ = app;
+    let _ = owner; // 仅 Windows 构型触发升级
 
     // GPU 已可用 → 直接用
     if cuda_ok || mps_ok {
@@ -951,7 +1018,20 @@ pub async fn ensure_torch_gpu_runtime(
     // 已装但是 CPU-only 构建，且本机有 NVIDIA → 换成 CUDA 版
     #[cfg(target_os = "windows")]
     if installed && !cuda_build && !TORCH_UPGRADE_TRIED.load(Ordering::SeqCst) && has_nvidia_gpu().await {
-        TORCH_UPGRADE_TRIED.store(true, Ordering::SeqCst);
+        // 持 SETUP_LOCK + 锁内 CAS，理由同 ensure_onnx_gpu_runtime：
+        // pip 换装期间不允许 setup 删 venv，也不允许并发重复升级
+        let _setup_guard = SETUP_LOCK.lock().await;
+        if TORCH_UPGRADE_TRIED
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            let probe = probe_python(python, TORCH_PROBE).await.unwrap_or_default();
+            let f: Vec<&str> = probe.split('|').map(|s| s.trim()).collect();
+            return Ok(f.get(2).is_some_and(|v| *v == "1"));
+        }
+        // 归属登记 + 清掉他人残留的取消标志
+        let _owner = claim_setup_owner(owner);
+        SETUP_CANCELLED.store(false, Ordering::SeqCst);
 
         // 先卸载 CPU 版（两者文件冲突，必须先移除）
         {
@@ -978,6 +1058,7 @@ pub async fn ensure_torch_gpu_runtime(
                 "--index-url", "https://download.pytorch.org/whl/cu121",
             ])
             .env("PYTHONIOENCODING", "utf-8");
+            super::proxy_config::apply_proxy_env(&mut cmd);
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x08000000);
             let output = cmd.output().map_err(|e| format!("安装失败: {}", e))?;
@@ -1066,6 +1147,8 @@ pub fn pip_install_with_python(
             dep,
         ])
         .env("PYTHONIOENCODING", "utf-8");
+        // 应用内代理注入给 pip（reqwest 走 build_http_client，pip 得靠环境变量）
+        super::proxy_config::apply_proxy_env(&mut cmd);
 
         #[cfg(target_os = "windows")]
         {

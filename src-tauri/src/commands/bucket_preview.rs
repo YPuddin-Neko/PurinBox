@@ -341,8 +341,8 @@ fn make_bucket_resolutions(
     let max_area = max_reso.0 as u64 * max_reso.1 as u64;
     let mut resos = std::collections::BTreeSet::new();
 
-    // 正方形桶
-    let sq = ((max_area as f64).sqrt() / divisible as f64) as u32 * divisible;
+    // 正方形桶（下限保护：极小训练分辨率会算出 0，(0,0) 桶让 aspect_ratio 变 NaN 崩前端）
+    let sq = (((max_area as f64).sqrt() / divisible as f64) as u32 * divisible).max(divisible);
     resos.insert((sq, sq));
 
     // 从 min_size 到 max_size 枚举宽度
@@ -539,6 +539,10 @@ pub async fn analyze_buckets<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: BucketOptions,
 ) -> Result<BucketAnalysis, String> {
+    // 互斥：页面与工作流节点共用全局取消标志，并发会互吞取消
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let _busy = crate::commands::BusyGuard::acquire(&RUNNING, "分桶分析")?;
+
     ANALYZE_CANCEL.store(false, Ordering::SeqCst);
     tokio::task::spawn_blocking(move || analyze_buckets_sync(app, options))
         .await

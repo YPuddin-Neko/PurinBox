@@ -165,6 +165,8 @@ where
 
     for (i, path) in files.iter().enumerate() {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
+            // 终态事件收尾全局任务面板，否则任务停留在"运行中"
+            emit(i as u32, "done", "分析已取消".to_string(), String::new());
             return Err("已取消".into());
         }
 
@@ -182,12 +184,16 @@ where
                 max_w = max_w.max(w);
                 min_h = min_h.min(h);
                 max_h = max_h.max(h);
-                emit(
-                    i as u32 + 1,
-                    "processing",
-                    format!("{} — {}x{}", fname, w, h),
-                    fname,
-                );
+                // 每文件一次 IPC 事件在万级数据集上会拖垮前端渲染，成功分支节流（错误分支保留逐条）
+                let current = i as u32 + 1;
+                if current % 50 == 0 || current as usize == files.len() {
+                    emit(
+                        current,
+                        "processing",
+                        format!("{} — {}x{}", fname, w, h),
+                        fname,
+                    );
+                }
             }
             Err(e) => {
                 failed_files.push(format!("{}: {}", path.to_string_lossy(), e));
@@ -203,6 +209,12 @@ where
 
     let valid_total: u32 = dist.values().map(|v| v.len() as u32).sum();
     if valid_total == 0 {
+        emit(
+            files.len() as u32,
+            "error",
+            "没有可成功读取尺寸的图片".to_string(),
+            String::new(),
+        );
         return Err("没有可成功读取尺寸的图片".into());
     }
 
@@ -311,6 +323,16 @@ fn aggregate_sync(
     let out_root = Path::new(&options.output_path);
     std::fs::create_dir_all(out_root).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
+    // 输出目录==输入目录时，收集排除逻辑会整体失效（excluded != input 不成立），
+    // 上次导出的产物会被再次归组，每次重导出文件数近似翻倍，直接拒绝
+    let same_dir = match (std::fs::canonicalize(input), std::fs::canonicalize(out_root)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => input == out_root,
+    };
+    if same_dir {
+        return Err("输出目录不能与输入目录相同：导出产物会在下次导出/分析时被当作输入重复归组".into());
+    }
+
     // 分辨率 → 计划条目索引；文件夹名剥掉路径分隔符防止逃逸
     let mut lookup: HashMap<(u32, u32), usize> = HashMap::new();
     let mut folder_names: Vec<String> = Vec::with_capacity(options.plan.len());
@@ -359,6 +381,8 @@ fn aggregate_sync(
 
     for (i, path) in files.iter().enumerate() {
         if AGGREGATE_CANCEL.load(Ordering::SeqCst) {
+            // 必须发终态事件，否则全局任务面板会永远停在"运行中"
+            emit(i as u32, "done", "聚合导出已取消".to_string());
             // 汇总信息放进错误消息（前端 catch 统一记录，避免与事件日志重复）
             return Err(format!("已取消，已复制 {} 个文件", copied));
         }
@@ -368,8 +392,11 @@ fn aggregate_sync(
                 if let Some(&idx) = lookup.get(&(w, h)) {
                     let dir = out_root.join(&folder_names[idx]);
                     if !used_folders.contains(&idx) {
-                        std::fs::create_dir_all(&dir)
-                            .map_err(|e| format!("创建目录失败 {}: {}", dir.display(), e))?;
+                        if let Err(e) = std::fs::create_dir_all(&dir) {
+                            let msg = format!("创建目录失败 {}: {}", dir.display(), e);
+                            emit(i as u32, "error", msg.clone());
+                            return Err(msg);
+                        }
                         used_folders.insert(idx);
                     }
                     let filename = path
@@ -410,8 +437,9 @@ fn aggregate_sync(
             format!("，{} 个复制失败", failed.len())
         },
     );
-    // 汇总由命令返回值带回前端记录日志；这里只把进度条推满（processing 状态不会重复记日志）
-    emit(total, "processing", format!("正在聚合 {}/{}", total, total));
+    // 详细汇总由命令返回值带回前端记录日志；done 事件负责把全局任务面板收尾
+    // （此前只发 processing 不发终态，任务会永远停在"运行中"）
+    emit(total, "done", "聚合导出完成".to_string());
     Ok(summary)
 }
 

@@ -104,6 +104,10 @@ pub async fn start_llm_tagging(
     app: tauri::AppHandle,
     options: LlmTaggerOptions,
 ) -> Result<ProcessResult, String> {
+    // 互斥：全局取消标志不允许并发运行
+    static LLM_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let _busy = crate::commands::BusyGuard::acquire(&LLM_RUNNING, "LLM 打标")?;
+
     LLM_CANCELLED.store(false, Ordering::SeqCst);
     let input_path_owned = options.input_path.clone();
     let input_dir = Path::new(&input_path_owned);
@@ -413,6 +417,7 @@ pub async fn start_llm_tagging(
         }
     }
 
+    let was_cancelled = LLM_CANCELLED.load(Ordering::SeqCst);
     let _ = app_arc.emit(
         "llm-tagger-progress",
         ProgressEvent {
@@ -421,8 +426,11 @@ pub async fn start_llm_tagging(
             filename: String::new(),
             status: "done".to_string(),
             message: format!(
-                "LLM 打标完成: 成功 {}, 失败 {}, 共 {}",
-                success_count, fail_count, total
+                "LLM 打标{}: 成功 {}, 失败 {}, 共 {}",
+                if was_cancelled { "已取消" } else { "完成" },
+                success_count,
+                fail_count,
+                total
             ),
             ..Default::default()
         },
@@ -457,7 +465,8 @@ async fn tag_with_llm(
         img
     };
 
-    // 编码为 JPEG base64（压缩更小、传输更快）
+    // 编码为 JPEG base64（压缩更小、传输更快；JPEG 不接受 RGBA，透明图先按白底拍平）
+    let img = crate::commands::flatten_to_rgb_white(img);
     let mut buf = std::io::Cursor::new(Vec::new());
     img.write_to(&mut buf, image::ImageFormat::Jpeg)
         .map_err(|e| format!("编码图片失败: {}", e))?;

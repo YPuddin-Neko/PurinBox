@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { ensureAssetScope } from '../utils/assetScope';
 import { open } from '@tauri-apps/plugin-dialog';
 import { listen } from '../utils/tauriRuntime';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -230,6 +231,7 @@ export default function TagManagerPage() {
     if (!selected) return;
     setLoading(true);
     try {
+      await ensureAssetScope(selected as string);
       if (mode === 'danbooru') {
         const result = await invoke<TagDataset>('load_tag_dataset', { folder: selected as string, recursive });
         setImages(result.images.map(img => ({ ...img, dirty: false })));
@@ -252,6 +254,7 @@ export default function TagManagerPage() {
     if (!folderPath) return;
     setLoading(true);
     try {
+      await ensureAssetScope(folderPath);
       if (mode === 'danbooru') {
         const result = await invoke<TagDataset>('load_tag_dataset', { folder: folderPath, recursive });
         setImages(result.images.map(img => ({ ...img, dirty: false })));
@@ -376,15 +379,18 @@ export default function TagManagerPage() {
     setImages(p => p.map((img, i) => {
       if (addScope === 'current' && i !== selectedIdx) return img;
       let newTags = [...img.tags];
+      // 前置不能逐个 unshift：那会把输入顺序整体反转（首 token 权重敏感）
+      const toInsert: string[] = [];
       tags.forEach(t => {
         const idx = newTags.indexOf(t);
         if (idx >= 0) {
           if (addOverwrite) { newTags.splice(idx, 1); }
           else return;
         }
-        if (addPosition === 'start') newTags.unshift(t);
-        else newTags.push(t);
+        toInsert.push(t);
       });
+      if (addPosition === 'start') newTags = [...toInsert, ...newTags];
+      else newTags = [...newTags, ...toInsert];
       return { ...img, tags: newTags, dirty: true };
     }));
     setShowAddModal(false); setAddTagInput('');

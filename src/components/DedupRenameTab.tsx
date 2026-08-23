@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
+import { ensureAssetScope } from '../utils/assetScope';
 import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
@@ -73,6 +74,8 @@ export default function DedupRenameTab() {
     setLogs([{ time: getTimeStr(), message: t('dedupRename.scanStart'), status: 'info' }]);
     addTask('dedup-rename', t('dedupRename.tabDedup'));
     try {
+      await ensureAssetScope(folderA);
+      await ensureAssetScope(folderB);
       const result = await invoke<ScanResult>('scan_dedup_rename', {
         options: { folder_a: folderA, folder_b: folderB, dhash_threshold: dhash, phash_threshold: phash, color_threshold: colorTh },
       });

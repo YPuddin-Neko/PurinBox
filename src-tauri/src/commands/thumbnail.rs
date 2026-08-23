@@ -20,7 +20,7 @@ const PRUNE_TARGET: usize = 6000;
 static PRUNING: AtomicBool = AtomicBool::new(false);
 
 /// 缓存目录：{系统缓存目录}/PurinBox/thumbnails（取不到系统缓存目录时退回临时目录）
-fn thumb_cache_dir() -> PathBuf {
+pub(crate) fn thumb_cache_dir() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("PurinBox")

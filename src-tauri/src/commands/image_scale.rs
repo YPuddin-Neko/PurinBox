@@ -34,6 +34,10 @@ pub async fn scale_images<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: ScaleOptions,
 ) -> Result<ProcessResult, String> {
+    // 互斥：页面与工作流节点共用全局取消标志，并发会互吞取消
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let _busy = crate::commands::BusyGuard::acquire(&RUNNING, "缩放")?;
+
     CANCEL_FLAG.store(false, Ordering::SeqCst);
     tokio::task::spawn_blocking(move || scale_images_sync(&app, &options))
         .await
@@ -130,20 +134,23 @@ fn scale_images_sync<R: tauri::Runtime>(
         }
     }
 
-    let _ = app.emit(
-        "scale-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
-                "处理完成: 成功 {}, 失败 {}, 共 {}",
-                success_count, fail_count, total
-            ),
-            ..Default::default()
-        },
-    );
+    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
+    if !CANCEL_FLAG.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "scale-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: "done".to_string(),
+                message: format!(
+                    "处理完成: 成功 {}, 失败 {}, 共 {}",
+                    success_count, fail_count, total
+                ),
+                ..Default::default()
+            },
+        );
+    }
 
     Ok(ProcessResult {
         success_count,
@@ -208,8 +215,7 @@ fn process_scale(
                     filename, orig_w, orig_h, nw, nh
                 ))
             } else {
-                std::fs::copy(file_path, &output_path)
-                    .map_err(|e| format!("无法复制图片: {}", e))?;
+                crate::commands::copy_file_safe(file_path, &output_path)?;
                 Ok(format!(
                     "[跳过] {} ({}x{}, 无需上采样)",
                     filename, orig_w, orig_h
@@ -230,8 +236,7 @@ fn process_scale(
                     filename, orig_w, orig_h, nw, nh
                 ))
             } else {
-                std::fs::copy(file_path, &output_path)
-                    .map_err(|e| format!("无法复制图片: {}", e))?;
+                crate::commands::copy_file_safe(file_path, &output_path)?;
                 Ok(format!(
                     "[跳过] {} ({}x{}, 无需下采样)",
                     filename, orig_w, orig_h
@@ -273,8 +278,7 @@ fn process_scale(
             }
 
             if steps.is_empty() {
-                std::fs::copy(file_path, &output_path)
-                    .map_err(|e| format!("无法复制图片: {}", e))?;
+                crate::commands::copy_file_safe(file_path, &output_path)?;
                 Ok(format!(
                     "[跳过] {} ({}x{}, 已在目标范围内)",
                     filename, orig_w, orig_h

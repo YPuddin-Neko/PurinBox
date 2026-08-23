@@ -4,6 +4,7 @@ import TagAutocomplete from './TagAutocomplete';
 import ImageLightbox from './ImageLightbox';
 import ThumbImage from './ThumbImage';
 import { invoke } from '@tauri-apps/api/core';
+import { ensureAssetScope } from '../utils/assetScope';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
@@ -20,7 +21,7 @@ interface JsonCharacter { name: string; variant: string; }
 interface JsonFromPath { appearance: string[]; }
 interface JsonAiOutput { count?: string; appearance: string[]; tags: string[]; environment: string[]; nl?: string; }
 interface JsonTagData { fixed: JsonFixed; character: JsonCharacter; from_path: JsonFromPath; ai_output: JsonAiOutput; }
-interface JsonImageItem { path: string; filename: string; data: JsonTagData; has_json: boolean; dirty?: boolean; }
+interface JsonImageItem { path: string; filename: string; data: JsonTagData; has_json: boolean; parse_failed?: boolean; dirty?: boolean; }
 interface JsonDataset { folder: string; images: JsonImageItem[]; detected_format: string; }
 
 type AiCatKey = 'appearance' | 'tags' | 'environment';
@@ -279,18 +280,20 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   const resizeCleanupRef=useRef<(()=>void)|null>(null);
   useEffect(()=>()=>{resizeCleanupRef.current?.();},[]);
 
-  // 安全化数据
+  // 安全化数据（展开原对象：schema 外的未知字段随 Rust 侧 serde(flatten) 原样往返，写回不丢）
   const safeData = (d: any): JsonTagData => ({
-    fixed: { quality: d?.fixed?.quality, series: d?.fixed?.series, artist: d?.fixed?.artist },
-    character: { name: d?.character?.name || '', variant: d?.character?.variant || '' },
-    from_path: { appearance: Array.isArray(d?.from_path?.appearance) ? d.from_path.appearance : [] },
-    ai_output: { count: d?.ai_output?.count, appearance: Array.isArray(d?.ai_output?.appearance) ? d.ai_output.appearance : [], tags: Array.isArray(d?.ai_output?.tags) ? d.ai_output.tags : [], environment: Array.isArray(d?.ai_output?.environment) ? d.ai_output.environment : [], nl: d?.ai_output?.nl },
+    ...d,
+    fixed: { ...d?.fixed, quality: d?.fixed?.quality, series: d?.fixed?.series, artist: d?.fixed?.artist },
+    character: { ...d?.character, name: d?.character?.name || '', variant: d?.character?.variant || '' },
+    from_path: { ...d?.from_path, appearance: Array.isArray(d?.from_path?.appearance) ? d.from_path.appearance : [] },
+    ai_output: { ...d?.ai_output, count: d?.ai_output?.count, appearance: Array.isArray(d?.ai_output?.appearance) ? d.ai_output.appearance : [], tags: Array.isArray(d?.ai_output?.tags) ? d.ai_output.tags : [], environment: Array.isArray(d?.ai_output?.environment) ? d.ai_output.environment : [], nl: d?.ai_output?.nl },
   });
 
   const handleLoadFolder=useCallback(async()=>{
     const sel=await dialogOpen({directory:true,multiple:false,title:t('jsonTag.selectFolder')});
     if(!sel)return; setLoading(true);
-    try{const r=await invoke<JsonDataset>('load_json_dataset',{folder:sel as string, recursive});
+    try{await ensureAssetScope(sel as string);
+      const r=await invoke<JsonDataset>('load_json_dataset',{folder:sel as string, recursive});
       setImages(r.images.map(img=>({...img,data:safeData(img.data),dirty:false})));setSelectedIdx(r.images.length>0?0:-1);
       setFolderPath(sel as string);setSearchText('');setFilterMode('all');setImgPage(0);
       if(r.detected_format==='simplified'){setSimplified(true);localStorage.setItem('json_tag_simplified','true');}
@@ -298,7 +301,8 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
     }catch(e){console.error(e);}finally{setLoading(false);}
   },[recursive,t]);
   const handleRefresh=useCallback(async()=>{if(!folderPath)return;setLoading(true);
-    try{const r=await invoke<JsonDataset>('load_json_dataset',{folder:folderPath, recursive});
+    try{await ensureAssetScope(folderPath);
+      const r=await invoke<JsonDataset>('load_json_dataset',{folder:folderPath, recursive});
       setImages(r.images.map(img=>({...img,data:safeData(img.data),dirty:false})));
     }catch(e){console.error(e);}finally{setLoading(false);}
   },[folderPath,recursive]);
@@ -307,12 +311,12 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   const imgSrc=cur?convertFileSrc(cur.path):'';
   const dirtyCount=images.filter(i=>i.dirty).length;
 
-  const handleSaveSingle=useCallback(async()=>{if(!cur||!cur.dirty)return;setSavingSingle(true);
+  const handleSaveSingle=useCallback(async()=>{if(!cur||!cur.dirty||cur.parse_failed)return;setSavingSingle(true);
     try{await invoke('save_single_json_file',{imagePath:cur.path,data:cur.data,simplified});
       setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,dirty:false}:img));
     }catch(e){console.error(e);}finally{setSavingSingle(false);}
   },[cur,selectedIdx,simplified]);
-  const handleSaveAll=useCallback(async()=>{const dirty=images.filter(i=>i.dirty).map(i=>({path:i.path,data:i.data}));
+  const handleSaveAll=useCallback(async()=>{const dirty=images.filter(i=>i.dirty&&!i.parse_failed).map(i=>({path:i.path,data:i.data}));
     if(!dirty.length)return;setSaving(true);
     try{await invoke<number>('save_all_json_files',{items:dirty,simplified});
       setImages(p=>p.map(img=>img.dirty?{...img,dirty:false}:img));
@@ -439,6 +443,8 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
     const isArray=['ai_output.appearance','ai_output.tags','ai_output.environment','from_path.appearance'].includes(batchField);
     setImages(prev=>prev.map((img,i)=>{
       if(batchScope==='current'&&i!==selectedIdx)return img;
+      // 解析失败的文件前端拿到的是空数据，批量改动后保存会用近空 JSON 覆盖原文件
+      if(img.parse_failed)return img;
       const d=JSON.parse(JSON.stringify(img.data)) as JsonTagData;
       if(isArray){
         const [section,field]=batchField.split('.') as [keyof JsonTagData, string];
@@ -470,6 +476,8 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
     const isAll=batchField==='all';
     setImages(prev=>prev.map((img,i)=>{
       if(batchScope==='current'&&i!==selectedIdx)return img;
+      // 解析失败的文件不参与批量操作（保存会用近空 JSON 覆盖原文件）
+      if(img.parse_failed)return img;
       const d=JSON.parse(JSON.stringify(img.data)) as JsonTagData;
       let changed=false;
       const filterArr=(arr:string[])=>{const n=arr.filter(t=>!tagsSet.has(t));if(n.length!==arr.length){changed=true;}return n;};
@@ -562,7 +570,8 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   if (filtered.length !== prevFilteredLen.current) { prevFilteredLen.current = filtered.length; if (imgPage >= Math.ceil(filtered.length / IMG_PER_PAGE)) { setImgPage(0); } }
 
   const updateData=useCallback((fn:(d:JsonTagData)=>JsonTagData)=>{
-    setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,data:fn(JSON.parse(JSON.stringify(img.data))),dirty:true}:img));
+    // 解析失败的条目 data 是空默认值，任何编辑落盘都会用近空 JSON 覆盖原文件
+    setImages(p=>p.map((img,i)=>i===selectedIdx&&!img.parse_failed?{...img,data:fn(JSON.parse(JSON.stringify(img.data))),dirty:true}:img));
   },[selectedIdx]);
 
   const removeAiTag=useCallback((cat:AiCatKey,tag:string)=>{
@@ -810,6 +819,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
               <ImageIcon style={{width:14,height:14,color:'#7c5cfc'}} />
               <span style={ptitle}>{t('jsonTag.preview')}</span>
               {cur&&<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontWeight:400}}>{cur.filename}</span>}
+              {cur?.parse_failed&&<span style={{fontSize:10,color:'#f87171',fontWeight:600,padding:'1px 6px',borderRadius:4,background:'rgba(248,113,113,0.12)',border:'1px solid rgba(248,113,113,0.3)'}}>JSON 解析失败 · 只读保护</span>}
             </div>
             <div style={{display:'flex',alignItems:'center',gap:6}}>
               <button className="btn btn-ghost btn-sm" onClick={goPrev} disabled={selectedIdx<=0} style={{width:26,height:26,padding:0,display:'flex',alignItems:'center',justifyContent:'center',borderRadius:6}}><ChevronLeft style={{width:14,height:14}} /></button>
@@ -865,6 +875,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
                     setEditingChip(null);
                   };
                   const addOne = (v:string) => {
+                    if(parts.some(p=>p.toLowerCase()===v.toLowerCase()))return; // 与数组字段一致：不加重复标签
                     if(parts.length===0) onSet(v);
                     else onSet([...parts, v].join(', '));
                   };
@@ -970,7 +981,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
                   <span style={{fontSize:9,padding:'0 5px',borderRadius:6,background:'rgba(34,211,238,0.08)',color:'#22d3ee',fontWeight:600}}>{cur.data.from_path.appearance.length}</span>
                 </div>
                 <div style={{padding:'5px 8px',borderRadius:'var(--radius-md)',background:'rgba(34,211,238,0.06)',border:'1px solid rgba(34,211,238,0.15)'}}>
-                  {tagChips(cur.data.from_path.appearance,{bg:'rgba(34,211,238,0.10)',bd:'rgba(34,211,238,0.25)',tx:'#22d3ee'},t=>removeFromPathTag(t),'fp','fp',v=>updateData(d=>{d.from_path.appearance=[...d.from_path.appearance,v];return d;}),(idx,v)=>updateData(d=>{d.from_path.appearance=replaceTagAtIndex(d.from_path.appearance,idx,v);return d;}))}
+                  {tagChips(cur.data.from_path.appearance,{bg:'rgba(34,211,238,0.10)',bd:'rgba(34,211,238,0.25)',tx:'#22d3ee'},t=>removeFromPathTag(t),'fp','fp',v=>updateData(d=>{if(!d.from_path.appearance.some(x=>x.toLowerCase()===v.toLowerCase()))d.from_path.appearance=[...d.from_path.appearance,v];return d;}),(idx,v)=>updateData(d=>{d.from_path.appearance=replaceTagAtIndex(d.from_path.appearance,idx,v);return d;}))}
                 </div>
               </div>}
 

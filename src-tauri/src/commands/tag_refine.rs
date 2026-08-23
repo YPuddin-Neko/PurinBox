@@ -75,6 +75,8 @@ struct ChatResponse {
 #[derive(Deserialize)]
 struct ChatChoice {
     message: ChatChoiceMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -115,17 +117,28 @@ pub async fn start_tag_refining(
     app: tauri::AppHandle,
     options: TagRefineOptions,
 ) -> Result<ProcessResult, String> {
+    // 互斥：全局取消标志不允许并发运行（辅助打标与精修页并发会互吞取消）
+    static REFINE_RUNNING: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    let _busy = crate::commands::BusyGuard::acquire(&REFINE_RUNNING, "标签精修")?;
+
     TAG_REFINE_CANCELLED.store(false, Ordering::SeqCst);
 
     let input_dir = Path::new(&options.input_path);
     let input_dir_path = input_dir.to_path_buf();
     let output_dir_path = PathBuf::from(&options.output_path);
 
-    let files = collect_image_files_with_recursive_excluding(
+    let mut files = collect_image_files_with_recursive_excluding(
         input_dir,
         options.recursive,
         Some(&output_dir_path),
     )?;
+    // 历史版本会把警告/错误图复制进 _warnings/_errors，recursive 下不能把这些副本再当输入
+    files.retain(|f| {
+        !f.components().any(|c| {
+            matches!(c.as_os_str().to_str(), Some("_warnings") | Some("_errors"))
+        })
+    });
     let total = files.len() as u32;
 
     if total == 0 {
@@ -327,7 +340,20 @@ pub async fn start_tag_refining(
     let warn_files_list = warning_files.lock().await.clone();
     let mut copy_msg = String::new();
 
-    if !err_files.is_empty() {
+    // 输出目录==输入目录（辅助打标固定如此）时禁止复制：
+    // 否则重复图片被灌进训练集本身，recursive 下次运行还会把副本当新图处理
+    let same_io_dir = match (
+        std::fs::canonicalize(&output_dir_path),
+        std::fs::canonicalize(&input_dir_path),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => crate::commands::path_key_ci(&output_dir_path) == crate::commands::path_key_ci(&input_dir_path),
+    };
+    if same_io_dir && (!err_files.is_empty() || !warn_files_list.is_empty()) {
+        copy_msg.push_str("，输出与输入目录相同，已跳过 _errors/_warnings 复制");
+    }
+
+    if !err_files.is_empty() && !same_io_dir {
         let err_dir = output_dir_path.join("_errors");
         if std::fs::create_dir_all(&err_dir).is_ok() {
             let mut copied = 0u32;
@@ -348,7 +374,7 @@ pub async fn start_tag_refining(
             copy_msg.push_str(&format!("，{} 个错误文件已复制到 _errors/", copied));
         }
     }
-    if !warn_files_list.is_empty() {
+    if !warn_files_list.is_empty() && !same_io_dir {
         let warn_dir = output_dir_path.join("_warnings");
         if std::fs::create_dir_all(&warn_dir).is_ok() {
             let mut copied = 0u32;
@@ -754,7 +780,8 @@ async fn refine_tags_with_llm(
         img
     };
 
-    // 编码为 JPEG base64
+    // 编码为 JPEG base64（JPEG 编码器不接受 RGBA，透明图需先按白底拍平）
+    let img = super::flatten_to_rgb_white(img);
     let mut buf = std::io::Cursor::new(Vec::new());
     img.write_to(&mut buf, image::ImageFormat::Jpeg)
         .map_err(|e| format!("编码图片失败: {}", e))?;
@@ -843,6 +870,11 @@ async fn refine_tags_with_llm(
         .choices
         .first()
         .ok_or_else(|| "API 未返回任何结果".to_string())?;
+
+    // 截断的响应是残缺的标签列表，写盘会把未包含的原标签全部删掉
+    if choice.finish_reason.as_deref() == Some("length") {
+        return Err("响应因 max_tokens 被截断，已丢弃（请调大 max_tokens）".to_string());
+    }
 
     let content = choice
         .message

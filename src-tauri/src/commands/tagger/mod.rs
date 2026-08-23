@@ -1,5 +1,4 @@
 pub mod download;
-pub mod gpu_runtime;
 pub mod inference;
 pub mod llm_tagger;
 pub mod models;
@@ -375,199 +374,10 @@ pub async fn remove_custom_tagger_model(id: String) -> Result<(), String> {
     models::remove_custom_model(&id)
 }
 
-/// 检测 GPU 加速是否可用（Windows: CUDA, macOS: CoreML/Metal）
-#[tauri::command]
-pub async fn check_cuda_available(app: tauri::AppHandle) -> Result<(bool, String), String> {
-    use tauri::Emitter;
-
-    let emit_line = |msg: &str, status: &str| {
-        let _ = app.emit(
-            "tagger-progress",
-            ProgressEvent {
-                current: 0,
-                total: 0,
-                filename: String::new(),
-                status: status.to_string(),
-                message: msg.to_string(),
-                ..Default::default()
-            },
-        );
-    };
-
-    let mut summary_lines: Vec<String> = Vec::new();
-    let is_macos = cfg!(target_os = "macos");
-
-    // 1. 硬件检测
-    if is_macos {
-        emit_line("正在检测 GPU...", "info");
-        let gpu_lines = tokio::task::spawn_blocking(|| {
-            let mut lines: Vec<String> = Vec::new();
-            inference::detect_apple_gpu_pub(&mut lines);
-            lines
-        })
-        .await
-        .unwrap_or_else(|_| vec!["检测线程异常".into()]);
-
-        for line in &gpu_lines {
-            emit_line(line, "success");
-        }
-        summary_lines.extend(gpu_lines);
-    } else {
-        // Windows/Linux: NVIDIA 检测
-        emit_line("正在检测 NVIDIA 驱动...", "info");
-
-        let nvidia_result = tokio::task::spawn_blocking(|| {
-            let mut lines: Vec<String> = Vec::new();
-            let ok = inference::detect_nvidia_env_pub(&mut lines);
-            inference::detect_cuda_toolkit_pub(&mut lines);
-            (ok, lines)
-        })
-        .await
-        .unwrap_or_else(|_| (false, vec!["检测线程异常".into()]));
-
-        let (_has_nvidia, env_lines) = nvidia_result;
-        for line in &env_lines {
-            let status = if line.contains("未检测到") {
-                "error"
-            } else {
-                "success"
-            };
-            emit_line(line, status);
-        }
-        summary_lines.extend(env_lines);
-    }
-
-    // 2. Python onnxruntime 检测
-    emit_line("正在检测推理环境...", "info");
-
-    let python_check = tokio::task::spawn_blocking(inference::check_python_env)
-        .await
-        .unwrap_or_else(|_| Err("检测线程异常".into()));
-
-    #[allow(unused_variables, unused_mut)]
-    let (mut gpu_ok, python_ok) = match python_check {
-        Ok((ort_ver, providers)) => {
-            emit_line(
-                &format!("✓ 推理环境就绪 (onnxruntime v{})", ort_ver),
-                "success",
-            );
-
-            // 检测 GPU provider
-            let has_cuda = providers.contains("CUDAExecutionProvider");
-            let has_coreml = providers.contains("CoreMLExecutionProvider");
-            let has_gpu = has_cuda || has_coreml;
-
-            if has_cuda {
-                emit_line("✓ CUDA ExecutionProvider 可用", "success");
-            } else if has_coreml {
-                emit_line(
-                    "✓ CoreML ExecutionProvider 可用 (Apple Neural Engine)",
-                    "success",
-                );
-            } else {
-                emit_line("GPU ExecutionProvider 不可用", "info");
-            }
-            (has_gpu, true)
-        }
-        Err(_) => {
-            // Python 环境未就绪，自动配置
-            emit_line("Python 环境未就绪，正在自动配置...", "info");
-            match python_env::setup_python_env(&app).await {
-                Ok(_) => {
-                    // 配置成功，重新检测
-                    let recheck = tokio::task::spawn_blocking(inference::check_python_env)
-                        .await
-                        .unwrap_or_else(|_| Err("检测线程异常".into()));
-                    match recheck {
-                        Ok((ort_ver, providers)) => {
-                            emit_line(
-                                &format!("✓ 推理环境就绪 (onnxruntime v{})", ort_ver),
-                                "success",
-                            );
-                            let has_cuda = providers.contains("CUDAExecutionProvider");
-                            let has_coreml = providers.contains("CoreMLExecutionProvider");
-                            let has_gpu = has_cuda || has_coreml;
-                            if has_cuda {
-                                emit_line("✓ CUDA ExecutionProvider 可用", "success");
-                            } else if has_coreml {
-                                emit_line(
-                                    "✓ CoreML ExecutionProvider 可用 (Apple Neural Engine)",
-                                    "success",
-                                );
-                            } else {
-                                emit_line("GPU ExecutionProvider 不可用", "info");
-                            }
-                            (has_gpu, true)
-                        }
-                        Err(e) => {
-                            emit_line(&e, "error");
-                            summary_lines.push(e);
-                            (false, false)
-                        }
-                    }
-                }
-                Err(e) => {
-                    emit_line(&format!("Python 环境配置失败: {}", e), "error");
-                    summary_lines.push(e);
-                    (false, false)
-                }
-            }
-        }
-    };
-
-    // 3. 通过统一入口确保 GPU 运行时（幂等：已可用或已试过安装则不重复部署）
-    if !gpu_ok && python_ok {
-        if let Some(python) = python_env::get_python_exe() {
-            match python_env::ensure_onnx_gpu_runtime(&app, &python).await {
-                Ok(true) => {
-                    gpu_ok = true;
-                    emit_line("✓ CUDA 加速已启用", "success");
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    emit_line(&format!("GPU 运行时配置失败: {}", e), "error");
-                }
-            }
-        }
-    }
-
-    // 4. 总结
-    if gpu_ok {
-        let backend = if cfg!(target_os = "macos") {
-            "CoreML"
-        } else {
-            "CUDA"
-        };
-        emit_line(&format!("✓ GPU 加速已就绪 ({})", backend), "success");
-    } else {
-        emit_line("将使用 CPU 推理", "info");
-    }
-
-    Ok((gpu_ok, summary_lines.join("\n")))
-}
-
 /// 取消正在进行的模型下载
 #[tauri::command]
 pub fn cancel_tagger_download() {
     download::cancel_download();
-}
-
-/// 获取 ONNX Runtime 状态（Python 环境检测）
-#[tauri::command]
-pub fn get_gpu_runtime_status() -> gpu_runtime::OrtRuntimeStatus {
-    gpu_runtime::check_ort_runtime()
-}
-
-/// 下载 ONNX Runtime（保留兼容性，但实际推荐 pip install）
-#[tauri::command]
-pub async fn download_gpu_runtime(app: tauri::AppHandle) -> Result<(), String> {
-    gpu_runtime::download_ort_runtime(&app).await
-}
-
-/// 取消 ONNX Runtime 下载
-#[tauri::command]
-pub fn cancel_gpu_runtime_download() {
-    gpu_runtime::cancel_ort_download();
 }
 
 /// 取消打标（同时取消可能正在进行的下载/安装）
@@ -575,8 +385,8 @@ pub fn cancel_gpu_runtime_download() {
 pub fn cancel_tagging() {
     inference::cancel_tagging();
     download::cancel_download();
-    gpu_runtime::cancel_ort_download();
-    python_env::cancel_setup();
+    // 只取消打标自己发起的环境部署，不连带中止其他功能的（归属隔离）
+    python_env::cancel_setup_for("tagger");
 }
 
 /// 强制取消打标（终止整个子进程树）
@@ -584,8 +394,7 @@ pub fn cancel_tagging() {
 pub fn force_cancel_tagging() {
     inference::cancel_tagging();
     download::cancel_download();
-    gpu_runtime::cancel_ort_download();
-    python_env::cancel_setup();
+    python_env::cancel_setup_for("tagger");
     inference::kill_python_process();
 }
 
@@ -596,6 +405,11 @@ pub async fn start_tagging(
     options: TaggerOptions,
 ) -> Result<ProcessResult, String> {
     use tauri::Emitter;
+
+    // 互斥：打标页/辅助打标/工作流节点共用全局子进程句柄与取消标志，并发会互杀进程
+    static TAGGING_RUNNING: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    let _busy = crate::commands::BusyGuard::acquire(&TAGGING_RUNNING, "打标")?;
 
     // 重置取消标志
     inference::reset_tagging_cancel();
@@ -623,13 +437,13 @@ pub async fn start_tagging(
                     ..Default::default()
                 },
             );
-            python_env::setup_python_env(&app).await?
+            python_env::setup_python_env(&app, "tagger").await?
         }
     };
 
     // 确保 onnxruntime GPU 运行时（统一入口，幂等：已可用则直接返回不重装）
     if !python.is_empty() {
-        let _ = python_env::ensure_onnx_gpu_runtime(&app, &python).await;
+        let _ = python_env::ensure_onnx_gpu_runtime(&app, &python, "tagger").await;
     }
 
     // 1. 查找模型

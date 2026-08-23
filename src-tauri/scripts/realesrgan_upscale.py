@@ -135,7 +135,10 @@ def is_under(path, parent):
     if not parent:
         return False
     try:
-        return os.path.commonpath([os.path.abspath(path), os.path.abspath(parent)]) == os.path.abspath(parent)
+        # Windows 路径大小写不敏感，必须 normcase 后比对，否则手输的大小写变体会让排除失效
+        p = os.path.normcase(os.path.abspath(path))
+        base = os.path.normcase(os.path.abspath(parent))
+        return os.path.commonpath([p, base]) == base
     except ValueError:
         return False
 
@@ -307,7 +310,10 @@ def main():
             # cv2.imwrite 在 Windows 上不支持 Unicode 路径，用 imencode 中转
             success_write, buf = cv2.imencode('.png', output)
             if success_write:
-                buf.tofile(out_path)
+                # 先写临时名再原子替换：取消杀进程时不留半截 PNG 顶着正名
+                tmp_path = out_path + ".tmp"
+                buf.tofile(tmp_path)
+                os.replace(tmp_path, out_path)
             else:
                 raise ValueError("编码图片失败")
             success += 1

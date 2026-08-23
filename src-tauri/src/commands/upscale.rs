@@ -168,7 +168,10 @@ fn is_engine_ready(engine: &EngineDef) -> bool {
         // Python engine: need deps (torch+cv2) AND at least one model weight
         return is_python_deps_ready() && has_any_esrgan_weight();
     }
-    engine_binary(engine).exists()
+    // 解压中断会留下"二进制在、模型目录缺"的半套文件：
+    // 只看二进制会把坏安装判成已就绪，且 download 入口因"已就绪"拒绝重新下载
+    let dir = engine_dir(engine.id);
+    engine_binary(engine).exists() && engine.models.iter().any(|m| dir.join(m.2).is_dir())
 }
 
 /// Real-ESRGAN 模型权重目录 — 统一到 models/upscale_engines/realesrgan/ 下
@@ -556,8 +559,8 @@ async fn download_python_engine(
 
     // Step 1: Ensure Python environment + onnxruntime GPU 运行时
     emit(5.0, "downloading", "正在检查 Python 环境...".into());
-    let python = super::python_env::setup_python_env(app).await?;
-    let _has_gpu = super::python_env::ensure_onnx_gpu_runtime(app, &python).await?;
+    let python = super::python_env::setup_python_env(app, "upscale").await?;
+    let _has_gpu = super::python_env::ensure_onnx_gpu_runtime(app, &python, "upscale").await?;
 
     if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
         return Err("下载已取消".into());
@@ -759,9 +762,21 @@ pub struct UpscaleOptions {
 }
 
 static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+/// 互斥标志：超分页面与工作流节点共用同一组全局状态（CANCEL_FLAG/ACTIVE_CHILD/进度事件），
+/// 并发运行会互相清对方的取消标志与子进程 PID，必须串行。
+static UPSCALE_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 pub async fn start_upscale(
+    app: tauri::AppHandle,
+    options: UpscaleOptions,
+) -> Result<ProcessResult, String> {
+    // RAII 互斥：手写 CAS 在 panic/future 被丢弃时会把标志卡死，永久拒绝后续超分
+    let _busy = crate::commands::BusyGuard::acquire(&UPSCALE_RUNNING, "超分")?;
+    start_upscale_inner(app, options).await
+}
+
+async fn start_upscale_inner(
     app: tauri::AppHandle,
     options: UpscaleOptions,
 ) -> Result<ProcessResult, String> {
@@ -795,18 +810,38 @@ fn run_ncnn_upscale(
     engine: &EngineDef,
     options: &UpscaleOptions,
 ) -> Result<ProcessResult, String> {
-    let bin = engine_binary(engine);
-    let input = Path::new(&options.input_path);
-    let output_dir = Path::new(&options.output_path);
+    // cwd 会被固定到引擎目录（见下方 -m 说明），所有外部路径必须先绝对化，
+    // 否则相对形式的输入/输出/二进制会被子进程解析到引擎目录下
+    let bin = std::path::absolute(engine_binary(engine))
+        .map_err(|e| format!("解析引擎路径失败: {}", e))?;
+    let input_abs = std::path::absolute(Path::new(&options.input_path))
+        .map_err(|e| format!("解析输入路径失败: {}", e))?;
+    let output_abs = std::path::absolute(Path::new(&options.output_path))
+        .map_err(|e| format!("解析输出路径失败: {}", e))?;
+    let input = input_abs.as_path();
+    let output_dir = output_abs.as_path();
 
     if !output_dir.exists() {
         std::fs::create_dir_all(output_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
     }
 
-    let files =
+    let mut files =
         collect_image_files_with_recursive_excluding(input, options.recursive, Some(output_dir))?;
+    // NCNN 二进制（stb_image + libwebp）不支持 TIFF 解码，提前过滤避免整批逐张报错
+    let before = files.len();
+    files.retain(|f| {
+        !matches!(
+            f.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref(),
+            Some("tif") | Some("tiff")
+        )
+    });
+    let tiff_skipped = before - files.len();
     if files.is_empty() {
-        return Err("未找到任何图片".into());
+        return Err(if tiff_skipped > 0 {
+            "未找到可处理的图片（NCNN 引擎不支持 TIFF 格式）".into()
+        } else {
+            "未找到任何图片".into()
+        });
     }
 
     let total = files.len() as u32;
@@ -821,23 +856,46 @@ fn run_ncnn_upscale(
             total,
             filename: String::new(),
             status: "processing".to_string(),
-            message: format!(
-                "开始超分: 共 {} 张, 引擎: {}, 倍率: {}x",
-                total, engine.name, options.scale
-            ),
+            message: if tiff_skipped > 0 {
+                format!(
+                    "开始超分: 共 {} 张, 引擎: {}, 倍率: {}x（已跳过 {} 个 TIFF，NCNN 不支持）",
+                    total, engine.name, options.scale, tiff_skipped
+                )
+            } else {
+                format!(
+                    "开始超分: 共 {} 张, 引擎: {}, 倍率: {}x",
+                    total, engine.name, options.scale
+                )
+            },
             ..Default::default()
         },
     );
 
     let engine_dir = engine_dir(engine.id);
 
-    // For Real-ESRGAN, the -n flag is model name, not denoise
-    // For Real-CUGAN and Waifu2x, -n is noise-level and -m is model path
+    // Real-CUGAN / Waifu2x 的 -n 是噪声等级、-m 是模型目录
     let model_choice = engine
         .models
         .iter()
         .find(|m| m.0 == options.model_id)
         .unwrap_or(&engine.models[0]);
+
+    // 二进制存在但模型目录缺失（解压中断/被安全软件清理）时给出可操作错误，
+    // 而不是逐张图报一条裸路径
+    let model_dir = engine_dir.join(model_choice.2);
+    if !model_dir.is_dir() {
+        return Err(format!(
+            "模型目录缺失: {}。请删除引擎目录后重新下载 {}",
+            model_dir.display(),
+            engine.name
+        ));
+    }
+
+    // 不同扩展名的同名文件会映射到同一个 .png 输出，记录已占用的输出防止静默覆盖；
+    // 输出还可能撞上另一张源图（原地模式下 a.jpg 的 a.png 输出覆盖已存在的源图 a.png）
+    let input_set: std::collections::HashSet<String> =
+        files.iter().map(|p| crate::commands::path_key_ci(p)).collect();
+    let mut used_outputs: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (i, file_path) in files.iter().enumerate() {
         if CANCEL_FLAG.load(Ordering::SeqCst) {
@@ -879,8 +937,73 @@ fn run_ncnn_upscale(
         let out_file =
             output_path_for_input(input, file_path, output_dir, &out_name, options.recursive)?;
 
+        // 大小写不敏感比较：photo.PNG 的输出 photo.png 在 Windows/macOS 上就是它自己
+        let out_key = crate::commands::path_key_ci(&out_file);
+        // 输出与输入是同一个文件（输入=输出目录里的 PNG）：跳过，避免原图被就地覆盖
+        if out_key == crate::commands::path_key_ci(file_path) {
+            fail_count += 1;
+            let err_msg = format!("{}: 输出与输入为同一文件，已跳过（请更换输出目录）", filename);
+            errors.push(err_msg.clone());
+            let _ = app.emit(
+                "upscale-progress",
+                ProgressEvent {
+                    current: i as u32 + 1,
+                    total,
+                    filename: filename.clone(),
+                    status: "error".to_string(),
+                    message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
+                    ..Default::default()
+                },
+            );
+            continue;
+        }
+        // 输出名撞上另一张源图：跳过，避免把别的原图覆盖掉
+        if input_set.contains(&out_key) {
+            fail_count += 1;
+            let err_msg = format!("{}: 输出会覆盖另一张源图，已跳过（请更换输出目录）", filename);
+            errors.push(err_msg.clone());
+            let _ = app.emit(
+                "upscale-progress",
+                ProgressEvent {
+                    current: i as u32 + 1,
+                    total,
+                    filename: filename.clone(),
+                    status: "error".to_string(),
+                    message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
+                    ..Default::default()
+                },
+            );
+            continue;
+        }
+        // 同名不同扩展的输入会争抢同一个输出名：后到者报错而不是静默覆盖
+        if !used_outputs.insert(out_key) {
+            fail_count += 1;
+            let err_msg = format!("{}: 输出文件名与其他输入冲突（同名不同扩展），已跳过", filename);
+            errors.push(err_msg.clone());
+            let _ = app.emit(
+                "upscale-progress",
+                ProgressEvent {
+                    current: i as u32 + 1,
+                    total,
+                    filename: filename.clone(),
+                    status: "error".to_string(),
+                    message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
+                    ..Default::default()
+                },
+            );
+            continue;
+        }
+        // 清掉上次运行的旧输出：NCNN 二进制失败也会 exit 0，
+        // 若旧文件残留，"exit 0 + 文件存在"会把本次失败误判为成功
+        let _ = std::fs::remove_file(&out_file);
+
         // Build command
         let mut cmd = std::process::Command::new(&bin);
+
+        // NCNN 的 Windows 构建会把 -m 按 exe 所在目录再拼一次，传绝对路径会变成
+        // {engine_dir}\{engine_dir}\models-xx 而找不到模型。因此 -m 只传相对目录名，
+        // 并把工作目录固定为引擎目录，按 exe 目录或 cwd 解析的实现都能正确定位。
+        cmd.current_dir(&engine_dir);
 
         // Common args
         cmd.arg("-i")
@@ -890,30 +1013,27 @@ fn run_ncnn_upscale(
             .arg("-s")
             .arg(options.scale.to_string())
             .arg("-t")
-            .arg(if options.tile_size < 0 {
+            .arg(if options.tile_size < 32 {
+                // NCNN 拒绝 1-31 的 tile 值；<32 一律 0（自动）
                 "0".to_string()
             } else {
                 options.tile_size.to_string()
             });
 
-        // GPU selection: macOS NCNN builds don't support -g -1 (CPU mode)
-        if options.gpu_id >= 0 {
+        // GPU 选择：仅 macOS 构建不支持 -g -1（CPU 模式）；
+        // Windows/Linux 必须显式传 -g -1 才能走 CPU，省略会自动选 GPU
+        if options.gpu_id >= 0 || cfg!(not(target_os = "macos")) {
             cmd.arg("-g").arg(options.gpu_id.to_string());
         }
 
         match engine.id {
             "realcugan" => {
                 cmd.arg("-n").arg(options.denoise_level.to_string());
-                cmd.arg("-m").arg(engine_dir.join(model_choice.2));
-            }
-            "realesrgan" => {
-                // Real-ESRGAN uses -n for model name, -m for model dir
-                cmd.arg("-n").arg(model_choice.2);
-                cmd.arg("-m").arg(engine_dir.join("models"));
+                cmd.arg("-m").arg(model_choice.2);
             }
             "waifu2x" => {
                 cmd.arg("-n").arg(options.denoise_level.to_string());
-                cmd.arg("-m").arg(engine_dir.join(model_choice.2));
+                cmd.arg("-m").arg(model_choice.2);
             }
             _ => {}
         }
@@ -1025,20 +1145,23 @@ fn run_ncnn_upscale(
         }
     }
 
-    let _ = app.emit(
-        "upscale-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
-                "完成: 成功 {}, 失败 {}, 共 {}",
-                success_count, fail_count, total
-            ),
-            ..Default::default()
-        },
-    );
+    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
+    if !CANCEL_FLAG.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "upscale-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: "done".to_string(),
+                message: format!(
+                    "完成: 成功 {}, 失败 {}, 共 {}",
+                    success_count, fail_count, total
+                ),
+                ..Default::default()
+            },
+        );
+    }
 
     Ok(ProcessResult {
         success_count,
@@ -1215,6 +1338,7 @@ async fn run_python_upscale(
         let mut fail_count = 0u32;
         let mut total = 0u32;
         let mut errors = Vec::new();
+        let mut got_done = false;
 
         for line in reader.lines().map_while(Result::ok) {
             if CANCEL_FLAG.load(Ordering::SeqCst) {
@@ -1295,16 +1419,46 @@ async fn run_python_upscale(
                             msg.get("success").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                         fail_count = msg.get("fail").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                         total = msg.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        got_done = true;
                     }
                     _ => {}
                 }
             }
         }
 
-        let _ = child.wait();
+        let exit_status = child.wait();
         // 清除子进程 PID
         if let Ok(mut guard) = ACTIVE_CHILD.lock() {
             *guard = None;
+        }
+
+        // Python 没发 done 行就退出（import 失败/崩溃/被杀）时，
+        // 不能默默发"完成: 成功 0"——按取消或失败如实上报
+        if !got_done {
+            if CANCEL_FLAG.load(Ordering::SeqCst) {
+                let _ = app_clone.emit(
+                    "upscale-progress",
+                    ProgressEvent {
+                        current: total,
+                        total,
+                        filename: String::new(),
+                        status: "done".to_string(),
+                        message: "超分已取消".to_string(),
+                        ..Default::default()
+                    },
+                );
+                return Ok(ProcessResult {
+                    success_count,
+                    fail_count,
+                    total,
+                    errors,
+                });
+            }
+            let code = exit_status.ok().and_then(|s| s.code());
+            return Err(format!(
+                "超分进程异常退出（退出码 {:?}），未返回结果；详见上方 [Python] 日志",
+                code
+            ));
         }
 
         let _ = app_clone.emit(

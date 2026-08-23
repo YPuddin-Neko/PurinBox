@@ -28,6 +28,7 @@ import SdMetadataPage from './pages/SdMetadataPage';
 import AestheticPage from './pages/AestheticPage';
 import WorkflowPage from './pages/WorkflowPage';
 import SettingsPage from './pages/SettingsPage';
+import './assets/fonts/inter.css'; // 本地 Inter，替代 Google Fonts 远程引用（大陆网络会挂起触发看门狗）
 import './styles/global.css';
 import './styles/sidebar.css';
 import './styles/layout.css';

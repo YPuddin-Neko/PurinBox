@@ -47,6 +47,9 @@ function WorkflowEditor() {
   const [showMinimap, setShowMinimap] = useState(true);
   const [showNodePanel, setShowNodePanel] = useState(false);
   const engineRef = useRef(new WorkflowEngine());
+  // 上一次运行的 execute promise：取消后引擎还要收尾（等当前节点返回 + 清理临时目录），
+  // 立刻重跑会让旧运行的清理删掉新运行刚建的目录、旧节点的后端互斥闸也还没释放
+  const execPromiseRef = useRef<Promise<void> | null>(null);
   const [runningMessage, setRunningMessage] = useState('');
   const isDraggingRef = useRef(false);
 
@@ -177,7 +180,7 @@ function WorkflowEditor() {
       const path = await save({ title: t('workflow.save'), filters: [{ name: t('workflow.workflowFile'), extensions: ['purin'] }] });
       if (!path) return;
       const data: WorkflowData = {
-        version: 1, name: path.split('/').pop()?.replace('.purin', '') || 'workflow',
+        version: 1, name: path.split(/[\\/]/).pop()?.replace('.purin', '') || 'workflow',
         nodes: nodes.map(n => ({ id: n.id, type: n.data.type, position: n.position, data: n.data })),
         edges: edges.map(e => ({ id: e.id, source: e.source, target: e.target, sourceHandle: e.sourceHandle ?? undefined, targetHandle: e.targetHandle ?? undefined })),
       };
@@ -215,6 +218,10 @@ function WorkflowEditor() {
     if (nodes.length === 0) return;
 
     setIsRunning(true);
+    if (execPromiseRef.current) {
+      setRunningMessage('等待上一次运行收尾...');
+      await execPromiseRef.current.catch(() => {});
+    }
     setRunningMessage(t('workflow.runStart'));
 
     // 更新节点状态的回调
@@ -242,7 +249,7 @@ function WorkflowEditor() {
     const engine = new WorkflowEngine();
     engineRef.current = engine;
 
-    await engine.execute(nodes, edges, {
+    const runPromise = engine.execute(nodes, edges, {
       onNodeStatusChange: updateNodeStatus,
       onProgress: updateNodeProgress,
       onStepStart: (_nodeId, step, total) => {
@@ -262,6 +269,8 @@ function WorkflowEditor() {
         setIsRunning(false);
       },
     });
+    execPromiseRef.current = runPromise;
+    await runPromise;
   }, [isRunning, nodes, edges, setNodes, t]);
 
   const currentSelected = useMemo(() => {

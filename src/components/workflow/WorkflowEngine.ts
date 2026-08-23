@@ -72,6 +72,16 @@ function getParentNodes(nodeId: string, edges: Edge[]): string[] {
  */
 const IN_PLACE_NODE_TYPES = new Set(['tagger', 'llm-tagger', 'rename']);
 
+/// 输出目录只搬图片、需要顺带携带同名标签文件的图像处理节点
+const SIDECAR_CARRY_NODE_TYPES = new Set([
+  'scale', 'crop', 'flip', 'format-convert', 'alpha-convert',
+  'blur-noise', 'perspective', 'upscale', 'filter',
+]);
+
+// 运行代号：取消后旧 execute 仍在收尾（当前节点要跑完才返回），
+// 其迟到的回调与 finally 清理不得影响紧接着启动的新一轮运行
+let globalRunSeq = 0;
+
 const TEMP_DIR_NAME = '.workflow_temp';
 
 /**
@@ -124,7 +134,8 @@ async function cleanupWorkflowTemp(nodes: Node<WorkflowNodeData>[]): Promise<voi
   }
   for (const root of roots) {
     try {
-      await invoke('cleanup_workflow_temp', { dir: root });
+      // 裸盘符 "J:" 传给 Rust 的 Path::join 会变成盘符相对路径 J:.workflow_temp，补回根分隔符
+      await invoke('cleanup_workflow_temp', { dir: /^[A-Za-z]:$/.test(root) ? root + '\\' : root });
     } catch (e) {
       // 清理失败不影响主流程
       console.warn('清理工作流临时目录失败:', root, e);
@@ -140,6 +151,8 @@ function buildCommandOptions(
   node: Node<WorkflowNodeData>,
   inputPath: string,
   outputPath: string,
+  // 上游是美学评分时文件散落在 <label>/ 子目录里，必须递归收集，否则下游静默产出空结果
+  recursiveInput = false,
 ): Record<string, any> | null {
   const data = node.data;
   const def = getNodeDef(data.type);
@@ -158,7 +171,7 @@ function buildCommandOptions(
           target_height: params.height || 1024,
           down_target_width: 0,
           down_target_height: 0,
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
@@ -173,7 +186,7 @@ function buildCommandOptions(
           target_height: params.height || 1024,
           aspect_ratio: 1.0,
           crop_top: 0, crop_bottom: 0, crop_left: 0, crop_right: 0,
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
@@ -183,7 +196,7 @@ function buildCommandOptions(
           input_path: inputPath,
           output_path: outputPath,
           direction: params.direction || 'horizontal',
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
@@ -193,7 +206,7 @@ function buildCommandOptions(
           input_path: inputPath,
           output_path: outputPath,
           target_format: params.target_format || 'png',
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
@@ -203,7 +216,7 @@ function buildCommandOptions(
           input_path: inputPath,
           output_path: outputPath,
           background: params.background || 'white',
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
@@ -214,7 +227,7 @@ function buildCommandOptions(
           output_path: outputPath,
           blur_radius: params.blur_radius || 0,
           noise_strength: params.noise_strength || 0,
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
@@ -224,25 +237,31 @@ function buildCommandOptions(
           input_path: inputPath,
           output_path: outputPath,
           intensity: params.intensity || 0.1,
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
-    case 'upscale':
+    case 'upscale': {
+      const engineId = params.engine_id || 'realcugan';
+      // 默认模型必须与引擎匹配：realesrgan 的 Python 脚本对未知模型 id 直接报错退出
+      const defaultModel = engineId === 'realesrgan' ? 'realesrgan-x4plus'
+        : engineId === 'waifu2x' ? 'models-cunet'
+        : 'models-se';
       return {
         options: {
           input_path: inputPath,
           output_path: outputPath,
-          engine_id: params.engine_id || 'realcugan',
-          model_id: params.model_id || 'models-se',
+          engine_id: engineId,
+          model_id: params.model_id || defaultModel,
           scale: Number(params.scale) || 2,
           denoise_level: params.denoise_level ?? -1,
           tta: params.tta || false,
           gpu_id: 0,
           tile_size: 0,
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
+    }
 
     case 'person-crop':
       return {
@@ -264,7 +283,7 @@ function buildCommandOptions(
           eyes_tag: params.eyes_tag || '',
           eyes_scale: params.eyes_scale ?? 2.0,
           keep_original_tags: params.keep_original_tags ?? true,
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
@@ -274,9 +293,12 @@ function buildCommandOptions(
           input_path: inputPath,
           output_path: outputPath,
           use_gpu: true,
+          // 工作流内必须复制而非移动：输出多半是 .workflow_temp，
+          // 移动会让原图唯一副本落在临时目录里，清理临时目录=删数据集
           move_files: true,
+          copy_files: true,
           batch_size: params.batch_size ?? 1,
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
@@ -301,7 +323,7 @@ function buildCommandOptions(
           sort_by: params.sort_by || 'confidence',
           existing_tags_action: params.existing_tags_action || 'overwrite',
           batch_size: params.batch_size ?? 1,
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
     }
@@ -324,7 +346,7 @@ function buildCommandOptions(
           json_simplified: params.output_format === 'json_simplified',
           request_interval_ms: -1,
           concurrency: params.concurrency ?? 1,
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
@@ -337,7 +359,7 @@ function buildCommandOptions(
           condition: params.condition || 'below_resolution',
           width: params.width || 512,
           height: params.height || 512,
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
@@ -361,7 +383,7 @@ function buildCommandOptions(
           res_height: params.res_height || 1024,
           steps: Number(params.steps) || 64,
           no_upscale: params.no_upscale ?? false,
-          recursive: false,
+          recursive: recursiveInput,
         },
       };
 
@@ -376,6 +398,8 @@ function buildCommandOptions(
  */
 export class WorkflowEngine {
   private cancelFlag = false;
+  /// 成功时是否保留临时目录（有链条终点的产物留在里面）
+  private keepTempOnSuccess = false;
   private status: ExecutionStatus = 'idle';
   private unlisteners: UnlistenFn[] = [];
   private currentNodeId = '';
@@ -406,12 +430,25 @@ export class WorkflowEngine {
   async execute(
     nodes: Node<WorkflowNodeData>[],
     edges: Edge[],
-    callbacks: ExecutionCallbacks,
+    rawCallbacks: ExecutionCallbacks,
   ): Promise<void> {
     if (this.status === 'running') return;
+    const runSeq = ++globalRunSeq;
+    const live = () => runSeq === globalRunSeq;
+    const callbacks: ExecutionCallbacks = {
+      onNodeStatusChange: (...a) => { if (live()) rawCallbacks.onNodeStatusChange(...a); },
+      onStepStart: (...a) => { if (live()) rawCallbacks.onStepStart(...a); },
+      onStepDone: (...a) => { if (live()) rawCallbacks.onStepDone(...a); },
+      onComplete: (...a) => { if (live()) rawCallbacks.onComplete(...a); },
+      onError: (...a) => { if (live()) rawCallbacks.onError(...a); },
+      onProgress: (...a) => { if (live()) rawCallbacks.onProgress?.(...a); },
+    };
     this.status = 'running';
     this.cancelFlag = false;
     const startTime = Date.now();
+    // 为 true 时 finally 跳过清理。目前唯一场景：输入位于 .workflow_temp 内被拒跑——
+    // 拒跑就是为了保护它，finally 若照常清理等于把用户数据删了
+    let preserveTempOnExit = false;
 
     // 当前节点的进度监听器（每个步骤动态切换）
     let currentProgressUnlisten: UnlistenFn | null = null;
@@ -426,6 +463,23 @@ export class WorkflowEngine {
       // 0. 清理上一次运行的中间产物。
       // 临时目录名按 step_{序号}_{类型} 生成，多次运行之间完全相同，
       // 若上次被取消/失败留下了残留文件，本次会把它们当成上游产物读进来。
+      // 输入目录若位于 .workflow_temp 内（上次无输出节点的运行把成品留在那里），
+      // 下面的残留清理会连输入一起删掉——直接拒跑并提示搬出
+      const tempPathRe = /[\\/]\.workflow_temp([\\/]|$)/;
+      const inputInTemp = nodes.find(
+        n => n.data.type === 'image-folder' && tempPathRe.test(String(n.data.params.path || '')),
+      );
+      if (inputInTemp) {
+        preserveTempOnExit = true;
+        callbacks.onNodeStatusChange(inputInTemp.id, 'error', '输入位于临时目录内');
+        callbacks.onError(
+          inputInTemp.id,
+          '输入目录位于 .workflow_temp 内，运行前的残留清理会把它删除；请先把上次产物移动到正式目录再作为输入',
+        );
+        this.status = 'error';
+        return;
+      }
+
       await cleanupWorkflowTemp(nodes);
 
       // 1. 拓扑排序
@@ -435,6 +489,8 @@ export class WorkflowEngine {
 
       // 用于跟踪每个节点的输出目录（作为下游的输入）
       const nodeOutputs = new Map<string, string>();
+      // 输出目录带 <label>/ 子层级的节点（美学评分）：下游收集必须递归，且沿链传递
+      const nodeNested = new Map<string, boolean>();
       // 用于跟踪被条件分支跳过的节点
       const skippedNodes = new Set<string>();
 
@@ -488,6 +544,8 @@ export class WorkflowEngine {
             return;
           }
           nodeOutputs.set(nodeId, folderPath);
+          // 递归扫描开关此前从未被消费：嵌套数据集（10_charA/ 等）会收集到 0 张图
+          nodeNested.set(nodeId, !!data.params.recursive);
           callbacks.onNodeStatusChange(nodeId, 'done', '✓');
           callbacks.onStepDone(nodeId, i, totalSteps);
           continue;
@@ -499,6 +557,9 @@ export class WorkflowEngine {
           if (outputPath) {
             nodeOutputs.set(nodeId, outputPath);
           }
+          // nested 标记要随路径一起透传，否则"美学→输出文件夹→打标"这类链会丢递归
+          const ofParents = getParentNodes(nodeId, edges);
+          nodeNested.set(nodeId, ofParents.length > 0 ? (nodeNested.get(ofParents[0]) ?? false) : false);
           callbacks.onNodeStatusChange(nodeId, 'done', '✓');
           callbacks.onStepDone(nodeId, i, totalSteps);
           continue;
@@ -515,6 +576,7 @@ export class WorkflowEngine {
         if (data.type === 'bucket-assign') {
           const parents = getParentNodes(nodeId, edges);
           const inputPath = parents.length > 0 ? (nodeOutputs.get(parents[0]) || '') : '';
+          const baNested = parents.length > 0 ? (nodeNested.get(parents[0]) ?? false) : false;
           if (!inputPath) {
             callbacks.onNodeStatusChange(nodeId, 'error', '无输入');
             callbacks.onError(nodeId, '该节点没有输入路径');
@@ -534,7 +596,7 @@ export class WorkflowEngine {
                 res_height: data.params.res_height || 1024,
                 steps: Number(data.params.steps) || 64,
                 no_upscale: data.params.no_upscale ?? false,
-                recursive: false,
+                recursive: baNested,
               },
             });
 
@@ -561,19 +623,28 @@ export class WorkflowEngine {
             // 收集非活跃分支的下游节点
             const inactiveEdges = edges.filter(e => e.source === nodeId && e.sourceHandle === inactiveHandle);
             const markSkipped = (startIds: string[]) => {
+              // 直接目标无条件跳过；再往下游只有"全部父节点都被跳过"的节点才跳过——
+              // 两条分支汇合的节点仍由活跃分支供给，绝不能连带跳过
+              const seeds = new Set(startIds);
               const queue = [...startIds];
               while (queue.length > 0) {
                 const id = queue.shift()!;
                 if (skippedNodes.has(id)) continue;
+                if (!seeds.has(id)) {
+                  const parentIds = edges.filter(e => e.target === id).map(e => e.source);
+                  const allParentsSkipped =
+                    parentIds.length > 0 && parentIds.every(pid => skippedNodes.has(pid));
+                  if (!allParentsSkipped) continue;
+                }
                 skippedNodes.add(id);
-                // 继续标记该节点的所有下游
                 edges.filter(e => e.source === id).forEach(e => queue.push(e.target));
               }
             };
             markSkipped(inactiveEdges.map(e => e.target));
 
-            // 输出路径传递给活跃分支
+            // 输出路径传递给活跃分支（nested 标记同样要透传，否则美学下游在此断链）
             nodeOutputs.set(nodeId, inputPath);
+            nodeNested.set(nodeId, baNested);
 
             const branchLabel = isUniform ? 'A (均匀)' : 'B (分散)';
             const info = `→ ${branchLabel} | 桶${buckets.length}个 | 最大桶${maxBucket.image_count}/${totalImages}张 (${(maxBucketRatio * 100).toFixed(0)}%)`;
@@ -595,6 +666,7 @@ export class WorkflowEngine {
           const parents = getParentNodes(nodeId, edges);
           if (parents.length > 0) {
             nodeOutputs.set(nodeId, nodeOutputs.get(parents[0]) || '');
+            nodeNested.set(nodeId, nodeNested.get(parents[0]) ?? false);
           }
           callbacks.onNodeStatusChange(nodeId, 'done', '✓ (passthrough)');
           callbacks.onStepDone(nodeId, i, totalSteps);
@@ -610,9 +682,27 @@ export class WorkflowEngine {
 
         // 确定输入路径（从上游节点获取）
         const parents = getParentNodes(nodeId, edges);
+        // 多条入边时只认"实际执行并产出输出"的上游：分桶 A/B 分支的汇合节点
+        // 天然有两条入边，但被跳过的分支不会写 nodeOutputs——那不算多输入。
+        // 仍有多个活跃上游才是真正不支持的场景（会静默丢弃其余输入），明确报错
+        const activeParents = parents.filter(pid => nodeOutputs.has(pid));
+        if (activeParents.length > 1) {
+          callbacks.onNodeStatusChange(nodeId, 'error', '多个上游输入');
+          callbacks.onError(nodeId, '该节点有多个实际产出的上游输入，目前只支持单输入（多余的会被静默丢弃），请合并为一条链');
+          this.status = 'error';
+          return;
+        }
         let inputPath = '';
-        if (parents.length > 0) {
-          inputPath = nodeOutputs.get(parents[0]) || '';
+        if (activeParents.length > 0) {
+          inputPath = nodeOutputs.get(activeParents[0]) || '';
+        }
+        const inputNested = activeParents.length > 0 ? (nodeNested.get(activeParents[0]) ?? false) : false;
+        // 重命名后端只扫顶层（无递归支持），嵌套输入必然找到 0 张图——给出可操作的报错
+        if (inputNested && data.type === 'rename') {
+          callbacks.onNodeStatusChange(nodeId, 'error', '不支持嵌套输入');
+          callbacks.onError(nodeId, '重命名节点不支持递归处理子目录（上游输出按分类分层或开启了递归扫描）——请调整链路');
+          this.status = 'error';
+          return;
         }
         if (!inputPath) {
           callbacks.onNodeStatusChange(nodeId, 'error', '无输入');
@@ -622,14 +712,23 @@ export class WorkflowEngine {
         }
 
         // 确定输出路径
-        // 检查下游是否有 output-folder 节点
+        // 在全部下游里找 output-folder（不能只看第一条边——先画的边不一定是它）
         const children = edges.filter(e => e.source === nodeId).map(e => e.target);
         let outputPath = '';
-        
-        // 如果最后的下游是 output-folder，用它的路径
-        const lastChild = children.length > 0 ? nodeMap.get(children[0]) : null;
-        if (lastChild?.data.type === 'output-folder' && lastChild.data.params.path) {
-          outputPath = lastChild.data.params.path as string;
+
+        const outFolder = children
+          .map(cid => nodeMap.get(cid))
+          .find(c => c?.data.type === 'output-folder');
+        if (outFolder) {
+          const outFolderPath = outFolder.data.params.path as string;
+          if (!outFolderPath) {
+            // 空路径若静默跳过，成品会写进临时目录并在成功清理时被删
+            callbacks.onNodeStatusChange(outFolder.id, 'error', '未设置路径');
+            callbacks.onError(outFolder.id, '输出文件夹节点未设置路径');
+            this.status = 'error';
+            return;
+          }
+          outputPath = outFolderPath;
         }
 
         // 否则使用临时目录
@@ -637,7 +736,7 @@ export class WorkflowEngine {
           outputPath = buildTempOutputPath(inputPath, i, data.type);
         }
 
-        const cmdOptions = buildCommandOptions(node, inputPath, outputPath);
+        const cmdOptions = buildCommandOptions(node, inputPath, outputPath, inputNested);
         if (!cmdOptions) {
           callbacks.onNodeStatusChange(nodeId, 'error', '不支持的命令');
           callbacks.onError(nodeId, `不支持的节点类型: ${data.type}`);
@@ -646,13 +745,57 @@ export class WorkflowEngine {
         }
 
         try {
+          // 节点边界取消竞态：cancel_* 可能赶在 start_* 之前落地并被其入口复位，
+          // 进入 invoke 前最后确认一次本地取消标志
+          if (this.cancelFlag) {
+            this.status = 'cancelled';
+            callbacks.onNodeStatusChange(nodeId, 'idle', '已取消');
+            return;
+          }
           await startProgressListener(data.type);
-          await invoke(def.tauriCommand, cmdOptions);
+          const result = await invoke<unknown>(def.tauriCommand, cmdOptions);
           stopProgressListener();
-          // 原地操作节点（打标/重命名）不产出新目录，输出即输入，需透传给下游，
+
+          // ProcessResult 不能丢弃：全部失败/输入为空时若照样标 ✓，
+          // 空目录会沿链传下去，最后显示"运行完成"却什么都没有
+          let doneMsg = '✓';
+          const r = result as { success_count?: number; fail_count?: number; total?: number } | null;
+          if (r && typeof r === 'object' && typeof r.success_count === 'number' && typeof r.total === 'number') {
+            if (r.total === 0 || r.success_count === 0) {
+              // 取消会让命令带着 0 成功正常返回——按取消收尾，不能报成错误
+              if (this.cancelFlag) {
+                this.status = 'cancelled';
+                callbacks.onNodeStatusChange(nodeId, 'idle', '已取消');
+                return;
+              }
+              // 过滤节点的 success 只计"匹配"数：0 匹配是正常的空跑（delete 模式尤其如此），
+              // 不能中止整条链；copy 模式的空产物会在下游以清晰的 total=0 报出
+              if (data.type !== 'filter') {
+                throw `没有任何文件处理成功（成功 ${r.success_count}/${r.total}），已中止后续节点`;
+              }
+            }
+            if ((r.fail_count ?? 0) > 0) doneMsg = `✓ (${r.fail_count} 个失败)`;
+          }
+
+          // filter 的 delete 模式是就地删除、不产出输出目录，必须按就地节点透传输入
+          const isInPlaceNode = IN_PLACE_NODE_TYPES.has(data.type)
+            || (data.type === 'filter' && (data.params.action || 'copy') === 'delete');
+
+          // 图像节点只搬图片：把上游同名 .txt/.json/.caption 一起带上，
+          // 否则"打标在前、图像处理在后"的链会把标签留在临时目录里随清理丢失
+          if (SIDECAR_CARRY_NODE_TYPES.has(data.type) && !isInPlaceNode) {
+            try {
+              await invoke('carry_tag_sidecars', { inputPath, outputPath, recursive: inputNested });
+            } catch (e) {
+              console.warn('携带标签文件失败:', e);
+            }
+          }
+
+          // 原地操作节点（打标/重命名/过滤删除）不产出新目录，输出即输入，需透传给下游，
           // 否则下游会拿到一个从未被创建的临时目录路径而报「输入路径无效」
-          nodeOutputs.set(nodeId, IN_PLACE_NODE_TYPES.has(data.type) ? inputPath : outputPath);
-          callbacks.onNodeStatusChange(nodeId, 'done', '✓');
+          nodeOutputs.set(nodeId, isInPlaceNode ? inputPath : outputPath);
+          nodeNested.set(nodeId, data.type === 'aesthetic' ? true : inputNested);
+          callbacks.onNodeStatusChange(nodeId, 'done', doneMsg);
           callbacks.onStepDone(nodeId, i, totalSteps);
         } catch (e: any) {
           stopProgressListener();
@@ -665,6 +808,19 @@ export class WorkflowEngine {
       }
 
       // 5. 全部完成
+      // 记录是否有"链条终点产物仍留在临时目录"（该链没接输出文件夹）——
+      // 那些 step_N 就是用户的最终结果，成功后的清理不能删
+      {
+        const processedIds = new Set(nodeOutputs.keys());
+        const hasDownstreamProcessing = (id: string) =>
+          edges.some(
+            e => e.source === id && processedIds.has(e.target)
+              && nodeMap.get(e.target)?.data.type !== 'output-folder',
+          );
+        this.keepTempOnSuccess = [...nodeOutputs.entries()].some(
+          ([id, p]) => !hasDownstreamProcessing(id) && tempPathRe.test(p),
+        );
+      }
       const elapsed = Date.now() - startTime;
       this.status = 'done';
       callbacks.onComplete(elapsed);
@@ -685,9 +841,9 @@ export class WorkflowEngine {
       // 失败/取消：中间产物是无用垃圾，直接清理。
       // 成功：仅当存在 output-folder 节点时清理——否则最后一个节点的产物就在
       // 临时目录里，删掉会连用户的结果一起毁掉。
-      const shouldCleanup =
-        this.status !== 'done' || nodes.some(n => n.data.type === 'output-folder');
-      if (shouldCleanup) {
+      const shouldCleanup = !preserveTempOnExit && (this.status !== 'done' || !this.keepTempOnSuccess);
+      // live()：被新一轮运行取代的旧 execute 不得清理（会删掉新一轮正在读写的目录）
+      if (shouldCleanup && live()) {
         await cleanupWorkflowTemp(nodes);
       }
     }

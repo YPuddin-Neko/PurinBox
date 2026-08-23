@@ -208,15 +208,45 @@ def process_image(models, image_path, options, output_dir):
     tag_file = Path(image_path).with_suffix('.txt')
     orig_tags = ''
     if tag_file.exists():
-        orig_tags = tag_file.read_text(encoding='utf-8').strip()
+        try:
+            orig_tags = tag_file.read_text(encoding='utf-8').strip()
+        except UnicodeDecodeError:
+            # 中文 Windows 老工具产出的 ANSI/GBK 标签
+            orig_tags = tag_file.read_text(encoding='gbk', errors='replace').strip()
+        except Exception:
+            orig_tags = ''  # 标签读取失败只降级，不阻断裁切本身
     
-    def save_tag(suffix, extra_tag=''):
+    _PIL_FMT = {'jpg': 'JPEG', 'jpeg': 'JPEG', 'png': 'PNG', 'webp': 'WEBP', 'bmp': 'BMP',
+                'tif': 'TIFF', 'tiff': 'TIFF', 'gif': 'GIF'}
+
+    def save_crop(cropped_img, out_name):
+        """同名冲突加计数器（链式使用时 x_0_full 会撞名互相覆盖）；
+        先写临时名再原子替换，被取消杀死时不留半截图片顶着正名。"""
+        out_path = Path(output_dir) / out_name
+        if out_path.exists():
+            base, sfx = out_path.stem, out_path.suffix
+            n = 1
+            while out_path.exists():
+                out_path = Path(output_dir) / f'{base}_{n}{sfx}'
+                n += 1
+        fmt = _PIL_FMT.get(out_path.suffix.lstrip('.').lower())
+        if fmt:
+            tmp = out_path.with_name(out_path.name + '.tmp')
+            cropped_img.save(tmp, format=fmt)
+            os.replace(tmp, out_path)
+        else:
+            cropped_img.save(out_path)
+        return out_path
+
+    def save_tag_for(img_out_path, extra_tag=''):
         tags = orig_tags if keep_tags else ''
         if extra_tag:
             tags = f'{extra_tag}, {tags}' if tags else extra_tag
         if tags:
-            tag_out = os.path.join(output_dir, f'{stem}{suffix}.txt')
-            Path(tag_out).write_text(tags, encoding='utf-8')
+            tag_out = Path(img_out_path).with_suffix('.txt')
+            tmp = tag_out.with_name(tag_out.name + '.tmp')
+            tmp.write_text(tags, encoding='utf-8')
+            os.replace(tmp, tag_out)
     
     # 全身检测
     if options.get('person_enabled', True) and 'person' in models:
@@ -225,10 +255,9 @@ def process_image(models, image_path, options, output_dir):
         for idx, (x1, y1, x2, y2, c) in enumerate(boxes):
             suffix = f'_{idx}' if len(boxes) > 1 else ''
             cropped = crop_box(img, x1, y1, x2, y2, 0.08)
-            out_name = f'{stem}{suffix}_full{ext}'
-            cropped.save(os.path.join(output_dir, out_name))
+            final_path = save_crop(cropped, f'{stem}{suffix}_full{ext}')
             if keep_tags and orig_tags:
-                save_tag(f'{suffix}_full')
+                save_tag_for(final_path)
             results.append(f'全身({c:.2f})')
     
     # 半身检测
@@ -239,9 +268,8 @@ def process_image(models, image_path, options, output_dir):
         for idx, (x1, y1, x2, y2, c) in enumerate(boxes):
             suffix = f'_{idx}' if len(boxes) > 1 else ''
             cropped = crop_box(img, x1, y1, x2, y2, 0.06)
-            out_name = f'{stem}{suffix}_halfbody{ext}'
-            cropped.save(os.path.join(output_dir, out_name))
-            save_tag(f'{suffix}_halfbody', upper_tag)
+            final_path = save_crop(cropped, f'{stem}{suffix}_halfbody{ext}')
+            save_tag_for(final_path, upper_tag)
             results.append(f'半身({c:.2f})')
     
     # 头部检测
@@ -259,9 +287,8 @@ def process_image(models, image_path, options, output_dir):
             sx1, sy1 = cx - nw / 2, cy - nh / 2
             sx2, sy2 = cx + nw / 2, cy + nh / 2
             cropped = crop_box(img, sx1, sy1, sx2, sy2, 0.02)
-            out_name = f'{stem}{suffix}_head{ext}'
-            cropped.save(os.path.join(output_dir, out_name))
-            save_tag(f'{suffix}_head', head_tag)
+            final_path = save_crop(cropped, f'{stem}{suffix}_head{ext}')
+            save_tag_for(final_path, head_tag)
             results.append(f'头部({c:.2f})')
     
     # 眼部检测
@@ -279,9 +306,8 @@ def process_image(models, image_path, options, output_dir):
             sx1, sy1 = cx - nw / 2, cy - nh / 2
             sx2, sy2 = cx + nw / 2, cy + nh / 2
             cropped = crop_box(img, sx1, sy1, sx2, sy2, 0.02)
-            out_name = f'{stem}{suffix}_eyes{ext}'
-            cropped.save(os.path.join(output_dir, out_name))
-            save_tag(f'{suffix}_eyes', eyes_tag)
+            final_path = save_crop(cropped, f'{stem}{suffix}_eyes{ext}')
+            save_tag_for(final_path, eyes_tag)
             results.append(f'眼部({c:.2f})')
     
     if not results:

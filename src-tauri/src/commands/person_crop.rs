@@ -364,11 +364,16 @@ pub async fn start_person_crop(
     app: tauri::AppHandle,
     options: PersonCropOptions,
 ) -> Result<ProcessResult, String> {
+    // 互斥：全局子进程 PID/取消标志不允许并发运行（页面 + 工作流节点会互相覆盖）
+    static PERSON_CROP_RUNNING: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    let _busy = crate::commands::BusyGuard::acquire(&PERSON_CROP_RUNNING, "人物裁切")?;
+
     CANCEL_FLAG.store(false, Ordering::SeqCst);
 
     // 确保 Python 环境 + onnxruntime GPU 运行时
-    let python = super::python_env::setup_python_env(&app).await?;
-    let _has_gpu = super::python_env::ensure_onnx_gpu_runtime(&app, &python).await?;
+    let python = super::python_env::setup_python_env(&app, "person-crop").await?;
+    let _has_gpu = super::python_env::ensure_onnx_gpu_runtime(&app, &python, "person-crop").await?;
 
     let _ = app.emit(
         "person-crop-progress",
@@ -599,8 +604,11 @@ fn run_person_crop(
             .ok_or("Python 进程无响应")?
             .map_err(|e| format!("读取响应失败: {}", e))?;
 
-        let json: serde_json::Value = serde_json::from_str(&line)
-            .map_err(|e| format!("解析响应失败: {} (原始: {})", e, line))?;
+        // stdout 上可能混入非协议行（site-packages 的 .pth 脚本等第三方 print），跳过而不是整体失败
+        let json: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
 
         // 处理 log 类型消息（GPU 诊断等）
         if let Some(msg_type) = json.get("type").and_then(|v| v.as_str()) {
@@ -815,20 +823,23 @@ fn run_person_crop(
     let _ = child.wait();
     *CHILD_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
-    let _ = app.emit(
-        "person-crop-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
-                "处理完成: 成功 {}, 失败 {}, 共 {}",
-                success_count, fail_count, total
-            ),
-            ..Default::default()
-        },
-    );
+    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
+    if !CANCEL_FLAG.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "person-crop-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: "done".to_string(),
+                message: format!(
+                    "处理完成: 成功 {}, 失败 {}, 共 {}",
+                    success_count, fail_count, total
+                ),
+                ..Default::default()
+            },
+        );
+    }
 
     Ok(ProcessResult {
         success_count,

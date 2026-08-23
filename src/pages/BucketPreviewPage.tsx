@@ -214,6 +214,8 @@ export default function BucketPreviewPage() {
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   // toast 定时器：先 clear 再设，避免快速连续 toast 时旧定时器提前清掉新 toast
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 分析请求代际：输入/引擎切换或重新分析后，旧 invoke 的 resolve 一律作废
+  const analyzeGenRef = useRef(0);
 
   const [expandedBuckets, setExpandedBuckets] = useState<Set<number>>(new Set());
   const [bucketPage, setBucketPage] = useState(0);
@@ -240,6 +242,7 @@ export default function BucketPreviewPage() {
   }, [modeMenuOpen]);
 
   useEffect(() => {
+    analyzeGenRef.current++; // 让在途分析的 resolve 作废，旧目录/旧引擎的结果不能回填
     setRecommendation(null);
     setRecommendPage(0);
     setAnalysis(null);
@@ -289,6 +292,7 @@ export default function BucketPreviewPage() {
     if (stepsVal !== steps) setSteps(stepsVal);
     if (isDpMode && dpArBucketCountVal !== dpArBucketCount) setDpArBucketCount(dpArBucketCountVal);
     if (batchSizeVal !== batchSize) setBatchSize(batchSizeVal);
+    const gen = ++analyzeGenRef.current;
     setAnalyzing(true);
     setAnalysis(null);
     setScanProgress(0);
@@ -315,11 +319,13 @@ export default function BucketPreviewPage() {
           drop_last: isDpMode ? dropLast : false,
         },
       });
+      if (gen !== analyzeGenRef.current) return; // 输入/引擎已切换，丢弃过期结果
       setAnalysis(result);
     } catch (e: any) {
-      setScanMsg(`${t('pages.errorPrefix')}: ${String(e)}`);
+      if (gen === analyzeGenRef.current) setScanMsg(`${t('pages.errorPrefix')}: ${String(e)}`);
     } finally {
-      setAnalyzing(false);
+      // 过期的 finally 不能把新一轮分析的按钮态复位
+      if (gen === analyzeGenRef.current) setAnalyzing(false);
     }
   };
 
@@ -676,7 +682,7 @@ export default function BucketPreviewPage() {
                 {recommending ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('common.cancel')}</> : <><Sparkles style={{ width: 14, height: 14 }} /> {t('bucketPreview.recommendParams')}</>}
               </button>
             )}
-            <button className="btn btn-primary" style={{ height: 34, padding: '0 20px', flexShrink: 0 }} onClick={analyzing ? cancelAnalyze : handleAnalyze} disabled={!analyzing && (!inputPath || resError || stepsError || dpArError || dpBucketError || batchSizeError)}>
+            <button className="btn btn-primary" style={{ height: 34, padding: '0 20px', flexShrink: 0 }} onClick={analyzing ? cancelAnalyze : handleAnalyze} disabled={!analyzing && (recommending || !inputPath || resError || stepsError || dpArError || dpBucketError || batchSizeError)}>
               {analyzing ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('common.cancel')}</> : <><Play style={{ width: 14, height: 14 }} /> {t('bucketPreview.startPreview')}</>}
             </button>
           </div>

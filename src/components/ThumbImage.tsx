@@ -1,5 +1,6 @@
 import { useEffect, useState, CSSProperties } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { ensureAssetScope } from '../utils/assetScope';
 import { hasTauriRuntime } from '../utils/tauriRuntime';
 
 // 已解析的缩略图 URL（path|maxEdge → asset URL），进程生命周期内有效
@@ -35,6 +36,8 @@ function resolveThumb(path: string, maxEdge: number): Promise<string> {
     pending = (async () => {
       await acquireSlot();
       try {
+        // 放行原图所在目录：缩略图失败的兜底直显、以及同目录的灯箱原图都依赖它
+        await ensureAssetScope(path, { file: true });
         const thumbPath = await invoke<string>('get_image_thumbnail', { path, maxEdge });
         const url = convertFileSrc(thumbPath);
         resolvedCache.set(key, url);
