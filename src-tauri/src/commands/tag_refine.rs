@@ -432,11 +432,13 @@ pub async fn start_tag_refining(
 
 
 /// JSON 标签字段布局（完整格式 vs 简化格式）
-/// string 字段是逗号分隔的标签串，array 字段是标签数组；新增标签落入 added_to
+/// string 字段是逗号分隔的标签串，array 字段是标签数组；新增标签落入 added_to；
+/// nl_path 是自然语言描述字段（LLM 返回 NL: 段时写入）
 struct JsonTagLayout {
     string_fields: &'static [&'static [&'static str]],
     array_fields: &'static [&'static [&'static str]],
     added_to: &'static [&'static str],
+    nl_path: &'static [&'static str],
 }
 
 const FULL_LAYOUT: JsonTagLayout = JsonTagLayout {
@@ -455,12 +457,14 @@ const FULL_LAYOUT: JsonTagLayout = JsonTagLayout {
         &["from_path", "appearance"],
     ],
     added_to: &["ai_output", "tags"],
+    nl_path: &["ai_output", "nl"],
 };
 
 const SIMPLIFIED_LAYOUT: JsonTagLayout = JsonTagLayout {
     string_fields: &[&["quality"], &["series"], &["artist"], &["character"], &["count"]],
     array_fields: &[&["appearance"], &["tags"], &["environment"]],
     added_to: &["tags"],
+    nl_path: &["nl"],
 };
 
 fn json_layout(data: &serde_json::Value) -> &'static JsonTagLayout {
@@ -585,6 +589,94 @@ fn apply_refined_tags_to_json(data: &mut serde_json::Value, refined: &[String]) 
     }
 }
 
+/// 将 LLM 返回的自然语言描述写入 JSON 的 nl 字段（完整格式 ai_output.nl / 简化格式 nl）。
+/// 本地打标器不产生 nl，该字段由此补充；路径缺失时逐级补建。
+fn set_json_nl(data: &mut serde_json::Value, nl: &str) {
+    let layout = json_layout(data);
+    let mut cur = data;
+    let (last, parents) = match layout.nl_path.split_last() {
+        Some(v) => v,
+        None => return,
+    };
+    for key in parents {
+        if !cur.get(*key).map(|v| v.is_object()).unwrap_or(false) {
+            if let Some(obj) = cur.as_object_mut() {
+                obj.insert(
+                    (*key).to_string(),
+                    serde_json::Value::Object(serde_json::Map::new()),
+                );
+            } else {
+                return;
+            }
+        }
+        cur = cur.get_mut(*key).unwrap();
+    }
+    if let Some(obj) = cur.as_object_mut() {
+        obj.insert(
+            (*last).to_string(),
+            serde_json::Value::String(nl.to_string()),
+        );
+    }
+}
+
+/// 大小写不敏感的行前缀剥离（仅 ASCII 前缀；非字符边界安全返回 None）
+fn strip_ci_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = s.get(..prefix.len())?;
+    if head.eq_ignore_ascii_case(prefix) {
+        Some(&s[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+/// 解析 LLM 响应中的 `TAGS:` / `NL:` 标记段（大小写不敏感，容忍 markdown 加粗/列表前缀）。
+/// 返回 (tags 行内容, NL 描述, 未归入任何标记段的其余行)。
+/// 未使用标记格式的旧提示词：返回 (None, None, 全部行)，由调用方走旧启发式。
+fn split_marker_response(content: &str) -> (Option<String>, Option<String>, Vec<&str>) {
+    let mut tags_line: Option<String> = None;
+    let mut nl_buf: Vec<String> = Vec::new();
+    let mut rest_lines: Vec<&str> = Vec::new();
+    let mut in_nl = false;
+
+    for line in content.lines() {
+        let t = line
+            .trim()
+            .trim_start_matches(|c: char| matches!(c, '*' | '#' | '>' | '-' | '`'))
+            .trim_start();
+        if let Some(rest) = strip_ci_prefix(t, "tags:") {
+            tags_line = Some(rest.trim_start_matches('*').trim().to_string());
+            in_nl = false;
+            continue;
+        }
+        if let Some(rest) = strip_ci_prefix(t, "nl:") {
+            nl_buf.clear();
+            let first = rest.trim_start_matches('*').trim();
+            if !first.is_empty() {
+                nl_buf.push(first.to_string());
+            }
+            in_nl = true;
+            continue;
+        }
+        if in_nl {
+            // NL 段允许跨行，空行或代码围栏结束该段
+            if t.is_empty() {
+                in_nl = false;
+            } else {
+                nl_buf.push(t.to_string());
+            }
+        } else {
+            rest_lines.push(line);
+        }
+    }
+
+    let nl = {
+        let joined = nl_buf.join(" ");
+        let cleaned = joined.trim().trim_matches('"').trim().to_string();
+        if cleaned.is_empty() { None } else { Some(cleaned) }
+    };
+    (tags_line, nl, rest_lines)
+}
+
 /// 处理单个文件：读取图片 + 对应标签 → LLM 细化
 async fn process_single_file(
     client: &reqwest::Client,
@@ -667,11 +759,12 @@ async fn process_single_file(
 
     // 调用 LLM 细化
     match refine_tags_with_llm(client, img_path, &original_tags, options, last_req_time).await {
-        Ok(refined_tags) => {
+        Ok((refined_tags, nl)) => {
             let elapsed_ms = start.elapsed().as_millis();
             let original_count = original_tags.len();
             let refined_count = refined_tags.len();
-            let changed = refined_tags != original_tags;
+            let nl_written = is_json && nl.is_some();
+            let changed = refined_tags != original_tags || nl_written;
             let mut warnings: Vec<String> = Vec::new();
 
             // 对比分析
@@ -719,6 +812,10 @@ async fn process_single_file(
             let output_content = if let Some(mut data) = json_data {
                 // 差量写回：保留原字段归属，仅应用增删
                 apply_refined_tags_to_json(&mut data, &refined_tags);
+                // LLM 返回了 NL: 描述段时写入 nl 字段（本地打标器不产生 nl，由 LLM 补充）
+                if let Some(nl_text) = nl.as_deref() {
+                    set_json_nl(&mut data, nl_text);
+                }
                 match serde_json::to_string_pretty(&data) {
                     Ok(s) => s,
                     Err(e) => {
@@ -753,14 +850,15 @@ async fn process_single_file(
     }
 }
 
-/// 调用多模态 LLM 进行标签细化（发送图片 + 已有标签）
+/// 调用多模态 LLM 进行标签细化（发送图片 + 已有标签）。
+/// 返回 (细化后标签, NL 描述)：响应含 `NL:` 标记段时第二项为 Some，用于 JSON 模式补充 nl 字段。
 async fn refine_tags_with_llm(
     client: &reqwest::Client,
     img_path: &Path,
     tags: &[String],
     options: &TagRefineOptions,
     last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Option<String>), String> {
     // 读取并缩放图片
     let max_side = if options.image_size > 0 {
         options.image_size
@@ -899,16 +997,25 @@ async fn refine_tags_with_llm(
         return Err("API 返回空内容".to_string());
     };
 
-    // 解析返回的标签
-    let cleaned = if final_content.contains('\n') {
-        final_content
-            .lines()
-            .filter(|l| l.contains(','))
-            .max_by_key(|l| l.len())
-            .unwrap_or(&final_content)
-            .to_string()
-    } else {
-        final_content
+    // 优先解析 TAGS:/NL: 标记格式（辅助打标 JSON 模式的默认提示词要求此格式）；
+    // 无标记时退回旧启发式：多行取最长的含逗号行。
+    // NL 段先于启发式剥离——自然语言长句常含逗号且比标签列表更长，会被启发式误选
+    let (marker_tags, nl, rest_lines) = split_marker_response(&final_content);
+    let cleaned = match marker_tags {
+        Some(l) => l,
+        None => {
+            let joined = rest_lines.join("\n");
+            if joined.contains('\n') {
+                joined
+                    .lines()
+                    .filter(|l| l.contains(','))
+                    .max_by_key(|l| l.len())
+                    .unwrap_or(&joined)
+                    .to_string()
+            } else {
+                joined
+            }
+        }
     };
 
     let refined_tags: Vec<String> = cleaned
@@ -921,5 +1028,98 @@ async fn refine_tags_with_llm(
         return Err("AI 返回的细化结果为空".to_string());
     }
 
-    Ok(refined_tags)
+    Ok((refined_tags, nl))
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    #[test]
+    fn parses_tags_and_nl_markers() {
+        let (tags, nl, _) = split_marker_response(
+            "TAGS: 1girl, long hair, smile\nNL: A girl smiles at the viewer.",
+        );
+        assert_eq!(tags.as_deref(), Some("1girl, long hair, smile"));
+        assert_eq!(nl.as_deref(), Some("A girl smiles at the viewer."));
+    }
+
+    #[test]
+    fn tolerates_markdown_and_case() {
+        let (tags, nl, _) = split_marker_response(
+            "**Tags:** 1girl, solo\n\n> nl: A solo girl, standing outdoors,\nunder a blue sky.",
+        );
+        assert_eq!(tags.as_deref(), Some("1girl, solo"));
+        // NL 段跨行拼接
+        assert_eq!(
+            nl.as_deref(),
+            Some("A solo girl, standing outdoors, under a blue sky.")
+        );
+    }
+
+    /// 无标记的旧格式响应：全部行留给启发式，nl 为 None
+    #[test]
+    fn legacy_response_passes_through() {
+        let (tags, nl, rest) = split_marker_response("some preamble\n1girl, solo, smile");
+        assert!(tags.is_none());
+        assert!(nl.is_none());
+        assert_eq!(rest, vec!["some preamble", "1girl, solo, smile"]);
+    }
+
+    /// NL 长句含逗号且比标签列表长：有标记时绝不能被当成标签列表
+    #[test]
+    fn nl_never_leaks_into_tags() {
+        let (tags, nl, rest) = split_marker_response(
+            "TAGS: 1girl\nNL: An extremely long description, with many commas, that is much longer than the tag list itself.",
+        );
+        assert_eq!(tags.as_deref(), Some("1girl"));
+        assert!(nl.unwrap().starts_with("An extremely long"));
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn set_nl_full_and_simplified() {
+        // 完整格式：写入 ai_output.nl（路径缺失时补建）
+        let mut full = serde_json::json!({"ai_output": {"tags": ["1girl"]}});
+        set_json_nl(&mut full, "desc");
+        assert_eq!(full["ai_output"]["nl"], "desc");
+
+        let mut full_no_ai = serde_json::json!({"fixed": {"quality": ""}});
+        set_json_nl(&mut full_no_ai, "desc2");
+        assert_eq!(full_no_ai["ai_output"]["nl"], "desc2");
+
+        // 简化格式：写入顶层 nl
+        let mut simp = serde_json::json!({"tags": ["1girl"], "character": "miku"});
+        set_json_nl(&mut simp, "desc3");
+        assert_eq!(simp["nl"], "desc3");
+    }
+
+    /// 差量写回 + nl 补充的组合：空字符串字段（完整 schema 占位）不产生垃圾标签
+    #[test]
+    fn refine_roundtrip_with_skeleton_json() {
+        let mut data = serde_json::json!({
+            "fixed": {"quality": "", "series": "", "artist": ""},
+            "character": {"name": "hatsune miku", "variant": ""},
+            "from_path": {"appearance": []},
+            "ai_output": {"count": "1girl", "appearance": ["long hair"], "tags": ["smile"], "environment": [], "nl": ""}
+        });
+        let flat = flatten_json_tags(&data);
+        assert_eq!(flat, vec!["hatsune miku", "1girl", "long hair", "smile"]);
+
+        // LLM 保留 miku/1girl/long hair，删除 smile，新增 standing
+        let refined: Vec<String> = ["hatsune miku", "1girl", "long hair", "standing"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        apply_refined_tags_to_json(&mut data, &refined);
+        set_json_nl(&mut data, "Miku stands with long hair.");
+
+        assert_eq!(data["character"]["name"], "hatsune miku");
+        assert_eq!(data["ai_output"]["count"], "1girl");
+        assert_eq!(data["ai_output"]["appearance"], serde_json::json!(["long hair"]));
+        assert_eq!(data["ai_output"]["tags"], serde_json::json!(["standing"]));
+        assert_eq!(data["ai_output"]["nl"], "Miku stands with long hair.");
+        // 空字符串字段保持为空，不产生 "@"/垃圾内容
+        assert_eq!(data["fixed"]["quality"], "");
+    }
 }

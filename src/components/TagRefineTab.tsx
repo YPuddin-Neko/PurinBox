@@ -8,7 +8,7 @@ import {
   CheckCircle2, XCircle, Info, ScrollText, Trash2, AlertTriangle, Save, Thermometer,
   Eye, EyeOff
 } from 'lucide-react';
-import { LogEntry, getTimeStr } from '../components/ProgressLog';
+import { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
 import CustomSelect from '../components/CustomSelect';
@@ -61,7 +61,7 @@ export default function TagRefineTab() {
   const [progress, setProgress] = useState(0);
   const [pCur, setPCur] = useState(0);
   const [pTot, setPTot] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
   const [successCnt, setSuccessCnt] = useState(0);

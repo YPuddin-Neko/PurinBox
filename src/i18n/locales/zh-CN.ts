@@ -729,6 +729,7 @@ const zhCN = {
     interval: '请求间隔(秒)',
     promptLabel: '调优提示词',
     promptHint: '{tags} 会被替换为该图当前的标签列表。补充/删除/修复的规则直接写在提示词里。',
+    promptHintNl: 'JSON 模式：模型按 TAGS: / NL: 两段返回，NL 描述由 LLM 根据画面与标签补充，写入 nl 字段。',
     catUnsupported: '当前模型不支持该类别',
     preferExisting: '优先使用已有标签',
     preferExistingTip: '图片已有同格式标签文件时跳过本地打标，保留现成标签直接进入 LLM 调优；关闭则本地模型覆盖重打',

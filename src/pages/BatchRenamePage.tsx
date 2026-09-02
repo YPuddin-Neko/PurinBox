@@ -15,7 +15,7 @@ import {
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
+import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
 import DedupRenameTab from '../components/DedupRenameTab';
 import InputPathPickerButton from '../components/InputPathPickerButton';
 import Checkbox from '../components/Checkbox';
@@ -41,7 +41,7 @@ export default function BatchRenamePage() {
   const [progress, setProgress] = useState(0);
   const [progressCurrent, setProgressCurrent] = useState(0);
   const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
 

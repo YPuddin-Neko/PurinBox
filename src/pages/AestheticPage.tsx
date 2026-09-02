@@ -5,7 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
 import { Star, FolderOpen, Cpu, Gpu } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
+import ProgressLog, { getTimeStr, useLogState } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
@@ -27,7 +27,7 @@ export default function AestheticPage() {
   const [batchSize, setBatchSize] = useState(1);
   const [processing, setProcessing] = useState(false);
 
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [progress, setProgress] = useState(0);
   const [progressCurrent, setProgressCurrent] = useState(0);
   const [progressTotal, setProgressTotal] = useState(0);

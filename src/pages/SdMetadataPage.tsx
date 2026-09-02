@@ -8,7 +8,7 @@ import {
   FileCode2, FolderOpen, Loader2, Eye, Download,
   ChevronLeft, ChevronRight, ImageUp, X, Clipboard, Check,
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
+import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
@@ -45,7 +45,7 @@ export default function SdMetadataPage() {
   const [progress, setProgress] = useState(0);
   const [pCur, setPCur] = useState(0);
   const [pTot, setPTot] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [page, setPage] = useState(0);

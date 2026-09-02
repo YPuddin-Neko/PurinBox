@@ -107,26 +107,45 @@ export default function ResolutionDonut({ groups, totalImages }: ResolutionDonut
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', justifyContent: 'center' }}>
         <svg width={size} height={size} role="img" aria-label={t('resolutionAnalyze.resolutionDistribution')}>
-          {arcs.map(a => (
-            <path
-              key={a.index}
-              d={a.a1 - a.a0 >= Math.PI * 2 - 1e-6
-                ? // 单一扇区占满时画整环（arc 命令无法表示 360°）
-                  `M ${cx} ${cy - rOuter} A ${rOuter} ${rOuter} 0 1 1 ${cx - 0.01} ${cy - rOuter} Z
-                   M ${cx} ${cy - rInner} A ${rInner} ${rInner} 0 1 0 ${cx - 0.01} ${cy - rInner} Z`
-                : arcPath(cx, cy, rOuter, rInner, a.a0, a.a1)}
-              fill={a.color}
-              fillRule="evenodd"
-              stroke="var(--color-bg-card)"
-              strokeWidth={2}
-              opacity={hovered == null || hovered === a.index ? 1 : 0.4}
-              style={{ transition: 'opacity 0.15s', cursor: 'default' }}
-              onMouseEnter={() => setHovered(a.index)}
-              onMouseLeave={() => setHovered(null)}
-            >
-              <title>{`${a.label} · ${a.count} (${a.percent.toFixed(1)}%)`}</title>
-            </path>
-          ))}
+          {arcs.map(a => {
+            const shared = {
+              opacity: hovered == null || hovered === a.index ? 1 : 0.4,
+              style: { transition: 'opacity 0.15s', cursor: 'default' } as const,
+              onMouseEnter: () => setHovered(a.index),
+              onMouseLeave: () => setHovered(null),
+            };
+            const title = <title>{`${a.label} · ${a.count} (${a.percent.toFixed(1)}%)`}</title>;
+            // 单一扇区占满整环：arc 命令表示不了 360°（起点=终点画不出来，
+            // 拆两段弧又容易选错圆心），直接用粗描边圆画环，且无需扇区分隔缝
+            if (a.a1 - a.a0 >= Math.PI * 2 - 1e-6) {
+              return (
+                <circle
+                  key={a.index}
+                  cx={cx}
+                  cy={cy}
+                  r={(rOuter + rInner) / 2}
+                  fill="none"
+                  stroke={a.color}
+                  strokeWidth={rOuter - rInner}
+                  {...shared}
+                >
+                  {title}
+                </circle>
+              );
+            }
+            return (
+              <path
+                key={a.index}
+                d={arcPath(cx, cy, rOuter, rInner, a.a0, a.a1)}
+                fill={a.color}
+                stroke="var(--color-bg-card)"
+                strokeWidth={2}
+                {...shared}
+              >
+                {title}
+              </path>
+            );
+          })}
           <text x={cx} y={cy - 4} textAnchor="middle" style={{ fill: 'var(--color-text-primary)', fontSize: 18, fontWeight: 700 }}>
             {center ? center.count : totalImages.toLocaleString()}
           </text>

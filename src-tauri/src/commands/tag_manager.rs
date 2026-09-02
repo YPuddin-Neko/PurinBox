@@ -222,14 +222,22 @@ pub fn save_all_caption_files(items: Vec<SaveCaptionItem>) -> Result<u32, String
 // JSON 结构化标签管理 — AnimaLoraStudio 完整格式
 // ============================================================
 
+/// 空 Option 字段序列化为 "" 占位：完整 schema 恒定输出，没有数据也不省略键
+fn ser_opt_str_as_empty<S: serde::Serializer>(
+    v: &Option<String>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.serialize_str(v.as_deref().unwrap_or(""))
+}
+
 /// fixed: 固定字段，不参与 shuffle
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JsonFixed {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "ser_opt_str_as_empty")]
     pub quality: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "ser_opt_str_as_empty")]
     pub series: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "ser_opt_str_as_empty")]
     pub artist: Option<String>,
     /// schema 外的未知字段原样保留，整文件重写时不丢用户自定义内容
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
@@ -239,9 +247,9 @@ pub struct JsonFixed {
 /// character: 角色信息
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JsonCharacter {
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub variant: String,
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -250,11 +258,7 @@ pub struct JsonCharacter {
 /// from_path: 从目录路径自动提取的外观标签
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JsonFromPath {
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_string_or_array"
-    )]
+    #[serde(default, deserialize_with = "deserialize_string_or_array")]
     pub appearance: Vec<String>,
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -292,27 +296,15 @@ where
 /// ai_output: VLM/Tagger 打标输出
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JsonAiOutput {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "ser_opt_str_as_empty")]
     pub count: Option<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_string_or_array"
-    )]
+    #[serde(default, deserialize_with = "deserialize_string_or_array")]
     pub appearance: Vec<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_string_or_array"
-    )]
+    #[serde(default, deserialize_with = "deserialize_string_or_array")]
     pub tags: Vec<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_string_or_array"
-    )]
+    #[serde(default, deserialize_with = "deserialize_string_or_array")]
     pub environment: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "ser_opt_str_as_empty")]
     pub nl: Option<String>,
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -489,71 +481,41 @@ pub struct SaveJsonItem {
     pub data: JsonTagData,
 }
 
-/// 将完整格式转为简化格式 JSON Value
+/// 将完整格式转为简化格式 JSON Value（9 个键恒定输出，空值占位不省略）
 fn to_simplified(data: &JsonTagData) -> serde_json::Value {
-    let mut out = serde_json::Map::new();
-    if let Some(q) = &data.fixed.quality {
-        out.insert("quality".into(), serde_json::Value::String(q.clone()));
+    fn str_arr(items: &[String]) -> serde_json::Value {
+        serde_json::Value::Array(
+            items
+                .iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        )
     }
-    if let Some(s) = &data.fixed.series {
-        out.insert("series".into(), serde_json::Value::String(s.clone()));
-    }
-    if let Some(a) = &data.fixed.artist {
-        out.insert("artist".into(), serde_json::Value::String(a.clone()));
-    }
-    if !data.character.name.is_empty() {
-        out.insert(
-            "character".into(),
-            serde_json::Value::String(data.character.name.clone()),
-        );
-    }
-    if let Some(c) = &data.ai_output.count {
-        out.insert("count".into(), serde_json::Value::String(c.clone()));
-    }
+    let opt_str = |v: &Option<String>| {
+        serde_json::Value::String(v.clone().unwrap_or_default())
+    };
+
+    // from_path.appearance 与 ai_output.appearance 合并（简化格式无 from_path 字段）
     let mut appearance: Vec<String> = data.from_path.appearance.clone();
     for t in &data.ai_output.appearance {
         if !appearance.contains(t) {
             appearance.push(t.clone());
         }
     }
-    if !appearance.is_empty() {
-        out.insert(
-            "appearance".into(),
-            serde_json::Value::Array(
-                appearance
-                    .into_iter()
-                    .map(serde_json::Value::String)
-                    .collect(),
-            ),
-        );
-    }
-    if !data.ai_output.tags.is_empty() {
-        out.insert(
-            "tags".into(),
-            serde_json::Value::Array(
-                data.ai_output
-                    .tags
-                    .iter()
-                    .map(|s| serde_json::Value::String(s.clone()))
-                    .collect(),
-            ),
-        );
-    }
-    if !data.ai_output.environment.is_empty() {
-        out.insert(
-            "environment".into(),
-            serde_json::Value::Array(
-                data.ai_output
-                    .environment
-                    .iter()
-                    .map(|s| serde_json::Value::String(s.clone()))
-                    .collect(),
-            ),
-        );
-    }
-    if let Some(nl) = &data.ai_output.nl {
-        out.insert("nl".into(), serde_json::Value::String(nl.clone()));
-    }
+
+    let mut out = serde_json::Map::new();
+    out.insert("quality".into(), opt_str(&data.fixed.quality));
+    out.insert("series".into(), opt_str(&data.fixed.series));
+    out.insert("artist".into(), opt_str(&data.fixed.artist));
+    out.insert(
+        "character".into(),
+        serde_json::Value::String(data.character.name.clone()),
+    );
+    out.insert("count".into(), opt_str(&data.ai_output.count));
+    out.insert("appearance".into(), str_arr(&appearance));
+    out.insert("tags".into(), str_arr(&data.ai_output.tags));
+    out.insert("environment".into(), str_arr(&data.ai_output.environment));
+    out.insert("nl".into(), opt_str(&data.ai_output.nl));
     serde_json::Value::Object(out)
 }
 
@@ -631,5 +593,45 @@ mod json_extra_tests {
         assert_eq!(v["ai_output"]["rating"], "safe");
         assert_eq!(v["my_extension"]["a"], 1);
         assert_eq!(v["ai_output"]["tags"][0], "1girl");
+    }
+
+    /// 完整 schema 恒定输出：没有数据的字段以空值占位，不省略键（nl 等曾被丢弃）
+    #[test]
+    fn full_json_serializes_complete_schema_with_empty_placeholders() {
+        let out = serde_json::to_string(&JsonTagData::default()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["fixed"]["quality"], "");
+        assert_eq!(v["fixed"]["series"], "");
+        assert_eq!(v["fixed"]["artist"], "");
+        assert_eq!(v["character"]["name"], "");
+        assert_eq!(v["character"]["variant"], "");
+        assert_eq!(v["from_path"]["appearance"], serde_json::json!([]));
+        assert_eq!(v["ai_output"]["count"], "");
+        assert_eq!(v["ai_output"]["appearance"], serde_json::json!([]));
+        assert_eq!(v["ai_output"]["tags"], serde_json::json!([]));
+        assert_eq!(v["ai_output"]["environment"], serde_json::json!([]));
+        assert_eq!(v["ai_output"]["nl"], "");
+    }
+
+    /// 简化格式同样恒定输出 9 个键
+    #[test]
+    fn simplified_json_serializes_complete_schema() {
+        let v = to_simplified(&JsonTagData::default());
+        let obj = v.as_object().unwrap();
+        for key in [
+            "quality",
+            "series",
+            "artist",
+            "character",
+            "count",
+            "appearance",
+            "tags",
+            "environment",
+            "nl",
+        ] {
+            assert!(obj.contains_key(key), "简化格式缺少字段: {}", key);
+        }
+        assert_eq!(v["nl"], "");
+        assert_eq!(v["tags"], serde_json::json!([]));
     }
 }

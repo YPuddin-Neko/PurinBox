@@ -5,7 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useTaskQueue } from '../components/TaskContext';
 import { useTranslation } from 'react-i18next';
 import { Layers, FolderOpen } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
+import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
 import InputPathPickerButton from '../components/InputPathPickerButton';
@@ -28,7 +28,7 @@ export default function AlphaConvertPage() {
   const [progress, setProgress] = useState(0);
   const [progressCurrent, setProgressCurrent] = useState(0);
   const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
 

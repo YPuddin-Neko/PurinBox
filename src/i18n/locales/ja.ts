@@ -700,6 +700,7 @@ const ja = {
     interval: '間隔 (秒)',
     promptLabel: '調整プロンプト',
     promptHint: '{tags} はその画像の現在のタグ一覧に置き換えられます。補完/削除/修正のルールはプロンプトに直接記述してください。',
+    promptHintNl: 'JSON モード：モデルは TAGS: / NL: の2段で返答し、NL の説明文は画像とタグに基づいて LLM が補完し、nl フィールドに書き込まれます。',
     catUnsupported: '選択中のモデルは未対応です',
     preferExisting: '既存タグを優先',
     preferExistingTip: '選択形式のタグファイルが既にある画像はローカルタグ付けをスキップし、そのまま LLM 調整へ進みます。オフの場合はローカルモデルで上書きします',

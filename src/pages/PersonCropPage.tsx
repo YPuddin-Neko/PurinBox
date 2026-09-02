@@ -9,7 +9,7 @@ import {
   PersonStanding, CircleUser, Eye, Download,
   Cpu, Gpu,
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
+import ProgressLog, { getTimeStr, useLogState } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
@@ -49,7 +49,7 @@ export default function PersonCropPage() {
   const [progress, setProgress] = useState(0);
   const [progressCurrent, setProgressCurrent] = useState(0);
   const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
   const taskLogs = useUnifiedTaskLogs(setLogs);

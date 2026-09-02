@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, Dispatch, SetStateAction } from 'react';
 import { CheckCircle2, XCircle, Loader2, Info, ScrollText, Trash2, Download, Timer, AlertTriangle } from 'lucide-react';
 import '../styles/progress.css';
 import { useTranslation } from 'react-i18next';
@@ -39,6 +39,22 @@ function formatElapsed(ms: number): string {
 export { getTimeStr };
 
 const MAX_LOGS = 500;
+
+/**
+ * 带上限的日志 state：超过 MAX_LOGS 时丢弃最旧条目。
+ * 显示层截断只省 DOM——state 不封顶的话，长任务（几万张图）里数组无限增长，
+ * 且每次追加的展开拷贝成本随长度线性上涨。所有日志页应使用此 hook 而非裸 useState。
+ */
+export function useLogState(): [LogEntry[], Dispatch<SetStateAction<LogEntry[]>>] {
+  const [logs, setLogsRaw] = useState<LogEntry[]>([]);
+  const setLogs = useCallback((action: SetStateAction<LogEntry[]>) => {
+    setLogsRaw(prev => {
+      const next = typeof action === 'function' ? action(prev) : action;
+      return next.length > MAX_LOGS ? next.slice(next.length - MAX_LOGS) : next;
+    });
+  }, []);
+  return [logs, setLogs];
+}
 
 export default function ProgressLog({ progress, current, total, logs, isDone, hasError, onClearLogs, externalStartTime }: ProgressLogProps) {
   const { t } = useTranslation();

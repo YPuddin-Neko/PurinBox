@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Loader2, Cpu, Gpu, Download, Plus, Check, Trash2, Search, FileUp, Save, ChevronDown, X } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
+import ProgressLog, { getTimeStr, useLogState } from './ProgressLog';
 import ProcessButton from './ProcessButton';
 import { useTaskQueue } from './TaskContext';
 import { ConfirmModal } from './Modal';
@@ -64,7 +64,7 @@ export default function AiTaggerTab() {
   const [progress, setProgress] = useState(0);
   const [pCur, setPCur] = useState(0);
   const [pTot, setPTot] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
   const DEFAULT_MODEL_SIZE = 448;

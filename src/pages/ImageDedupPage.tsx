@@ -8,7 +8,7 @@ import ThumbImage from '../components/ThumbImage';
 import {
   FolderOpen, Trash2, Check, X, Copy, Search, ChevronLeft, ChevronRight,
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
+import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import { useTranslation } from 'react-i18next';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
@@ -28,7 +28,7 @@ export default function ImageDedupPage() {
   const [progress, setProgress] = useState(0);
   const [progressCurrent, setProgressCurrent] = useState(0);
   const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [processStartTime, setProcessStartTime] = useState(0);

@@ -12,7 +12,7 @@ import {
   Cpu,
   Gpu,
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr } from '../components/ProgressLog';
+import ProgressLog, { getTimeStr, useLogState } from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
@@ -50,7 +50,7 @@ export default function UpscalePage() {
   const [tileSize, setTileSize] = useState(-1);
   const [processing, setProcessing] = useState(false);
 
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [progress, setProgress] = useState(0);
   const [progressCurrent, setProgressCurrent] = useState(0);
   const [progressTotal, setProgressTotal] = useState(0);

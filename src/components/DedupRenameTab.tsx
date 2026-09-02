@@ -6,7 +6,7 @@ import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { FolderOpen, ArrowRight, Play, Loader2, Search, RotateCcw, ChevronLeft, ChevronRight, Download } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
+import ProgressLog, { LogEntry, getTimeStr, useLogState } from './ProgressLog';
 import ProcessButton from './ProcessButton';
 import { useTaskQueue } from './TaskContext';
 import { useTranslation } from 'react-i18next';
@@ -30,7 +30,7 @@ export default function DedupRenameTab() {
   const [progress, setProgress] = useState(0);
   const [pCur, setPCur] = useState(0);
   const [pTot, setPTot] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [startTime, setStartTime] = useState(0);

@@ -5,7 +5,7 @@ import {
   Key, Bot, RefreshCw, Loader2, Eye, EyeOff, Save, Thermometer, Image as ImageIcon,
   Check, Cpu, Gpu,
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr } from './ProgressLog';
+import ProgressLog, { getTimeStr, useLogState } from './ProgressLog';
 import ProcessButton from './ProcessButton';
 import InputPathPickerButton from './InputPathPickerButton';
 import CustomSelect from './CustomSelect';
@@ -20,8 +20,8 @@ interface ProgressPayload { current: number; total: number; filename: string; st
 
 type Phase = '' | 'tagging' | 'refining';
 
-/** 默认调优提示词：补充缺失 / 删除错误 / 修复不准确（{tags} 由后端替换为该图现有标签） */
-const defaultHybridPrompt = `You are an expert anime image tagger. You will receive an image and its existing tags produced by a local tagger model.
+/** 默认调优提示词（TXT 模式）：补充缺失 / 删除错误 / 修复不准确（{tags} 由后端替换为该图现有标签） */
+const defaultPromptTxt = `You are an expert anime image tagger. You will receive an image and its existing tags produced by a local tagger model.
 
 Your task:
 1. Compare the image content with the existing tags
@@ -39,6 +39,33 @@ Rules:
 Existing tags: {tags}
 
 Refined tags:`;
+
+/** 默认调优提示词（JSON 模式）：在 TXT 模式基础上要求补写 nl 自然语言描述。
+ *  本地打标器不产生 nl 字段，由 LLM 根据画面与标签补充；
+ *  后端解析 TAGS:/NL: 标记段，NL 写入 nl 字段（完整格式 ai_output.nl / 简化格式 nl）。 */
+const defaultPromptJson = `You are an expert anime image tagger. You will receive an image and its existing tags produced by a local tagger model.
+
+Your task:
+1. Compare the image content with the existing tags
+2. Fix incorrect tags (e.g. wrong hair color, wrong clothing, wrong subject count)
+3. Add important missing tags that are clearly visible in the image
+4. Remove tags that do not match the image at all
+5. Keep the tag format consistent (lowercase danbooru-style tags)
+6. Write a natural language description (1-3 sentences) of the image, consistent with the image content and the final tags
+
+Rules:
+- Only make changes you are confident about
+- Preserve tags that are correct
+- Do NOT add explanations
+
+Existing tags: {tags}
+
+Reply in exactly this format (two lines, nothing else):
+TAGS: <refined tags, comma-separated>
+NL: <natural language description>`;
+
+const defaultPromptFor = (fmt: 'txt' | 'json' | 'json_simplified') =>
+  fmt === 'txt' ? defaultPromptTxt : defaultPromptJson;
 
 export default function HybridTaggerTab() {
   const { t } = useTranslation();
@@ -79,7 +106,7 @@ export default function HybridTaggerTab() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchMsg, setFetchMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [saveMsg, setSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
-  const [prompt, setPrompt] = useState(defaultHybridPrompt);
+  const [prompt, setPrompt] = useState(defaultPromptTxt);
   const [temperature, setTemperature] = useState('0.3');
   const [topP, setTopP] = useState('0');
   const [imageSize, setImageSize] = useState('1024');
@@ -99,7 +126,7 @@ export default function HybridTaggerTab() {
   const [progress, setProgress] = useState(0);
   const [pCur, setPCur] = useState(0);
   const [pTot, setPTot] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
   const taskLogs = useUnifiedTaskLogs(setLogs);
@@ -198,6 +225,16 @@ export default function HybridTaggerTab() {
 
   const isJson = outputFormat !== 'txt';
   const canStart = !!inputPath && !!selectedModel && !!endpoint && !!modelName && enabledCats.size > 0;
+
+  // 切换输出格式时联动默认提示词（JSON 模式要求 TAGS:/NL: 格式以补写 nl 字段）；
+  // 用户改过提示词则不动
+  const handleFormatChange = (v: string) => {
+    const next = v as typeof outputFormat;
+    setOutputFormat(next);
+    setPrompt(prev =>
+      prev === defaultPromptTxt || prev === defaultPromptJson ? defaultPromptFor(next) : prev
+    );
+  };
 
   const handleStart = async () => {
     if (!canStart) return;
@@ -440,7 +477,7 @@ export default function HybridTaggerTab() {
       <div className="tool-panel">
         <div className="tool-panel-header">
           <span className="tool-panel-title">{t('hybridTagger.llmPhase')}</span>
-          <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }} onClick={() => setPrompt(defaultHybridPrompt)}>{t('tagSort.resetDefault')}</button>
+          <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }} onClick={() => setPrompt(defaultPromptFor(outputFormat))}>{t('tagSort.resetDefault')}</button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 'var(--space-4)', alignItems: 'stretch' }}>
           {/* 左：提示词 */}
@@ -448,7 +485,10 @@ export default function HybridTaggerTab() {
             <label className="form-label">{t('hybridTagger.promptLabel')}</label>
             <textarea className="form-input" value={prompt} onChange={e => setPrompt(e.target.value)}
               style={{ fontSize: 11, fontFamily: 'monospace', lineHeight: 1.6, resize: 'vertical', flex: 1, minHeight: 200 }} />
-            <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', margin: '4px 0 0' }}>{t('hybridTagger.promptHint')}</p>
+            <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', margin: '4px 0 0' }}>
+              {t('hybridTagger.promptHint')}
+              {isJson && <> {t('hybridTagger.promptHintNl')}</>}
+            </p>
           </div>
           {/* 右：参数 + 输出 */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
@@ -484,7 +524,7 @@ export default function HybridTaggerTab() {
               <label className="form-label">{t('hybridTagger.outputFormat')}</label>
               <CustomSelect
                 value={outputFormat}
-                onChange={v => setOutputFormat(v as typeof outputFormat)}
+                onChange={handleFormatChange}
                 options={[
                   { value: 'txt', label: t('hybridTagger.formatTxt') },
                   { value: 'json', label: t('hybridTagger.formatJson') },

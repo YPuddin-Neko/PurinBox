@@ -6,7 +6,7 @@ import {
   RefreshCw, Thermometer, Hash, StopCircle, Save, ImageIcon, Timer, Layers,
   CheckCircle2, XCircle, Info, ScrollText, Trash2, Eye, EyeOff
 } from 'lucide-react';
-import { LogEntry, getTimeStr } from './ProgressLog';
+import { LogEntry, getTimeStr, useLogState } from './ProgressLog';
 import { useTaskQueue } from './TaskContext';
 import CustomSelect from './CustomSelect';
 import { useTranslation } from 'react-i18next';
@@ -95,7 +95,7 @@ export default function LlmTaggerTab() {
   const [progress, setProgress] = useState(0);
   const [pCur, setPCur] = useState(0);
   const [pTot, setPTot] = useState(0);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logs, setLogs] = useLogState();
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);

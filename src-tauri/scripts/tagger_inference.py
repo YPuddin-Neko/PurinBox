@@ -371,34 +371,36 @@ def _build_structured_json(selected_tags):
                 else:
                     tags_list.append(tag_name)
 
-    out = {}
-    # fixed: quality, series, artist
-    fixed = {}
-    if quality_parts:
-        fixed["quality"] = ", ".join(quality_parts)
-    if series_name:
-        fixed["series"] = series_name
-    if artist_name:
-        fixed["artist"] = f"@{artist_name}" if not artist_name.startswith("@") else artist_name
-    if fixed:
-        out["fixed"] = fixed
-    # character
-    if character_name:
-        out["character"] = {"name": character_name}
-    # ai_output
-    ai = {}
-    if count_tags:
-        ai["count"] = ", ".join(count_tags)
-    if appearance:
-        ai["appearance"] = appearance
-    if tags_list:
-        ai["tags"] = tags_list
-    if environment:
-        ai["environment"] = environment
-    if ai:
-        out["ai_output"] = ai
+    # 完整 schema 恒定输出：没有数据的字段以空值占位，不省略键
+    # （对齐 JSON 标签编辑器的完整格式：fixed/character/from_path/ai_output）
+    return {
+        "fixed": {
+            "quality": ", ".join(quality_parts),
+            "series": series_name,
+            "artist": _format_artist(artist_name),
+        },
+        "character": {
+            "name": character_name,
+            "variant": "",
+        },
+        "from_path": {
+            "appearance": [],
+        },
+        "ai_output": {
+            "count": ", ".join(count_tags),
+            "appearance": appearance,
+            "tags": tags_list,
+            "environment": environment,
+            # 本地打标器不产生自然语言描述；空值占位，由 LLM 调优补充
+            "nl": "",
+        },
+    }
 
-    return out
+
+def _format_artist(artist_name):
+    if not artist_name:
+        return ""
+    return artist_name if artist_name.startswith("@") else f"@{artist_name}"
 
 
 def _build_simplified_json(selected_tags):
@@ -439,22 +441,16 @@ def _build_simplified_json(selected_tags):
                 else:
                     tags_list.append(tag_name)
 
-    if quality_parts:
-        out["quality"] = ", ".join(quality_parts)
-    if count_tags:
-        out["count"] = ", ".join(count_tags)
-    if characters:
-        out["character"] = ", ".join(characters)
-    if series_list:
-        out["series"] = ", ".join(series_list)
-    if artist_name:
-        out["artist"] = f"@{artist_name}" if not artist_name.startswith("@") else artist_name
-    if appearance:
-        out["appearance"] = appearance
-    if tags_list:
-        out["tags"] = tags_list
-    if environment:
-        out["environment"] = environment
+    # 简化 schema 恒定输出（9 个键），空值占位不省略
+    out["quality"] = ", ".join(quality_parts)
+    out["series"] = ", ".join(series_list)
+    out["artist"] = _format_artist(artist_name)
+    out["character"] = ", ".join(characters)
+    out["count"] = ", ".join(count_tags)
+    out["appearance"] = appearance
+    out["tags"] = tags_list
+    out["environment"] = environment
+    out["nl"] = ""
 
     return out
 
