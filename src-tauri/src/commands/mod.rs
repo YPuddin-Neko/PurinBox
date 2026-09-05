@@ -175,6 +175,61 @@ fn is_supported_image_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// 工具自己产出的副本目录：失败/警告文件会被复制到这里备查。
+/// 它们常常就落在数据集根目录内，递归扫描时必须跳过，否则副本会被当成新图反复处理。
+/// 全应用统一用 `Fail`/`Warn`；`_errors`/`_warnings` 是旧版遗留，仍需剪枝。
+pub const ARTIFACT_DIR_NAMES: [&str; 4] = ["Fail", "Warn", "_errors", "_warnings"];
+
+/// 出错文件的归集目录名（全应用统一）
+pub const FAIL_DIR_NAME: &str = "Fail";
+/// 有警告文件的归集目录名（全应用统一）
+pub const WARN_DIR_NAME: &str = "Warn";
+
+fn is_artifact_dir_name(name: &str) -> bool {
+    ARTIFACT_DIR_NAMES
+        .iter()
+        .any(|d| name.eq_ignore_ascii_case(d))
+}
+
+/// 目录项是否是需要剪掉的产物目录。
+/// 输入根自身叫这个名字时不算——否则用户直接选中 Fail 目录重跑会得到"没有图片"。
+pub(crate) fn is_prunable_artifact_dir(entry: &walkdir::DirEntry) -> bool {
+    entry.depth() > 0
+        && entry.file_type().is_dir()
+        && entry
+            .file_name()
+            .to_str()
+            .is_some_and(is_artifact_dir_name)
+}
+
+/// 把出问题的源文件复制到 `<root>/<dir_name>/`，递归模式下保留相对子目录结构。
+/// 返回实际复制成功的数量；目录建不出来则返回 Err，单个文件复制失败只是不计数。
+pub fn copy_files_into_artifact_dir(
+    input_root: &Path,
+    root: &Path,
+    files: &[std::path::PathBuf],
+    dir_name: &str,
+    recursive: bool,
+) -> Result<u32, String> {
+    let target_root = root.join(dir_name);
+    std::fs::create_dir_all(&target_root)
+        .map_err(|e| format!("创建 {} 文件夹失败: {}", dir_name, e))?;
+
+    let mut copied = 0u32;
+    for src in files {
+        let Some(name) = src.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            continue;
+        };
+        let Ok(dest) = output_path_for_input(input_root, src, &target_root, &name, recursive) else {
+            continue;
+        };
+        if std::fs::copy(src, &dest).is_ok() {
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
 /// 收集目录中的图片文件路径
 /// 把任意像素格式按白底拍平成 RGB8（JPEG 编码器不接受 RGBA；直接丢 alpha 会让透明区变成脏色）
 pub(crate) fn flatten_to_rgb_white(img: image::DynamicImage) -> image::DynamicImage {
@@ -308,7 +363,11 @@ pub fn collect_image_files_with_recursive_excluding(
             walkdir::WalkDir::new(input).max_depth(1)
         };
 
-        for entry in walker.into_iter().filter_map(|e| e.ok()) {
+        for entry in walker
+            .into_iter()
+            .filter_entry(|e| !is_prunable_artifact_dir(e))
+            .filter_map(|e| e.ok())
+        {
             let p = entry.path();
             if !p.is_file() {
                 continue;
@@ -866,5 +925,75 @@ pub fn kill_child_tree(slot: &std::sync::Mutex<Option<std::process::Child>>) {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+
+#[cfg(test)]
+mod artifact_dir_tests {
+    use super::*;
+
+    fn fixture(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "purinbox_artifact_{}_{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for rel in ["", "sub", "Fail", "Warn", "_errors", "_warnings"] {
+            std::fs::create_dir_all(root.join(rel)).unwrap();
+        }
+        // 旧版遗留的 _errors/_warnings 也必须继续剪掉
+        for rel in [
+            "a.png",
+            "sub/d.png",
+            "Fail/b.png",
+            "Warn/f.png",
+            "_errors/c.png",
+            "_warnings/e.png",
+        ] {
+            std::fs::write(root.join(rel), b"x").unwrap();
+        }
+        root
+    }
+
+    fn names(files: &[std::path::PathBuf]) -> Vec<String> {
+        let mut v: Vec<String> = files
+            .iter()
+            .map(|f| f.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn recursive_scan_prunes_artifact_dirs() {
+        let root = fixture("prune");
+        let files = collect_image_files_recursive(&root).unwrap();
+        // Fail/_errors/_warnings 里的副本不能再被当成数据集图片
+        assert_eq!(names(&files), vec!["a.png", "d.png"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn artifact_dir_scanned_when_it_is_the_input_root() {
+        let root = fixture("as_root");
+        // 用户直接选中 Fail 目录重跑失败图，不能给出"没有图片"
+        let files = collect_image_files_recursive(&root.join("Fail")).unwrap();
+        assert_eq!(names(&files), vec!["b.png"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copy_into_artifact_dir_keeps_subdirs() {
+        let root = fixture("copy");
+        let failed = vec![root.join("a.png"), root.join("sub/d.png")];
+        let copied = copy_files_into_artifact_dir(&root, &root, &failed, "Fail", true).unwrap();
+        assert_eq!(copied, 2);
+        assert!(root.join("Fail/a.png").exists());
+        assert!(root.join("Fail/sub/d.png").exists());
+        // 复制进去的副本下一轮扫描依然被剪掉，不会自我增殖
+        let files = collect_image_files_recursive(&root).unwrap();
+        assert_eq!(names(&files), vec!["a.png", "d.png"]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

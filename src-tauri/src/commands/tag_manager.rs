@@ -32,6 +32,8 @@ fn collect_dataset_images(dir: &Path, recursive: bool) -> Vec<PathBuf> {
     };
     let mut images: Vec<PathBuf> = walker
         .into_iter()
+        // 失败图副本不进标签编辑器列表，否则同一张图会重复出现
+        .filter_entry(|e| !crate::commands::is_prunable_artifact_dir(e))
         .filter_map(|e| e.ok())
         .map(|entry| entry.into_path())
         .filter(|p| p.is_file() && is_supported_image(p))

@@ -327,33 +327,31 @@ pub async fn start_tag_sorting(
     let was_cancelled =
         cancelled.load(Ordering::SeqCst) || TAG_SORT_CANCELLED.load(Ordering::SeqCst);
 
-    // 将出错和有警告的源文件复制到对应子文件夹
+    // 将出错和有警告的源文件复制到对应子文件夹（目录名全应用统一）
     let err_files = error_files.lock().await.clone();
     let warn_files = warning_files.lock().await.clone();
     let mut copy_msg = String::new();
 
-    if !err_files.is_empty() {
-        let err_dir = output_dir_path.join("_errors");
-        if std::fs::create_dir_all(&err_dir).is_ok() {
-            let mut copied = 0u32;
-            for src in &err_files {
-                if let Some(name) = src.file_name() {
-                    let _ = std::fs::copy(src, err_dir.join(name)).map(|_| copied += 1);
-                }
-            }
-            copy_msg.push_str(&format!("，{} 个错误文件已复制到 _errors/", copied));
+    for (files, dir_name, label) in [
+        (&err_files, crate::commands::FAIL_DIR_NAME, "错误"),
+        (&warn_files, crate::commands::WARN_DIR_NAME, "警告"),
+    ] {
+        if files.is_empty() {
+            continue;
         }
-    }
-    if !warn_files.is_empty() {
-        let warn_dir = output_dir_path.join("_warnings");
-        if std::fs::create_dir_all(&warn_dir).is_ok() {
-            let mut copied = 0u32;
-            for src in &warn_files {
-                if let Some(name) = src.file_name() {
-                    let _ = std::fs::copy(src, warn_dir.join(name)).map(|_| copied += 1);
-                }
-            }
-            copy_msg.push_str(&format!("，{} 个警告文件已复制到 _warnings/", copied));
+        // 标签排序只扫一层，源文件都在输入根下，无子目录结构可保留
+        match crate::commands::copy_files_into_artifact_dir(
+            input_dir,
+            &output_dir_path,
+            files,
+            dir_name,
+            false,
+        ) {
+            Ok(copied) => copy_msg.push_str(&format!(
+                "，{} 个{}文件已复制到 {}/",
+                copied, label, dir_name
+            )),
+            Err(e) => copy_msg.push_str(&format!("，{}", e)),
         }
     }
 

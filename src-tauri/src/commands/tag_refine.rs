@@ -128,17 +128,12 @@ pub async fn start_tag_refining(
     let input_dir_path = input_dir.to_path_buf();
     let output_dir_path = PathBuf::from(&options.output_path);
 
-    let mut files = collect_image_files_with_recursive_excluding(
+    // 失败/警告图副本落在 Fail、Warn 里，收集侧已统一剪枝，不会被当成新图
+    let files = collect_image_files_with_recursive_excluding(
         input_dir,
         options.recursive,
         Some(&output_dir_path),
     )?;
-    // 历史版本会把警告/错误图复制进 _warnings/_errors，recursive 下不能把这些副本再当输入
-    files.retain(|f| {
-        !f.components().any(|c| {
-            matches!(c.as_os_str().to_str(), Some("_warnings") | Some("_errors"))
-        })
-    });
     let total = files.len() as u32;
 
     if total == 0 {
@@ -335,64 +330,64 @@ pub async fn start_tag_refining(
     let was_cancelled =
         cancelled.load(Ordering::SeqCst) || TAG_REFINE_CANCELLED.load(Ordering::SeqCst);
 
-    // 将出错文件复制到 _errors
     let err_files = error_files.lock().await.clone();
     let warn_files_list = warning_files.lock().await.clone();
     let mut copy_msg = String::new();
 
-    // 输出目录==输入目录（辅助打标固定如此）时禁止复制：
-    // 否则重复图片被灌进训练集本身，recursive 下次运行还会把副本当新图处理
     let same_io_dir = match (
         std::fs::canonicalize(&output_dir_path),
         std::fs::canonicalize(&input_dir_path),
     ) {
         (Ok(a), Ok(b)) => a == b,
-        _ => crate::commands::path_key_ci(&output_dir_path) == crate::commands::path_key_ci(&input_dir_path),
+        _ => {
+            crate::commands::path_key_ci(&output_dir_path)
+                == crate::commands::path_key_ci(&input_dir_path)
+        }
     };
-    if same_io_dir && (!err_files.is_empty() || !warn_files_list.is_empty()) {
-        copy_msg.push_str("，输出与输入目录相同，已跳过 _errors/_warnings 复制");
-    }
 
-    if !err_files.is_empty() && !same_io_dir {
-        let err_dir = output_dir_path.join("_errors");
-        if std::fs::create_dir_all(&err_dir).is_ok() {
-            let mut copied = 0u32;
-            for src in &err_files {
-                if let Some(name) = src.file_name() {
-                    let name = name.to_string_lossy();
-                    if let Ok(dest) = output_path_for_input(
-                        &input_dir_path,
-                        src,
-                        &err_dir,
-                        name.as_ref(),
-                        options.recursive,
-                    ) {
-                        let _ = std::fs::copy(src, dest).map(|_| copied += 1);
-                    }
-                }
-            }
-            copy_msg.push_str(&format!("，{} 个错误文件已复制到 _errors/", copied));
+    // 出错图片一律复制出来备查——辅助打标固定就地更新（输出==输入），
+    // 这里若跟着跳过，失败的是哪几张就再也找不回来了。
+    // 副本落在产物目录内，收集侧已剪枝，下一轮不会被当成新图。
+    if !err_files.is_empty() {
+        match crate::commands::copy_files_into_artifact_dir(
+            &input_dir_path,
+            &output_dir_path,
+            &err_files,
+            crate::commands::FAIL_DIR_NAME,
+            options.recursive,
+        ) {
+            Ok(copied) => copy_msg.push_str(&format!(
+                "，{} 个错误文件已复制到 {}/",
+                copied,
+                crate::commands::FAIL_DIR_NAME
+            )),
+            Err(e) => copy_msg.push_str(&format!("，{}", e)),
         }
     }
-    if !warn_files_list.is_empty() && !same_io_dir {
-        let warn_dir = output_dir_path.join("_warnings");
-        if std::fs::create_dir_all(&warn_dir).is_ok() {
-            let mut copied = 0u32;
-            for src in &warn_files_list {
-                if let Some(name) = src.file_name() {
-                    let name = name.to_string_lossy();
-                    if let Ok(dest) = output_path_for_input(
-                        &input_dir_path,
-                        src,
-                        &warn_dir,
-                        name.as_ref(),
-                        options.recursive,
-                    ) {
-                        let _ = std::fs::copy(src, dest).map(|_| copied += 1);
-                    }
-                }
+
+    // 警告=LLM 增删了标签，正是调优该干的事，就地模式下几乎每张图都命中：
+    // 真去复制等于把整个数据集又存了一遍，所以这一项保留就地跳过
+    if !warn_files_list.is_empty() {
+        if same_io_dir {
+            copy_msg.push_str(&format!(
+                "，输出与输入目录相同，已跳过 {}/ 复制",
+                crate::commands::WARN_DIR_NAME
+            ));
+        } else {
+            match crate::commands::copy_files_into_artifact_dir(
+                &input_dir_path,
+                &output_dir_path,
+                &warn_files_list,
+                crate::commands::WARN_DIR_NAME,
+                options.recursive,
+            ) {
+                Ok(copied) => copy_msg.push_str(&format!(
+                    "，{} 个警告文件已复制到 {}/",
+                    copied,
+                    crate::commands::WARN_DIR_NAME
+                )),
+                Err(e) => copy_msg.push_str(&format!("，{}", e)),
             }
-            copy_msg.push_str(&format!("，{} 个警告文件已复制到 _warnings/", copied));
         }
     }
 

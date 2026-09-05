@@ -51,7 +51,12 @@ fn collect_convertible_files(
         } else {
             walkdir::WalkDir::new(input).max_depth(1)
         };
-        for entry in walker.into_iter().filter_map(|e| e.ok()) {
+        for entry in walker
+            .into_iter()
+            // 失败图副本不该被再转换一遍
+            .filter_entry(|e| !crate::commands::is_prunable_artifact_dir(e))
+            .filter_map(|e| e.ok())
+        {
             let p = entry.path();
             if p.is_file() {
                 if should_exclude_output {

@@ -633,6 +633,8 @@ pub fn run_tagging(
     // 保护性跳过（已有标签 / 原标签文件不可读时拒写）单独计数，别伪装成"完成"
     let mut skip_count = 0u32;
     let mut errors = Vec::new();
+    // 打不上标的图收集起来，跑完复制进 Fail/ 供重跑，和 LLM 打标一致
+    let mut failed_files: Vec<std::path::PathBuf> = Vec::new();
 
     let enabled_cats: Vec<&str> = options
         .enabled_categories
@@ -740,6 +742,7 @@ pub fn run_tagging(
             });
             if let Err(e) = writeln!(stdin, "{}", tag_cmd) {
                 fail_count += 1;
+                failed_files.push(file_path.clone());
                 errors.push(format!("{}: 发送命令失败: {}", filename, e));
                 break;
             }
@@ -783,6 +786,7 @@ pub fn run_tagging(
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("unknown");
                                     fail_count += 1;
+                                    failed_files.push(file_path.clone());
                                     errors.push(format!("{}: {}", filename, text));
                                     let _ = app.emit(
                                         "tagger-progress",
@@ -829,11 +833,13 @@ pub fn run_tagging(
                     }
                     Ok(Err(e)) => {
                         fail_count += 1;
+                        failed_files.push(file_path.clone());
                         errors.push(format!("{}: 读取失败: {}", filename, e));
                         break;
                     }
                     Err(_) => {
                         fail_count += 1;
+                        failed_files.push(file_path.clone());
                         errors.push(format!("{}: Python 进程退出", filename));
                         break;
                     }
@@ -864,6 +870,7 @@ pub fn run_tagging(
             let batch_cmd = serde_json::json!({ "cmd": "tag_batch", "images": images });
             if let Err(e) = writeln!(stdin, "{}", batch_cmd) {
                 fail_count += batch_len as u32;
+                failed_files.extend(batch_files.iter().cloned());
                 errors.push(format!("批量发送失败: {}", e));
                 break;
             }
@@ -927,6 +934,9 @@ pub fn run_tagging(
                                         .unwrap_or("unknown");
                                     fail_count += 1;
                                     results_read += 1;
+                                    if !img_path.is_empty() {
+                                        failed_files.push(std::path::PathBuf::from(img_path));
+                                    }
                                     errors.push(format!("{}: {}", fname, text));
                                     let _ = app.emit(
                                         "tagger-progress",
@@ -972,11 +982,14 @@ pub fn run_tagging(
                     }
                     Ok(Err(e)) => {
                         fail_count += (batch_len - results_read) as u32;
+                        // Python 按顺序回结果，没回到的就是这批里剩下的那几张
+                        failed_files.extend(batch_files[results_read..].iter().cloned());
                         errors.push(format!("批量读取失败: {}", e));
                         break;
                     }
                     Err(_) => {
                         fail_count += (batch_len - results_read) as u32;
+                        failed_files.extend(batch_files[results_read..].iter().cloned());
                         errors.push("Python 进程退出".to_string());
                         break;
                     }
@@ -991,6 +1004,34 @@ pub fn run_tagging(
     // 取出全局句柄并等待进程退出（若已被取消杀掉则为 None）
     if let Some(mut child) = PYTHON_PROCESS.lock().ok().and_then(|mut g| g.take()) {
         let _ = child.wait();
+    }
+
+    // 打不上标的图集中到数据集根目录下的 Fail/，与 LLM 打标同名同位置，方便挑出来重跑
+    if !failed_files.is_empty() {
+        let (status, message) = match crate::commands::copy_files_into_artifact_dir(
+            input_dir,
+            input_dir,
+            &failed_files,
+            crate::commands::FAIL_DIR_NAME,
+            options.recursive,
+        ) {
+            Ok(copied) => (
+                "info",
+                format!("已将 {} 张失败图片复制到 Fail/ 文件夹", copied),
+            ),
+            Err(e) => ("error", e),
+        };
+        let _ = app.emit(
+            "tagger-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: status.to_string(),
+                message,
+                ..Default::default()
+            },
+        );
     }
 
     // 取消路径已发过"打标已取消"的 done 事件，这里不再发"完成"覆盖它

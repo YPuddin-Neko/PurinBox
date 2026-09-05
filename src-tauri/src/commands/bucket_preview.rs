@@ -306,6 +306,8 @@ fn collect_supported_image_files(input_path: &Path, recursive: bool) -> Vec<Path
     for entry in walkdir::WalkDir::new(input_path)
         .max_depth(walk_depth)
         .into_iter()
+        // 失败图副本会让分桶/分辨率统计凭空翻倍
+        .filter_entry(|e| !crate::commands::is_prunable_artifact_dir(e))
         .filter_map(|e| e.ok())
     {
         let p = entry.path();

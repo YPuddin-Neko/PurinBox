@@ -376,45 +376,33 @@ pub async fn start_llm_tagging(
     let errors = errors_arc.lock().await.clone();
     let failed_files = failed_arc.lock().await.clone();
 
-    // 将失败的图片复制到 Fail 文件夹（每个文件在自身所在目录下创建 Fail 子文件夹）
+    // 失败图片集中到数据集根目录下的一个 Fail 文件夹（递归时保留子目录结构）。
+    // 早先是在每张图自己的父目录各建一个 Fail，递归数据集会散落一堆，无从统一查看
     if !failed_files.is_empty() {
-        let mut copy_count = 0u32;
-        for f in &failed_files {
-            let parent = f.parent().unwrap_or(input_dir);
-            let fail_dir = parent.join("Fail");
-            if let Err(e) = std::fs::create_dir_all(&fail_dir) {
-                let _ = app_arc.emit(
-                    "llm-tagger-progress",
-                    ProgressEvent {
-                        current: total,
-                        total,
-                        filename: String::new(),
-                        status: "error".to_string(),
-                        message: format!("创建 Fail 文件夹失败: {}", e),
-                        ..Default::default()
-                    },
-                );
-                continue;
-            }
-            let fname = f.file_name().unwrap_or_default();
-            let dest = fail_dir.join(fname);
-            if std::fs::copy(f, &dest).is_ok() {
-                copy_count += 1;
-            }
-        }
-        if copy_count > 0 {
-            let _ = app_arc.emit(
-                "llm-tagger-progress",
-                ProgressEvent {
-                    current: total,
-                    total,
-                    filename: String::new(),
-                    status: "info".to_string(),
-                    message: format!("已将 {} 张失败图片复制到对应 Fail 文件夹", copy_count),
-                    ..Default::default()
-                },
-            );
-        }
+        let (status, message) = match crate::commands::copy_files_into_artifact_dir(
+            input_dir,
+            input_dir,
+            &failed_files,
+            crate::commands::FAIL_DIR_NAME,
+            options_arc.recursive,
+        ) {
+            Ok(copied) => (
+                "info",
+                format!("已将 {} 张失败图片复制到 Fail/ 文件夹", copied),
+            ),
+            Err(e) => ("error", e),
+        };
+        let _ = app_arc.emit(
+            "llm-tagger-progress",
+            ProgressEvent {
+                current: total,
+                total,
+                filename: String::new(),
+                status: status.to_string(),
+                message,
+                ..Default::default()
+            },
+        );
     }
 
     let was_cancelled = LLM_CANCELLED.load(Ordering::SeqCst);
