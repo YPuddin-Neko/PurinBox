@@ -275,6 +275,9 @@ _APPEARANCE_KEYWORDS = {
 }
 
 _ENVIRONMENT_KEYWORDS = {
+    # "background" 靠下面的部分匹配覆盖 simple/white/blurry/gradient background 等全部变体。
+    # 这个词此前整个漏了，导致最高频的一类背景标签全落进 tags
+    "background", "scenery", "landscape", "horizon",
     "outdoors", "indoors", "sky", "cloud", "clouds", "water", "ocean", "sea",
     "lake", "river", "pool", "rain", "snow", "ice",
     "grass", "tree", "trees", "forest", "mountain", "hill", "field",

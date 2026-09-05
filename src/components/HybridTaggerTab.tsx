@@ -40,9 +40,11 @@ Existing tags: {tags}
 
 Refined tags:`;
 
-/** 默认调优提示词（JSON 模式）：在 TXT 模式基础上要求补写 nl 自然语言描述。
- *  本地打标器不产生 nl 字段，由 LLM 根据画面与标签补充；
- *  后端解析 TAGS:/NL: 标记段，NL 写入 nl 字段（完整格式 ai_output.nl / 简化格式 nl）。 */
+/** 默认调优提示词（JSON 模式）：在 TXT 模式基础上，要求 LLM 把标签分配到
+ *  count/appearance/environment/tags 四个字段，并补写 nl 自然语言描述。
+ *  本地打标器这四类是靠关键词表猜的（"simple background" 之类常落错格），
+ *  由 LLM 按画面重新归类；后端解析 COUNT:/APPEARANCE:/ENVIRONMENT:/TAGS:/NL: 标记段。
+ *  quality/series/artist/character 来自 tagger 的模型分类，不在重排范围内。 */
 const defaultPromptJson = `You are an expert anime image tagger. You will receive an image and its existing tags produced by a local tagger model.
 
 Your task:
@@ -51,17 +53,30 @@ Your task:
 3. Add important missing tags that are clearly visible in the image
 4. Remove tags that do not match the image at all
 5. Keep the tag format consistent (lowercase danbooru-style tags)
-6. Write a natural language description (1-3 sentences) of the image, consistent with the image content and the final tags
+6. Sort every remaining tag into the correct category (the local tagger often puts tags in the wrong one)
+7. Write a natural language description (1-2 sentences) of the image, consistent with the image content and the final tags
+
+Categories:
+- COUNT: character count only, e.g. 1girl, 2boys, 1girl 1boy, no humans
+- APPEARANCE: the character's visual features - hair color, hairstyle, eye color, clothing, accessories
+- TAGS: actions, expressions, poses, composition, objects held or used, e.g. smile, standing, looking at viewer, upper body
+- ENVIRONMENT: background, location, lighting, atmosphere, e.g. simple background, white background, outdoors, classroom, night, sunlight
 
 Rules:
 - Only make changes you are confident about
 - Preserve tags that are correct
+- Every tag must appear in exactly one category
+- Leave a category line empty if it has no tags
+- Character names, series names, artist names and quality tags are handled separately - do not list them
 - Do NOT add explanations
 
 Existing tags: {tags}
 
-Reply in exactly this format (two lines, nothing else):
-TAGS: <refined tags, comma-separated>
+Reply in exactly this format (five lines, nothing else):
+COUNT: <comma-separated>
+APPEARANCE: <comma-separated>
+TAGS: <comma-separated>
+ENVIRONMENT: <comma-separated>
 NL: <natural language description>`;
 
 const defaultPromptFor = (fmt: 'txt' | 'json' | 'json_simplified') =>
