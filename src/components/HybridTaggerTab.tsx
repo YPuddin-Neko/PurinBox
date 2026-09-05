@@ -114,7 +114,8 @@ export default function HybridTaggerTab() {
   // ── LLM 调优 ──
   const [preset, setPreset] = useState('openai');
   const [customEndpoint, setCustomEndpoint] = useState('');
-  const [apiKey, setApiKey] = useState('');
+  // 每个预设各存一份 key，切换预设时输入框跟着换，不能只存单个值
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [showKey, setShowKey] = useState(false);
   const [modelName, setModelName] = useState('');
   const [modelList, setModelList] = useState<string[]>([]);
@@ -154,6 +155,8 @@ export default function HybridTaggerTab() {
     custom: { label: t('llmTagger.customLabel'), url: '' },
   };
   const endpoint = preset === 'custom' ? customEndpoint : (PRESETS[preset]?.url || '');
+  const apiKey = apiKeys[preset] || '';
+  const setApiKey = (v: string) => setApiKeys(prev => ({ ...prev, [preset]: v }));
 
   // 模型列表 + 已保存的 API 配置
   useEffect(() => {
@@ -166,8 +169,7 @@ export default function HybridTaggerTab() {
       const known = ['openai', 'gemini', 'deepseek', 'custom'];
       if (cfg.preset) setPreset(known.includes(cfg.preset) ? cfg.preset : 'custom');
       if (cfg.custom_endpoint) setCustomEndpoint(cfg.custom_endpoint);
-      const key = cfg.api_keys?.[cfg.preset] || '';
-      if (key) setApiKey(key);
+      if (cfg.api_keys) setApiKeys(cfg.api_keys);
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -222,7 +224,7 @@ export default function HybridTaggerTab() {
 
   const handleSaveConfig = async () => {
     try {
-      await invoke('save_api_config', { preset, customEndpoint, apiKeys: { [preset]: apiKey } });
+      await invoke('save_api_config', { preset, customEndpoint, apiKeys });
       setSaveMsg({ text: t('llmTagger.configSaved'), ok: true });
     } catch (e: any) {
       setSaveMsg({ text: `${t('llmTagger.saveFailed')}: ${String(e)}`, ok: false });
@@ -500,10 +502,6 @@ export default function HybridTaggerTab() {
             <label className="form-label">{t('hybridTagger.promptLabel')}</label>
             <textarea className="form-input" value={prompt} onChange={e => setPrompt(e.target.value)}
               style={{ fontSize: 11, fontFamily: 'monospace', lineHeight: 1.6, resize: 'vertical', flex: 1, minHeight: 200 }} />
-            <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', margin: '4px 0 0' }}>
-              {t('hybridTagger.promptHint')}
-              {isJson && <> {t('hybridTagger.promptHintNl')}</>}
-            </p>
           </div>
           {/* 右：参数 + 输出 */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>

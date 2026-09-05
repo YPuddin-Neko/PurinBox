@@ -728,8 +728,6 @@ const zhCN = {
     concurrency: '并发数',
     interval: '请求间隔(秒)',
     promptLabel: '调优提示词',
-    promptHint: '{tags} 会被替换为该图当前的标签列表。补充/删除/修复的规则直接写在提示词里。',
-    promptHintNl: 'JSON 模式：模型按 COUNT: / APPEARANCE: / ENVIRONMENT: / TAGS: / NL: 五段返回。前四段用于重新归类标签（本地打标器的分类常有错，如"简单背景"应属环境），NL 描述由 LLM 根据画面补充。角色名/系列/画师/质量标签不参与重排。',
     catUnsupported: '当前模型不支持该类别',
     preferExisting: '优先使用已有标签',
     preferExistingTip: '图片已有同格式标签文件时跳过本地打标，保留现成标签直接进入 LLM 调优；关闭则本地模型覆盖重打',

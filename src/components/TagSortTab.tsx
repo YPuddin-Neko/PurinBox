@@ -35,9 +35,8 @@ export default function TagSortTab() {
   const [outputPath, setOutputPath] = useState('');
   const [preset, setPreset] = useState('openai');
   const [customEndpoint, setCustomEndpoint] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  // 各预设的 key 暂存：切换预设时换入对应的 key，而不是沿用上一家的
-  const apiKeysRef = useRef<Record<string, string>>({});
+  // 每个预设各存一份 key，切换预设时输入框跟着换，不能只存单个值
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [modelName, setModelName] = useState('');
   const [modelList, setModelList] = useState<string[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
@@ -73,21 +72,21 @@ export default function TagSortTab() {
   };
 
   const endpoint = preset === 'custom' ? customEndpoint : (PRESETS[preset]?.url || '');
+  const apiKey = apiKeys[preset] || '';
+  const setApiKey = (v: string) => setApiKeys(prev => ({ ...prev, [preset]: v }));
 
   // 加载保存的配置
   useEffect(() => {
     invoke<{ preset: string; custom_endpoint: string; api_keys: Record<string, string> }>('load_api_config').then((cfg) => {
       if (cfg.preset) setPreset(cfg.preset);
       if (cfg.custom_endpoint) setCustomEndpoint(cfg.custom_endpoint);
-      apiKeysRef.current = cfg.api_keys || {};
-      const key = cfg.api_keys?.[cfg.preset] || '';
-      if (key) setApiKey(key);
+      if (cfg.api_keys) setApiKeys(cfg.api_keys);
     }).catch(() => {});
   }, []);
 
   const handleSaveConfig = async () => {
     try {
-      await invoke('save_api_config', { preset, customEndpoint, apiKeys: { [preset]: apiKey } });
+      await invoke('save_api_config', { preset, customEndpoint, apiKeys });
       setSaveMsg({ text: t('tagSort.configSaved'), ok: true });
     } catch (e: any) {
       setSaveMsg({ text: `${t('tagSort.saveFailed')}: ${String(e)}`, ok: false });
@@ -288,12 +287,7 @@ export default function TagSortTab() {
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   {Object.entries(PRESETS).map(([key, { label }]) => (
                     <button key={key} className={`btn btn-sm ${preset === key ? 'btn-primary' : 'btn-secondary'}`}
-                      onClick={() => {
-                        // 切预设必须同步换 Key，否则会把 A 家的 key 发给/存到 B 家
-                        apiKeysRef.current[preset] = apiKey;
-                        setPreset(key);
-                        setApiKey(apiKeysRef.current[key] || '');
-                      }} style={{ flex: 1, fontSize: 11 }}>{label}</button>
+                      onClick={() => setPreset(key)} style={{ flex: 1, fontSize: 11 }}>{label}</button>
                   ))}
                 </div>
                 {preset === 'custom' && (

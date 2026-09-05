@@ -699,8 +699,6 @@ const ja = {
     concurrency: '並列数',
     interval: '間隔 (秒)',
     promptLabel: '調整プロンプト',
-    promptHint: '{tags} はその画像の現在のタグ一覧に置き換えられます。補完/削除/修正のルールはプロンプトに直接記述してください。',
-    promptHintNl: 'JSON モード：モデルは COUNT: / APPEARANCE: / ENVIRONMENT: / TAGS: / NL: の5段で返答します。前の4段はタグの再分類用（ローカルタガーは分類を誤りやすく、例えば「simple background」は environment に属します）、NL は画像に基づいて LLM が補完します。キャラ名/シリーズ/絵師/品質タグは再分類の対象外です。',
     catUnsupported: '選択中のモデルは未対応です',
     preferExisting: '既存タグを優先',
     preferExistingTip: '選択形式のタグファイルが既にある画像はローカルタグ付けをスキップし、そのまま LLM 調整へ進みます。オフの場合はローカルモデルで上書きします',
