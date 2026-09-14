@@ -898,6 +898,7 @@ const en = {
     allTags: 'All Tags',
     commonTags: 'Common Tags',
     translateTags: 'Translate tags',
+    escapeAllTip: 'Escape all: convert every tag to Danbooru form (spaces → underscores, parentheses → \\( \\))',
     allLabel: 'All',
     commonLabel: 'Common',
     searchTags: 'Search tags...',

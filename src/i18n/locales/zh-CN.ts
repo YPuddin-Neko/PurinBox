@@ -929,6 +929,7 @@ const zhCN = {
     allTags: '全部标签',
     commonTags: '公共标签',
     translateTags: '翻译标签',
+    escapeAllTip: '一键转义：全部标签转为 Danbooru 格式（空格→下划线，括号转义为 \\( \\)）',
     allLabel: '全部',
     commonLabel: '公共',
     searchTags: '搜索标签...',

@@ -9,7 +9,7 @@ import {
   Tags, FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,
   Trash2, Image as ImageIcon, BarChart3, CheckCircle2, Loader2,
   Replace, Filter, ListPlus, PlusCircle, MinusCircle, Languages, RefreshCw,
-  ArrowUpDown, Hash, BarChart, List, CopyX
+  ArrowUpDown, Hash, BarChart, List, CopyX, Wand2
 } from 'lucide-react';
 import NaturalLangTab from '../components/NaturalLangTab';
 import JsonTagTab, { translateOwner, type JsonTagTabHandle } from '../components/JsonTagTab';
@@ -53,6 +53,21 @@ function getChipColor(tag: string) {
   return chipColors[Math.abs(h) % chipColors.length];
 }
 const normalizeDanbooruTag = (tag: string) => tag.trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
+
+// danbooru 原形：空格→下划线、括号转义为 \( \)。
+// 先把已有转义剥掉再统一重转，保证幂等（已转义的不会被转成 \\(）
+const toDanbooruEscaped = (tag: string) =>
+  tag.trim().toLowerCase()
+    .replace(/\\([()])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/ /g, '_')
+    .replace(/\(/g, '\\(')
+    .replace(/\)/g, '\\)');
+
+// 数据集里已有 danbooru 原形标签（带下划线或转义括号）→ 新标签沿用同种形式。
+// 不然一份 txt 里 "long hair" 和 "long_hair" 两种格式混着，训练时是两个 token
+const hasEscapedTags = (tags: string[]) => tags.some(t => t.includes('_') || t.includes('\\('));
 
 const phdr:React.CSSProperties={display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',borderBottom:'1px solid var(--color-border)',flexShrink:0};
 const ptitle:React.CSSProperties={fontSize:12,fontWeight:700,color:'var(--color-text-primary)',textTransform:'uppercase',letterSpacing:'0.5px'};
@@ -289,6 +304,23 @@ export default function TagManagerPage() {
   const taggedN = images.filter(i=>i.tags.length>0).length;
   const imgSrc = cur ? convertFileSrc(cur.path) : '';
 
+  // 新标签按数据集现有格式规范化：已有 danbooru 原形标签就转义，否则保持空格形式。
+  // 优先看当前图片，当前图无标签时看整个数据集
+  const normalizeNewTag = (raw: string, img?: ImageItem | null) => {
+    const pool = img && img.tags.length > 0 ? img.tags : images.flatMap(i => i.tags);
+    return hasEscapedTags(pool) ? toDanbooruEscaped(raw) : normalizeDanbooruTag(raw);
+  };
+
+  // 一键转义：全部标签转成 danbooru 原形。转义后可能撞出重复
+  // （"long hair" 和 "long_hair" 归一为同一个），顺手去重
+  const handleEscapeAll = () => {
+    setImages(p => p.map(img => {
+      const next = img.tags.map(toDanbooruEscaped).filter((t, i, arr) => arr.indexOf(t) === i);
+      const changed = next.length !== img.tags.length || next.some((t, i) => t !== img.tags[i]);
+      return changed ? { ...img, tags: next, dirty: true } : img;
+    }));
+  };
+
   // ── tag stats ──
   const tagStats = useMemo(() => {
     const m:Record<string,number>={};
@@ -373,7 +405,8 @@ export default function TagManagerPage() {
 
   // ── 批量添加标签（按范围：当前图片 / 全部图片）──
   const handleBatchAdd = () => {
-    const tags = addTagInput.split(',').map(t => t.trim().toLowerCase().replace(/_/g,' ')).filter(Boolean);
+    // 批量作用于全部图片，格式按整个数据集的现有惯例判定
+    const tags = addTagInput.split(/[,，]/).map(t => normalizeNewTag(t)).filter(Boolean);
     if (tags.length === 0) return;
     if (addScope === 'current' && selectedIdx < 0) return;
     setImages(p => p.map((img, i) => {
@@ -486,7 +519,7 @@ export default function TagManagerPage() {
   };
 
   const replaceTagAt = (idx: number, raw: string) => {
-    const nextTag = normalizeDanbooruTag(raw);
+    const nextTag = normalizeNewTag(raw, cur);
     if (!nextTag) { setEditingTagIdx(null); return; }
     setImages(p => p.map((img, i) => {
       if (i !== selectedIdx) return img;
@@ -824,9 +857,10 @@ export default function TagManagerPage() {
                 clearOnSelect={true}
                 keepOpen={true}
                 onSelect={(raw) => {
-                  // 支持一次输入多个：逗号分隔，逐个规范化（下划线→空格、合并多空格、转小写）
+                  // 支持一次输入多个：逗号分隔；格式跟随当前图片的现有惯例
+                  // （danbooru 原形 ↔ 空格形式，见 normalizeNewTag）
                   const incoming = raw.split(/[,，]/)
-                    .map(s => s.trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim())
+                    .map(s => normalizeNewTag(s, cur))
                     .filter(Boolean);
                   if (!incoming.length) return;
                   setImages(p => p.map((img, i) => {
@@ -860,6 +894,9 @@ export default function TagManagerPage() {
                 <span style={{fontSize:10,padding:'1px 8px',borderRadius:10,background:'rgba(96,165,250,0.1)',color:'#60a5fa',fontWeight:600}}>{filteredStats.length}</span>
               </div>
               <div style={{display:'flex',alignItems:'center',gap:4}}>
+                <button className="btn btn-ghost btn-sm" title={t('tagManager.escapeAllTip')} style={{width:22,height:22,padding:0,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={handleEscapeAll} disabled={images.length===0}>
+                  <Wand2 style={{width:12,height:12}} />
+                </button>
                 <button className="btn btn-ghost btn-sm" title={t('tagManager.translateTags')} style={{width:22,height:22,padding:0,display:'flex',alignItems:'center',justifyContent:'center',color:Object.keys(translations).length>0?'#60a5fa':undefined}} onClick={handleTranslate} disabled={images.length===0||localStorage.getItem('translate_enabled')!=='true'||translating}>
                   <Languages style={{width:12,height:12}} />
                 </button>

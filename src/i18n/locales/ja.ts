@@ -898,6 +898,7 @@ const ja = {
     allTags: '全タグ',
     commonTags: '共通タグ',
     translateTags: 'タグ翻訳',
+    escapeAllTip: '一括エスケープ：全タグを Danbooru 形式に変換（スペース→アンダースコア、括弧を \\( \\) にエスケープ）',
     allLabel: '全て',
     commonLabel: '共通',
     searchTags: 'タグ検索...',
