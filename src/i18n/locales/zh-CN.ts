@@ -754,6 +754,7 @@ const zhCN = {
     startText: '开始辅助打标',
     phaseTagging: '本地模型打标...',
     phaseConverting: '转换已有 txt 标签为 JSON...',
+    phaseConvertingToTxt: '转换已有 JSON 标签为 txt...',
     phaseRefining: 'LLM 二次确认与调优...',
     phaseShortTagging: '本地打标中...',
     phaseShortConverting: '转换标签中...',

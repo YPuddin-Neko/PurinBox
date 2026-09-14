@@ -1493,6 +1493,23 @@ fn parse_refine_response(
         let excerpt: String = content.trim().chars().take(80).collect();
         return Err(format!("LLM 拒绝处理该图片（疑似内容安全审核）: {}", excerpt));
     }
+    // 模型拒绝时也常常遵守输出格式（NL: I'm sorry, I cannot...）——
+    // 上面那道闸被 has_markers 跳过，拒绝文本会被直接写进 nl 字段，
+    // NL 段内容必须单独再过一遍（"仅补 nl 描述"预设必走这条路）
+    if let Some(nl_text) = marker.nl.as_deref() {
+        if crate::commands::looks_like_refusal(nl_text) {
+            let excerpt: String = nl_text.trim().chars().take(80).collect();
+            return Err(format!("LLM 拒绝处理该图片（疑似内容安全审核）: {}", excerpt));
+        }
+    }
+    // TAGS:/字段段同理：TAGS: I'm sorry, I can't... 会被拆成"标签"写盘
+    for seg in marker.buckets.slots().iter().filter_map(|s| s.as_ref()) {
+        let joined = seg.join(", ");
+        if crate::commands::looks_like_refusal(&joined) {
+            let excerpt: String = joined.chars().take(80).collect();
+            return Err(format!("LLM 拒绝处理该图片（疑似内容安全审核）: {}", excerpt));
+        }
+    }
 
     // 孤零零一个 count 段不足以判定是标记格式，让它退回启发式而不是劫持整个标签列表
     let refined_tags: Vec<String> = if marker.buckets.tags.is_some()
@@ -1779,8 +1796,26 @@ mod marker_tests {
         let (parsed, _, _) = parse_refine_response(tags, &[]).unwrap();
         assert!(parsed.contains(&"1girl".to_string()));
         // 按标记格式返回的短回复也不该被误判
-        let marked = parse_refine_response("TAGS: sorry\nNL: I'm sorry.", &[]).unwrap();
+        let marked = parse_refine_response("TAGS: sorry\nNL: A girl with a sorry expression.", &[])
+            .unwrap();
         assert_eq!(marked.0, vec!["sorry".to_string()]);
+    }
+
+    /// 模型拒绝时也常常遵守输出格式——带 NL:/TAGS: 前缀的拒绝语照样要判失败，
+    /// 否则"仅补 nl 描述"这类预设会把拒绝文本直接写进 nl 字段
+    #[test]
+    fn marked_refusal_is_rejected() {
+        for refusal in [
+            "NL: I'm sorry, I cannot describe this image.",
+            "NL: I can't provide a description for this content.",
+            "TAGS: I'm sorry, I can't help with that.",
+            "NL: 抱歉，我无法处理这张图片。",
+        ] {
+            assert!(
+                parse_refine_response(refusal, &["1girl".to_string()]).is_err(),
+                "应判为拒绝: {refusal}"
+            );
+        }
     }
 
     /// 闲聊行 `Count: 15 tags` 不能被当成字段归属，否则整份标签会被它替换掉

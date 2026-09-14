@@ -491,6 +491,18 @@ export default function HybridTaggerTab() {
         if (cancelRequestedRef.current) throw '已取消';
       }
 
+      // txt 输出 + 优先使用已有标签：只有 .json 的图先摊平成 txt，
+      // 打标阶段的 skip 才能命中——不然手里现成的 JSON 标签会被无视、重跑模型
+      if (!isJson && preferExisting) {
+        setPhase('converting');
+        taskLogs.appendLog(t('hybridTagger.phaseConvertingToTxt'), 'info');
+        updateTask('tagger', { status: 'running', message: t('hybridTagger.phaseConvertingToTxt') });
+        await invoke<ProcessResult>('convert_json_to_txt', {
+          options: { input_path: inputPath, recursive, overwrite_existing: false },
+        });
+        if (cancelRequestedRef.current) throw '已取消';
+      }
+
       // 本地打标（直接按所选格式输出）
       setPhase('tagging');
       await invoke<ProcessResult>('start_tagging', {

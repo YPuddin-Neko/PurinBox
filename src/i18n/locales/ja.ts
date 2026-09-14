@@ -725,6 +725,7 @@ const ja = {
     startText: 'アシストタグ付けを開始',
     phaseTagging: 'ローカルタグ付け...',
     phaseConverting: '既存の txt タグを JSON に変換中...',
+    phaseConvertingToTxt: '既存の JSON タグを txt に変換中...',
     phaseRefining: 'LLM 確認・調整...',
     phaseShortTagging: 'タグ付け中...',
     phaseShortConverting: 'タグ変換中...',

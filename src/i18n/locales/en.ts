@@ -725,6 +725,7 @@ const en = {
     startText: 'Start Assisted Tagging',
     phaseTagging: 'Local model tagging...',
     phaseConverting: 'Converting existing txt tags to JSON...',
+    phaseConvertingToTxt: 'Converting existing JSON tags to txt...',
     phaseRefining: 'LLM verification & refinement...',
     phaseShortTagging: 'Tagging locally...',
     phaseShortConverting: 'Converting tags...',

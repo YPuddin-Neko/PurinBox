@@ -463,30 +463,84 @@ def _normalize_tag_key(tag):
     return tag.strip().lower().replace("_", " ")
 
 
-def run_convert_mode():
-    """--convert 一次性模式：把图片旁的 .txt 标签按模型词表分类后转换为 JSON。
+def _flatten_json_tags(data):
+    """把 JSON 标签的所有字段摊平成 txt 标签列表。
 
-    仅加载词表（CSV/JSON），不加载 ONNX/onnxruntime，速度很快。
-    LLM 调优新增的、不在词表中的标签按 general 处理（再走外观/环境关键词细分）。
+    nl 是自然语言描述不是标签，故意不收。完整/简化两种格式自动识别；
+    字段值既可能是数组也可能是逗号串（tag_manager 两种都写），统一处理。
+    """
+    tags = []
+
+    def add(value):
+        items = []
+        if isinstance(value, list):
+            items = value
+        elif isinstance(value, str):
+            items = value.split(",")
+        for t in items:
+            t = str(t).strip()
+            if t and t not in tags:
+                tags.append(t)
+
+    if not isinstance(data, dict):
+        return tags
+    fixed = data.get("fixed")
+    if isinstance(fixed, dict):
+        add(fixed.get("quality"))
+        add(fixed.get("series"))
+        add(fixed.get("artist"))
+    character = data.get("character")
+    if isinstance(character, dict):
+        add(character.get("name"))
+        add(character.get("variant"))
+    from_path = data.get("from_path")
+    if isinstance(from_path, dict):
+        add(from_path.get("appearance"))
+    ai = data.get("ai_output")
+    if isinstance(ai, dict):
+        add(ai.get("count"))
+        add(ai.get("appearance"))
+        add(ai.get("tags"))
+        add(ai.get("environment"))
+    # 简化格式：扁平键（完整格式没有顶层这些键，去重兜底双保险）
+    for key in ("quality", "series", "artist", "character", "variant",
+                "count", "appearance", "tags", "environment"):
+        add(data.get(key))
+    return tags
+
+
+def run_convert_mode():
+    """--convert 一次性模式：txt ↔ JSON 标签格式互转。
+
+    默认 txt → JSON：按模型词表分类，仅加载词表（CSV/JSON），不加载
+    ONNX/onnxruntime，速度很快。LLM 调优新增的、不在词表中的标签按
+    general 处理（再走外观/环境关键词细分）。
+    --to-txt：JSON → txt 摊平，纯格式转换，连词表都不需要。
     """
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--convert", action="store_true")
+    parser.add_argument("--to-txt", action="store_true")
     parser.add_argument("--input", required=True)
-    parser.add_argument("--tags-path", required=True)
+    parser.add_argument("--tags-path", default=None)
     parser.add_argument("--simplified", action="store_true")
     parser.add_argument("--remove-txt", action="store_true")
     parser.add_argument("--recursive", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
-    if args.tags_path.endswith(".json"):
-        defs = load_tags_json(args.tags_path)
-    else:
-        defs = load_tags_csv(args.tags_path)
+    # --to-txt 是纯摊平，不查词表；只有 txt → JSON 方向需要词表做分类
     cat_by_name = {}
-    for d in defs:
-        cat_by_name[_normalize_tag_key(d["name"])] = d["category"]
+    if not args.to_txt:
+        if not args.tags_path:
+            result({"type": "error", "message": "txt → JSON 转换需要 --tags-path 指定模型词表"})
+            return
+        if args.tags_path.endswith(".json"):
+            defs = load_tags_json(args.tags_path)
+        else:
+            defs = load_tags_csv(args.tags_path)
+        for d in defs:
+            cat_by_name[_normalize_tag_key(d["name"])] = d["category"]
 
     exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".gif"}
     root = Path(args.input)
@@ -508,7 +562,27 @@ def run_convert_mode():
     for i, img in enumerate(images):
         txt = img.parent / f"{img.stem}.txt"
         json_path = img.parent / f"{img.stem}.json"
-        if not txt.exists():
+        if args.to_txt:
+            if not json_path.exists():
+                skipped += 1
+            elif txt.exists() and not args.overwrite:
+                # 已有 txt 就不拿 JSON 盖掉：那份 txt 可能已被人工整理过
+                skipped += 1
+            else:
+                try:
+                    data = json.loads(json_path.read_text(encoding="utf-8"))
+                    tag_list = _flatten_json_tags(data)
+                    if not tag_list:
+                        # JSON 里没有标签（比如只有 nl）——没东西可用，
+                        # 不写空 txt 让打标阶段误以为"已有标签"而跳过模型推理
+                        skipped += 1
+                    else:
+                        _write_text_atomic(txt, ", ".join(tag_list))
+                        converted += 1
+                except Exception as e:
+                    failed += 1
+                    result({"type": "log", "message": f"转换失败 {img.name}: {e}"})
+        elif not txt.exists():
             skipped += 1
         elif json_path.exists() and not args.overwrite:
             # 已有 JSON 就不拿 txt 盖掉：那份 JSON 可能已经有正确的字段归属和 nl

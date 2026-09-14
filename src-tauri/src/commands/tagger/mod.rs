@@ -599,6 +599,76 @@ fn run_convert_tags(
     options: &ConvertTagsOptions,
     tags_path: &std::path::Path,
 ) -> Result<ProcessResult, String> {
+    let mut args: Vec<String> = vec![
+        "--convert".into(),
+        "--input".into(),
+        options.input_path.clone(),
+        "--tags-path".into(),
+        tags_path.to_string_lossy().into_owned(),
+    ];
+    if options.json_simplified {
+        args.push("--simplified".into());
+    }
+    if options.remove_txt {
+        args.push("--remove-txt".into());
+    }
+    if options.recursive {
+        args.push("--recursive".into());
+    }
+    if options.overwrite_existing {
+        args.push("--overwrite".into());
+    }
+    run_convert_process(app, args, "JSON")
+}
+
+// ═══════════════ JSON → txt 标签格式转换 ═══════════════
+
+/// JSON → txt 转换选项。无需模型词表（摊平不分类），所以不需要 model_id。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ConvertJsonToTxtOptions {
+    pub input_path: String,
+    #[serde(default)]
+    pub recursive: bool,
+    /// 已存在同名 .txt 时是否覆盖。默认 false（跳过）——
+    /// 已有的 txt 可能是人工整理过的，拿 JSON 摊平盖掉就白改了
+    #[serde(default)]
+    pub overwrite_existing: bool,
+}
+
+/// 将图片旁的 .json 标签摊平转换为 .txt（nl 字段不进入 txt）。
+/// 辅助打标 txt 输出 + 优先使用已有标签时，靠它让"跳过已有标签"命中 JSON 来源的标签。
+#[tauri::command]
+pub async fn convert_json_to_txt(
+    app: tauri::AppHandle,
+    options: ConvertJsonToTxtOptions,
+) -> Result<ProcessResult, String> {
+    inference::reset_tagging_cancel();
+    tokio::task::spawn_blocking(move || {
+        let mut args: Vec<String> = vec![
+            "--convert".into(),
+            "--to-txt".into(),
+            "--input".into(),
+            options.input_path.clone(),
+        ];
+        if options.recursive {
+            args.push("--recursive".into());
+        }
+        if options.overwrite_existing {
+            args.push("--overwrite".into());
+        }
+        run_convert_process(&app, args, "txt")
+    })
+    .await
+    .map_err(|e| format!("转换任务执行失败: {}", e))?
+}
+
+/// txt↔JSON 两个方向共用的转换进程执行：spawn、进度转发、取消、stderr 收集。
+/// `label` 只用于进度/日志文案（"正在转换 JSON: xxx"）。
+fn run_convert_process(
+    app: &tauri::AppHandle,
+    args: Vec<String>,
+    label: &str,
+) -> Result<ProcessResult, String> {
     use std::io::BufRead;
     use tauri::Emitter;
 
@@ -607,28 +677,12 @@ fn run_convert_tags(
 
     let mut cmd = std::process::Command::new(&python);
     cmd.arg(script.to_string_lossy().as_ref())
-        .arg("--convert")
-        .arg("--input")
-        .arg(&options.input_path)
-        .arg("--tags-path")
-        .arg(tags_path)
+        .args(&args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONIOENCODING", "utf-8");
-    if options.json_simplified {
-        cmd.arg("--simplified");
-    }
-    if options.remove_txt {
-        cmd.arg("--remove-txt");
-    }
-    if options.recursive {
-        cmd.arg("--recursive");
-    }
-    if options.overwrite_existing {
-        cmd.arg("--overwrite");
-    }
     crate::commands::python_proc::configure_python_command(&mut cmd, false);
 
     let mut child = cmd
@@ -675,7 +729,7 @@ fn run_convert_tags(
                         total,
                         filename: filename.clone(),
                         status: "processing".to_string(),
-                        message: format!("正在转换 JSON: {}", filename),
+                        message: format!("正在转换{}: {}", label, filename),
                         ..Default::default()
                     },
                 );
@@ -749,8 +803,8 @@ fn run_convert_tags(
             filename: String::new(),
             status: "done".to_string(),
             message: format!(
-                "JSON 转换完成：{} 个转换，{} 个无标签跳过，{} 个失败",
-                converted, skipped, failed
+                "{}转换完成：{} 个转换，{} 个跳过，{} 个失败",
+                label, converted, skipped, failed
             ),
             ..Default::default()
         },

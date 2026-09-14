@@ -53,7 +53,7 @@ use commands::thumbnail::get_image_thumbnail;
 use commands::tagger::llm_tagger::{cancel_llm_tagging, fetch_llm_models, start_llm_tagging};
 use commands::tagger::{
     cancel_tagger_download, cancel_tagging,
-    convert_tags_to_json, force_cancel_tagging,
+    convert_json_to_txt, convert_tags_to_json, force_cancel_tagging,
     detect_onnx_model_info, get_tagger_models,
     import_local_tagger_model, remove_custom_tagger_model, start_tagging,
 };
@@ -120,6 +120,7 @@ pub fn run() {
             cancel_tagging,
             force_cancel_tagging,
             convert_tags_to_json,
+            convert_json_to_txt,
             reset_python_env,
             deploy_python_env,
             get_python_env_info,
