@@ -65,6 +65,10 @@ pub struct TaggerOptions {
     pub sort_by: String,
     #[serde(default = "default_existing_tags_action")]
     pub existing_tags_action: String,
+    /// txt 输出 + skip 时，同名 .json 也算"已有标签"（辅助打标：
+    /// 调优阶段会直接读 JSON 的字段结构，这里不能让模型重打一份 txt 盖掉选择）
+    #[serde(default)]
+    pub also_skip_json: bool,
     #[serde(default = "default_batch_size")]
     pub batch_size: u32,
     /// 是否递归扫描子文件夹
@@ -105,6 +109,9 @@ pub struct TaggerModelInfo {
     pub input_format: String,
     /// 该模型支持的标签分类列表
     pub supported_categories: Vec<String>,
+    /// 官方推荐阈值（None = 沿用工具箱默认值）
+    pub general_threshold: Option<f32>,
+    pub character_threshold: Option<f32>,
 }
 
 /// 标签定义（从 CSV 解析）
@@ -191,7 +198,6 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
                 }
             }
         } else {
-            // CSV 格式 (WD Tagger)
             let cat_map = [
                 (0, "general"),
                 (1, "artist"),
@@ -202,15 +208,24 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
                 (7, "model"),
                 (9, "rating"),
             ];
+            // CSV 格式 (WD Tagger)。按表头名取列：SmilingWolf 系是 tag_id,name,category,...，
+            // PixAI(deepghs 导出)是 id,tag_id,name,category,...——列位置不同
             if let Ok(mut reader) = csv::Reader::from_path(tags_path) {
+                let cat_idx = reader
+                    .headers()
+                    .ok()
+                    .and_then(|h| h.iter().position(|c| c.trim().eq_ignore_ascii_case("category")));
                 for result in reader.records().flatten() {
-                    if result.len() >= 3 {
-                        if let Ok(cat_id) = result.get(2).unwrap_or("0").parse::<i32>() {
-                            for (id, name) in &cat_map {
-                                if cat_id == *id {
-                                    cats.insert(name.to_string());
-                                    break;
-                                }
+                    let cell = match cat_idx {
+                        Some(i) => result.get(i),
+                        // 无表头名的老格式兜底：tag_id,name,category
+                        None => result.get(2),
+                    };
+                    if let Some(Ok(cat_id)) = cell.map(|c| c.trim().parse::<i32>()) {
+                        for (id, name) in &cat_map {
+                            if cat_id == *id {
+                                cats.insert(name.to_string());
+                                break;
                             }
                         }
                     }
@@ -339,6 +354,8 @@ pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
             repo_id: m.repo_id.clone(),
             input_format: fmt_str.to_string(),
             supported_categories,
+            general_threshold: m.general_threshold,
+            character_threshold: m.character_threshold,
         });
     }
     Ok(result)
@@ -490,6 +507,7 @@ pub async fn start_tagging(
     // 4. 通过 Python 子进程执行推理
     let is_nchw = model_def.input_format == models::InputFormat::NCHW;
     let preprocess_mode = model_def.preprocess_mode.clone();
+    let output_kind = model_def.output_kind.clone();
     let app_clone = app.clone();
     let opts = options.clone();
     let tags_path_for_python = tags_path.clone();
@@ -503,6 +521,7 @@ pub async fn start_tagging(
             model_def.input_size,
             is_nchw,
             &preprocess_mode,
+            &output_kind,
         )
     })
     .await

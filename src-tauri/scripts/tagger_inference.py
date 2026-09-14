@@ -68,6 +68,35 @@ def preprocess_image(image_path, target_size, input_format, preprocess_mode="aut
         img_array = (img_array - mean) / std
         return img_array[np.newaxis, ...].astype(np.float32)
 
+    if preprocess_mode == "pixai":
+        # PixAI Tagger：对齐 deepghs 导出的 preprocess.json——
+        # 直接拉伸 resize（无方形填充）、RGB、bilinear、normalize(0.5, 0.5)
+        image = image.resize((target_size, target_size), Image.BILINEAR)
+        img_array = np.array(image, dtype=np.float32) / 255.0
+        img_array = img_array.transpose(2, 0, 1)
+        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
+        std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
+        img_array = (img_array - mean) / std
+        return img_array[np.newaxis, ...].astype(np.float32)
+
+    if preprocess_mode == "wd_nchw":
+        # WD 系的 PyTorch 布局导出（如 wd-eva02-2026-canary 的 timm 导出）：
+        # 与 SmilingWolf 的 NHWC BGR 原始像素导出不同——
+        # 方形白填充 + bicubic + RGB + normalize(0.5, 0.5)，输出已是概率
+        w, h = image.size
+        if w != h:
+            new_size = max(w, h)
+            new_image = Image.new("RGB", (new_size, new_size), (255, 255, 255))
+            new_image.paste(image, ((new_size - w) // 2, (new_size - h) // 2))
+            image = new_image
+        image = image.resize((target_size, target_size), Image.BICUBIC)
+        img_array = np.array(image, dtype=np.float32) / 255.0
+        img_array = img_array.transpose(2, 0, 1)
+        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
+        std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
+        img_array = (img_array - mean) / std
+        return img_array[np.newaxis, ...].astype(np.float32)
+
     if input_format == "NCHW":
         # CL Tagger 预处理 (参考官方 HuggingFace Space)
         # 1. Pad to square (白色填充, 使用 PIL)
@@ -113,19 +142,31 @@ def preprocess_image(image_path, target_size, input_format, preprocess_mode="aut
         return image[np.newaxis, ...]  # [1, H, W, C]
 
 def load_tags_csv(csv_path):
-    """从 CSV 加载标签定义"""
+    """从 CSV 加载标签定义。
+
+    按表头名取列而不是固定位置：SmilingWolf 系是 tag_id,name,category,count，
+    PixAI(deepghs 导出)是 id,tag_id,name,category,count,ips——列位置不同。
+    """
     tags = []
     category_map = {9: "rating", 0: "general", 4: "character", 1: "artist", 3: "copyright", 5: "meta", 6: "quality", 7: "model"}
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
-        header = next(reader)
-        has_count = len(header) >= 4 and header[3].strip().lower() == "count"
+        header = [h.strip().lower() for h in next(reader)]
+        try:
+            name_idx = header.index("name")
+            cat_idx = header.index("category")
+        except ValueError:
+            # 无表头名的老格式兜底：tag_id,name,category[,count]
+            name_idx, cat_idx = 1, 2
+        count_idx = header.index("count") if "count" in header else None
         for row in reader:
-            if len(row) >= 3:
-                name = row[1]
-                cat_id = int(row[2])
+            if len(row) > max(name_idx, cat_idx):
+                name = row[name_idx]
+                cat_id = int(row[cat_idx])
                 category = category_map.get(cat_id, "general")
-                count = int(row[3]) if has_count and len(row) >= 4 and row[3].strip().isdigit() else 0
+                count = 0
+                if count_idx is not None and len(row) > count_idx and row[count_idx].strip().isdigit():
+                    count = int(row[count_idx])
                 tags.append({"name": name, "category": category, "count": count})
     return tags
 
@@ -763,6 +804,24 @@ def main():
                 # 检测输入格式
                 input_name = session.get_inputs()[0].name
                 input_format, detected_size = detect_model_format(session)
+
+                # 输出节点选择与 sigmoid 判定。
+                # 默认沿用旧启发式（NCHW = logits 需要 sigmoid，CL Tagger 如此）；
+                # output_kind 显式指定时按名称选节点：
+                #   probability → 优先 prediction 节点，不做 sigmoid
+                #   logits      → 优先 logits 节点，做 sigmoid
+                output_names = [o.name for o in session.get_outputs()]
+                output_index = 0
+                apply_sigmoid = input_format == "NCHW"
+                output_kind = cmd.get("output_kind", "auto")
+                if output_kind == "probability":
+                    if "prediction" in output_names:
+                        output_index = output_names.index("prediction")
+                    apply_sigmoid = False
+                elif output_kind == "logits":
+                    if "logits" in output_names:
+                        output_index = output_names.index("logits")
+                    apply_sigmoid = True
                 actual_providers = session.get_providers()
                 actual_info = f"onnxruntime {ort.__version__}, providers: {actual_providers}"
 
@@ -826,10 +885,10 @@ def main():
 
                 # 推理
                 outputs = session.run(None, {input_name: img_data})
-                probs = outputs[0][0]  # shape: [num_tags]
+                probs = outputs[output_index][0]  # shape: [num_tags]
 
-                # 对 NCHW 模型的输出需要 sigmoid (CL Tagger 输出 logits)
-                if input_format == "NCHW":
+                # logits 输出才需要 sigmoid（节点在 init 时按 output_kind 选定）
+                if apply_sigmoid:
                     probs = 1 / (1 + np.exp(-np.clip(probs, -30, 30)))
 
                 # 筛选标签（带分类信息）
@@ -998,8 +1057,13 @@ def main():
                 else:
                     txt_path = parent / f"{stem}.txt"
 
-                    # 已标识文件操作
-                    if existing_tags_action == "skip" and txt_path.exists():
+                    # 已标识文件操作。also_skip_json：辅助打标 txt 输出时，
+                    # 同名 .json 也算"已有标签"（调优阶段会直接读它的字段结构），
+                    # 这里不能让模型重打一份 txt 盖住用户的选择
+                    if existing_tags_action == "skip" and (
+                        txt_path.exists()
+                        or (cmd.get("also_skip_json", False) and (parent / f"{stem}.json").exists())
+                    ):
                         result({
                             "type": "result",
                             "image_path": image_path,
@@ -1088,7 +1152,7 @@ def main():
                 # 批量推理 (失败时降级为逐张推理重试)
                 try:
                     outputs = session.run(None, {input_name: batch_tensor})
-                    all_probs = outputs[0]  # shape: [N, num_tags]
+                    all_probs = outputs[output_index]  # shape: [N, num_tags]
                 except Exception as e:
                     log(f"批量推理失败，降级为逐张推理重试: {type(e).__name__}")
                     all_probs = []
@@ -1096,7 +1160,7 @@ def main():
                         img_path = images[vi].get("image_path", "")
                         try:
                             out_single = session.run(None, {input_name: batch_data[bi]})
-                            all_probs.append(out_single[0][0])
+                            all_probs.append(out_single[output_index][0])
                         except Exception as e2:
                             all_probs.append(None)
                             result({
@@ -1138,7 +1202,7 @@ def main():
                                 if t_str:
                                     append_list.append(t_str)
 
-                        if input_format == "NCHW":
+                        if apply_sigmoid:
                             probs = 1 / (1 + np.exp(-np.clip(probs, -30, 30)))
 
                         selected_tags = []
@@ -1253,7 +1317,10 @@ def main():
                         else:
                             txt_path = parent / f"{stem}.txt"
 
-                            if existing_tags_action == "skip" and txt_path.exists():
+                            if existing_tags_action == "skip" and (
+                                txt_path.exists()
+                                or (img_cmd.get("also_skip_json", False) and (parent / f"{stem}.json").exists())
+                            ):
                                 result({"type": "result", "image_path": image_path, "tags": [], "tag_count": 0, "skipped": True})
                                 continue
 

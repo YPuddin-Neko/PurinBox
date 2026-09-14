@@ -15,7 +15,7 @@ import i18n from '../i18n';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
 
-interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; supported_categories: string[]; }
+interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; supported_categories: string[]; general_threshold?: number | null; character_threshold?: number | null; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
 interface OnnxModelInfo { input_size: number; input_format: string; input_shape: number[]; channels: number; }
@@ -394,7 +394,13 @@ export default function AiTaggerTab() {
               <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }} dangerouslySetInnerHTML={{ __html: t('aiTagger.channelTip') }} />
             </div>
           )}
-          <CustomSelect value={selectedModel} onChange={v => setSelectedModel(v)}
+          <CustomSelect value={selectedModel} onChange={v => {
+            setSelectedModel(v);
+            // 模型带官方推荐阈值时应用到滑条（用户之后仍可手动调）
+            const m = models.find(x => x.id === v);
+            if (m?.general_threshold != null) setGenTh(m.general_threshold);
+            if (m?.character_threshold != null) setCharTh(m.character_threshold);
+          }}
             options={models.map(m => ({ value: m.id, label: `${m.name} ${m.is_downloaded ? '✓' : '⬇'}` }))} />
           {cur && (
             <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>

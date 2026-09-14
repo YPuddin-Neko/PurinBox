@@ -408,6 +408,7 @@ pub fn run_tagging(
     _input_size: u32,
     _is_nchw: bool,
     preprocess_mode: &str,
+    output_kind: &str,
 ) -> Result<ProcessResult, String> {
     // 杀死之前的进程（如果有）
     kill_python_process();
@@ -508,6 +509,7 @@ pub fn run_tagging(
         "use_gpu": options.use_gpu,
         "input_size": _input_size,
         "preprocess_mode": preprocess_mode,
+        "output_kind": output_kind,
     });
 
     if let Err(e) = writeln!(stdin, "{}", init_cmd) {
@@ -750,6 +752,7 @@ pub fn run_tagging(
                 "escape_parentheses": options.escape_parentheses,
                 "sort_by": options.sort_by,
                 "existing_tags_action": options.existing_tags_action,
+                "also_skip_json": options.also_skip_json,
             });
             if let Err(e) = writeln!(stdin, "{}", tag_cmd) {
                 fail_count += 1;
@@ -875,6 +878,7 @@ pub fn run_tagging(
                         "escape_parentheses": options.escape_parentheses,
                         "sort_by": options.sort_by,
                         "existing_tags_action": options.existing_tags_action,
+                        "also_skip_json": options.also_skip_json,
                     })
                 })
                 .collect();

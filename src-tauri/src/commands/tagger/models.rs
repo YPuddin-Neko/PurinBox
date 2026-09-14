@@ -29,9 +29,22 @@ pub struct ModelDefinition {
     pub input_format: InputFormat,
     #[serde(default = "default_preprocess_mode")]
     pub preprocess_mode: String,
+    /// 输出语义：auto（旧启发式，NCHW 视为 logits）| probability（概率，多输出时取
+    /// prediction 节点）| logits（原始分，需 sigmoid，多输出时取 logits 节点）
+    #[serde(default = "default_output_kind")]
+    pub output_kind: String,
+    /// 官方推荐的通用/角色阈值（None = 用工具箱统一默认值）
+    #[serde(default)]
+    pub general_threshold: Option<f32>,
+    #[serde(default)]
+    pub character_threshold: Option<f32>,
 }
 
 fn default_preprocess_mode() -> String {
+    "auto".to_string()
+}
+
+fn default_output_kind() -> String {
     "auto".to_string()
 }
 
@@ -75,6 +88,9 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             is_builtin: true,
             input_format: InputFormat::NHWC,
             preprocess_mode: "wd".into(),
+            output_kind: "auto".into(),
+            general_threshold: None,
+            character_threshold: None,
         },
         ModelDefinition {
             id: "wd-vit-tagger-v3".into(),
@@ -88,6 +104,9 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             is_builtin: true,
             input_format: InputFormat::NHWC,
             preprocess_mode: "wd".into(),
+            output_kind: "auto".into(),
+            general_threshold: None,
+            character_threshold: None,
         },
         ModelDefinition {
             id: "wd-convnext-tagger-v3".into(),
@@ -101,6 +120,9 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             is_builtin: true,
             input_format: InputFormat::NHWC,
             preprocess_mode: "wd".into(),
+            output_kind: "auto".into(),
+            general_threshold: None,
+            character_threshold: None,
         },
         ModelDefinition {
             id: "wd-eva02-large-tagger-v3".into(),
@@ -114,6 +136,45 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             is_builtin: true,
             input_format: InputFormat::NHWC,
             preprocess_mode: "wd".into(),
+            output_kind: "auto".into(),
+            general_threshold: None,
+            character_threshold: None,
+        },
+        ModelDefinition {
+            id: "wd-eva02-tagger-2026-canary".into(),
+            name: "WD EVA02 Tagger 2026 Canary".into(),
+            description: "EVA02 Large 的 2026 增量版，新增约 6000 个标签（共 16473，数据截至 2026-05）".into(),
+            repo_id: "Misaka41Z/wd-eva02-tagger-2026-canary-onnx-v2".into(),
+            model_filename: "model.onnx".into(),
+            tags_filename: "selected_tags.csv".into(),
+            extra_files: vec![],
+            input_size: 448,
+            is_builtin: true,
+            // 该 ONNX 是 timm 原始布局导出：NCHW + RGB 归一化，与 SmilingWolf
+            // 官方 NHWC BGR 原始像素的导出不同（实测确认，见 preprocess_mode wd_nchw）
+            input_format: InputFormat::NCHW,
+            preprocess_mode: "wd_nchw".into(),
+            output_kind: "probability".into(),
+            // 无官方分类阈值指导，行为与 eva02-v3 一致（实测对照），沿用工具箱默认值
+            general_threshold: None,
+            character_threshold: None,
+        },
+        ModelDefinition {
+            id: "pixai-tagger-v0.9".into(),
+            name: "PixAI Tagger v0.9".into(),
+            description: "PixAI 官方打标模型（13461 个标签，通用/角色两类），角色标签覆盖较新".into(),
+            repo_id: "deepghs/pixai-tagger-v0.9-onnx".into(),
+            model_filename: "model.onnx".into(),
+            tags_filename: "selected_tags.csv".into(),
+            extra_files: vec![],
+            input_size: 448,
+            is_builtin: true,
+            input_format: InputFormat::NCHW,
+            preprocess_mode: "pixai".into(),
+            output_kind: "probability".into(),
+            // 官方推荐阈值（deepghs thresholds.csv / README）：general 0.3, character 0.85
+            general_threshold: Some(0.3),
+            character_threshold: Some(0.85),
         },
         ModelDefinition {
             id: "wd-v1-4-moat-tagger-v2".into(),
@@ -127,6 +188,9 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             is_builtin: true,
             input_format: InputFormat::NHWC,
             preprocess_mode: "wd".into(),
+            output_kind: "auto".into(),
+            general_threshold: None,
+            character_threshold: None,
         },
         ModelDefinition {
             id: "cl-tagger-v2-01a".into(),
@@ -140,6 +204,9 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             is_builtin: true,
             input_format: InputFormat::NCHW,
             preprocess_mode: "siglip2".into(),
+            output_kind: "auto".into(),
+            general_threshold: None,
+            character_threshold: None,
         },
         ModelDefinition {
             id: "cl-tagger-1-02".into(),
@@ -153,6 +220,9 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             is_builtin: true,
             input_format: InputFormat::NHWC,
             preprocess_mode: "wd".into(),
+            output_kind: "auto".into(),
+            general_threshold: None,
+            character_threshold: None,
         },
     ]
 }
@@ -239,6 +309,9 @@ pub fn add_local_model(
         is_builtin: false,
         input_format,
         preprocess_mode: "auto".into(),
+        output_kind: "auto".into(),
+        general_threshold: None,
+        character_threshold: None,
     });
 
     save_custom_models(&models)?;

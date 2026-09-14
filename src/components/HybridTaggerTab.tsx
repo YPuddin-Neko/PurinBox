@@ -16,7 +16,7 @@ import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
 import { useTranslation } from 'react-i18next';
 import { IMAGE_DETAIL_OPTIONS } from '../utils/imageDetail';
 
-interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; supported_categories: string[]; }
+interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; supported_categories: string[]; general_threshold?: number | null; character_threshold?: number | null; }
 interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
 interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
 
@@ -491,17 +491,9 @@ export default function HybridTaggerTab() {
         if (cancelRequestedRef.current) throw '已取消';
       }
 
-      // txt 输出 + 优先使用已有标签：只有 .json 的图先摊平成 txt，
-      // 打标阶段的 skip 才能命中——不然手里现成的 JSON 标签会被无视、重跑模型
-      if (!isJson && preferExisting) {
-        setPhase('converting');
-        taskLogs.appendLog(t('hybridTagger.phaseConvertingToTxt'), 'info');
-        updateTask('tagger', { status: 'running', message: t('hybridTagger.phaseConvertingToTxt') });
-        await invoke<ProcessResult>('convert_json_to_txt', {
-          options: { input_path: inputPath, recursive, overwrite_existing: false },
-        });
-        if (cancelRequestedRef.current) throw '已取消';
-      }
+      // txt 输出 + 优先使用已有标签：不用转换——打标阶段靠 also_skip_json 把
+      // 同名 .json 算作"已有标签"跳过；LLM 调优阶段直接读 JSON 的字段结构
+      // （count/appearance/... 带着含义喂给 VLM），比摊平成 txt 信息更全
 
       // 本地打标（直接按所选格式输出）
       setPhase('tagging');
@@ -522,6 +514,8 @@ export default function HybridTaggerTab() {
           escape_parentheses: escapeParentheses,
           sort_by: 'confidence',
           existing_tags_action: preferExisting ? 'skip' : 'overwrite',
+          // txt 输出时同名 .json 也算已有标签——调优阶段会直接读它的字段结构
+          also_skip_json: !isJson && preferExisting,
           batch_size: 1,
           recursive,
         },
@@ -636,7 +630,13 @@ export default function HybridTaggerTab() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
             <CustomSelect
               value={selectedModel}
-              onChange={setSelectedModel}
+              onChange={v => {
+                setSelectedModel(v);
+                // 模型带官方推荐阈值时应用到滑条（用户之后仍可手动调）
+                const m = models.find(x => x.id === v);
+                if (m?.general_threshold != null) setGenTh(m.general_threshold);
+                if (m?.character_threshold != null) setCharTh(m.character_threshold);
+              }}
               options={models.map(m => ({ value: m.id, label: m.is_downloaded ? m.name : `${m.name} (${t('hybridTagger.notDownloaded')})` }))}
             />
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
