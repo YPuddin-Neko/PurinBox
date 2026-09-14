@@ -106,6 +106,7 @@ struct ChatChoiceMessage {
 }
 
 /// 处理单个文件的结果
+#[derive(Debug)]
 enum FileResult {
     Success {
         filename: String,
@@ -535,12 +536,15 @@ const SIMPLIFIED_LAYOUT: JsonTagLayout = JsonTagLayout {
     bucket_paths: [&["count"], &["appearance"], &["tags"], &["environment"]],
 };
 
-fn json_layout(data: &serde_json::Value) -> &'static JsonTagLayout {
-    let is_full = ["ai_output", "fixed", "from_path"]
+fn is_full_json_layout(data: &serde_json::Value) -> bool {
+    ["ai_output", "fixed", "from_path"]
         .iter()
         .any(|k| data.get(k).map(|v| v.is_object()).unwrap_or(false))
-        || data.get("character").map(|v| v.is_object()).unwrap_or(false);
-    if is_full {
+        || data.get("character").map(|v| v.is_object()).unwrap_or(false)
+}
+
+fn json_layout(data: &serde_json::Value) -> &'static JsonTagLayout {
+    if is_full_json_layout(data) {
         &FULL_LAYOUT
     } else {
         &SIMPLIFIED_LAYOUT
@@ -617,6 +621,65 @@ fn flatten_json_tags(data: &serde_json::Value) -> Vec<String> {
         }
     }
     tags
+}
+
+/// (语义字段名, 路径)，顺序对齐 Anima caption 的字段顺序；完整/简化格式各一份
+const FULL_LABELED_FIELDS: &[(&str, &[&str])] = &[
+    ("quality", &["fixed", "quality"]),
+    ("count", &["ai_output", "count"]),
+    ("character", &["character", "name"]),
+    ("series", &["fixed", "series"]),
+    ("artist", &["fixed", "artist"]),
+    ("appearance", &["ai_output", "appearance"]),
+    ("tags", &["ai_output", "tags"]),
+    ("environment", &["ai_output", "environment"]),
+];
+const SIMPLIFIED_LABELED_FIELDS: &[(&str, &[&str])] = &[
+    ("quality", &["quality"]),
+    ("count", &["count"]),
+    ("character", &["character"]),
+    ("series", &["series"]),
+    ("artist", &["artist"]),
+    ("appearance", &["appearance"]),
+    ("tags", &["tags"]),
+    ("environment", &["environment"]),
+];
+
+fn json_labeled_fields(data: &serde_json::Value) -> &'static [(&'static str, &'static [&'static str])] {
+    if is_full_json_layout(data) {
+        FULL_LABELED_FIELDS
+    } else {
+        SIMPLIFIED_LABELED_FIELDS
+    }
+}
+
+/// 把 JSON 标签按字段标签渲染成多行文本——txt 模式下没有 .txt 只有 .json 时，
+/// 不摊平转换、直接读 JSON：字段结构带着语义喂给 VLM，
+/// 比一串扁平标签更容易核对画面内容（字段含义随文本一并给出）
+fn render_json_tags_labeled(data: &serde_json::Value) -> String {
+    let mut out = String::from(
+        "(字段含义 Field meanings: quality=质量标签, count=人数, character=角色名, \
+         series=作品名, artist=画师(@ 前缀), appearance=外观(发型/发色/瞳色/服装/配饰), \
+         tags=动作/表情/姿势/构图/物品, environment=背景/场景/光影/氛围)",
+    );
+    for (label, path) in json_labeled_fields(data) {
+        let tags: Vec<&str> = match json_get_path(data, path) {
+            Some(serde_json::Value::String(s)) => {
+                s.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).collect()
+            }
+            Some(serde_json::Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|t| t.trim())
+                .filter(|t| !t.is_empty())
+                .collect(),
+            _ => continue,
+        };
+        if !tags.is_empty() {
+            out.push_str(&format!("\n{}: {}", label, tags.join(", ")));
+        }
+    }
+    out
 }
 
 /// 将 LLM 调优结果差量写回 JSON：
@@ -1088,7 +1151,17 @@ async fn process_single_file(
     // 查找对应的标签文件（txt 或 json）
     let is_json = options.file_format == "json";
     let tag_ext = if is_json { "json" } else { "txt" };
-    let tag_path = parent.join(format!("{}.{}", stem, tag_ext));
+    let mut tag_path = parent.join(format!("{}.{}", stem, tag_ext));
+    // txt 模式回退：没有 .txt 但有 .json 时直接读 JSON——字段结构带着语义
+    // 喂给 VLM 比先摊平转换信息更全（输出是扁平 txt，写盘时反正要摊平）
+    let mut json_fallback = false;
+    if !tag_path.exists() && !is_json {
+        let jp = parent.join(format!("{}.json", stem));
+        if jp.exists() {
+            tag_path = jp;
+            json_fallback = true;
+        }
+    }
     if !tag_path.exists() {
         return FileResult::Skipped {
             filename,
@@ -1113,9 +1186,12 @@ async fn process_single_file(
         };
     }
 
-    // json 模式：解析并扁平化标签；txt 模式：逗号拆分
+    // json 模式：解析并扁平化标签；txt 模式：逗号拆分。
+    // json 回退（txt 模式读到了 .json）：同样解析展开，但不进 json_data——
+    // 结果始终写回 .txt，JSON 原文件不动
     let mut json_data: Option<serde_json::Value> = None;
-    let original_tags: Vec<String> = if is_json {
+    let mut tags_display: Option<String> = None;
+    let original_tags: Vec<String> = if is_json || json_fallback {
         let parsed: serde_json::Value = match serde_json::from_str(&tag_content) {
             Ok(v) => v,
             Err(e) => {
@@ -1126,7 +1202,11 @@ async fn process_single_file(
             }
         };
         let tags = flatten_json_tags(&parsed);
-        json_data = Some(parsed);
+        if is_json {
+            json_data = Some(parsed);
+        } else {
+            tags_display = Some(render_json_tags_labeled(&parsed));
+        }
         tags
     } else {
         tag_content
@@ -1143,8 +1223,8 @@ async fn process_single_file(
         };
     }
 
-    // 调用 LLM 细化
-    match refine_tags_with_llm(client, img_path, &original_tags, options, last_req_time).await {
+    // 调用 LLM 细化（tags_display：JSON 回退时带字段标签的展示文本）
+    match refine_tags_with_llm(client, img_path, &original_tags, tags_display.as_deref(), options, last_req_time).await {
         // 自然语言打标：整段描述直接落盘，标签只是刚才喂给 LLM 的参考
         Ok(RefineOutput::Caption(caption)) => {
             let elapsed_ms = start.elapsed().as_millis();
@@ -1305,6 +1385,7 @@ async fn refine_tags_with_llm(
     client: &reqwest::Client,
     img_path: &Path,
     tags: &[String],
+    tags_display: Option<&str>,
     options: &TagRefineOptions,
     last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
 ) -> Result<RefineOutput, String> {
@@ -1335,7 +1416,11 @@ async fn refine_tags_with_llm(
     let b64 = base64::engine::general_purpose::STANDARD.encode(buf.get_ref());
     let data_url = format!("data:image/jpeg;base64,{}", b64);
 
-    let tag_list = tags.join(", ");
+    // JSON 回退时展示文本带字段标签和含义（count: 1girl / appearance: ...），
+    // 否则就是扁平的逗号分隔列表
+    let tag_list = tags_display
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| tags.join(", "));
 
     // 构造 prompt
     let user_text = if options.prompt.contains("{tags}") {
@@ -1828,6 +1913,38 @@ mod marker_tests {
         assert_eq!(m.rest, vec!["1girl, solo, smile"]);
     }
 
+    /// txt 模式 JSON 回退：带字段标签渲染，空字段省略，nl 不出现
+    #[test]
+    fn labeled_render_skips_empty_and_nl() {
+        let full = serde_json::json!({
+            "fixed": {"quality": "newest, safe", "series": "", "artist": "@wlop"},
+            "character": {"name": "hatsune miku", "variant": ""},
+            "from_path": {"appearance": []},
+            "ai_output": {"count": "1girl", "appearance": ["long hair", "blue eyes"],
+                          "tags": ["smile"], "environment": [], "nl": "a secret description"}
+        });
+        let rendered = render_json_tags_labeled(&full);
+        assert!(rendered.contains("quality: newest, safe"));
+        assert!(rendered.contains("count: 1girl"));
+        assert!(rendered.contains("character: hatsune miku"));
+        assert!(rendered.contains("artist: @wlop"));
+        assert!(rendered.contains("appearance: long hair, blue eyes"));
+        assert!(rendered.contains("tags: smile"));
+        // 空字段省略、nl 不出现
+        assert!(!rendered.contains("series:"));
+        assert!(!rendered.contains("environment:"));
+        assert!(!rendered.contains("a secret description"));
+        // 字段含义说明在最前
+        assert!(rendered.starts_with("(字段含义"));
+
+        // 简化格式同样渲染（逗号串 + 数组混合）
+        let simp = serde_json::json!({"count": "2girls", "tags": "sitting, looking at viewer", "nl": "x"});
+        let r2 = render_json_tags_labeled(&simp);
+        assert!(r2.contains("count: 2girls"));
+        assert!(r2.contains("tags: sitting, looking at viewer"));
+        assert!(!r2.contains('x'));
+    }
+
     #[test]
     fn set_nl_full_and_simplified() {
         // 完整格式：写入 ai_output.nl（路径缺失时补建）
@@ -1979,5 +2096,162 @@ mod marker_tests {
         assert_eq!(data["environment"], serde_json::json!(["simple background"]));
         // 未归入任何段的新增标签兜底追加到 tags
         assert_eq!(data["tags"], serde_json::json!(["smile", "blush"]));
+    }
+}
+
+/// 端到端测试：本地 mock OpenAI 兼容服务器 + 真实图片/标签文件，
+/// 跑 process_single_file 全链路（读标签 → 请求 → 解析 → 写盘）
+#[cfg(test)]
+mod e2e_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::mpsc;
+
+    fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    /// 起一个最小 mock：接受一个请求，body 发回 channel，返回固定 content 的 OpenAI 响应
+    fn mock_openai_server(content: &str) -> (String, mpsc::Receiver<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = mpsc::channel();
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop"
+            }]
+        })
+        .to_string();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 8192];
+                let mut header_end = None;
+                let mut content_len = 0usize;
+                loop {
+                    let n = stream.read(&mut tmp).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if header_end.is_none() {
+                        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
+                            header_end = Some(pos + 4);
+                            for line in String::from_utf8_lossy(&buf[..pos]).lines() {
+                                let l = line.to_lowercase();
+                                if let Some(v) = l.strip_prefix("content-length:") {
+                                    content_len = v.trim().parse().unwrap_or(0);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(he) = header_end {
+                        if buf.len() >= he + content_len {
+                            break;
+                        }
+                    }
+                }
+                if let Some(he) = header_end {
+                    let _ = tx.send(String::from_utf8_lossy(&buf[he..]).to_string());
+                }
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        (format!("http://127.0.0.1:{}/v1/chat/completions", port), rx)
+    }
+
+    fn make_options(endpoint: String) -> TagRefineOptions {
+        TagRefineOptions {
+            input_path: String::new(),
+            output_path: String::new(),
+            api_endpoint: endpoint,
+            api_key: "test-key".into(),
+            model_name: "mock-vlm".into(),
+            prompt: "当前标签:\n{tags}\n请调优".into(),
+            temperature: 0.3,
+            max_tokens: -1,
+            image_size: 512,
+            top_p: 0.0,
+            request_interval_ms: -1,
+            concurrency: 1,
+            recursive: false,
+            file_format: "txt".into(),
+            image_detail: String::new(),
+            caption_mode: false,
+            trigger_word: String::new(),
+            preserve_tags: false,
+        }
+    }
+
+    fn setup_dir(tag: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("purinbox_refine_e2e_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let img = root.join("a.png");
+        image::RgbImage::from_pixel(64, 64, image::Rgb([120, 80, 160]))
+            .save(&img)
+            .unwrap();
+        (root, img)
+    }
+
+    const FIXTURE_JSON: &str = r#"{
+        "fixed": {"quality": "newest, safe", "series": "", "artist": ""},
+        "character": {"name": "hatsune miku", "variant": ""},
+        "ai_output": {"count": "1girl", "appearance": ["long hair", "blue eyes"],
+                      "tags": ["smile"], "environment": [], "nl": "keep me"}
+    }"#;
+
+    /// txt 模式 + 只有 .json：回退读取、带字段语义发给 LLM、结果写 .txt、JSON 不动
+    #[tokio::test]
+    async fn txt_mode_json_fallback_end_to_end() {
+        let (endpoint, rx) =
+            mock_openai_server("TAGS: 1girl, long hair, smile, outdoors\nNL: txt 模式忽略");
+        let (root, img) = setup_dir("fallback");
+        std::fs::write(root.join("a.json"), FIXTURE_JSON).unwrap();
+
+        let options = make_options(endpoint);
+        // 绕开代理环境变量，直连本地 mock
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let last_req = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        let result = process_single_file(&client, &img, &root, &root, &options, &last_req).await;
+
+        assert!(matches!(result, FileResult::Success { .. }), "应成功: {result:?}");
+        let txt = std::fs::read_to_string(root.join("a.txt")).unwrap();
+        assert_eq!(txt, "1girl, long hair, smile, outdoors");
+        // JSON 原文件不动，nl 保留
+        let json_raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("a.json")).unwrap()).unwrap();
+        assert_eq!(json_raw["ai_output"]["nl"], "keep me");
+        // 发给 LLM 的标签带字段标签（字段含义 + count: / appearance: 行）
+        let sent = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("mock 服务器应收到请求");
+        assert!(sent.contains("appearance: long hair, blue eyes"), "请求应有字段标签: {}", &sent[..sent.len().min(400)]);
+        assert!(sent.contains("count: 1girl"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 拒绝语带 NL: 前缀 → 判失败且不写任何文件
+    #[tokio::test]
+    async fn marked_refusal_fails_without_writing() {
+        let (endpoint, _rx) =
+            mock_openai_server("NL: I'm sorry, I cannot describe this image.");
+        let (root, img) = setup_dir("refusal");
+        std::fs::write(root.join("a.json"), FIXTURE_JSON).unwrap();
+
+        let options = make_options(endpoint);
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let last_req = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        let result = process_single_file(&client, &img, &root, &root, &options, &last_req).await;
+
+        assert!(matches!(result, FileResult::Error { .. }), "拒绝应判失败: {result:?}");
+        assert!(!root.join("a.txt").exists(), "拒绝时不应写出 txt");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

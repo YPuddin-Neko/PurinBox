@@ -463,7 +463,7 @@ const zhCN = {
     title: '图片打标',
     subtitle: '使用 Tagger 模型或大语言模型自动为训练图片生成文本标签',
     aiTab: 'Tagger 模型打标',
-    llmTab: 'LLM 模型打标',
+    llmTab: 'VLM 模型打标',
     hybridTab: '辅助打标',
   },
 
@@ -723,11 +723,11 @@ const zhCN = {
   },
 
   // ═══════════════ AI 打标 ═══════════════
-  // ═══════════════ 辅助打标（本地 + LLM 调优） ═══════════════
+  // ═══════════════ 辅助打标（本地 + VLM 调优） ═══════════════
   hybridTagger: {
-    desc: '流程：本地模型打标 → LLM 对照图片二次确认与调优 → （可选）转换为 JSON 格式。标签文件就地写在图片旁。',
+    desc: '流程：本地模型打标 → VLM 对照图片二次确认与调优 → （可选）转换为 JSON 格式。标签文件就地写在图片旁。',
     localPhase: '本地打标',
-    llmPhase: 'LLM 调优',
+    llmPhase: 'VLM 调优',
     presetFull: '标签调优 + 自然语言描述',
     presetTagsOnly: '标签调优',
     triggerWord: '触发词',
@@ -745,7 +745,7 @@ const zhCN = {
     promptLabel: '调优提示词',
     catUnsupported: '当前模型不支持该类别',
     preferExisting: '优先使用已有标签',
-    preferExistingTip: '图片已有同格式标签文件时跳过本地打标，保留现成标签直接进入 LLM 调优；关闭则本地模型覆盖重打',
+    preferExistingTip: '图片已有同格式标签文件时跳过本地打标，保留现成标签直接进入 VLM 调优；关闭则本地模型覆盖重打',
     outputFormat: '输出格式',
     formatTxt: 'TXT（逗号分隔标签）',
     formatJson: 'JSON（完整格式）',
@@ -754,11 +754,10 @@ const zhCN = {
     startText: '开始辅助打标',
     phaseTagging: '本地模型打标...',
     phaseConverting: '转换已有 txt 标签为 JSON...',
-    phaseConvertingToTxt: '转换已有 JSON 标签为 txt...',
-    phaseRefining: 'LLM 二次确认与调优...',
+    phaseRefining: 'VLM 二次确认与调优...',
     phaseShortTagging: '本地打标中...',
     phaseShortConverting: '转换标签中...',
-    phaseShortRefining: 'LLM 调优中...',
+    phaseShortRefining: 'VLM 调优中...',
     allDone: '辅助打标完成',
   },
   aiTagger: {
@@ -851,7 +850,7 @@ const zhCN = {
     batchSize: '批次',
   },
 
-  // ═══════════════ LLM 打标 ═══════════════
+  // ═══════════════ VLM 打标 ═══════════════
   llmTagger: {
     datasetPath: '数据集路径',
     selectFolder: '选择图片文件夹...',
@@ -883,10 +882,10 @@ const zhCN = {
     outputFormat: '输出格式',
     fullFormat: '完整格式',
     simplified: '简化格式',
-    startLlmTag: '开始 LLM 打标',
+    startLlmTag: '开始 VLM 打标',
     tagging: '打标中...',
-    startMsg: '开始 LLM 打标 | 模型: {{model}} | API: {{api}}',
-    taskName: 'LLM 打标',
+    startMsg: '开始 VLM 打标 | 模型: {{model}} | API: {{api}}',
+    taskName: 'VLM 打标',
     progressDone: '处理完成',
     progressLabel: '处理进度',
     fileCount: '个文件',
@@ -1103,8 +1102,8 @@ const zhCN = {
     // 代理
     proxy: '代理设置',
     proxyEnabled: '启用代理',
-    proxyLlm: ' LLM 代理',
-    proxyLlmDesc: '允许 LLM 接口走代理',
+    proxyLlm: ' VLM 代理',
+    proxyLlmDesc: '允许 VLM 接口走代理',
     proxyType: '代理类型',
     proxyHost: '代理地址',
     proxyPort: '端口',
@@ -1136,7 +1135,7 @@ const zhCN = {
     workflowToggle: '工作流',
     workflowToggleDesc: '测试版功能：以节点方式编排多个处理步骤自动执行。功能仍在打磨中，可能存在不稳定之处。',
     hybridTaggerToggle: '辅助打标',
-    hybridTaggerToggleDesc: '测试版功能：先使用本地模型生成标签，再由 LLM 对照图片进行二次确认与调优。',
+    hybridTaggerToggleDesc: '测试版功能：先使用本地模型生成标签，再由 VLM 对照图片进行二次确认与调优。',
     monitorSec: '{{n}} 秒',
     monitorOff: '关闭',
     monitorRealtime: '实时',
@@ -1149,7 +1148,7 @@ const zhCN = {
     proxyUserOptional: '用户名（可选）',
     proxyPassOptional: '密码（可选）',
     proxyNoAuthHint: '无需认证留空',
-    proxyDesc: '代理将应用于所有网络请求，包括翻译 API、LLM 接口、模型下载等。修改后请点击“保存”，新任务将自动使用新配置。',
+    proxyDesc: '代理将应用于所有网络请求，包括翻译 API、VLM 接口、模型下载等。修改后请点击“保存”，新任务将自动使用新配置。',
     proxySaved: '代理设置已保存',
     proxySaveFailed: '保存失败',
     // Hugging Face
@@ -1495,7 +1494,7 @@ const zhCN = {
     nodePersonCrop: '人物裁切',
     nodeAesthetic: '美学评分',
     nodeTagger: 'Tagger 打标',
-    nodeLlmTagger: 'LLM 打标',
+    nodeLlmTagger: 'VLM 打标',
     nodeFilter: '分辨率筛选',
     nodeRename: '批量重命名',
     nodeBucketAssign: '分桶判断',
