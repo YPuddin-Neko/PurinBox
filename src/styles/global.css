@@ -10,9 +10,19 @@
   box-sizing: border-box;
   user-select: none;
   -webkit-user-select: none;
-  /* 内部容器（提示词框、日志、各种列表）滚到边界后不再把滚动传给整页。
-     对不可滚动的元素无副作用，所以直接铺在通配规则里，
-     省得 30 多个滚动容器逐个补内联 overscrollBehavior */
+}
+
+/* 内部滚动容器（提示词框、日志、下拉、各种列表）滚到边界后不再把滚动传给整页。
+   只能作用于真正的滚动容器：WebKit(macOS Tauri 的 WKWebView)下
+   overscroll-behavior 对非滚动元素也会吞掉滚轮事件——曾全局铺在 * 上，
+   导致侧边栏菜单项等非滚动元素把滚轮拦截、侧边栏无法滚动 */
+textarea,
+.cs-dropdown,
+.log-content,
+[style*="overflow-y: auto"],
+[style*="overflow-y:auto"],
+[style*="overflow: auto"],
+[style*="overflow:auto"] {
   overscroll-behavior: contain;
 }
 
