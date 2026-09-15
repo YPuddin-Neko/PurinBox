@@ -143,7 +143,7 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
         ModelDefinition {
             id: "wd-eva02-tagger-2026-canary".into(),
             name: "WD EVA02 Tagger 2026 Canary".into(),
-            description: "EVA02 Large 的 2026 增量版，新增约 6000 个标签（共 16473，数据截至 2026-05）".into(),
+            description: "基于 EVA02 Large 的 2026 增量版，标签更新".into(),
             repo_id: "Misaka41Z/wd-eva02-tagger-2026-canary-onnx-v2".into(),
             model_filename: "model.onnx".into(),
             tags_filename: "selected_tags.csv".into(),
@@ -162,7 +162,7 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
         ModelDefinition {
             id: "pixai-tagger-v0.9".into(),
             name: "PixAI Tagger v0.9".into(),
-            description: "PixAI 官方打标模型（13461 个标签，通用/角色两类），角色标签覆盖较新".into(),
+            description: "PixAI 官方打标模型，角色标签覆盖较新".into(),
             repo_id: "deepghs/pixai-tagger-v0.9-onnx".into(),
             model_filename: "model.onnx".into(),
             tags_filename: "selected_tags.csv".into(),
