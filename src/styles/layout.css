@@ -157,6 +157,9 @@
 /* ---- Content ---- */
 .main-content {
   flex: 1;
+  /* 同 sidebar-nav：flex 子项默认 min-height: auto 会让容器被内容撑高、
+     overflow 永不触发，需要 min-height: 0 才能收缩出滚动 */
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: var(--space-6);

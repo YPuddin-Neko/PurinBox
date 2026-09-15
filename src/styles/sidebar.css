@@ -24,6 +24,10 @@
 /* ---- Navigation ---- */
 .sidebar-nav {
   flex: 1;
+  /* flex 子项默认 min-height: auto（=内容高度），内容超出时 nav 会被撑到
+     比 100vh 还高，overflow 永远不触发、滚轮失效，底部设置按钮被挤出可视区。
+     min-height: 0 让它能收缩到内容高度以下，滚动才会生效 */
+  min-height: 0;
   padding: var(--space-3) var(--space-3);
   overflow-y: auto;
   overflow-x: hidden;
