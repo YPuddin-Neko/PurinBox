@@ -137,13 +137,15 @@ fn apply_proxy(builder: reqwest::ClientBuilder, cfg: &ProxyConfig) -> reqwest::C
 
     let is_socks = cfg.proxy_type == "socks5";
     let url = if is_socks {
-        // SOCKS5 的认证必须放在 URL userinfo 中：Proxy::basic_auth 仅对 HTTP 代理生效
+        // 必须用 socks5h(代理解析域名)而不是 socks5(本地解析):
+        // 本地解析在 DNS 被污染/劫持的网络里直接失败,表现为
+        // "error sending request for url",且没有任何代理相关提示
         if cfg.username.is_empty() {
-            format!("socks5://{}:{}", cfg.host, cfg.port)
+            format!("socks5h://{}:{}", cfg.host, cfg.port)
         } else {
             let password = decode(&cfg.password_encoded);
             format!(
-                "socks5://{}:{}@{}:{}",
+                "socks5h://{}:{}@{}:{}",
                 urlencoding::encode(&cfg.username),
                 urlencoding::encode(&password),
                 cfg.host,
@@ -221,5 +223,46 @@ pub fn build_http_client_for_llm() -> reqwest::ClientBuilder {
         apply_proxy(builder, &cfg)
     } else {
         builder
+    }
+}
+
+#[cfg(test)]
+mod proxy_e2e_tests {
+    use super::*;
+
+    /// 端到端：保存 socks5 配置(落盘到真实配置文件) → 用与下载相同的客户端构建
+    /// 路径走代理拉取 HF 文件。同时验证"保存真的写盘了"和"reqwest 能走通 socks5"。
+    #[tokio::test]
+    async fn save_then_download_via_socks5() {
+        save_proxy_config(
+            true,
+            false,
+            "socks5".into(),
+            "192.168.0.25".into(),
+            7897,
+            String::new(),
+            String::new(),
+        )
+        .unwrap();
+        // 读回验证落盘
+        let (enabled, _, ptype, host, port, _, _) = load_proxy_config().unwrap();
+        assert!(enabled);
+        assert_eq!(ptype, "socks5");
+        assert_eq!(host, "192.168.0.25");
+        assert_eq!(port, 7897);
+
+        let client = build_http_client()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .read_timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap();
+        let resp = client
+            .get("https://huggingface.co/SmilingWolf/wd-vit-tagger-v3/resolve/main/selected_tags.csv")
+            .send()
+            .await;
+        match resp {
+            Ok(r) => assert!(r.status().is_success(), "HTTP 错误: {}", r.status()),
+            Err(e) => panic!("socks5 代理下载失败: {e}"),
+        }
     }
 }
