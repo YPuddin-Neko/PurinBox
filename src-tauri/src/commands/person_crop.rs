@@ -544,12 +544,7 @@ fn run_person_crop(
     if let Some(stderr) = child.stderr.take() {
         let app_err = app.clone();
         std::thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines().map_while(Result::ok) {
-                let clean = line.trim().to_string();
-                if clean.is_empty() {
-                    continue;
-                }
+            super::python_proc::for_each_stderr_line(stderr, |clean| {
                 // 过滤 cuDNN/CUDA/onnxruntime 加载警告
                 let lower = clean.to_lowercase();
                 if lower.contains("cudnn")
@@ -559,12 +554,7 @@ fn run_person_crop(
                     || lower.contains("loaded library")
                     || lower.contains("context leak")
                 {
-                    continue;
-                }
-                // 跳过编码乱码
-                let non_ascii = clean.chars().filter(|c| !c.is_ascii()).count();
-                if clean.len() > 20 && non_ascii * 2 > clean.len() {
-                    continue;
+                    return;
                 }
                 let _ = app_err.emit(
                     "person-crop-progress",
@@ -577,7 +567,7 @@ fn run_person_crop(
                         ..Default::default()
                     },
                 );
-            }
+            });
         });
     }
 

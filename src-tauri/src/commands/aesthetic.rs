@@ -101,28 +101,6 @@ fn find_python() -> Result<String, String> {
     Err("未找到可用的 Python 环境".into())
 }
 
-/// 去除 ANSI 转义序列
-fn strip_ansi_codes(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(&next) = chars.peek() {
-                    chars.next();
-                    if next.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
 /// UTF-8 安全行读取 — 非 UTF-8 字节用 lossy 替换
 fn read_utf8_line(reader: &mut impl BufRead) -> Option<String> {
     let mut buf = Vec::new();
@@ -399,54 +377,30 @@ fn run_aesthetic_scoring(
     // stderr 读取线程
     let app_err = app.clone();
     std::thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut buf = Vec::new();
-        use std::io::Read;
-        let mut byte = [0u8; 1];
-        loop {
-            match reader.read(&mut byte) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if byte[0] == b'\n' {
-                        let line = String::from_utf8(buf.clone()).unwrap_or_else(|_| {
-                            let (s, _, _) = encoding_rs::GBK.decode(&buf);
-                            s.to_string()
-                        });
-                        buf.clear();
-                        let clean = strip_ansi_codes(&line);
-                        let clean = clean.trim();
-                        if clean.is_empty() {
-                            continue;
-                        }
-                        let lower = clean.to_lowercase();
-                        if lower.contains("context leak")
-                            || lower.contains("msgtracer")
-                            || lower.contains("onnxruntime")
-                            || lower.contains("could not load")
-                            || lower.contains("loaded library")
-                            || lower.contains("ep error")
-                            || lower.contains("provider")
-                        {
-                            continue;
-                        }
-                        let _ = app_err.emit(
-                            "aesthetic-progress",
-                            ProgressEvent {
-                                current: 0,
-                                total: 0,
-                                filename: String::new(),
-                                status: "warning".to_string(),
-                                message: format!("[Python] {}", clean),
-                                ..Default::default()
-                            },
-                        );
-                    } else if byte[0] != b'\r' {
-                        buf.push(byte[0]);
-                    }
-                }
-                Err(_) => break,
+        super::python_proc::for_each_stderr_line(stderr, |clean| {
+            let lower = clean.to_lowercase();
+            if lower.contains("context leak")
+                || lower.contains("msgtracer")
+                || lower.contains("onnxruntime")
+                || lower.contains("could not load")
+                || lower.contains("loaded library")
+                || lower.contains("ep error")
+                || lower.contains("provider")
+            {
+                return;
             }
-        }
+            let _ = app_err.emit(
+                "aesthetic-progress",
+                ProgressEvent {
+                    current: 0,
+                    total: 0,
+                    filename: String::new(),
+                    status: "warning".to_string(),
+                    message: format!("[Python] {}", clean),
+                    ..Default::default()
+                },
+            );
+        });
     });
 
     // 发送 init 命令

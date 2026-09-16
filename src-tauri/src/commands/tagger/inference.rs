@@ -12,51 +12,6 @@ use super::{
 use crate::commands::python_proc;
 use crate::commands::{collect_image_files, collect_image_files_recursive};
 
-/// 去除 ANSI 转义序列（颜色码等）
-/// 同时处理 \x1b[...m 和 Windows 下残留的 [0;93m 格式
-fn strip_ansi_codes(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            // 跳过 ESC[...m 序列
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(&next) = chars.peek() {
-                    chars.next();
-                    if next.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            }
-        } else if c == '[' {
-            // Windows 下可能 ESC 被吃掉，只剩 [0;93m 这样的
-            // 检查是否是 ANSI 码模式: [数字;数字m 或 [m
-            let mut buf = String::new();
-            let mut is_ansi = false;
-            while let Some(&next) = chars.peek() {
-                if next.is_ascii_digit() || next == ';' {
-                    buf.push(next);
-                    chars.next();
-                } else if next == 'm' && buf.len() <= 10 {
-                    chars.next();
-                    is_ansi = true;
-                    break;
-                } else {
-                    break;
-                }
-            }
-            if !is_ansi {
-                result.push('[');
-                result.push_str(&buf);
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
 /// 全局打标取消标志
 static TAGGING_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -448,62 +403,34 @@ pub fn run_tagging(
     // 把 Child 句柄存入全局，这样 cancel_tagging() -> kill_python_process() 才能真正杀掉进程
     *PYTHON_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
 
-    // 启动 stderr 读取线程（输出到日志，过滤 ANSI 颜色码）
+    // 启动 stderr 读取线程（解码后过滤 onnxruntime/CUDA 噪音，其余转发到日志）
     let app_err = app.clone();
     std::thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut buf = Vec::new();
-        use std::io::Read;
-        let mut byte = [0u8; 1];
-        loop {
-            match reader.read(&mut byte) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if byte[0] == b'\n' {
-                        let line = String::from_utf8(buf.clone()).unwrap_or_else(|_| {
-                            let (s, _, _) = encoding_rs::GBK.decode(&buf);
-                            s.to_string()
-                        });
-                        buf.clear();
-                        // 控制字符直接剥掉:Windows 上 UTF-16 泄漏会把 NUL 交错进文本,
-                        // 既乱码又让下面按关键词过滤 onnxruntime 噪音的判定认不出来
-                        let line: String =
-                            line.chars().filter(|c| !c.is_control() || *c == '\t').collect();
-                        let clean = strip_ansi_codes(&line);
-                        let clean = clean.trim();
-                        if clean.is_empty() {
-                            continue;
-                        }
-                        let lower = clean.to_lowercase();
-                        if lower.contains("context leak")
-                            || lower.contains("msgtracer")
-                            || lower.contains("number of partitions supported by coreml")
-                            || lower.contains("cudnn")
-                            || lower.contains("cuda_path")
-                            || lower.contains("onnxruntime")
-                            || lower.contains("could not load")
-                            || lower.contains("loaded library")
-                        {
-                            continue;
-                        }
-                        let _ = app_err.emit(
-                            "tagger-progress",
-                            ProgressEvent {
-                                current: 0,
-                                total: 0,
-                                filename: String::new(),
-                                status: "warning".to_string(),
-                                message: format!("[Python] {}", clean),
-                                ..Default::default()
-                            },
-                        );
-                    } else if byte[0] != b'\r' {
-                        buf.push(byte[0]);
-                    }
-                }
-                Err(_) => break,
+        python_proc::for_each_stderr_line(stderr, |clean| {
+            let lower = clean.to_lowercase();
+            if lower.contains("context leak")
+                || lower.contains("msgtracer")
+                || lower.contains("number of partitions supported by coreml")
+                || lower.contains("cudnn")
+                || lower.contains("cuda_path")
+                || lower.contains("onnxruntime")
+                || lower.contains("could not load")
+                || lower.contains("loaded library")
+            {
+                return;
             }
-        }
+            let _ = app_err.emit(
+                "tagger-progress",
+                ProgressEvent {
+                    current: 0,
+                    total: 0,
+                    filename: String::new(),
+                    status: "warning".to_string(),
+                    message: format!("[Python] {}", clean),
+                    ..Default::default()
+                },
+            );
+        });
     });
 
     let init_cmd = serde_json::json!({

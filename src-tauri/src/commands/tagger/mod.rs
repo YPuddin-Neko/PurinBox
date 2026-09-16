@@ -712,10 +712,9 @@ fn run_convert_process(
     // 之前这里是 Stdio::null()，Python 崩了只能得到一句"异常退出"，看不到原因
     let stderr_reader = child.stderr.take().map(|se| {
         std::thread::spawn(move || {
-            std::io::BufReader::new(se)
-                .lines()
-                .map_while(Result::ok)
-                .collect::<Vec<String>>()
+            let mut lines = Vec::new();
+            crate::commands::python_proc::for_each_stderr_line(se, |l| lines.push(l));
+            lines
         })
     });
     // 登记到全局句柄，取消时 kill_python_process 才杀得到它

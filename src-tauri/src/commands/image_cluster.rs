@@ -278,85 +278,51 @@ pub async fn start_image_cluster(
         // stderr 线程
         let app_err = app_clone.clone();
         std::thread::spawn(move || {
-            let mut reader = std::io::BufReader::new(stderr);
-            let mut buf = Vec::new();
-            use std::io::Read;
-            let mut byte = [0u8; 1];
-            loop {
-                match reader.read(&mut byte) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        if byte[0] == b'\n' {
-                            let line = String::from_utf8(buf.clone()).unwrap_or_else(|_| {
-                                let (s, _, _) = encoding_rs::GBK.decode(&buf);
-                                s.to_string()
-                            });
-                            buf.clear();
-                            let clean = line.trim();
-                            if clean.is_empty() {
-                                continue;
-                            }
-                            // 去除 ANSI 转义序列
-                            let clean = clean
-                                .replace('\x1b', "")
-                                .replace("[0m", "")
-                                .replace("[1m", "")
-                                .replace("[31m", "")
-                                .replace("[33m", "");
-                            let clean = clean.trim();
-                            if clean.is_empty() {
-                                continue;
-                            }
-                            if clean.matches('%').count() > 3 {
-                                continue;
-                            }
-                            if clean.contains("UserWarning") || clean.contains("FutureWarning") {
-                                continue;
-                            }
-                            if clean.contains("RuntimeWarning") {
-                                continue;
-                            }
-                            if clean.starts_with("Downloading:") || clean.starts_with("100%") {
-                                continue;
-                            }
-                            if clean == "warn(" || clean.starts_with("warnings.warn(") {
-                                continue;
-                            }
-                            if clean.contains("site-packages/") && clean.contains(".py:") {
-                                continue;
-                            }
-                            if clean.starts_with("eigenvalues") || clean.starts_with("scipy.") {
-                                continue;
-                            }
-                            // 过滤 cuDNN/CUDA/onnxruntime 加载警告和编码乱码
-                            let lower = clean.to_lowercase();
-                            if lower.contains("cudnn")
-                                || lower.contains("cuda_path")
-                                || lower.contains("onnxruntime")
-                                || lower.contains("could not load")
-                                || lower.contains("loaded library")
-                            {
-                                continue;
-                            }
-
-                            let _ = app_err.emit(
-                                "cluster-progress",
-                                ProgressEvent {
-                                    current: 0,
-                                    total: 0,
-                                    filename: String::new(),
-                                    status: "warning".to_string(),
-                                    message: format!("[Python] {}", clean),
-                                    ..Default::default()
-                                },
-                            );
-                        } else if byte[0] != b'\r' {
-                            buf.push(byte[0]);
-                        }
-                    }
-                    Err(_) => break,
+            super::python_proc::for_each_stderr_line(stderr, |clean| {
+                if clean.matches('%').count() > 3 {
+                    return;
                 }
-            }
+                if clean.contains("UserWarning")
+                    || clean.contains("FutureWarning")
+                    || clean.contains("RuntimeWarning")
+                {
+                    return;
+                }
+                if clean.starts_with("Downloading:") || clean.starts_with("100%") {
+                    return;
+                }
+                if clean == "warn(" || clean.starts_with("warnings.warn(") {
+                    return;
+                }
+                if clean.contains("site-packages/") && clean.contains(".py:") {
+                    return;
+                }
+                if clean.starts_with("eigenvalues") || clean.starts_with("scipy.") {
+                    return;
+                }
+                // 过滤 cuDNN/CUDA/onnxruntime 加载警告
+                let lower = clean.to_lowercase();
+                if lower.contains("cudnn")
+                    || lower.contains("cuda_path")
+                    || lower.contains("onnxruntime")
+                    || lower.contains("could not load")
+                    || lower.contains("loaded library")
+                {
+                    return;
+                }
+
+                let _ = app_err.emit(
+                    "cluster-progress",
+                    ProgressEvent {
+                        current: 0,
+                        total: 0,
+                        filename: String::new(),
+                        status: "warning".to_string(),
+                        message: format!("[Python] {}", clean),
+                        ..Default::default()
+                    },
+                );
+            });
         });
 
         // 解析 stdout JSON
