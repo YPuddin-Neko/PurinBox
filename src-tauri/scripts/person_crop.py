@@ -27,6 +27,7 @@ def _resolve_providers(use_gpu):
 def load_model(model_path, providers):
     """加载 ONNX 模型（使用预先解析好的 providers）"""
     import onnxruntime as ort
+    ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
     
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"模型文件不存在: {model_path}")

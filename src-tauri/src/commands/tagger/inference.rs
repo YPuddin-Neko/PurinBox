@@ -465,6 +465,10 @@ pub fn run_tagging(
                             s.to_string()
                         });
                         buf.clear();
+                        // 控制字符直接剥掉:Windows 上 UTF-16 泄漏会把 NUL 交错进文本,
+                        // 既乱码又让下面按关键词过滤 onnxruntime 噪音的判定认不出来
+                        let line: String =
+                            line.chars().filter(|c| !c.is_control() || *c == '\t').collect();
                         let clean = strip_ansi_codes(&line);
                         let clean = clean.trim();
                         if clean.is_empty() {

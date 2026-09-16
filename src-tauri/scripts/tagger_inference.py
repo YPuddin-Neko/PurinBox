@@ -703,6 +703,7 @@ def run_detect_mode():
         sys.exit(1)
     try:
         import onnxruntime as ort
+        ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
         sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
         inp = sess.get_inputs()[0]
         shape = [int(d) if isinstance(d, int) else -1 for d in inp.shape]
@@ -744,6 +745,7 @@ def main():
     register_cuda_dlls()
 
     import onnxruntime as ort
+    ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
 
     session = None
     tags = []

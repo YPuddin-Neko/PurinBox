@@ -157,6 +157,7 @@ def main():
         elif command == "init":
             try:
                 import onnxruntime as ort
+                ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
 
                 model_path = cmd["model_path"]
                 use_gpu = cmd.get("use_gpu", False)
@@ -239,6 +240,7 @@ def main():
                 except Exception as gpu_err:
                     # CoreML / CUDA 推理失败，自动回退到 CPU
                     import onnxruntime as ort
+                    ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
                     log(f"GPU 推理失败，自动回退到 CPU: {type(gpu_err).__name__}")
                     sess_options = ort.SessionOptions()
                     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -371,6 +373,7 @@ def main():
                 # GPU 推理失败，回退 CPU 重试
                 try:
                     import onnxruntime as ort
+                    ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
                     log(f"GPU 批量推理失败，自动回退到 CPU: {type(e).__name__}")
                     sess_options = ort.SessionOptions()
                     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
