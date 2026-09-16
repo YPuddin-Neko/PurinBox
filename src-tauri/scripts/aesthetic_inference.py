@@ -157,7 +157,7 @@ def main():
         elif command == "init":
             try:
                 import onnxruntime as ort
-                ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
+                from gpu_diagnostics import resolve_ort_providers, quiet_session_options
 
                 model_path = cmd["model_path"]
                 use_gpu = cmd.get("use_gpu", False)
@@ -180,10 +180,9 @@ def main():
                 log(f"输入尺寸: {input_size}x{input_size}")
 
                 # 选择 provider — 统一流程：探测环境 + 输出日志 + 决定 providers
-                from gpu_diagnostics import resolve_ort_providers
                 providers = resolve_ort_providers(log_i18n, use_gpu=use_gpu)
 
-                sess_options = ort.SessionOptions()
+                sess_options = quiet_session_options(ort)
                 sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
                 session = ort.InferenceSession(model_path, sess_options, providers=providers)
@@ -240,9 +239,9 @@ def main():
                 except Exception as gpu_err:
                     # CoreML / CUDA 推理失败，自动回退到 CPU
                     import onnxruntime as ort
-                    ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
+                    from gpu_diagnostics import quiet_session_options
                     log(f"GPU 推理失败，自动回退到 CPU: {type(gpu_err).__name__}")
-                    sess_options = ort.SessionOptions()
+                    sess_options = quiet_session_options(ort)
                     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
                     session = ort.InferenceSession(
                         _model_path_saved, sess_options,
@@ -373,9 +372,9 @@ def main():
                 # GPU 推理失败，回退 CPU 重试
                 try:
                     import onnxruntime as ort
-                    ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
+                    from gpu_diagnostics import quiet_session_options
                     log(f"GPU 批量推理失败，自动回退到 CPU: {type(e).__name__}")
-                    sess_options = ort.SessionOptions()
+                    sess_options = quiet_session_options(ort)
                     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
                     session = ort.InferenceSession(
                         _model_path_saved, sess_options,

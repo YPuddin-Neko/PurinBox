@@ -96,8 +96,7 @@ def tile_process(img_np, session, input_name, output_name, scale, tile_size=0, t
 def create_session(onnx_path, device):
     """创建 onnxruntime InferenceSession，自动选择最佳 EP"""
     import onnxruntime as ort
-    ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
-    from gpu_diagnostics import resolve_ort_providers
+    from gpu_diagnostics import resolve_ort_providers, quiet_session_options
 
     onnx_path = os.path.abspath(onnx_path)
 
@@ -109,7 +108,7 @@ def create_session(onnx_path, device):
         coreml_options={"MLComputeUnits": "ALL"},
     )
 
-    sess_opts = ort.SessionOptions()
+    sess_opts = quiet_session_options(ort)
     sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
     try:

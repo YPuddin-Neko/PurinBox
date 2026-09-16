@@ -9,6 +9,8 @@
 对外接口：
   probe_gpu()               → GpuInfo，纯探测，不产生日志
   emit_gpu_report(emit, ..) → 按上述顺序输出 i18n 日志，返回最终是否用 GPU
+  resolve_ort_providers(..) → 探测 + 日志 + 决定 onnxruntime providers 列表
+  quiet_session_options(ort)→ 日志压到 Error 级的 SessionOptions，建 session 必用
   diagnose_gpu()            → 兼容旧接口，返回 i18n 条目列表
 """
 import sys
@@ -259,6 +261,24 @@ def resolve_ort_providers(emit_i18n, use_gpu=True, coreml_options=None):
     emit_i18n("gpu.unavailable")
     emit_i18n("gpu.fallbackCpu")
     return cpu_only
+
+
+def quiet_session_options(ort):
+    """返回把 onnxruntime 日志压到 Error 级的 SessionOptions。
+
+    所有 InferenceSession 都要经过这里：ORT 的 Warning（典型如 CUDA 下部分节点
+    落回 CPU 时 transformer_memcpy 的提示）对用户没有行动价值，而且 Windows 上
+    ORT 用宽字符流写 stderr，这些行到 Rust 侧是 UTF-16 裸字节。
+    session 的 log_severity_level 默认 -1（继承默认 logger），这里两边都显式设置，
+    不依赖继承链；Error 及以上仍放行，CUDA 加载失败之类的信息不受影响。
+    """
+    try:
+        ort.set_default_logger_severity(3)
+    except Exception:
+        pass
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3
+    return opts
 
 
 def diagnose_gpu():

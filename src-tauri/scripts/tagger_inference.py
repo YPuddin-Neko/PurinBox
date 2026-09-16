@@ -703,8 +703,10 @@ def run_detect_mode():
         sys.exit(1)
     try:
         import onnxruntime as ort
-        ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
-        sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        from gpu_diagnostics import quiet_session_options
+        sess = ort.InferenceSession(
+            model_path, quiet_session_options(ort), providers=["CPUExecutionProvider"]
+        )
         inp = sess.get_inputs()[0]
         shape = [int(d) if isinstance(d, int) else -1 for d in inp.shape]
         if len(shape) == 4 and shape[1] in (1, 3, 4):
@@ -745,7 +747,7 @@ def main():
     register_cuda_dlls()
 
     import onnxruntime as ort
-    ort.set_default_logger_severity(3)  # 屏蔽 Warning 级噪音(设备/显存警告在 Windows 会以乱码形式漏进处理日志)
+    from gpu_diagnostics import resolve_ort_providers, quiet_session_options
 
     session = None
     tags = []
@@ -779,13 +781,13 @@ def main():
 
                 # === ONNX Runtime 后端 ===
                 # 统一流程：探测环境（显卡型号 / CUDA / cuDNN）+ 输出日志 + 决定 providers
-                from gpu_diagnostics import resolve_ort_providers
                 providers = resolve_ort_providers(log_i18n, use_gpu=use_gpu)
                 gpu_provider = providers[0] if providers[0] != "CPUExecutionProvider" else None
 
                 # 尝试创建 session，GPU 失败时自动回退 CPU
+                sess_options = quiet_session_options(ort)
                 try:
-                    session = ort.InferenceSession(model_path, providers=providers)
+                    session = ort.InferenceSession(model_path, sess_options, providers=providers)
                 except Exception as e:
                     if gpu_provider and gpu_provider in providers:
                         err_msg = str(e)
@@ -799,7 +801,7 @@ def main():
                             log(f"原因: {err_msg[:200]}")
                         log("自动回退到 CPU 推理")
                         providers = ["CPUExecutionProvider"]
-                        session = ort.InferenceSession(model_path, providers=providers)
+                        session = ort.InferenceSession(model_path, sess_options, providers=providers)
                     else:
                         raise
 
