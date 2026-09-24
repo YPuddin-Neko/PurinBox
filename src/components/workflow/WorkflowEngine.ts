@@ -316,6 +316,7 @@ function buildCommandOptions(
           exclude_tags: params.exclude_tags || '',
           append_tags: params.append_tags || '',
           append_position: params.append_position || 'append',
+          json_append_field: params.json_append_field || 'tags',
           replace_underscore: params.replace_underscore ?? true,
           output_format: (params.output_format === 'json_simplified') ? 'json' : (params.output_format || 'txt'),
           json_simplified: params.output_format === 'json_simplified',

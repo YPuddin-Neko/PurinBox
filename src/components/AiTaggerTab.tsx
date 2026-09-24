@@ -32,6 +32,7 @@ interface TaggerPreset {
   excludeTags: string;
   appendTags: string;
   appendPosition: 'prepend' | 'append';
+  jsonAppendField?: string;
   replaceUnderscore: boolean;
   escapeParentheses: boolean;
   sortBy: 'confidence' | 'frequency';
@@ -82,6 +83,7 @@ export default function AiTaggerTab() {
   const [excludeTags, setExcludeTags] = useState('');
   const [appendTags, setAppendTags] = useState('');
   const [appendPosition, setAppendPosition] = useState<'prepend' | 'append'>('append');
+  const [jsonAppendField, setJsonAppendField] = useState('tags');
   const [replaceUnderscore, setReplaceUnderscore] = useState(true);
   const [escapeParentheses, setEscapeParentheses] = useState(false);
   const [sortBy, setSortBy] = useState<'confidence' | 'frequency'>('confidence');
@@ -128,7 +130,7 @@ export default function AiTaggerTab() {
       enabled: Array.from(enabled),
       useGpu,
       batchSize,
-      excludeTags, appendTags, appendPosition,
+      excludeTags, appendTags, appendPosition, jsonAppendField,
       replaceUnderscore, escapeParentheses,
       sortBy, existingTagsAction,
       outputFormat, jsonSimplified,
@@ -152,6 +154,7 @@ export default function AiTaggerTab() {
     setExcludeTags(preset.excludeTags);
     setAppendTags(preset.appendTags);
     setAppendPosition(preset.appendPosition);
+    setJsonAppendField(preset.jsonAppendField ?? 'tags');
     setReplaceUnderscore(preset.replaceUnderscore);
     setEscapeParentheses(preset.escapeParentheses ?? false);
     setSortBy(preset.sortBy ?? 'confidence');
@@ -249,7 +252,7 @@ export default function AiTaggerTab() {
     taskLogs.setInitialLog(t('aiTagger.startMsg', { model: cur?.name, hw: useGpu ? 'GPU' : 'CPU' }));
     addTask('tagger', `${t('aiTagger.taskName')} - ${cur?.name || '?'}`);
     try {
-      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, batch_size: useGpu ? bs : 1, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, sort_by: sortBy, existing_tags_action: existingTagsAction, output_format: outputFormat, json_simplified: jsonSimplified, recursive } });
+      await invoke<ProcessResult>('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, batch_size: useGpu ? bs : 1, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, json_append_field: jsonAppendField, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, sort_by: sortBy, existing_tags_action: existingTagsAction, output_format: outputFormat, json_simplified: jsonSimplified, recursive } });
       updateTask('tagger', { status: 'done' });
       await load();
     } catch (e: any) {
@@ -515,7 +518,23 @@ export default function AiTaggerTab() {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
               <label className="form-label" style={{ fontSize: 11, margin: 0 }}>{t('aiTagger.appendTags')}</label>
-              <div style={{ display: 'flex', gap: 4 }}>
+              <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                {outputFormat === 'json' && (
+                  <div style={{ width: 96 }} title={t('aiTagger.appendField')}>
+                    <CustomSelect value={jsonAppendField}
+                      onChange={v => setJsonAppendField(v)}
+                      options={[
+                        { value: 'tags', label: t('aiTagger.fieldTags') },
+                        { value: 'appearance', label: t('aiTagger.fieldAppearance') },
+                        { value: 'environment', label: t('aiTagger.fieldEnvironment') },
+                        { value: 'quality', label: t('aiTagger.fieldQuality') },
+                        { value: 'character', label: t('aiTagger.fieldCharacter') },
+                        { value: 'series', label: t('aiTagger.fieldSeries') },
+                        { value: 'artist', label: t('aiTagger.fieldArtist') },
+                        { value: 'count', label: t('aiTagger.fieldCount') },
+                      ]} compact />
+                  </div>
+                )}
                 {(['prepend', 'append'] as const).map(pos => (<button key={pos} onClick={() => setAppendPosition(pos)} style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${appendPosition === pos ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: appendPosition === pos ? 'rgba(124,92,252,0.08)' : 'transparent', color: appendPosition === pos ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 10, fontWeight: 600, cursor: 'pointer' }}>{pos === 'prepend' ? t('aiTagger.prepend') : t('aiTagger.append')}</button>))}
               </div>
             </div>

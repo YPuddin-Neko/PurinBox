@@ -675,21 +675,52 @@ def _write_text_atomic(path, text):
     os.replace(tmp, path)
 
 
-def _merge_append_tags_json(data, append_list, simplified, position):
-    """JSON 输出合并追加标签（触发词）。txt 分支一直有此逻辑，json 分支此前直接丢弃。"""
+# JSON 追加标签可选字段 → 完整格式下的 (容器键, 字段键)；简化格式字段名即顶层键
+_JSON_APPEND_FIELD_MAP = {
+    "quality": ("fixed", "quality"),
+    "series": ("fixed", "series"),
+    "artist": ("fixed", "artist"),
+    "character": ("character", "name"),
+    "count": ("ai_output", "count"),
+    "appearance": ("ai_output", "appearance"),
+    "tags": ("ai_output", "tags"),
+    "environment": ("ai_output", "environment"),
+}
+# 存储为逗号串的字段（builder / tag_manager 约定）；不在此表的为数组字段
+_JSON_APPEND_STRING_KEYS = {"quality", "series", "artist", "name", "count"}
+
+
+def _merge_append_tags_json(data, append_list, simplified, position, field="tags"):
+    """JSON 输出合并追加标签（触发词）。txt 分支一直有此逻辑，json 分支此前直接丢弃。
+
+    field：用户选择的目标字段（简化/完整两种布局共用同一套逻辑字段名），
+    未知字段回退 tags。nl 不可选——它是自然语言不是标签。
+    """
+    if field not in _JSON_APPEND_FIELD_MAP:
+        field = "tags"
     if simplified:
-        container, key = data, "tags"
+        container, key = data, field
     else:
-        container, key = data.setdefault("ai_output", {}), "tags"
+        container_key, key = _JSON_APPEND_FIELD_MAP[field]
+        container = data.setdefault(container_key, {})
+    # 画师字段遵循文件的 @ 前缀约定，追加的词逐个补前缀
+    additions = [_format_artist(t) for t in append_list] if field == "artist" else list(append_list)
     arr = container.get(key)
     if isinstance(arr, str):
         # 逗号字符串形式（tag_manager 同样支持）——拆成列表合并，不能整个丢弃
         arr = [t.strip() for t in arr.split(",") if t.strip()]
-    elif not isinstance(arr, list):
+        native_str = True
+    elif isinstance(arr, list):
+        arr = list(arr)
+        native_str = False
+    else:
         arr = []
-    append_set = set(append_list)
+        native_str = key in _JSON_APPEND_STRING_KEYS
+    append_set = set(additions)
     arr = [t for t in arr if t not in append_set]
-    container[key] = (append_list + arr) if position == "prepend" else (arr + append_list)
+    arr = (additions + arr) if position == "prepend" else (arr + additions)
+    # 按字段原生类型写回：数组字段保持数组，逗号串字段拼回字符串
+    container[key] = ", ".join(arr) if native_str else arr
     return data
 
 
@@ -865,6 +896,7 @@ def main():
                 exclude_tags_str = cmd.get("exclude_tags", "")
                 append_tags_str = cmd.get("append_tags", "")
                 append_position = cmd.get("append_position", "append")
+                json_append_field = cmd.get("json_append_field", "tags")
                 escape_parentheses = cmd.get("escape_parentheses", False)
                 sort_by = cmd.get("sort_by", "confidence")  # "confidence" or "frequency"
 
@@ -1044,7 +1076,7 @@ def main():
                                         existing_set = set(merged[k])
                                         merged[k] = merged[k] + [t for t in v if t not in existing_set]
                             if append_list:
-                                merged = _merge_append_tags_json(merged, append_list, json_simplified, append_position)
+                                merged = _merge_append_tags_json(merged, append_list, json_simplified, append_position, json_append_field)
                             _write_json_atomic(json_path, merged)
                         except Exception as merge_err:
                             # 合并失败时不覆盖用户原文件：仅警告并跳过写入
@@ -1056,7 +1088,7 @@ def main():
                         else:
                             data = _build_structured_json(selected_tags)
                         if append_list:
-                            data = _merge_append_tags_json(data, append_list, json_simplified, append_position)
+                            data = _merge_append_tags_json(data, append_list, json_simplified, append_position, json_append_field)
                         _write_json_atomic(json_path, data)
                 else:
                     txt_path = parent / f"{stem}.txt"
@@ -1189,6 +1221,7 @@ def main():
                         exclude_tags_str = img_cmd.get("exclude_tags", "")
                         append_tags_str = img_cmd.get("append_tags", "")
                         append_position = img_cmd.get("append_position", "append")
+                        json_append_field = img_cmd.get("json_append_field", "tags")
                         escape_parentheses = img_cmd.get("escape_parentheses", False)
                         sort_by = img_cmd.get("sort_by", "confidence")
 
@@ -1308,7 +1341,7 @@ def main():
                                             existing_set = set(merged[k])
                                             merged[k] = merged[k] + [t_val for t_val in v if t_val not in existing_set]
                                     if append_list:
-                                        merged = _merge_append_tags_json(merged, append_list, json_simplified, append_position)
+                                        merged = _merge_append_tags_json(merged, append_list, json_simplified, append_position, json_append_field)
                                     _write_json_atomic(json_path, merged)
                                 except Exception as merge_err:
                                     # 合并失败时不覆盖用户原文件：仅警告并跳过写入
@@ -1316,7 +1349,7 @@ def main():
                             else:
                                 data = _build_simplified_json(selected_tags) if json_simplified else _build_structured_json(selected_tags)
                                 if append_list:
-                                    data = _merge_append_tags_json(data, append_list, json_simplified, append_position)
+                                    data = _merge_append_tags_json(data, append_list, json_simplified, append_position, json_append_field)
                                 _write_json_atomic(json_path, data)
                         else:
                             txt_path = parent / f"{stem}.txt"

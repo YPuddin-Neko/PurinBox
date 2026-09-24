@@ -53,6 +53,10 @@ pub struct TaggerOptions {
     pub append_tags: String,
     #[serde(default = "default_append_position")]
     pub append_position: String,
+    /// JSON 输出时追加标签的目标字段（quality/character/series/artist/count/
+    /// appearance/tags/environment），仅 output_format=json 时有意义
+    #[serde(default = "default_json_append_field")]
+    pub json_append_field: String,
     #[serde(default = "default_true")]
     pub replace_underscore: bool,
     #[serde(default = "default_output_format")]
@@ -82,6 +86,9 @@ fn default_batch_size() -> u32 {
 
 fn default_append_position() -> String {
     "append".into()
+}
+fn default_json_append_field() -> String {
+    "tags".into()
 }
 fn default_true() -> bool {
     true
