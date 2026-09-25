@@ -199,8 +199,7 @@ const REFUSAL_MARKERS: [&str; 18] = [
 
 /// 判断整段回复是不是"模型拒绝了"（NSFW 触发安全审核等）。
 ///
-/// 关键闸是逗号数量：标签列表天然含大量逗号，而拒绝语是一两句自然语言。
-/// 不设这道闸的话，正常回复里出现 "i can't" 之类的字样就会被误杀。
+/// 用逗号数量区分标签列表和短拒绝语，减少包含拒绝词的正常标签列表被误判。
 /// 调用方还应先确认回复里没有按格式返回的标记段——模型按格式回了就说明它没拒绝。
 pub(crate) fn looks_like_refusal(content: &str) -> bool {
     let trimmed = content.trim();
@@ -216,7 +215,7 @@ pub(crate) fn looks_like_refusal(content: &str) -> bool {
 
 /// 工具自己产出的副本目录：失败/警告文件会被复制到这里备查。
 /// 它们常常就落在数据集根目录内，递归扫描时必须跳过，否则副本会被当成新图反复处理。
-/// 全应用统一用 `Fail`/`Warn`；`_errors`/`_warnings` 是旧版遗留，仍需剪枝。
+/// 兼容 `Fail`、`Warn`、`_errors` 和 `_warnings` 目录。
 pub const ARTIFACT_DIR_NAMES: [&str; 4] = ["Fail", "Warn", "_errors", "_warnings"];
 
 /// 出错文件的归集目录名（全应用统一）
@@ -967,7 +966,7 @@ pub fn kill_process_tree(pid: u32) {
     }
 }
 
-/// 强制终止 `Child` 句柄对应的整个进程树，并回收句柄避免僵尸进程。
+/// 强制终止 `Child` 句柄对应的进程树并回收句柄。
 pub fn kill_child_tree(slot: &std::sync::Mutex<Option<std::process::Child>>) {
     if let Ok(mut guard) = slot.lock() {
         if let Some(mut child) = guard.take() {
@@ -993,7 +992,7 @@ mod artifact_dir_tests {
         for rel in ["", "sub", "Fail", "Warn", "_errors", "_warnings"] {
             std::fs::create_dir_all(root.join(rel)).unwrap();
         }
-        // 旧版遗留的 _errors/_warnings 也必须继续剪掉
+        // 兼容历史产物目录名。
         for rel in [
             "a.png",
             "sub/d.png",
@@ -1020,7 +1019,7 @@ mod artifact_dir_tests {
     fn recursive_scan_prunes_artifact_dirs() {
         let root = fixture("prune");
         let files = collect_image_files_recursive(&root).unwrap();
-        // Fail/_errors/_warnings 里的副本不能再被当成数据集图片
+        // 产物目录中的副本不属于数据集图片。
         assert_eq!(names(&files), vec!["a.png", "d.png"]);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1028,7 +1027,7 @@ mod artifact_dir_tests {
     #[test]
     fn artifact_dir_scanned_when_it_is_the_input_root() {
         let root = fixture("as_root");
-        // 用户直接选中 Fail 目录重跑失败图，不能给出"没有图片"
+        // 输入根本身是产物目录时仍允许重跑其中的图片。
         let files = collect_image_files_recursive(&root.join("Fail")).unwrap();
         assert_eq!(names(&files), vec!["b.png"]);
         let _ = std::fs::remove_dir_all(&root);
@@ -1043,7 +1042,7 @@ mod artifact_dir_tests {
         assert_eq!(dir_of(&single), root);
         // root 传成图片路径也不该炸
         let copied =
-            copy_files_into_artifact_dir(&single, &single, &[single.clone()], "Fail", false)
+            copy_files_into_artifact_dir(&single, &single, std::slice::from_ref(&single), "Fail", false)
                 .unwrap();
         assert_eq!(copied, 1);
         assert!(root.join("Fail/a.png").exists());

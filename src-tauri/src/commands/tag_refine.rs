@@ -594,11 +594,11 @@ fn json_set_path(data: &mut serde_json::Value, path: &[&str], value: serde_json:
 }
 
 fn path_is_string_field(layout: &JsonTagLayout, path: &[&str]) -> bool {
-    layout.string_fields.iter().any(|p| *p == path)
+    layout.string_fields.contains(&path)
 }
 
 fn path_is_bucket(layout: &JsonTagLayout, path: &[&str]) -> bool {
-    layout.bucket_paths.iter().any(|p| *p == path)
+    layout.bucket_paths.contains(&path)
 }
 
 /// 从 JSON 标签文件展开扁平标签列表（供 LLM 提示词使用）
@@ -1074,7 +1074,7 @@ fn split_marker_response(content: &str) -> MarkerResponse<'_> {
     for line in content.lines() {
         let t = line
             .trim()
-            .trim_start_matches(|c: char| matches!(c, '*' | '#' | '>' | '-' | '`'))
+            .trim_start_matches(['*', '#', '>', '-', '`'])
             .trim_start();
 
         let mut matched = false;
@@ -1389,32 +1389,38 @@ async fn refine_tags_with_llm(
     options: &TagRefineOptions,
     last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
 ) -> Result<RefineOutput, String> {
-    // 读取并缩放图片
+    // 读取并缩放图片。解码、缩放、编码是 CPU 密集操作且带文件 I/O，
+    // 批量精修时不能直接占用异步执行器线程，移入阻塞线程池
     let max_side = if options.image_size > 0 {
         options.image_size
     } else {
         1024
     };
-    let img = image::ImageReader::open(img_path)
-        .map_err(|e| format!("读取图片失败: {}", e))?
-        .with_guessed_format()
-        .map_err(|e| format!("无法识别图片格式: {}", e))?
-        .decode()
-        .map_err(|e| format!("无法解码图片: {}", e))?;
+    let img_path_buf = img_path.to_path_buf();
+    let data_url = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let img = image::ImageReader::open(&img_path_buf)
+            .map_err(|e| format!("读取图片失败: {}", e))?
+            .with_guessed_format()
+            .map_err(|e| format!("无法识别图片格式: {}", e))?
+            .decode()
+            .map_err(|e| format!("无法解码图片: {}", e))?;
 
-    let img = if img.width() > max_side || img.height() > max_side {
-        img.resize(max_side, max_side, image::imageops::FilterType::Lanczos3)
-    } else {
-        img
-    };
+        let img = if img.width() > max_side || img.height() > max_side {
+            img.resize(max_side, max_side, image::imageops::FilterType::Lanczos3)
+        } else {
+            img
+        };
 
-    // 编码为 JPEG base64（JPEG 编码器不接受 RGBA，透明图需先按白底拍平）
-    let img = super::flatten_to_rgb_white(img);
-    let mut buf = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut buf, image::ImageFormat::Jpeg)
-        .map_err(|e| format!("编码图片失败: {}", e))?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(buf.get_ref());
-    let data_url = format!("data:image/jpeg;base64,{}", b64);
+        // 编码为 JPEG base64（JPEG 编码器不接受 RGBA，透明图需先按白底拍平）
+        let img = super::flatten_to_rgb_white(img);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Jpeg)
+            .map_err(|e| format!("编码图片失败: {}", e))?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(buf.get_ref());
+        Ok(format!("data:image/jpeg;base64,{}", b64))
+    })
+    .await
+    .map_err(|e| format!("图片处理任务失败: {}", e))??;
 
     // JSON 回退时展示文本带字段标签和含义（count: 1girl / appearance: ...），
     // 否则就是扁平的逗号分隔列表
@@ -1512,7 +1518,7 @@ async fn refine_tags_with_llm(
     if choice.finish_reason.as_deref() == Some("length") {
         return Err("响应因 max_tokens 被截断，已丢弃（请调大 max_tokens）".to_string());
     }
-    // 服务端内容安全审核直接拦下：这张图不该被当成"处理成功"
+    // 内容安全审核拒绝时不写入标签。
     if matches!(
         choice.finish_reason.as_deref(),
         Some("content_filter") | Some("safety")
@@ -1570,8 +1576,7 @@ fn parse_refine_response(
 ) -> Result<(Vec<String>, Option<String>, TagBuckets), String> {
     let marker = split_marker_response(content);
 
-    // 模型拒绝（NSFW 触发安全审核等）：拒绝语必须判失败，
-    // 否则会被下面的"最长含逗号行"启发式当成标签写进标签文件
+    // 拒绝语必须判失败，避免被标签列表启发式写入标签文件。
     let has_markers =
         marker.buckets.slots().iter().any(|s| s.is_some()) || marker.nl.is_some();
     if !has_markers && crate::commands::looks_like_refusal(content) {
@@ -1596,7 +1601,7 @@ fn parse_refine_response(
         }
     }
 
-    // 孤零零一个 count 段不足以判定是标记格式，让它退回启发式而不是劫持整个标签列表
+    // 仅有 count 段不足以判定为标记格式，继续使用普通标签解析。
     let refined_tags: Vec<String> = if marker.buckets.tags.is_some()
         || marker.buckets.has_field_assignment()
     {
@@ -1675,7 +1680,7 @@ mod marker_tests {
         assert_eq!(m.rest, vec!["some preamble", "1girl, solo, smile"]);
     }
 
-    /// NL 长句含逗号且比标签列表长：有标记时绝不能被当成标签列表
+    /// 有标记时优先按标记解析，避免把 NL 长句当成标签列表。
     #[test]
     fn nl_never_leaks_into_tags() {
         let m = split_marker_response(
@@ -1857,7 +1862,7 @@ mod marker_tests {
         assert_eq!(untouched["fixed"]["artist"], "@wlop");
     }
 
-    /// 安全审核拒绝：必须判失败，绝不能把拒绝语当成标签写进标签文件
+    /// 安全审核拒绝必须失败，拒绝语不能写入标签文件。
     #[test]
     fn refusal_is_rejected_not_written_as_tags() {
         for refusal in [
@@ -1873,7 +1878,7 @@ mod marker_tests {
         }
     }
 
-    /// 正常标签列表里出现拒绝措辞的字样不能被误杀——逗号数量是那道闸
+    /// 正常标签列表可包含拒绝措辞，逗号数量用于区分两种内容。
     #[test]
     fn normal_tag_lists_are_not_mistaken_for_refusal() {
         // 逗号多 = 标签列表，即便含 "i can't" 之类的字样
@@ -2036,7 +2041,7 @@ mod marker_tests {
         );
     }
 
-    /// 重排时标签不能同时出现在两个字段：已留在 character/quality 的不再进重排字段
+    /// 重排时不让标签同时出现在 character/quality 和其他字段。
     #[test]
     fn rebucket_does_not_duplicate_across_fields() {
         let mut data = serde_json::json!({
@@ -2066,7 +2071,7 @@ mod marker_tests {
         assert_eq!(data["tags"], serde_json::json!([]));
     }
 
-    /// 只给了部分段时，未给出的段沿用原值（仅清理被删标签），新增标签兜底进 tags
+    /// 只返回部分字段时保留其他字段；未归类的新标签进入 tags。
     #[test]
     fn rebucket_partial_segments_keep_rest() {
         let mut data = serde_json::json!({
@@ -2094,7 +2099,7 @@ mod marker_tests {
         // red eyes 被删，long hair 留在原字段
         assert_eq!(data["appearance"], serde_json::json!(["long hair"]));
         assert_eq!(data["environment"], serde_json::json!(["simple background"]));
-        // 未归入任何段的新增标签兜底追加到 tags
+        // 未归类的新增标签追加到 tags。
         assert_eq!(data["tags"], serde_json::json!(["smile", "blush"]));
     }
 }

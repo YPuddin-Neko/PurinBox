@@ -312,13 +312,13 @@ fn detect_system_python() -> Option<(String, String)> {
                     + String::from_utf8_lossy(&output.stderr).as_ref();
                 if ver_output.contains("Python 3") {
                     let version = ver_output.trim().to_string();
-                    // 检查版本是否 >= 3.10
+                    // 低于 3.10 的解释器不参与候选。
                     if let Some(minor) = parse_python_minor(&version) {
                         if minor < MIN_PYTHON_MINOR {
                             continue; // 版本太旧，跳过
                         }
                     }
-                    // 验证可以运行 -m venv
+                    // 确认解释器可以导入 venv 模块。
                     let mut test = std::process::Command::new(name);
                     test.args(["-c", "import venv"]);
                     #[cfg(target_os = "windows")]
@@ -404,7 +404,7 @@ fn resolve_python_path(name: &str) -> String {
 
 /// 完整的 Python 环境设置流程（入口，全局串行化）
 pub async fn setup_python_env(app: &tauri::AppHandle, owner: &'static str) -> Result<String, String> {
-    // 本次是全新调用：清掉同名 owner 的陈旧排队取消（上一次的取消不该击中这一次）
+    // 清掉同一 owner 的旧取消请求，避免影响新任务。
     PENDING_CANCELS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -552,7 +552,7 @@ async fn setup_with_standalone(app: &tauri::AppHandle) -> Result<String, String>
         return Err("已取消".into());
     }
 
-    // 验证
+    // 确认依赖安装完成且环境可用。
     if !tokio::task::spawn_blocking(is_ready).await.unwrap_or(false) {
         return Err("Python 环境安装后验证失败".into());
     }
@@ -634,11 +634,7 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
         }
 
         downloaded += bytes.len() as u64;
-        let pct = if total_size > 0 {
-            downloaded * 100 / total_size
-        } else {
-            0
-        };
+        let pct = (downloaded * 100).checked_div(total_size).unwrap_or(0);
         if pct != last_pct {
             last_pct = pct;
             let mb = downloaded as f64 / 1024.0 / 1024.0;

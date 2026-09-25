@@ -169,7 +169,7 @@ def load_tags_csv(csv_path):
             name_idx = header.index("name")
             cat_idx = header.index("category")
         except ValueError:
-            # 无表头名的老格式兜底：tag_id,name,category[,count]
+            # 无表头时使用旧格式的 tag_id,name,category[,count] 列顺序。
             name_idx, cat_idx = 1, 2
         count_idx = header.index("count") if "count" in header else None
         for row in reader:
@@ -620,7 +620,7 @@ def _flatten_json_tags(data):
         add(ai.get("appearance"))
         add(ai.get("tags"))
         add(ai.get("environment"))
-    # 简化格式：扁平键（完整格式没有顶层这些键，去重兜底双保险）
+    # 简化格式的扁平字段作为补充来源，并统一去重。
     for key in ("quality", "series", "artist", "character", "variant",
                 "count", "appearance", "tags", "environment"):
         add(data.get(key))
@@ -1019,8 +1019,7 @@ def main():
                         try:
                             with open(json_path, "r", encoding="utf-8") as f:
                                 existing_data = json.load(f)
-                            # 简化处理：JSON 模式下直接覆盖（JSON 结构合并太复杂）
-                            # 保留已有数据并用新数据更新
+                            # 保留已有字段；仅补充缺失字段，并对列表字段合并去重。
                             if existing_tags_action == "append":
                                 # 已有数据优先，新数据补充
                                 merged = existing_data.copy()
@@ -1169,7 +1168,18 @@ def main():
                     continue
 
                 # 拼接 batch tensor: [N, C, H, W] or [N, H, W, C]
-                batch_tensor = np.concatenate(batch_data, axis=0)
+                # 拼接失败也必须给每张图一个终态消息——Rust 按图片数等结果，
+                # 少发会让任务一直等不到批次的完整结果
+                try:
+                    batch_tensor = np.concatenate(batch_data, axis=0)
+                except Exception as e:
+                    for vi in valid_indices:
+                        result({
+                            "type": "error",
+                            "image_path": images[vi].get("image_path", ""),
+                            "message": f"批量拼接失败: {e}",
+                        })
+                    continue
 
                 all_probs = None
                 fixed_batch = session.get_inputs()[0].shape[0]

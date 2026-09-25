@@ -143,7 +143,7 @@ async fn node_format_convert() {
 
     let r = convert_format(app.handle().clone(), opts).await.unwrap();
     assert_eq!(r.fail_count, 0, "格式转换不应有失败: {:?}", r.errors);
-    // 工作流语义关键：已是目标格式的文件也必须出现在输出目录，
+        // 已是目标格式的文件也要复制到输出目录，
     // 否则下游节点会拿到不完整的数据集
     assert_eq!(
         file_count(&out),
@@ -241,7 +241,7 @@ async fn node_filter() {
     let r = filter_by_resolution(app.handle().clone(), opts).await.unwrap();
     assert_eq!(r.fail_count, 0, "分辨率筛选不应有失败: {:?}", r.errors);
     let hit = file_count(&out);
-    assert!(hit >= 1 && hit < 5, "应筛出部分低分辨率图片，实际 {}", hit);
+    assert!((1..5).contains(&hit), "应筛出部分低分辨率图片，实际 {}", hit);
     assert_eq!(file_count(&input), 5, "copy 模式不应动原目录");
     cleanup(&root);
 }
@@ -250,7 +250,7 @@ async fn node_filter() {
 async fn node_rename() {
     let app = mock_app();
     let (root, input) = make_dataset("rename");
-    // 放一个同名标签文件，验证 rename_tags 联动
+        // 添加同名标签文件，覆盖 rename_tags 联动。
     std::fs::write(input.join("a_512.txt"), "1girl, solo").unwrap();
 
     let opts = serde_json::from_value(json!({

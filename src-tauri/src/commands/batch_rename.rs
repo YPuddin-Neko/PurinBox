@@ -16,6 +16,10 @@ pub struct RenameOptions {
     pub digit_count: u32,
     /// 是否打乱顺序
     pub shuffle: bool,
+    /// 打乱用的随机种子。预览与执行传同一种子时顺序一致；
+    /// 不传（如工作流直接执行）则随机
+    #[serde(default)]
+    pub shuffle_seed: Option<u64>,
     /// 是否同步重命名标签文件（.txt, .json）
     #[serde(default)]
     pub rename_tags: bool,
@@ -43,8 +47,7 @@ fn preview_rename_sync(options: &RenameOptions) -> Result<Vec<RenamePreviewItem>
     let mut files = collect_image_files(input)?;
 
     if options.shuffle {
-        let mut rng = rand::rng();
-        files.shuffle(&mut rng);
+        apply_shuffle(&mut files, options.shuffle_seed);
     }
 
     let mut previews = Vec::new();
@@ -107,8 +110,7 @@ fn execute_rename_sync<R: tauri::Runtime>(
     let mut files = collect_image_files(input)?;
 
     if options.shuffle {
-        let mut rng = rand::rng();
-        files.shuffle(&mut rng);
+        apply_shuffle(&mut files, options.shuffle_seed);
     }
 
     let total = files.len() as u32;
@@ -278,6 +280,19 @@ fn execute_rename_sync<R: tauri::Runtime>(
     })
 }
 
+/// 打乱文件列表。种子相同时顺序确定，用于让预览与执行的映射一致；
+/// 无种子（工作流等直接执行场景）时完全随机
+fn apply_shuffle(files: &mut [std::path::PathBuf], seed: Option<u64>) {
+    match seed {
+        Some(s) => {
+            use rand::SeedableRng;
+            let mut rng = rand::rngs::StdRng::seed_from_u64(s);
+            files.shuffle(&mut rng);
+        }
+        None => files.shuffle(&mut rand::rng()),
+    }
+}
+
 /// 生成简易唯一 ID（避免引入 uuid 库）
 fn uuid_simple() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -286,4 +301,37 @@ fn uuid_simple() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("{:x}", ts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shuffle_with_same_seed_is_deterministic() {
+        let files: Vec<std::path::PathBuf> = (0..10)
+            .map(|i| std::path::PathBuf::from(format!("img_{}.png", i)))
+            .collect();
+        let mut a = files.clone();
+        let mut b = files.clone();
+        apply_shuffle(&mut a, Some(42));
+        apply_shuffle(&mut b, Some(42));
+        assert_eq!(a, b);
+
+        // 只是重排，不增删文件
+        let mut sorted = a.clone();
+        sorted.sort();
+        assert_eq!(sorted, files);
+    }
+
+    #[test]
+    fn shuffle_without_seed_keeps_all_files() {
+        let files: Vec<std::path::PathBuf> = (0..5)
+            .map(|i| std::path::PathBuf::from(format!("img_{}.png", i)))
+            .collect();
+        let mut a = files.clone();
+        apply_shuffle(&mut a, None);
+        a.sort();
+        assert_eq!(a, files);
+    }
 }

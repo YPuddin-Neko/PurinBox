@@ -291,6 +291,10 @@ where
             }
             Ok(v)
         }
+        // null 字段视为"字段为空"，而不是让整个文件解析失败
+        fn visit_unit<E: de::Error>(self) -> Result<Vec<String>, E> {
+            Ok(Vec::new())
+        }
     }
     deserializer.deserialize_any(StringOrArray)
 }
@@ -366,19 +370,7 @@ pub fn load_json_dataset(folder: String, recursive: Option<bool>) -> Result<Json
         let (data, has_json, fmt, parse_failed) = if json_path.exists() {
             match std::fs::read_to_string(&json_path) {
                 Ok(content) => {
-                    // 先检查顶层 keys 判断格式
-                    let is_full = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content)
-                    {
-                        v.as_object()
-                            .map(|o| {
-                                o.contains_key("ai_output")
-                                    || o.contains_key("fixed")
-                                    || o.contains_key("from_path")
-                            })
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
+                    let is_full = is_full_format(&content);
 
                     if is_full {
                         match serde_json::from_str::<JsonTagData>(&content) {
@@ -417,6 +409,22 @@ pub fn load_json_dataset(folder: String, recursive: Option<bool>) -> Result<Json
         images,
         detected_format,
     })
+}
+
+/// 判断 JSON 内容是否为完整格式（顶层含结构化字段）。
+/// 完整格式的 character 是对象 {name, variant, ...}；简化格式顶层 character 是字符串，
+/// 含同名字符串键不算完整格式
+fn is_full_format(content: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(content) else {
+        return false;
+    };
+    let Some(o) = v.as_object() else {
+        return false;
+    };
+    o.contains_key("ai_output")
+        || o.contains_key("fixed")
+        || o.contains_key("from_path")
+        || matches!(o.get("character"), Some(serde_json::Value::Object(_)))
 }
 
 /// 解析简化格式 JSON（扁平结构）转为完整格式
@@ -635,5 +643,39 @@ mod json_extra_tests {
         }
         assert_eq!(v["nl"], "");
         assert_eq!(v["tags"], serde_json::json!([]));
+    }
+
+    /// null 数组字段视为空，不拖垮整个文件解析
+    #[test]
+    fn null_array_fields_parse_as_empty() {
+        let raw = r#"{
+            "ai_output": {"appearance": null, "tags": ["1girl"], "environment": null, "nl": null},
+            "from_path": {"appearance": null}
+        }"#;
+        let data: JsonTagData = serde_json::from_str(raw).unwrap();
+        assert!(data.ai_output.appearance.is_empty());
+        assert_eq!(data.ai_output.tags, vec!["1girl".to_string()]);
+        assert!(data.ai_output.environment.is_empty());
+        assert_eq!(data.ai_output.nl, None);
+        assert!(data.from_path.appearance.is_empty());
+    }
+
+    /// character 对象按完整格式识别；同名字符串键仍是简化格式
+    #[test]
+    fn character_object_detected_as_full_format() {
+        assert!(is_full_format(
+            r#"{"character": {"name": "hakurei reimu", "variant": ""}}"#
+        ));
+        assert!(!is_full_format(
+            r#"{"character": "hakurei reimu", "tags": ["1girl"]}"#
+        ));
+
+        // 角色对象能按完整结构解析保留
+        let data: JsonTagData = serde_json::from_str(
+            r#"{"character": {"name": "hakurei reimu", "variant": "winter"}}"#,
+        )
+        .unwrap();
+        assert_eq!(data.character.name, "hakurei reimu");
+        assert_eq!(data.character.variant, "winter");
     }
 }

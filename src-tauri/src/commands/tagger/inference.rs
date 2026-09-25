@@ -52,6 +52,33 @@ pub fn kill_python_process() {
     crate::commands::kill_child_tree(&PYTHON_PROCESS);
 }
 
+/// 协议读取的静默上限：超过该时长没有任何输出行，视为 Python 进程卡死
+const PYTHON_SILENCE_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
+
+enum ProtocolRead {
+    Line(std::io::Result<String>),
+    Disconnected,
+    Timeout,
+}
+
+/// 以短 tick 轮询协议行。接收端不能裸 recv() 死等：
+/// Python 卡死（进程存活但不再输出）时任务会永久停滞；
+/// 取消时进程树被杀、通道断开，经 Disconnected 正常收尾。
+fn recv_protocol_line(line_rx: &mpsc::Receiver<std::io::Result<String>>) -> ProtocolRead {
+    let start = std::time::Instant::now();
+    loop {
+        match line_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(v) => return ProtocolRead::Line(v),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if start.elapsed() >= PYTHON_SILENCE_LIMIT {
+                    return ProtocolRead::Timeout;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return ProtocolRead::Disconnected,
+        }
+    }
+}
+
 /// 运行命令并隐藏 Windows 控制台窗口，返回 stdout 或错误信息
 fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new(program);
@@ -412,7 +439,7 @@ pub fn run_tagging(
     output_kind: &str,
     category_thresholds: &std::collections::BTreeMap<String, f32>,
 ) -> Result<ProcessResult, String> {
-    // 杀死之前的进程（如果有）
+    // 停止现有推理进程，确保全局句柄只对应当前任务。
     kill_python_process();
 
     // 查找 Python
@@ -741,8 +768,8 @@ pub fn run_tagging(
                 break;
             }
             loop {
-                match line_rx.recv() {
-                    Ok(Ok(line)) => {
+                match recv_protocol_line(&line_rx) {
+                    ProtocolRead::Line(Ok(line)) => {
                         if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
                             let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
                             match msg_type {
@@ -825,16 +852,27 @@ pub fn run_tagging(
                             }
                         }
                     }
-                    Ok(Err(e)) => {
+                    ProtocolRead::Line(Err(e)) => {
                         fail_count += 1;
                         failed_files.push(file_path.clone());
                         errors.push(format!("{}: 读取失败: {}", filename, e));
                         break;
                     }
-                    Err(_) => {
+                    ProtocolRead::Disconnected => {
                         fail_count += 1;
                         failed_files.push(file_path.clone());
                         errors.push(format!("{}: Python 进程退出", filename));
+                        break;
+                    }
+                    ProtocolRead::Timeout => {
+                        fail_count += 1;
+                        failed_files.push(file_path.clone());
+                        errors.push(format!(
+                            "{}: Python 超过 {} 秒无响应，已终止进程",
+                            filename,
+                            PYTHON_SILENCE_LIMIT.as_secs()
+                        ));
+                        kill_python_process();
                         break;
                     }
                 }
@@ -872,8 +910,8 @@ pub fn run_tagging(
             }
             let mut results_read = 0usize;
             while results_read < batch_len {
-                match line_rx.recv() {
-                    Ok(Ok(line)) => {
+                match recv_protocol_line(&line_rx) {
+                    ProtocolRead::Line(Ok(line)) => {
                         if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
                             let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
                             match msg_type {
@@ -976,17 +1014,28 @@ pub fn run_tagging(
                             }
                         }
                     }
-                    Ok(Err(e)) => {
+                    ProtocolRead::Line(Err(e)) => {
                         fail_count += (batch_len - results_read) as u32;
                         // Python 按顺序回结果，没回到的就是这批里剩下的那几张
                         failed_files.extend(batch_files[results_read..].iter().cloned());
                         errors.push(format!("批量读取失败: {}", e));
                         break;
                     }
-                    Err(_) => {
+                    ProtocolRead::Disconnected => {
                         fail_count += (batch_len - results_read) as u32;
                         failed_files.extend(batch_files[results_read..].iter().cloned());
                         errors.push("Python 进程退出".to_string());
+                        break;
+                    }
+                    ProtocolRead::Timeout => {
+                        fail_count += (batch_len - results_read) as u32;
+                        failed_files.extend(batch_files[results_read..].iter().cloned());
+                        errors.push(format!(
+                            "Python 超过 {} 秒无响应，已终止进程；本批剩余 {} 张记为失败",
+                            PYTHON_SILENCE_LIMIT.as_secs(),
+                            batch_len - results_read
+                        ));
+                        kill_python_process();
                         break;
                     }
                 }

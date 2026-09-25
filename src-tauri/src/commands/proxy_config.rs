@@ -82,7 +82,8 @@ pub fn save_proxy_config(
         password_encoded: encode(&password),
     };
     let json = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {}", e))?;
-    std::fs::write(dir.join(CONFIG_FILE), json).map_err(|e| format!("写入代理配置失败: {}", e))?;
+    super::config_paths::write_file_atomic(&dir.join(CONFIG_FILE), json.as_bytes())
+        .map_err(|e| format!("写入代理配置失败: {}", e))?;
     Ok(())
 }
 
@@ -137,9 +138,7 @@ fn apply_proxy(builder: reqwest::ClientBuilder, cfg: &ProxyConfig) -> reqwest::C
 
     let is_socks = cfg.proxy_type == "socks5";
     let url = if is_socks {
-        // 必须用 socks5h(代理解析域名)而不是 socks5(本地解析):
-        // 本地解析在 DNS 被污染/劫持的网络里直接失败,表现为
-        // "error sending request for url",且没有任何代理相关提示
+        // 使用 socks5h 让代理解析域名，避免本地 DNS 解析失败。
         if cfg.username.is_empty() {
             format!("socks5h://{}:{}", cfg.host, cfg.port)
         } else {

@@ -32,6 +32,8 @@ export default function BatchRenamePage() {
   const [startNumber, setStartNumber] = useState(1);
   const [digitCount, setDigitCount] = useState(4);
   const [shuffleOrder, setShuffleOrder] = useState(false);
+  // 每次生成预览时换一个新种子；执行沿用同一颗种子，保证预览映射与实际重命名一致
+  const [shuffleSeed, setShuffleSeed] = useState<number | undefined>(undefined);
   const [renameTags, setRenameTags] = useState(true);
   const [previewPage, setPreviewPage] = useState(0);
   const PREVIEW_PER_PAGE = 15;
@@ -62,7 +64,7 @@ export default function BatchRenamePage() {
     return () => { active = false; p.then(fn => fn()); };
   }, []);
 
-  // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    // 提交前规范数字参数。
   const sanitizeRenameNums = () => {
     const sn = Number.isFinite(startNumber) && startNumber >= 0 ? startNumber : 0;
     const dc = Number.isFinite(digitCount) && digitCount >= 1 ? Math.min(digitCount, 10) : 1;
@@ -74,10 +76,12 @@ export default function BatchRenamePage() {
   const handlePreview = async () => {
     if (!inputPath) return;
     const { sn, dc } = sanitizeRenameNums();
+    const seed = shuffleOrder ? Date.now() % 4294967296 : undefined;
+    setShuffleSeed(seed);
     setPreviewLoading(true);
     try {
       const result = await invoke<PreviewItem[]>('preview_rename', {
-        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: shuffleOrder, rename_tags: renameTags },
+        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: shuffleOrder, shuffle_seed: seed, rename_tags: renameTags },
       });
       setPreviews(result);
       setPreviewPage(0); // 新预览可能页数更少，沿用旧页码会显示空表
@@ -92,10 +96,12 @@ export default function BatchRenamePage() {
   const handleShuffle = async () => {
     if (!inputPath) return;
     const { sn, dc } = sanitizeRenameNums();
+    const seed = Date.now() % 4294967296;
+    setShuffleSeed(seed);
     setPreviewLoading(true);
     try {
       const result = await invoke<PreviewItem[]>('preview_rename', {
-        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: true, rename_tags: renameTags },
+        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: true, shuffle_seed: seed, rename_tags: renameTags },
       });
       setPreviews(result);
       setPreviewPage(0);
@@ -119,7 +125,7 @@ export default function BatchRenamePage() {
     setLogs([{ time: getTimeStr(), message: t('batchRename.startMsg', { prefix, start: sn, digits: dc }), status: 'info' }]);
     try {
       await invoke<ProcessResult>('execute_rename', {
-        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: shuffleOrder, rename_tags: renameTags },
+        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: shuffleOrder, shuffle_seed: shuffleOrder ? shuffleSeed : undefined, rename_tags: renameTags },
       });
       setPreviews([]);
     } catch (e: any) {

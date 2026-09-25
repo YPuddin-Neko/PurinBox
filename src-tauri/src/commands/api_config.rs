@@ -9,7 +9,7 @@ pub struct ApiConfig {
     pub preset: String,
     /// 自定义端点 URL（仅 preset="custom" 时使用）
     pub custom_endpoint: String,
-    /// 各预设的 API Key（base64 编码存储），key = preset 名称
+    /// 各预设 API Key 的落盘存储值（密钥环标记或 base64），key = preset 名称
     #[serde(default)]
     pub api_keys: HashMap<String, String>,
     // ---- 兼容旧版：单一 api_key_encoded ----
@@ -40,12 +40,18 @@ pub struct ApiConfigResponse {
 
 const CONFIG_FILE: &str = "api_config.json";
 
+/// 系统密钥环中的服务名
+const KEYRING_SERVICE: &str = "PurinBox";
+
+/// 落盘标记值：真实 key 在系统密钥环里，配置文件只留标记
+const KEYRING_MARKER: &str = "@keyring";
+
 /// 配置文件读取路径（含旧 exe 同目录 config/ 的自动迁移）
 fn config_path() -> PathBuf {
     super::config_paths::resolve_config_file(CONFIG_FILE)
 }
 
-/// 编码 API Key（base64）
+/// 编码 API Key（base64；仅作密钥环不可用时的回退与旧配置兼容读取）
 fn encode_key(key: &str) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(key.as_bytes())
@@ -64,6 +70,38 @@ fn decode_key(encoded: &str) -> String {
         .unwrap_or_default()
 }
 
+fn keyring_entry(preset: &str) -> Option<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, &format!("api-key:{}", preset)).ok()
+}
+
+/// 优先写入系统密钥环（Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service）;
+/// 密钥环不可用时回退配置文件 base64。返回落盘存储值
+fn store_key(preset: &str, key: &str) -> String {
+    if let Some(entry) = keyring_entry(preset) {
+        if entry.set_password(key).is_ok() {
+            return KEYRING_MARKER.to_string();
+        }
+    }
+    encode_key(key)
+}
+
+/// 读取 API Key：密钥环标记走系统密钥环，其余按 base64 解码（兼容旧配置）
+fn load_key(preset: &str, stored: &str) -> String {
+    if stored == KEYRING_MARKER {
+        return keyring_entry(preset)
+            .and_then(|entry| entry.get_password().ok())
+            .unwrap_or_default();
+    }
+    decode_key(stored)
+}
+
+/// 显式清除某个预设的 key 时同步删除密钥环条目
+fn delete_key(preset: &str) {
+    if let Some(entry) = keyring_entry(preset) {
+        let _ = entry.delete_credential();
+    }
+}
+
 /// 保存 API 配置
 #[tauri::command]
 pub fn save_api_config(
@@ -76,28 +114,31 @@ pub fn save_api_config(
 
     // 与已存储的 key 合并：调用方（如精修/辅助打标 Tab）可能只传当前预设一把 key，
     // 整体替换会抹掉其他预设已保存的 key。传空字符串表示显式清除该预设。
-    let mut encoded_keys: HashMap<String, String> = std::fs::read_to_string(config_path())
+    let mut stored_keys: HashMap<String, String> = std::fs::read_to_string(config_path())
         .ok()
         .and_then(|c| serde_json::from_str::<ApiConfig>(&c).ok())
         .map(|old| old.api_keys)
         .unwrap_or_default();
     for (k, v) in api_keys {
         if v.is_empty() {
-            encoded_keys.remove(&k);
+            stored_keys.remove(&k);
+            delete_key(&k);
         } else {
-            encoded_keys.insert(k, encode_key(&v));
+            let stored = store_key(&k, &v);
+            stored_keys.insert(k, stored);
         }
     }
 
     let config = ApiConfig {
         preset,
         custom_endpoint,
-        api_keys: encoded_keys,
+        api_keys: stored_keys,
         api_key_encoded: String::new(),
     };
 
     let json = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {}", e))?;
-    std::fs::write(dir.join(CONFIG_FILE), json).map_err(|e| format!("写入配置失败: {}", e))?;
+    super::config_paths::write_file_atomic(&dir.join(CONFIG_FILE), json.as_bytes())
+        .map_err(|e| format!("写入配置失败: {}", e))?;
     Ok(())
 }
 
@@ -121,7 +162,7 @@ pub fn load_api_config() -> Result<ApiConfigResponse, String> {
     let mut decoded_keys: HashMap<String, String> = config
         .api_keys
         .iter()
-        .map(|(k, v)| (k.clone(), decode_key(v)))
+        .map(|(k, v)| (k.clone(), load_key(k, v)))
         .filter(|(_, v)| !v.is_empty())
         .collect();
 

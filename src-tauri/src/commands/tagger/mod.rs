@@ -239,7 +239,7 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
                 for result in reader.records().flatten() {
                     let cell = match cat_idx {
                         Some(i) => result.get(i),
-                        // 无表头名的老格式兜底：tag_id,name,category
+                        // 无表头时使用旧格式的 tag_id,name,category 列顺序。
                         None => result.get(2),
                     };
                     if let Some(Ok(cat_id)) = cell.map(|c| c.trim().parse::<i32>()) {
@@ -268,10 +268,9 @@ fn normalize_category_value(
         } else {
             s.to_string()
         }
-    } else if let Some(idx) = value.as_u64() {
-        resolve_category_index(idx as usize, categories)?
     } else {
-        return None;
+        let idx = value.as_u64()?;
+        resolve_category_index(idx as usize, categories)?
     };
 
     match raw.to_lowercase().replace('-', "_").as_str() {
@@ -734,7 +733,7 @@ fn run_convert_process(
         .map_err(|e| format!("启动转换进程失败: {}", e))?;
     let stdout = child.stdout.take().ok_or("无法获取转换进程输出")?;
     // stderr 必须另起线程并发读走：piped 之后不读，缓冲区一满 Python 就阻塞在写日志上。
-    // 之前这里是 Stdio::null()，Python 崩了只能得到一句"异常退出"，看不到原因
+    // 读取 stderr，保留 Python 进程的诊断信息。
     let stderr_reader = child.stderr.take().map(|se| {
         std::thread::spawn(move || {
             let mut lines = Vec::new();

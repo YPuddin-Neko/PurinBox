@@ -11,7 +11,7 @@ pub async fn save_workflow(path: String, data: String) -> Result<(), String> {
             .map_err(|e| format!("创建目录失败: {}", e))?;
     }
 
-    std::fs::write(file_path, data)
+    super::config_paths::write_file_atomic(file_path, data.as_bytes())
         .map_err(|e| format!("写入工作流失败: {}", e))?;
 
     Ok(())
@@ -93,8 +93,7 @@ pub fn carry_tag_sidecars(
     if !input.is_dir() || !output.is_dir() {
         return Ok(0);
     }
-    // 先给输入侧的标签文件按相对路径建索引：纯图片数据集（最常见）直接零开销返回，
-    // 避免对输出目录每张图做 3 次存在性探测
+    // 先按相对路径索引输入侧的标签文件；没有标签文件时直接返回。
     let mut avail: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
     let walker = if recursive {
         walkdir::WalkDir::new(input)

@@ -39,7 +39,7 @@ pub fn save_huggingface_config(token: String) -> Result<(), String> {
         token_encoded: encode(token.trim()),
     };
     let json = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {}", e))?;
-    std::fs::write(dir.join(CONFIG_FILE), json)
+    super::config_paths::write_file_atomic(&dir.join(CONFIG_FILE), json.as_bytes())
         .map_err(|e| format!("写入 Hugging Face 配置失败: {}", e))?;
     Ok(())
 }

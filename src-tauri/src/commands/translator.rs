@@ -145,6 +145,36 @@ pub struct CacheStats {
 }
 
 // ═══════════════════════════════════════
+//  目标语言代码映射
+//  应用内统一使用 zh-CN / ja / ko（见设置页选项），各服务商语言代码不同。
+//  未知值按 zh-CN 处理。
+// ═══════════════════════════════════════
+
+fn baidu_lang_code(target_lang: &str) -> &'static str {
+    match target_lang {
+        "ja" => "jp",
+        "ko" => "kor",
+        _ => "zh",
+    }
+}
+
+fn youdao_lang_code(target_lang: &str) -> &'static str {
+    match target_lang {
+        "ja" => "ja",
+        "ko" => "ko",
+        _ => "zh-CHS",
+    }
+}
+
+fn bing_lang_code(target_lang: &str) -> &'static str {
+    match target_lang {
+        "ja" => "ja",
+        "ko" => "ko",
+        _ => "zh-Hans",
+    }
+}
+
+// ═══════════════════════════════════════
 //  百度翻译
 // ═══════════════════════════════════════
 
@@ -177,6 +207,7 @@ fn baidu_sign(input: &str) -> String {
 async fn translate_baidu(
     client: &reqwest::Client,
     texts: &[String],
+    target_lang: &str,
     appid: &str,
     secret_key: &str,
 ) -> Result<Vec<String>, String> {
@@ -189,13 +220,13 @@ async fn translate_baidu(
             .as_millis()
     );
 
-    let sign_str = format!("{}{}{}{}", appid, &text, &salt, secret_key);
+    let sign_str = format!("{}{}{}{}", appid, text, salt, secret_key);
     let sign = baidu_sign(&sign_str);
 
     let params = [
         ("q", text.as_str()),
         ("from", "en"),
-        ("to", "zh"),
+        ("to", baidu_lang_code(target_lang)),
         ("appid", appid),
         ("salt", &salt),
         ("sign", &sign),
@@ -345,6 +376,7 @@ fn youdao_truncate(q: &str) -> String {
 async fn translate_youdao(
     client: &reqwest::Client,
     texts: &[String],
+    target_lang: &str,
     app_key: &str,
     app_secret: &str,
 ) -> Result<Vec<String>, String> {
@@ -371,7 +403,7 @@ async fn translate_youdao(
     let params = [
         ("q", text.as_str()),
         ("from", "en"),
-        ("to", "zh-CHS"),
+        ("to", youdao_lang_code(target_lang)),
         ("appKey", app_key),
         ("salt", &salt),
         ("sign", &sign),
@@ -452,6 +484,7 @@ struct BingError {
 async fn translate_bing(
     client: &reqwest::Client,
     texts: &[String],
+    target_lang: &str,
     subscription_key: &str,
     region: &str,
 ) -> Result<Vec<String>, String> {
@@ -461,7 +494,10 @@ async fn translate_bing(
         .collect();
 
     let mut req = client
-        .post("https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=en&to=zh-Hans")
+        .post(format!(
+            "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=en&to={}",
+            bing_lang_code(target_lang)
+        ))
         .header("Ocp-Apim-Subscription-Key", subscription_key)
         .header("Content-Type", "application/json")
         .json(&body);
@@ -629,7 +665,7 @@ pub async fn translate_tags(
                         if idx > 0 {
                             tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
                         }
-                        let results = translate_baidu(&client, single, appid, key).await?;
+                        let results = translate_baidu(&client, single, &target_lang, appid, key).await?;
                         // 百度按换行拆分了结果，重新合并
                         results.join("\n")
                     }
@@ -646,7 +682,7 @@ pub async fn translate_tags(
                             tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
                         }
                         let results =
-                            translate_youdao(&client, single, app_key, app_secret).await?;
+                            translate_youdao(&client, single, &target_lang, app_key, app_secret).await?;
                         results.join("\n")
                     }
                     "bing" => {
@@ -656,7 +692,7 @@ pub async fn translate_tags(
                                 .to_string());
                         }
                         let region = bing_region.as_deref().unwrap_or("");
-                        let results = translate_bing(&client, single, key, region).await?;
+                        let results = translate_bing(&client, single, &target_lang, key, region).await?;
                         results.join("")
                     }
                     _ => {
@@ -707,7 +743,7 @@ pub async fn translate_tags(
                                     .to_string(),
                             );
                         }
-                        translate_baidu(&client, chunk, appid, key).await?
+                        translate_baidu(&client, chunk, &target_lang, appid, key).await?
                     }
                     "youdao" => {
                         let app_key = youdao_app_key.as_deref().unwrap_or("");
@@ -718,7 +754,7 @@ pub async fn translate_tags(
                                     .to_string(),
                             );
                         }
-                        translate_youdao(&client, chunk, app_key, app_secret).await?
+                        translate_youdao(&client, chunk, &target_lang, app_key, app_secret).await?
                     }
                     "bing" => {
                         let key = bing_key.as_deref().unwrap_or("");
@@ -727,7 +763,7 @@ pub async fn translate_tags(
                                 .to_string());
                         }
                         let region = bing_region.as_deref().unwrap_or("");
-                        translate_bing(&client, chunk, key, region).await?
+                        translate_bing(&client, chunk, &target_lang, key, region).await?
                     }
                     _ => translate_google(&client, chunk, &target_lang).await?,
                 };
@@ -863,7 +899,7 @@ pub async fn test_translation(
             if appid.is_empty() || key.is_empty() {
                 return Err("请先填写百度翻译 APP ID 和密钥".to_string());
             }
-            translate_baidu(&client, &test_texts, appid, key).await?
+            translate_baidu(&client, &test_texts, "zh-CN", appid, key).await?
         }
         "youdao" => {
             let app_key = youdao_app_key.as_deref().unwrap_or("");
@@ -871,7 +907,7 @@ pub async fn test_translation(
             if app_key.is_empty() || app_secret.is_empty() {
                 return Err("请先填写有道翻译应用 ID 和应用密钥".to_string());
             }
-            translate_youdao(&client, &test_texts, app_key, app_secret).await?
+            translate_youdao(&client, &test_texts, "zh-CN", app_key, app_secret).await?
         }
         "bing" => {
             let key = bing_key.as_deref().unwrap_or("");
@@ -879,7 +915,7 @@ pub async fn test_translation(
                 return Err("请先填写必应翻译订阅密钥".to_string());
             }
             let region = bing_region.as_deref().unwrap_or("");
-            translate_bing(&client, &test_texts, key, region).await?
+            translate_bing(&client, &test_texts, "zh-CN", key, region).await?
         }
         _ => translate_google(&client, &test_texts, "zh-CN").await?,
     };
@@ -937,6 +973,8 @@ pub fn export_translation_csv(path: String) -> Result<u32, String> {
 #[tauri::command]
 pub fn import_translation_csv(path: String) -> Result<(u32, u32, String), String> {
     let content = std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))?;
+    // 应用自身导出带 UTF-8 BOM，比较表头前先剥掉，保证导出文件可直接再导入
+    let content = content.strip_prefix('\u{FEFF}').unwrap_or(&content);
 
     let mut lines = content.lines();
     let header = lines.next().ok_or("CSV 文件为空")?;
@@ -1055,4 +1093,32 @@ fn parse_csv_line(line: &str) -> Vec<String> {
     }
     result.push(current);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_lang_codes_cover_app_languages() {
+        assert_eq!(baidu_lang_code("zh-CN"), "zh");
+        assert_eq!(baidu_lang_code("ja"), "jp");
+        assert_eq!(baidu_lang_code("ko"), "kor");
+        assert_eq!(baidu_lang_code("unknown"), "zh");
+
+        assert_eq!(youdao_lang_code("zh-CN"), "zh-CHS");
+        assert_eq!(youdao_lang_code("ja"), "ja");
+        assert_eq!(youdao_lang_code("ko"), "ko");
+
+        assert_eq!(bing_lang_code("zh-CN"), "zh-Hans");
+        assert_eq!(bing_lang_code("ja"), "ja");
+        assert_eq!(bing_lang_code("ko"), "ko");
+    }
+
+    #[test]
+    fn csv_header_bom_is_stripped() {
+        let content = "\u{FEFF}tag,translated,lang\n";
+        let stripped = content.strip_prefix('\u{FEFF}').unwrap_or(content);
+        assert_eq!(stripped, "tag,translated,lang\n");
+    }
 }

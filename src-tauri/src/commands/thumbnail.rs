@@ -101,8 +101,15 @@ fn get_image_thumbnail_sync(path: &str, max_edge: u32) -> Result<String, String>
     let has_alpha = thumb.color().has_alpha();
     let dest = if has_alpha { png_path } else { jpg_path };
 
-    // 先写临时文件再改名，避免并发/中断产生半截缓存文件
-    let tmp = dir.join(format!("{}.tmp-{}", key, std::process::id()));
+    // 先写临时文件再改名，避免并发/中断产生半截缓存文件。
+    // PID 之外再加进程内序号，同进程并发请求同一原图时临时路径不共享
+    static TMP_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let tmp = dir.join(format!(
+        "{}.tmp-{}-{}",
+        key,
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     let write_result = (|| -> Result<(), String> {
         let file = fs::File::create(&tmp).map_err(|e| format!("创建缩略图失败: {}", e))?;
         let mut writer = std::io::BufWriter::new(file);

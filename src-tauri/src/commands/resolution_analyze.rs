@@ -186,7 +186,7 @@ where
                 max_h = max_h.max(h);
                 // 每文件一次 IPC 事件在万级数据集上会拖垮前端渲染，成功分支节流（错误分支保留逐条）
                 let current = i as u32 + 1;
-                if current % 50 == 0 || current as usize == files.len() {
+                if current.is_multiple_of(50) || current as usize == files.len() {
                     emit(
                         current,
                         "processing",
@@ -417,7 +417,7 @@ fn aggregate_sync(
         }
 
         let current = i as u32 + 1;
-        if current % 20 == 0 || current == total {
+        if current.is_multiple_of(20) || current == total {
             emit(current, "processing", format!("正在聚合 {}/{}", current, total));
         }
     }

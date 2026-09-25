@@ -83,11 +83,60 @@ pub fn exe_root() -> PathBuf {
     exe_dir
 }
 
-/// 标签缓存目录（翻译缓存库与 Danbooru 标签库共用）
-pub fn default_tagcache_dir() -> PathBuf {
+/// 旧标签缓存目录（exe 同目录）。仅用于判断已有数据位置，新安装不再默认写入：
+/// 按机安装（如 Program Files）时普通用户对 exe 目录没有写权限。
+fn legacy_tagcache_dir() -> PathBuf {
     if cfg!(target_os = "windows") {
         exe_root().join("data").join("tagcache")
     } else {
         exe_root().join("tagcache")
     }
+}
+
+/// 标签缓存目录（翻译缓存库与 Danbooru 标签库共用）。
+/// 默认落在用户数据目录（Windows: `%LOCALAPPDATA%\PurinBox\tagcache`，
+/// Linux: `~/.local/share/PurinBox/tagcache`，macOS: `~/Library/Application Support/PurinBox/tagcache`）；
+/// 检测到旧版 exe 同目录缓存时继续沿用旧位置，已下载的数据不搬家。
+pub fn default_tagcache_dir() -> PathBuf {
+    let new_dir = dirs::data_local_dir()
+        .map(|p| p.join("PurinBox").join("tagcache"))
+        .unwrap_or_else(legacy_tagcache_dir);
+    let legacy = legacy_tagcache_dir();
+    if legacy != new_dir && legacy.exists() {
+        return legacy;
+    }
+    new_dir
+}
+
+/// 原子写入文件：先写同目录临时文件再 rename，避免进程在写入中途被杀时留下截断文件
+pub fn write_file_atomic(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static TMP_SEQ: AtomicU32 = AtomicU32::new(0);
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config");
+    let tmp = path.with_file_name(format!(
+        ".{}.tmp-{}-{}",
+        file_name,
+        std::process::id(),
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    let write_result = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(contents)?;
+        f.sync_all()
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }

@@ -158,11 +158,11 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             input_size: 448,
             is_builtin: true,
             // 该 ONNX 是 timm 原始布局导出：NCHW + RGB 归一化，与 SmilingWolf
-            // 官方 NHWC BGR 原始像素的导出不同（实测确认，见 preprocess_mode wd_nchw）
+            // 该 ONNX 使用 timm 的 NCHW + RGB 归一化预处理；SmilingWolf 导出使用 NHWC + BGR。
             input_format: InputFormat::NCHW,
             preprocess_mode: "wd_nchw".into(),
             output_kind: "probability".into(),
-            // 无官方分类阈值指导，行为与 eva02-v3 一致（实测对照），沿用工具箱默认值
+            // 没有官方分类阈值时沿用工具箱默认值。
             general_threshold: None,
             character_threshold: None,
             category_thresholds: BTreeMap::new(),
@@ -289,7 +289,8 @@ fn save_custom_models(models: &[ModelDefinition]) -> Result<(), String> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;
     }
     let json = serde_json::to_string_pretty(models).map_err(|e| format!("序列化失败: {}", e))?;
-    std::fs::write(custom_models_path(), json).map_err(|e| format!("写入配置失败: {}", e))?;
+    crate::commands::config_paths::write_file_atomic(&custom_models_path(), json.as_bytes())
+        .map_err(|e| format!("写入配置失败: {}", e))?;
     Ok(())
 }
 
