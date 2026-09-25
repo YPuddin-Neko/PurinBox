@@ -288,6 +288,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
       { key: 'cat_character', labelKey: 'aiTagger.catCharacter', type: 'boolean', default: true },
       { key: 'cat_rating', labelKey: 'aiTagger.catRating', type: 'boolean', default: false },
       { key: 'cat_artist', labelKey: 'aiTagger.catArtist', type: 'boolean', default: false },
+      { key: 'cat_style', labelKey: 'aiTagger.catStyle', type: 'boolean', default: false },
       { key: 'cat_copyright', labelKey: 'aiTagger.catCopyright', type: 'boolean', default: false },
       { key: 'cat_meta', labelKey: 'aiTagger.catMeta', type: 'boolean', default: false },
       { key: 'replace_underscore', labelKey: 'aiTagger.replaceUnderscore', type: 'boolean', default: true },

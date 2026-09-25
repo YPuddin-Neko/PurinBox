@@ -759,6 +759,7 @@ const ja = {
     catCharacter: 'キャラクタータグ',
     catRating: 'レーティングタグ',
     catArtist: 'アーティストタグ',
+    catStyle: 'スタイルタグ',
     catCopyright: '著作権タグ',
     catMeta: 'メタタグ',
     catQuality: '品質タグ',

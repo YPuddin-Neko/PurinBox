@@ -759,6 +759,7 @@ const en = {
     catCharacter: 'Character',
     catRating: 'Rating',
     catArtist: 'Artist',
+    catStyle: 'Style',
     catCopyright: 'Copyright',
     catMeta: 'Meta',
     catQuality: 'Quality',

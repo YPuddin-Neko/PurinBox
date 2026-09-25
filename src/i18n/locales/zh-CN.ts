@@ -788,6 +788,7 @@ const zhCN = {
     catCharacter: '角色标签',
     catRating: '评级标签',
     catArtist: '作者标签',
+    catStyle: '风格标签',
     catCopyright: '版权标签',
     catMeta: '元信息标签',
     catQuality: '质量标签',

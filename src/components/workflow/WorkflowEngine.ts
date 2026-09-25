@@ -303,7 +303,7 @@ function buildCommandOptions(
       };
 
     case 'tagger': {
-      const cats = ['general', 'character', 'rating', 'artist', 'copyright', 'meta'];
+      const cats = ['general', 'character', 'rating', 'artist', 'style', 'copyright', 'meta'];
       const enabledCats = cats.filter(c => params[`cat_${c}`] ?? (c === 'general' || c === 'character'));
       return {
         options: {

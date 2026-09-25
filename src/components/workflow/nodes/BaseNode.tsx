@@ -24,11 +24,17 @@ function BaseNode({ id, data, selected }: NodeProps & { data: WorkflowNodeData }
   const statusClass = `wf-node-status-${data.status}`;
 
   const updateParam = useCallback((key: string, value: any) => {
+    const updates: Record<string, any> = { [key]: value };
+    if (data.type === 'tagger' && key === 'model_id') {
+      const model = dynamicItems.find(m => m.id === value);
+      if (model?.general_threshold != null) updates.general_threshold = model.general_threshold;
+      if (model?.character_threshold != null) updates.character_threshold = model.character_threshold;
+    }
     setNodes(nds => nds.map(n => {
       if (n.id !== id) return n;
-      return { ...n, data: { ...n.data, params: { ...(n.data as WorkflowNodeData).params, [key]: value } } };
+      return { ...n, data: { ...n.data, params: { ...(n.data as WorkflowNodeData).params, ...updates } } };
     }));
-  }, [id, setNodes]);
+  }, [id, setNodes, data.type, dynamicItems]);
 
   const handlePathSelect = useCallback(async (key: string) => {
     const selected = await open({ directory: true, multiple: false, title: t('workflow.selectFolder') });

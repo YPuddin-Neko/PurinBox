@@ -68,6 +68,19 @@ def preprocess_image(image_path, target_size, input_format, preprocess_mode="aut
         img_array = (img_array - mean) / std
         return img_array[np.newaxis, ...].astype(np.float32)
 
+    if preprocess_mode == "pixai_v1":
+        # v1 的 ONNX runner：等比 bilinear 缩放后居中黑填充，RGB 归一化到 [-1, 1]。
+        w, h = image.size
+        if (w, h) != (target_size, target_size):
+            scale = min(target_size / h, target_size / w)
+            size = (max(1, int(w * scale)), max(1, int(h * scale)))
+            image = image.resize(size, Image.Resampling.BILINEAR)
+            canvas = Image.new("RGB", (target_size, target_size), (0, 0, 0))
+            canvas.paste(image, ((target_size - size[0]) // 2, (target_size - size[1]) // 2))
+            image = canvas
+        data = np.asarray(image, dtype=np.float32) / 255.0
+        return ((data - 0.5) / 0.5).transpose(2, 0, 1)[np.newaxis, ...]
+
     if preprocess_mode == "pixai":
         # PixAI Tagger：对齐 deepghs 导出的 preprocess.json——
         # 直接拉伸 resize（无方形填充）、RGB、bilinear、normalize(0.5, 0.5)
@@ -177,6 +190,8 @@ def load_tags_json(json_path):
 
     if isinstance(data, dict) and "idx_to_tag" in data:
         return load_vocabulary_json(data)
+    if isinstance(data, dict) and isinstance(data.get("categories"), list):
+        return load_grouped_tags_json(data)
 
     tags = []
     for idx_str in sorted(data.keys(), key=int):
@@ -185,6 +200,22 @@ def load_tags_json(json_path):
         category = info.get("category", "General").lower()
         count = info.get("count", 0)
         tags.append({"name": tag_name, "category": category, "count": count})
+    return tags
+
+def load_grouped_tags_json(data):
+    """按全局 offset 读取 PixAI v1 的分类词表，避免分类顺序改变标签索引。"""
+    tags = []
+    for group in sorted(data["categories"], key=lambda group: group["offset"]):
+        names = group["tags"]
+        if group["offset"] != len(tags) or group["count"] != len(names):
+            raise ValueError("JSON 标签文件的分类索引或数量无效")
+        category = _normalize_category(group["name"])
+        for name in names:
+            if not isinstance(name, str):
+                raise ValueError("JSON 标签名称必须是字符串")
+            tags.append({"name": name, "category": category, "count": 0})
+    if len(tags) != data["num_classes"]:
+        raise ValueError("JSON 标签总数与 num_classes 不一致")
     return tags
 
 def _resolve_category_index(index, categories):
@@ -208,7 +239,7 @@ def _normalize_category(raw, categories=None):
         key = "copyright"
     elif key == "characters":
         key = "character"
-    allowed = {"general", "artist", "copyright", "character", "meta", "rating", "quality", "model"}
+    allowed = {"general", "artist", "style", "copyright", "character", "meta", "rating", "quality", "model"}
     return key if key in allowed else "general"
 
 def load_vocabulary_json(data):
@@ -245,6 +276,52 @@ def load_vocabulary_json(data):
             "count": int(count) if isinstance(count, (int, float)) else 0,
         })
     return tags
+
+def select_tags(probs, tags, options, category_thresholds):
+    """合并模型分类阈值与用户设置，供单张和批量推理共用。"""
+    if len(probs) != len(tags):
+        raise ValueError(f"模型输出数量 {len(probs)} 与词表数量 {len(tags)} 不一致")
+    general = options.get("general_threshold", category_thresholds.get("general", 0.35))
+    character = options.get("character_threshold", category_thresholds.get("character", 0.85))
+    thresholds = {
+        "general": general, "character": character, "copyright": character,
+        "artist": character, "style": general, "meta": general, "model": general,
+        **category_thresholds,
+    }
+    thresholds.update(general=general, character=character)
+    enabled = set(options.get("enabled_categories", ["general", "character"]))
+    excluded = {s.strip() for s in options.get("exclude_tags", "").split(",") if s.strip()}
+    grouped = {}
+    for tag, prob in zip(tags, probs):
+        if tag["category"] in enabled:
+            grouped.setdefault(tag["category"], []).append((tag, float(prob)))
+
+    selected = []
+    # 旧模型的 rating/quality 取最高分；提供分类阈值的模型按阈值筛选。
+    for category in ("rating", "quality", "general", "character", "copyright", "artist", "style", "meta", "model"):
+        pairs = grouped.get(category, [])
+        if not pairs:
+            continue
+        if category in ("rating", "quality") and category not in category_thresholds:
+            pairs = [max(pairs, key=lambda item: item[1])]
+        else:
+            threshold = thresholds[category]
+            pairs = [(tag, prob) for tag, prob in pairs
+                     if (prob > threshold if category in category_thresholds else prob >= threshold)]
+            pairs.sort(key=lambda item: item[1], reverse=True)
+        for tag, prob in pairs:
+            name = tag["name"]
+            if options.get("replace_underscore", True) and name not in _KAOMOJI_TAGS:
+                name = name.replace("_", " ")
+            if options.get("escape_parentheses", False):
+                name = name.replace("(", "\\(").replace(")", "\\)")
+            if name in excluded or name.replace("\\", "") in excluded or tag["name"] in excluded:
+                continue
+            selected.append((name, category, prob, tag.get("count", 0)))
+    if options.get("sort_by", "confidence") == "frequency":
+        selected.sort(key=lambda item: item[3], reverse=True)
+    return selected, [tag[0] for tag in selected]
+
 
 def detect_model_format(session):
     """检测模型输入格式"""
@@ -400,7 +477,7 @@ def _build_structured_json(selected_tags):
             quality_parts.append(tag_name)
         elif cat == "artist":
             artist_name = tag_name if not artist_name else f"{artist_name}, {tag_name}"
-        elif cat == "model":
+        elif cat in ("model", "style"):
             tags_list.append(tag_name)
         else:
             lower = tag_name.lower()
@@ -470,7 +547,7 @@ def _build_simplified_json(selected_tags):
             quality_parts.append(tag_name)
         elif cat == "artist":
             artist_name = tag_name if not artist_name else f"{artist_name}, {tag_name}"
-        elif cat == "model":
+        elif cat in ("model", "style"):
             tags_list.append(tag_name)
         else:
             lower = tag_name.lower()
@@ -786,6 +863,7 @@ def main():
     input_size = 448
     input_name = None
     preprocess_mode = "auto"
+    category_thresholds = {}
 
     # Windows 上 sys.stdin 默认用 GBK 编码，但 Rust 发送的是 UTF-8
     # 必须用 buffer 以二进制读取再手动 UTF-8 解码
@@ -809,6 +887,7 @@ def main():
                 tags_path = cmd["tags_path"]
                 use_gpu = cmd.get("use_gpu", False)
                 preprocess_mode = cmd.get("preprocess_mode", "auto")
+                category_thresholds = cmd.get("category_thresholds", {})
 
                 # === ONNX Runtime 后端 ===
                 # 统一流程：探测环境（显卡型号 / CUDA / cuDNN）+ 输出日志 + 决定 providers
@@ -889,24 +968,9 @@ def main():
                     continue
 
                 image_path = cmd["image_path"]
-                general_threshold = cmd.get("general_threshold", 0.35)
-                character_threshold = cmd.get("character_threshold", 0.85)
-                enabled_categories = set(cmd.get("enabled_categories", ["general", "character"]))
-                replace_underscore = cmd.get("replace_underscore", True)
-                exclude_tags_str = cmd.get("exclude_tags", "")
                 append_tags_str = cmd.get("append_tags", "")
                 append_position = cmd.get("append_position", "append")
                 json_append_field = cmd.get("json_append_field", "tags")
-                escape_parentheses = cmd.get("escape_parentheses", False)
-                sort_by = cmd.get("sort_by", "confidence")  # "confidence" or "frequency"
-
-                # 解析排除标签集合
-                exclude_set = set()
-                if exclude_tags_str.strip():
-                    for t in exclude_tags_str.split(","):
-                        t = t.strip()
-                        if t:
-                            exclude_set.add(t)
 
                 # 解析追加标签列表
                 append_list = []
@@ -927,85 +991,7 @@ def main():
                 if apply_sigmoid:
                     probs = 1 / (1 + np.exp(-np.clip(probs, -30, 30)))
 
-                # 筛选标签（带分类信息）
-                # 严格对齐官方 CL Tagger 逻辑:
-                #   - rating: argmax (取最高分1个)
-                #   - quality: argmax (取最高分1个)
-                #   - general/meta: gen_threshold 阈值过滤
-                #   - character/copyright/artist: char_threshold 阈值过滤
-                #   - model: gen_threshold 阈值过滤
-                selected_tags = []      # (tag_name, category, prob, count) 用于分类
-                selected_flat = []      # 纯名称列表，用于 txt 输出
-
-                # 按类别收集所有标签的 (index, prob)
-                category_indices = {}  # cat -> [(idx, prob)]
-                for idx, prob in enumerate(probs):
-                    if idx >= len(tags):
-                        break
-                    tag = tags[idx]
-                    cat = tag["category"]
-                    if cat not in enabled_categories:
-                        continue
-                    if cat not in category_indices:
-                        category_indices[cat] = []
-                    category_indices[cat].append((idx, float(prob)))
-
-                # argmax 类别: rating, quality
-                for argmax_cat in ["rating", "quality"]:
-                    if argmax_cat not in category_indices:
-                        continue
-                    pairs = category_indices[argmax_cat]
-                    if not pairs:
-                        continue
-                    best_idx, best_prob = max(pairs, key=lambda x: x[1])
-                    tag_name = tags[best_idx]["name"]
-                    tag_count = tags[best_idx].get("count", 0)
-                    if replace_underscore and tag_name not in _KAOMOJI_TAGS:
-                        tag_name = tag_name.replace("_", " ")
-                    if escape_parentheses:
-                        tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
-                    if tag_name in exclude_set or tag_name.replace("\\", "") in exclude_set or tags[best_idx]["name"] in exclude_set:
-                        continue
-                    selected_tags.append((tag_name, argmax_cat, best_prob, tag_count))
-                    selected_flat.append(tag_name)
-
-                # 阈值类别
-                threshold_cats = {
-                    "general": general_threshold,
-                    "character": character_threshold,
-                    "copyright": character_threshold,
-                    "artist": character_threshold,
-                    "meta": general_threshold,
-                    "model": general_threshold,
-                }
-                for cat, thresh in threshold_cats.items():
-                    if cat not in category_indices:
-                        continue
-                    pairs = category_indices[cat]
-                    # 按概率降序排列
-                    pairs_sorted = sorted(pairs, key=lambda x: x[1], reverse=True)
-                    for idx, prob in pairs_sorted:
-                        if prob < thresh:
-                            continue
-                        tag_name = tags[idx]["name"]
-                        tag_count = tags[idx].get("count", 0)
-                        if replace_underscore and tag_name not in _KAOMOJI_TAGS:
-                            tag_name = tag_name.replace("_", " ")
-                        if escape_parentheses:
-                            tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
-                        if tag_name in exclude_set or tag_name.replace("\\", "") in exclude_set or tags[idx]["name"] in exclude_set:
-                            continue
-                        selected_tags.append((tag_name, cat, prob, tag_count))
-                        selected_flat.append(tag_name)
-
-                # 按频率排序（如果启用）
-                if sort_by == "frequency":
-                    # 将 selected_tags 和 selected_flat 按 count 降序重新排序
-                    # 保持 (tag_name, cat, prob, count) 的对应关系
-                    indexed = list(enumerate(selected_tags))
-                    indexed.sort(key=lambda x: x[1][3], reverse=True)
-                    selected_tags = [item[1] for item in indexed]
-                    selected_flat = [item[1][0] for item in indexed]
+                selected_tags, selected_flat = select_tags(probs, tags, cmd, category_thresholds)
 
                 # 输出格式
                 output_format = cmd.get("output_format", "txt")
@@ -1185,12 +1171,15 @@ def main():
                 # 拼接 batch tensor: [N, C, H, W] or [N, H, W, C]
                 batch_tensor = np.concatenate(batch_data, axis=0)
 
-                # 批量推理 (失败时降级为逐张推理重试)
-                try:
-                    outputs = session.run(None, {input_name: batch_tensor})
-                    all_probs = outputs[output_index]  # shape: [N, num_tags]
-                except Exception as e:
-                    log(f"批量推理失败，降级为逐张推理重试: {type(e).__name__}")
+                all_probs = None
+                fixed_batch = session.get_inputs()[0].shape[0]
+                if fixed_batch != 1 or len(batch_data) == 1:
+                    try:
+                        outputs = session.run(None, {input_name: batch_tensor})
+                        all_probs = outputs[output_index]
+                    except Exception as e:
+                        log(f"批量推理失败，降级为逐张推理重试: {type(e).__name__}")
+                if all_probs is None:
                     all_probs = []
                     for bi, vi in enumerate(valid_indices):
                         img_path = images[vi].get("image_path", "")
@@ -1214,23 +1203,9 @@ def main():
                         if probs is None:
                             continue  # 逐张重试已失败并报过 error
 
-                        general_threshold = img_cmd.get("general_threshold", 0.35)
-                        character_threshold = img_cmd.get("character_threshold", 0.85)
-                        enabled_categories = set(img_cmd.get("enabled_categories", ["general", "character"]))
-                        replace_underscore = img_cmd.get("replace_underscore", True)
-                        exclude_tags_str = img_cmd.get("exclude_tags", "")
                         append_tags_str = img_cmd.get("append_tags", "")
                         append_position = img_cmd.get("append_position", "append")
                         json_append_field = img_cmd.get("json_append_field", "tags")
-                        escape_parentheses = img_cmd.get("escape_parentheses", False)
-                        sort_by = img_cmd.get("sort_by", "confidence")
-
-                        exclude_set = set()
-                        if exclude_tags_str.strip():
-                            for t_str in exclude_tags_str.split(","):
-                                t_str = t_str.strip()
-                                if t_str:
-                                    exclude_set.add(t_str)
 
                         append_list = []
                         if append_tags_str.strip():
@@ -1242,71 +1217,7 @@ def main():
                         if apply_sigmoid:
                             probs = 1 / (1 + np.exp(-np.clip(probs, -30, 30)))
 
-                        selected_tags = []
-                        selected_flat = []
-
-                        category_indices = {}
-                        for idx, prob in enumerate(probs):
-                            if idx >= len(tags):
-                                break
-                            tag = tags[idx]
-                            cat = tag["category"]
-                            if cat not in enabled_categories:
-                                continue
-                            if cat not in category_indices:
-                                category_indices[cat] = []
-                            category_indices[cat].append((idx, float(prob)))
-
-                        for argmax_cat in ["rating", "quality"]:
-                            if argmax_cat not in category_indices:
-                                continue
-                            pairs = category_indices[argmax_cat]
-                            if not pairs:
-                                continue
-                            best_idx, best_prob = max(pairs, key=lambda x: x[1])
-                            tag_name = tags[best_idx]["name"]
-                            tag_count = tags[best_idx].get("count", 0)
-                            if replace_underscore and tag_name not in _KAOMOJI_TAGS:
-                                tag_name = tag_name.replace("_", " ")
-                            if escape_parentheses:
-                                tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
-                            if tag_name in exclude_set or tag_name.replace("\\", "") in exclude_set or tags[best_idx]["name"] in exclude_set:
-                                continue
-                            selected_tags.append((tag_name, argmax_cat, best_prob, tag_count))
-                            selected_flat.append(tag_name)
-
-                        threshold_cats = {
-                            "general": general_threshold,
-                            "character": character_threshold,
-                            "copyright": character_threshold,
-                            "artist": character_threshold,
-                            "meta": general_threshold,
-                            "model": general_threshold,
-                        }
-                        for cat, thresh in threshold_cats.items():
-                            if cat not in category_indices:
-                                continue
-                            pairs = category_indices[cat]
-                            pairs_sorted = sorted(pairs, key=lambda x: x[1], reverse=True)
-                            for idx, prob in pairs_sorted:
-                                if prob < thresh:
-                                    continue
-                                tag_name = tags[idx]["name"]
-                                tag_count = tags[idx].get("count", 0)
-                                if replace_underscore and tag_name not in _KAOMOJI_TAGS:
-                                    tag_name = tag_name.replace("_", " ")
-                                if escape_parentheses:
-                                    tag_name = tag_name.replace("(", "\\(").replace(")", "\\)")
-                                if tag_name in exclude_set or tag_name.replace("\\", "") in exclude_set or tags[idx]["name"] in exclude_set:
-                                    continue
-                                selected_tags.append((tag_name, cat, prob, tag_count))
-                                selected_flat.append(tag_name)
-
-                        if sort_by == "frequency":
-                            indexed = list(enumerate(selected_tags))
-                            indexed.sort(key=lambda x: x[1][3], reverse=True)
-                            selected_tags = [item[1] for item in indexed]
-                            selected_flat = [item[1][0] for item in indexed]
+                        selected_tags, selected_flat = select_tags(probs, tags, img_cmd, category_thresholds)
 
                         output_format = img_cmd.get("output_format", "txt")
                         existing_tags_action = img_cmd.get("existing_tags_action", "overwrite")

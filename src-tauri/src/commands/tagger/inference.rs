@@ -169,8 +169,53 @@ pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
     if let Some(idx_to_tag) = value.get("idx_to_tag") {
         return load_vocabulary_json_tags(idx_to_tag, &value);
     }
+    if let Some(groups) = value
+        .get("categories")
+        .and_then(|v| v.as_array())
+        .filter(|groups| groups.iter().any(|g| g.get("tags").is_some()))
+    {
+        return load_grouped_json_tags(groups, &value);
+    }
 
     load_legacy_json_tags(&value)
+}
+
+fn load_grouped_json_tags(
+    groups: &[serde_json::Value],
+    root: &serde_json::Value,
+) -> Result<Vec<TagDefinition>, String> {
+    let invalid = || "JSON 标签文件的分类索引或数量无效".to_string();
+    let mut groups: Vec<_> = groups.iter().collect();
+    groups.sort_by_key(|group| group.get("offset").and_then(|v| v.as_u64()));
+    let mut tags = Vec::new();
+    for group in groups {
+        let offset = group
+            .get("offset")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(invalid)?;
+        let count = group
+            .get("count")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(invalid)?;
+        let names = group
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .ok_or_else(invalid)?;
+        if offset != tags.len() as u64 || count != names.len() as u64 {
+            return Err(invalid());
+        }
+        let category = category_from_value(group.get("name"), None);
+        for name in names {
+            tags.push(TagDefinition {
+                name: name.as_str().ok_or_else(invalid)?.to_string(),
+                category: category.clone(),
+            });
+        }
+    }
+    if root.get("num_classes").and_then(|v| v.as_u64()) != Some(tags.len() as u64) {
+        return Err(invalid());
+    }
+    Ok(tags)
 }
 
 fn load_legacy_json_tags(value: &serde_json::Value) -> Result<Vec<TagDefinition>, String> {
@@ -262,6 +307,7 @@ fn category_from_value(
 
     match raw.to_lowercase().replace('-', "_").as_str() {
         "artist" => TagCategory::Artist,
+        "style" => TagCategory::Style,
         "copyright" | "copyrights" => TagCategory::Copyright,
         "character" | "characters" => TagCategory::Character,
         "meta" => TagCategory::Meta,
@@ -364,6 +410,7 @@ pub fn run_tagging(
     _is_nchw: bool,
     preprocess_mode: &str,
     output_kind: &str,
+    category_thresholds: &std::collections::BTreeMap<String, f32>,
 ) -> Result<ProcessResult, String> {
     // 杀死之前的进程（如果有）
     kill_python_process();
@@ -441,6 +488,7 @@ pub fn run_tagging(
         "input_size": _input_size,
         "preprocess_mode": preprocess_mode,
         "output_kind": output_kind,
+        "category_thresholds": category_thresholds,
     });
 
     if let Err(e) = writeln!(stdin, "{}", init_cmd) {
@@ -1013,4 +1061,43 @@ pub fn run_tagging(
         total,
         errors,
     })
+}
+
+#[cfg(test)]
+mod vocabulary_tests {
+    use super::*;
+
+    fn grouped_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "num_classes": 3,
+            "categories": [
+                {"name": "style", "offset": 2, "count": 1, "tags": ["watercolor"]},
+                {"name": "general", "offset": 0, "count": 2, "tags": ["1girl", "solo"]}
+            ]
+        })
+    }
+
+    #[test]
+    fn grouped_vocabulary_uses_global_offsets_and_preserves_style() {
+        let root = grouped_fixture();
+        let tags = load_grouped_json_tags(root["categories"].as_array().unwrap(), &root).unwrap();
+        assert_eq!(
+            tags.iter().map(|tag| tag.name.as_str()).collect::<Vec<_>>(),
+            ["1girl", "solo", "watercolor"]
+        );
+        assert_eq!(tags[2].category, TagCategory::Style);
+    }
+
+    #[test]
+    fn grouped_vocabulary_rejects_index_and_count_mismatches() {
+        for (path, value) in [
+            ("/categories/0/offset", serde_json::json!(1)),
+            ("/categories/1/count", serde_json::json!(3)),
+            ("/num_classes", serde_json::json!(4)),
+        ] {
+            let mut root = grouped_fixture();
+            *root.pointer_mut(path).unwrap() = value;
+            assert!(load_grouped_json_tags(root["categories"].as_array().unwrap(), &root).is_err());
+        }
+    }
 }

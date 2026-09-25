@@ -14,6 +14,7 @@ use super::{ProcessResult, ProgressEvent};
 pub enum TagCategory {
     General,
     Artist,
+    Style,
     Copyright,
     Character,
     Meta,
@@ -173,7 +174,20 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
             // JSON 格式 (CL Tagger)
             if let Ok(content) = std::fs::read_to_string(tags_path) {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(tag_to_category) =
+                    if let Some(groups) = value
+                        .get("categories")
+                        .and_then(|v| v.as_array())
+                        .filter(|groups| groups.iter().any(|g| g.get("tags").is_some()))
+                    {
+                        for group in groups {
+                            if let Some(name) = group
+                                .get("name")
+                                .and_then(|name| normalize_category_value(name, None))
+                            {
+                                cats.insert(name);
+                            }
+                        }
+                    } else if let Some(tag_to_category) =
                         value.get("tag_to_category").and_then(|v| v.as_object())
                     {
                         let categories = value.get("categories");
@@ -218,10 +232,10 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
             // CSV 格式 (WD Tagger)。按表头名取列：SmilingWolf 系是 tag_id,name,category,...，
             // PixAI(deepghs 导出)是 id,tag_id,name,category,...——列位置不同
             if let Ok(mut reader) = csv::Reader::from_path(tags_path) {
-                let cat_idx = reader
-                    .headers()
-                    .ok()
-                    .and_then(|h| h.iter().position(|c| c.trim().eq_ignore_ascii_case("category")));
+                let cat_idx = reader.headers().ok().and_then(|h| {
+                    h.iter()
+                        .position(|c| c.trim().eq_ignore_ascii_case("category"))
+                });
                 for result in reader.records().flatten() {
                     let cell = match cat_idx {
                         Some(i) => result.get(i),
@@ -263,6 +277,7 @@ fn normalize_category_value(
     match raw.to_lowercase().replace('-', "_").as_str() {
         "general" => Some("general".into()),
         "artist" => Some("artist".into()),
+        "style" => Some("style".into()),
         "copyright" | "copyrights" => Some("copyright".into()),
         "character" | "characters" => Some("character".into()),
         "meta" => Some("meta".into()),
@@ -339,7 +354,9 @@ pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
         };
 
         // 检测支持的分类
-        let supported_categories = if is_downloaded {
+        let supported_categories = if !m.category_thresholds.is_empty() {
+            m.category_thresholds.keys().cloned().collect()
+        } else if is_downloaded {
             let tags_path = model_dir.join(&tags_basename);
             let detected = detect_supported_categories(&tags_path);
             if detected.is_empty() {
@@ -529,6 +546,7 @@ pub async fn start_tagging(
             is_nchw,
             &preprocess_mode,
             &output_kind,
+            &model_def.category_thresholds,
         )
     })
     .await

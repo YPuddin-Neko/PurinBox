@@ -1,5 +1,6 @@
 use super::get_models_dir;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// 输入数据格式
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -38,6 +39,8 @@ pub struct ModelDefinition {
     pub general_threshold: Option<f32>,
     #[serde(default)]
     pub character_threshold: Option<f32>,
+    #[serde(default)]
+    pub category_thresholds: BTreeMap<String, f32>,
 }
 
 fn default_preprocess_mode() -> String {
@@ -91,6 +94,7 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             output_kind: "auto".into(),
             general_threshold: None,
             character_threshold: None,
+            category_thresholds: BTreeMap::new(),
         },
         ModelDefinition {
             id: "wd-vit-tagger-v3".into(),
@@ -107,6 +111,7 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             output_kind: "auto".into(),
             general_threshold: None,
             character_threshold: None,
+            category_thresholds: BTreeMap::new(),
         },
         ModelDefinition {
             id: "wd-convnext-tagger-v3".into(),
@@ -123,6 +128,7 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             output_kind: "auto".into(),
             general_threshold: None,
             character_threshold: None,
+            category_thresholds: BTreeMap::new(),
         },
         ModelDefinition {
             id: "wd-eva02-large-tagger-v3".into(),
@@ -139,6 +145,7 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             output_kind: "auto".into(),
             general_threshold: None,
             character_threshold: None,
+            category_thresholds: BTreeMap::new(),
         },
         ModelDefinition {
             id: "wd-eva02-tagger-2026-canary".into(),
@@ -158,6 +165,34 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             // 无官方分类阈值指导，行为与 eva02-v3 一致（实测对照），沿用工具箱默认值
             general_threshold: None,
             character_threshold: None,
+            category_thresholds: BTreeMap::new(),
+        },
+        ModelDefinition {
+            id: "pixai-tagger-v1.0".into(),
+            name: "PixAI Tagger v1.0".into(),
+            description: "PixAI 1.0，支持 30,877 个标签及风格识别".into(),
+            repo_id: "noaione/pixai-tagger-v1.0-onnx".into(),
+            model_filename: "model.onnx".into(),
+            tags_filename: "tags.json".into(),
+            extra_files: vec!["model.onnx.data".into()],
+            input_size: 1008,
+            is_builtin: true,
+            input_format: InputFormat::NCHW,
+            preprocess_mode: "pixai_v1".into(),
+            output_kind: "logits".into(),
+            general_threshold: Some(0.17),
+            character_threshold: Some(0.27),
+            category_thresholds: [
+                ("general", 0.17),
+                ("character", 0.27),
+                ("style", 0.15),
+                ("copyright", 0.24),
+                ("meta", 0.17),
+                ("rating", 0.41),
+            ]
+            .into_iter()
+            .map(|(name, threshold)| (name.into(), threshold))
+            .collect(),
         },
         ModelDefinition {
             id: "pixai-tagger-v0.9".into(),
@@ -175,6 +210,7 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             // 官方推荐阈值（deepghs thresholds.csv / README）：general 0.3, character 0.85
             general_threshold: Some(0.3),
             character_threshold: Some(0.85),
+            category_thresholds: BTreeMap::new(),
         },
         ModelDefinition {
             id: "wd-v1-4-moat-tagger-v2".into(),
@@ -191,6 +227,7 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             output_kind: "auto".into(),
             general_threshold: None,
             character_threshold: None,
+            category_thresholds: BTreeMap::new(),
         },
         ModelDefinition {
             id: "cl-tagger-v2-01a".into(),
@@ -207,6 +244,7 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             output_kind: "auto".into(),
             general_threshold: None,
             character_threshold: None,
+            category_thresholds: BTreeMap::new(),
         },
         ModelDefinition {
             id: "cl-tagger-1-02".into(),
@@ -223,6 +261,7 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             output_kind: "auto".into(),
             general_threshold: None,
             character_threshold: None,
+            category_thresholds: BTreeMap::new(),
         },
     ]
 }
@@ -312,6 +351,7 @@ pub fn add_local_model(
         output_kind: "auto".into(),
         general_threshold: None,
         character_threshold: None,
+        category_thresholds: BTreeMap::new(),
     });
 
     save_custom_models(&models)?;
@@ -344,4 +384,32 @@ pub fn find_model(id: &str) -> Option<ModelDefinition> {
     }
     let custom = load_custom_models().unwrap_or_default();
     custom.into_iter().find(|m| m.id == id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pixai_v1_requires_external_weights_and_keeps_v09_available() {
+        let model = find_model("pixai-tagger-v1.0").unwrap();
+        assert_eq!(
+            model.required_local_files(),
+            ["model.onnx", "tags.json", "model.onnx.data"]
+        );
+        assert_eq!(model.category_thresholds.len(), 6);
+        assert_eq!(model.category_thresholds["style"], 0.15);
+        let old = find_model("pixai-tagger-v0.9").unwrap();
+        assert_eq!(old.input_size, 448);
+        assert!(old.category_thresholds.is_empty());
+    }
+
+    #[test]
+    fn old_model_configs_default_to_legacy_thresholds() {
+        let mut value = serde_json::to_value(find_model("pixai-tagger-v0.9").unwrap()).unwrap();
+        value.as_object_mut().unwrap().remove("category_thresholds");
+        let restored: ModelDefinition = serde_json::from_value(value).unwrap();
+        assert!(restored.category_thresholds.is_empty());
+        assert_eq!(restored.character_threshold, Some(0.85));
+    }
 }

@@ -48,6 +48,7 @@ export default function AiTaggerTab() {
     { key: 'character', label: t('aiTagger.catCharacter'), default: true },
     { key: 'rating', label: t('aiTagger.catRating'), default: false },
     { key: 'artist', label: t('aiTagger.catArtist'), default: false },
+    { key: 'style', label: t('aiTagger.catStyle'), default: false },
     { key: 'copyright', label: t('aiTagger.catCopyright'), default: false },
     { key: 'meta', label: t('aiTagger.catMeta'), default: false },
     { key: 'quality', label: t('aiTagger.catQuality'), default: false },
