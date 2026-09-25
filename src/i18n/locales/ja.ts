@@ -736,6 +736,7 @@ const ja = {
     selectFolder: '画像フォルダを選択...',
     taggerModel: 'タグ付けモデル',
     importModel: 'モデルインポート',
+    customGroup: 'カスタム',
     close: '✕ 閉じる',
     nameLabel: '名前：',
     namePlaceholder: '例: My Custom Tagger',

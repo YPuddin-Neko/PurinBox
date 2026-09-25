@@ -8,6 +8,7 @@ import ProcessButton from './ProcessButton';
 import { useTaskQueue } from './TaskContext';
 import { ConfirmModal } from './Modal';
 import CustomSelect from './CustomSelect';
+import TaggerModelSelect from './TaggerModelSelect';
 import InputPathPickerButton from './InputPathPickerButton';
 import Checkbox from './Checkbox';
 import { useTranslation } from 'react-i18next';
@@ -398,14 +399,14 @@ export default function AiTaggerTab() {
               <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.5 }} dangerouslySetInnerHTML={{ __html: t('aiTagger.channelTip') }} />
             </div>
           )}
-          <CustomSelect value={selectedModel} onChange={v => {
+          <TaggerModelSelect models={models} value={selectedModel} onChange={v => {
             setSelectedModel(v);
             // 模型带官方推荐阈值时应用到滑条（用户之后仍可手动调）
             const m = models.find(x => x.id === v);
             if (m?.general_threshold != null) setGenTh(m.general_threshold);
             if (m?.character_threshold != null) setCharTh(m.character_threshold);
           }}
-            options={models.map(m => ({ value: m.id, label: `${m.name} ${m.is_downloaded ? '✓' : '⬇'}` }))} />
+            formatLabel={m => `${m.name} ${m.is_downloaded ? '✓' : '⬇'}`} />
           {cur && (
             <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>
               <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cur.description}</span>

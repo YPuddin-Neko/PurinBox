@@ -10,6 +10,7 @@ import ProgressLog, { getTimeStr, useLogState } from './ProgressLog';
 import ProcessButton from './ProcessButton';
 import InputPathPickerButton from './InputPathPickerButton';
 import CustomSelect from './CustomSelect';
+import TaggerModelSelect from './TaggerModelSelect';
 import Checkbox from './Checkbox';
 import { useTaskQueue } from './TaskContext';
 import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
@@ -218,6 +219,35 @@ const loadCustomPresets = (): PromptPreset[] => {
   } catch { return []; }
 };
 
+/** 上一次使用的打标/调优设置，重启后回填，免去每次重复设置 */
+const SETTINGS_KEY = 'hybrid_tagger_settings_v1';
+
+interface HybridSettings {
+  modelId?: string;
+  genTh?: number;
+  charTh?: number;
+  useGpu?: boolean;
+  replaceUnderscore?: boolean;
+  escapeParentheses?: boolean;
+  preferExisting?: boolean;
+  enabledCats?: string[];
+  modelName?: string;
+  temperature?: string;
+  topP?: string;
+  imageSize?: string;
+  imageDetail?: string;
+  concurrency?: string;
+  intervalSec?: string;
+  outputFormat?: 'txt' | 'json' | 'json_simplified';
+}
+
+const loadSettings = (): HybridSettings => {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    return raw ? JSON.parse(raw) || {} : {};
+  } catch { return {}; }
+};
+
 export default function HybridTaggerTab() {
   const { t } = useTranslation();
   const cats = [
@@ -237,16 +267,24 @@ export default function HybridTaggerTab() {
   const [recursive, setRecursive] = useState(false);
 
   // ── 本地打标 ──
+  // 上次使用的设置整体从 localStorage 回填（阈值、开关、LLM 参数同理）
+  const savedRef = useRef<HybridSettings | null>(null);
+  if (savedRef.current === null) savedRef.current = loadSettings();
+  const sv = savedRef.current;
   const [models, setModels] = useState<ModelInfo[]>([]);
-  const [selectedModel, setSelectedModel] = useState('');
-  const [genTh, setGenTh] = useState(0.35);
-  const [charTh, setCharTh] = useState(0.85);
-  const [useGpu, setUseGpu] = useState(true);
-  const [replaceUnderscore, setReplaceUnderscore] = useState(true);
-  const [escapeParentheses, setEscapeParentheses] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(sv.modelId || '');
+  const [genTh, setGenTh] = useState(sv.genTh ?? 0.35);
+  const [charTh, setCharTh] = useState(sv.charTh ?? 0.85);
+  const [useGpu, setUseGpu] = useState(sv.useGpu ?? true);
+  const [replaceUnderscore, setReplaceUnderscore] = useState(sv.replaceUnderscore ?? true);
+  const [escapeParentheses, setEscapeParentheses] = useState(sv.escapeParentheses ?? false);
   /** 图片已有同格式标签文件时跳过本地打标（保留现成标签，直接进入 LLM 调优） */
-  const [preferExisting, setPreferExisting] = useState(true);
-  const [enabledCats, setEnabledCats] = useState<Set<string>>(new Set(cats.filter(c => c.default).map(c => c.key)));
+  const [preferExisting, setPreferExisting] = useState(sv.preferExisting ?? true);
+  const [enabledCats, setEnabledCats] = useState<Set<string>>(() => {
+    const known = new Set(cats.map(c => c.key));
+    const restored = (sv.enabledCats || []).filter(k => known.has(k));
+    return new Set(restored.length > 0 ? restored : cats.filter(c => c.default).map(c => c.key));
+  });
 
   // ── LLM 调优 ──
   const [preset, setPreset] = useState('openai');
@@ -254,7 +292,7 @@ export default function HybridTaggerTab() {
   // 每个预设各存一份 key，切换预设时输入框跟着换，不能只存单个值
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
   const [showKey, setShowKey] = useState(false);
-  const [modelName, setModelName] = useState('');
+  const [modelName, setModelName] = useState(sv.modelName || '');
   const [modelList, setModelList] = useState<string[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchMsg, setFetchMsg] = useState<{ text: string; ok: boolean } | null>(null);
@@ -268,15 +306,15 @@ export default function HybridTaggerTab() {
   const [triggerWord, setTriggerWord] = useState(() => {
     try { return localStorage.getItem(TRIGGER_WORD_KEY) || ''; } catch { return ''; }
   });
-  const [temperature, setTemperature] = useState('0.3');
-  const [topP, setTopP] = useState('0');
-  const [imageSize, setImageSize] = useState('1024');
-  const [imageDetail, setImageDetail] = useState('');
-  const [concurrency, setConcurrency] = useState('1');
-  const [intervalSec, setIntervalSec] = useState('-1');
+  const [temperature, setTemperature] = useState(sv.temperature || '0.3');
+  const [topP, setTopP] = useState(sv.topP || '0');
+  const [imageSize, setImageSize] = useState(sv.imageSize || '1024');
+  const [imageDetail, setImageDetail] = useState(sv.imageDetail || '');
+  const [concurrency, setConcurrency] = useState(sv.concurrency || '1');
+  const [intervalSec, setIntervalSec] = useState(sv.intervalSec || '-1');
 
   // ── 输出 ──
-  const [outputFormat, setOutputFormat] = useState<'txt' | 'json' | 'json_simplified'>('txt');
+  const [outputFormat, setOutputFormat] = useState<'txt' | 'json' | 'json_simplified'>(sv.outputFormat || 'txt');
 
   // ── 执行状态 ──
   const [processing, setProcessing] = useState(false);
@@ -308,8 +346,11 @@ export default function HybridTaggerTab() {
   useEffect(() => {
     invoke<ModelInfo[]>('get_tagger_models').then(l => {
       setModels(l);
-      const firstDownloaded = l.find(m => m.is_downloaded);
-      if (!selectedModel) setSelectedModel((firstDownloaded || l[0])?.id || '');
+      // 回填的模型可能已被删除：不存在时退回第一个已下载模型
+      if (!selectedModel || !l.some(m => m.id === selectedModel)) {
+        const firstDownloaded = l.find(m => m.is_downloaded);
+        setSelectedModel((firstDownloaded || l[0])?.id || '');
+      }
     }).catch(() => {});
     invoke<{ preset: string; custom_endpoint: string; api_keys: Record<string, string> }>('load_api_config').then((cfg) => {
       const known = ['openai', 'gemini', 'deepseek', 'custom'];
@@ -333,6 +374,19 @@ export default function HybridTaggerTab() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedModel, models]);
+
+  // 设置变更即持久化，下次打开原样回填
+  useEffect(() => {
+    const s: HybridSettings = {
+      modelId: selectedModel, genTh, charTh, useGpu,
+      replaceUnderscore, escapeParentheses, preferExisting,
+      enabledCats: [...enabledCats],
+      modelName, temperature, topP, imageSize, imageDetail,
+      concurrency, intervalSec, outputFormat,
+    };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* 配额满等，忽略 */ }
+  }, [selectedModel, genTh, charTh, useGpu, replaceUnderscore, escapeParentheses, preferExisting,
+    enabledCats, modelName, temperature, topP, imageSize, imageDetail, concurrency, intervalSec, outputFormat]);
 
   // 本地打标/转换走 tagger-progress，LLM 调优走 tag-refine-progress，统一进日志与进度条
   useEffect(() => {
@@ -628,7 +682,8 @@ export default function HybridTaggerTab() {
             </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            <CustomSelect
+            <TaggerModelSelect
+              models={models}
               value={selectedModel}
               onChange={v => {
                 setSelectedModel(v);
@@ -637,7 +692,7 @@ export default function HybridTaggerTab() {
                 if (m?.general_threshold != null) setGenTh(m.general_threshold);
                 if (m?.character_threshold != null) setCharTh(m.character_threshold);
               }}
-              options={models.map(m => ({ value: m.id, label: m.is_downloaded ? m.name : `${m.name} (${t('hybridTagger.notDownloaded')})` }))}
+              formatLabel={m => m.is_downloaded ? m.name : `${m.name} (${t('hybridTagger.notDownloaded')})`}
             />
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
               {(() => {

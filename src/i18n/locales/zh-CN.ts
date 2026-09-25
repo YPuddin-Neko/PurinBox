@@ -765,6 +765,7 @@ const zhCN = {
     selectFolder: '选择图片文件夹...',
     taggerModel: '打标模型',
     importModel: '导入模型',
+    customGroup: '自定义',
     close: '✕ 关闭',
     nameLabel: '名称：',
     namePlaceholder: '例如: My Custom Tagger',

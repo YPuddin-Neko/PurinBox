@@ -736,6 +736,7 @@ const en = {
     selectFolder: 'Select image folder...',
     taggerModel: 'Tagger Model',
     importModel: 'Import Model',
+    customGroup: 'Custom',
     close: '✕ Close',
     nameLabel: 'Name:',
     namePlaceholder: 'e.g. My Custom Tagger',
