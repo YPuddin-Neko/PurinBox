@@ -50,6 +50,16 @@ jobs:
         with:
           ref: ${{ env.CHECKOUT_REF }}
 
+      # Release 正文取自 CHANGELOG.md 中与 tag 同名的章节（如 "## v0.4.1"）。
+      # generate_release_notes 对无 PR 的直推历史只会输出一条 compare 链接，不用它。
+      - name: Extract changelog for tag
+        run: |
+          awk -v h="## $RELEASE_TAG" '$0 == h {f=1; next} /^## / && f {exit} f' CHANGELOG.md > RELEASE_BODY.md
+          if [ ! -s RELEASE_BODY.md ]; then
+            echo "::error::CHANGELOG.md 中没有 '$RELEASE_TAG' 对应章节，已中止，避免发出空正文的 Release。"
+            exit 1
+          fi
+
       - name: Create Release
         id: create
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -58,7 +68,7 @@ jobs:
           name: 'PurinBox ${{ env.RELEASE_TAG }}'
           draft: false
           prerelease: false
-          generate_release_notes: true
+          body_path: RELEASE_BODY.md
 
   # 2. 构建 Windows
   build-windows:
