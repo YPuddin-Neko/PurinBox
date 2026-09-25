@@ -38,7 +38,7 @@ interface AnalyzeResult {
 interface ResolutionCluster {
   members: ResolutionGroup[];
   totalCount: number;
-  /** 计算的推荐分辨率（组内按数量加权：面积取几何平均，宽高比取算术平均，对齐 8） */
+  /** 计算的推荐分辨率（组内按数量加权：面积取几何平均，宽高比取算术平均，对齐 64） */
   computed: { w: number; h: number };
 }
 
@@ -49,7 +49,7 @@ function computeClusterMiddle(members: ResolutionGroup[]): { w: number; h: numbe
   const logArea = members.reduce((s, m) => s + m.count * Math.log(m.width * m.height), 0) / total;
   const area = Math.exp(logArea);
   const ar = members.reduce((s, m) => s + m.count * (m.width / m.height), 0) / total;
-  const snap = (v: number) => Math.max(64, Math.round(v / 8) * 8);
+  const snap = (v: number) => Math.max(64, Math.round(v / 64) * 64);
   return { w: snap(Math.sqrt(area * ar)), h: snap(Math.sqrt(area / ar)) };
 }
 
