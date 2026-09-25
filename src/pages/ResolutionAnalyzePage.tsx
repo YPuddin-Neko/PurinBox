@@ -169,7 +169,7 @@ export default function ResolutionAnalyzePage() {
   const handleAnalyze = async () => {
     // 导出与分析共用同一事件通道，并发会让进度/任务状态互相打架
     if (!inputPath || aggExporting || resultExporting) return;
-    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    // 提交前规范数字参数。
     const threshold = Number.isFinite(rareThreshold) && rareThreshold >= 1 ? Math.floor(rareThreshold) : 10;
     if (threshold !== rareThreshold) setRareThreshold(threshold);
     setProcessing(true);

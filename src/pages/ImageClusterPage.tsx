@@ -86,7 +86,7 @@ export default function ImageClusterPage() {
 
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
-    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    // 提交前规范数字参数。
     const num = (v: number, fallback: number) => (Number.isFinite(v) && v >= 2 ? v : fallback);
     const nC = num(nClusters, 5), minSize = num(minClusterSize, 3);
     if (nC !== nClusters) setNClusters(nC);

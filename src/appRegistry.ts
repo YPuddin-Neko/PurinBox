@@ -134,7 +134,7 @@ export const PAGES: PageDef[] = [
   { path: '/settings', i18nKey: 'sidebar.settings', icon: Settings, persistent: false },
 ];
 
-// ═══════════════ 派生映射（原五份手动同步表，勿再手写） ═══════════════
+// ═══════════════ 派生映射 ═══════════════
 
 /** 持久化页面（首次访问后保持挂载） */
 export const persistentPages = PAGES.filter(p => p.persistent);

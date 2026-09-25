@@ -421,10 +421,9 @@ fn run_aesthetic_scoring(
     let mut ready = false;
     // 超时看门狗：阻塞读期间 elapsed 检查永远不执行（Python 静默挂死时 read 永久阻塞），
     // 改由独立线程到点杀进程 → stdout 关闭 → 阻塞读解除 → 走 !ready 错误路径。
-    // 就绪后看门狗自行退出，加载慢于超时上限但已发出 ready 的情况不会被误杀。
+    // 就绪后看门狗自行退出。
     let ready_flag = std::sync::Arc::new(AtomicBool::new(false));
-    // 按"静默时长"判死：加载中 Python 会持续吐 log 行，只要有输出就不算挂死——
-    // 冷盘上加载超过 180s 的大模型不会被误杀；真正静默 180s 才终止
+    // 按静默时长判定进程无响应；持续输出日志的加载过程不会被终止。
     let last_activity = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let watch_start = std::time::Instant::now();
     {
@@ -453,10 +452,10 @@ fn run_aesthetic_scoring(
             std::sync::atomic::Ordering::SeqCst,
         );
         if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
-            // 必须解除看门狗：否则它在静默期满后对全局句柄补刀，误杀重启后新一轮的进程
+            // 取消时解除看门狗，避免它在静默超时后再次操作进程句柄。
             ready_flag.store(true, Ordering::SeqCst);
             kill_process();
-            // 加载期取消也必须发终态事件——页面只在 done 事件里复位按钮/任务状态
+            // 加载期取消也要发终态事件，页面据此复位任务状态。
             let _ = app.emit(
                 "aesthetic-progress",
                 ProgressEvent {

@@ -260,7 +260,7 @@ export default function SettingsPage() {
   const handleSaveProxy = async () => {
     if (!isDesktopRuntime) return;
     setProxySaving(true); setProxySaveMsg(null);
-    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法端口
+    // 提交前规范端口参数。
     const port = Number.isFinite(proxyPort) && proxyPort > 0 ? Math.floor(proxyPort) : 0;
     if (port !== proxyPort) setProxyPort(port);
     try {

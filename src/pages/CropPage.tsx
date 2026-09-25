@@ -106,7 +106,7 @@ export default function CropPage() {
 
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
-    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    // 提交前规范数字参数。
     const num = (v: number, fallback: number, min: number) => (Number.isFinite(v) && v >= min ? v : fallback);
     const cw = num(centerW, 1024, 1), ch = num(centerH, 1024, 1);
     const rw = num(ratioW, 1, 1), rh = num(ratioH, 1, 1);

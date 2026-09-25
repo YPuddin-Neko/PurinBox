@@ -137,7 +137,7 @@ export default function TagManagerPage() {
     document.body.style.cursor = 'col-resize';
   }, [col1W, col3W]);
 
-  // 卸载时兜底移除拖拽期间挂在 document 上的监听
+  // 卸载时移除拖拽监听。
   const resizeCleanupRef = useRef<(() => void) | null>(null);
   useEffect(() => () => { resizeCleanupRef.current?.(); }, []);
 

@@ -368,8 +368,7 @@ pub async fn start_image_cluster(
                     }
                     "error" => {
                         let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                        // 出错时先杀掉并回收子进程，再清空 PID 记录，
-                        // 避免僵尸进程以及之后"强制取消"对陈旧 PID 误杀无关进程
+                        // 出错时先回收子进程，再清空 PID 记录。
                         let _ = child.kill();
                         let _ = child.wait();
                         if let Ok(mut guard) = CHILD_PID.lock() {

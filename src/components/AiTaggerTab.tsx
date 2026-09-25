@@ -241,7 +241,7 @@ export default function AiTaggerTab() {
 
   const handleStart = async () => {
     if (!inputPath || !selectedModel || enabled.size === 0) return;
-    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    // 提交前规范数字参数。
     const bs = Number.isFinite(batchSize) && batchSize >= 1 ? Math.min(batchSize, 64) : 1;
     if (bs !== batchSize) setBatchSize(bs);
     // 如果正在打标，先取消上一次
@@ -292,7 +292,7 @@ export default function AiTaggerTab() {
       setLogs(p => [...p, { time: getTimeStr(), message: t('aiTagger.fillAllFields'), status: 'error' }]);
       return;
     }
-    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    // 提交前规范数字参数。
     const size = Number.isFinite(nSize) && nSize >= 1 ? nSize : DEFAULT_MODEL_SIZE;
     if (size !== nSize) setNSize(size);
     setImporting(true);

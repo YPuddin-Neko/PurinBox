@@ -105,7 +105,7 @@ export default function ScalePage() {
   const handleProcess = async () => {
     const mode = getMode();
     if (!inputPath || !outputPath || !mode) return;
-    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    // 提交前规范数字参数。
     const num = (v: number, fallback: number) => (Number.isFinite(v) && v >= 1 ? v : fallback);
     const upW = num(upWidth, 1024), upH = num(upHeight, 1024);
     const downW = num(downWidth, 512), downH = num(downHeight, 512);

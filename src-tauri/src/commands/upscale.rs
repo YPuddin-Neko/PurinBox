@@ -993,8 +993,7 @@ fn run_ncnn_upscale(
             );
             continue;
         }
-        // 清掉上次运行的旧输出：NCNN 二进制失败也会 exit 0，
-        // 若旧文件残留，"exit 0 + 文件存在"会把本次失败误判为成功
+        // 清掉旧输出，避免 NCNN 失败但返回 0 时沿用残留文件。
         let _ = std::fs::remove_file(&out_file);
 
         // Build command
@@ -1338,8 +1337,7 @@ async fn run_python_upscale(
                     }
                     "error" => {
                         let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                        // 出错时先杀掉并回收子进程，再清空 PID 记录，
-                        // 避免僵尸进程以及之后"强制取消"对陈旧 PID 误杀无关进程
+                        // 出错时先回收子进程，再清空 PID 记录。
                         let _ = child.kill();
                         let _ = child.wait();
                         if let Ok(mut guard) = ACTIVE_CHILD.lock() {

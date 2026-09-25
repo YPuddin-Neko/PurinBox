@@ -302,7 +302,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
     document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);document.body.style.cursor='row-resize';
   },[previewH]);
 
-  // 卸载时兜底移除拖拽期间挂在 document 上的监听
+  // 卸载时移除拖拽监听。
   const resizeCleanupRef=useRef<(()=>void)|null>(null);
   useEffect(()=>()=>{resizeCleanupRef.current?.();},[]);
 

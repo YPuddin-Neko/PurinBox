@@ -119,7 +119,7 @@ export default function PersonCropPage() {
 
   const handleProcess = async () => {
     if (!inputPath || !outputPath) return;
-    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    // 提交前规范数字参数。
     const num = (v: number, fallback: number, min: number, max: number) => (Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback);
     const pConf = num(personConf, 0.3, 0.1, 0.9), uConf = num(upperConf, 0.5, 0.1, 0.9);
     const hConf = num(headConf, 0.4, 0.1, 0.9), eConf = num(eyesConf, 0.3, 0.1, 0.9);

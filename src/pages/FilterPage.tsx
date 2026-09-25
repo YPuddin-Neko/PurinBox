@@ -98,7 +98,7 @@ export default function FilterPage() {
   const handleProcess = async () => {
     if (!inputPath) return;
     if (action === 'copy' && !outputPath) return;
-    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    // 提交前规范数字参数。
     const num = (v: number, fallback: number) => (Number.isFinite(v) && v >= 1 ? v : fallback);
     const w = num(width, 512), h = num(height, 512);
     if (w !== width) setWidth(w);

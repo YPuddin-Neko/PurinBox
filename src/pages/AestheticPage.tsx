@@ -86,7 +86,7 @@ export default function AestheticPage() {
 
   const handleProcess = async () => {
     if (!inputPath) return;
-    // 数字字段兜底：输入中途可能为 ""（空串），提交前规整为合法值
+    // 提交前规范数字参数。
     const bs = Number.isFinite(batchSize) && batchSize >= 1 ? Math.min(batchSize, 64) : 1;
     if (bs !== batchSize) setBatchSize(bs);
     setProcessing(true); setIsDone(false); setHasError(false); setProgress(0);

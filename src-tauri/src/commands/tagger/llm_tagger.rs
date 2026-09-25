@@ -567,7 +567,7 @@ async fn tag_with_llm(
         return Err("API 返回空内容".to_string());
     };
 
-    // 服务端安全审核拦下，或模型自己回了一句拒绝：都不能当成描述写进标签文件
+    // 审核拒绝或模型返回拒绝语时，不写入标签文件。
     if matches!(
         choice.finish_reason.as_deref(),
         Some("content_filter") | Some("safety")

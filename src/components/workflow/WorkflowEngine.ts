@@ -462,8 +462,7 @@ export class WorkflowEngine {
 
     try {
       // 0. 清理上一次运行的中间产物。
-      // 临时目录名按 step_{序号}_{类型} 生成，多次运行之间完全相同，
-      // 若上次被取消/失败留下了残留文件，本次会把它们当成上游产物读进来。
+      // 临时目录名按 step_{序号}_{类型} 生成。清理残留目录，避免旧文件被当成上游产物。
       // 输入目录若位于 .workflow_temp 内（上次无输出节点的运行把成品留在那里），
       // 下面的残留清理会连输入一起删掉——直接拒跑并提示搬出
       const tempPathRe = /[\\/]\.workflow_temp([\\/]|$)/;
@@ -624,8 +623,7 @@ export class WorkflowEngine {
             // 收集非活跃分支的下游节点
             const inactiveEdges = edges.filter(e => e.source === nodeId && e.sourceHandle === inactiveHandle);
             const markSkipped = (startIds: string[]) => {
-              // 直接目标无条件跳过；再往下游只有"全部父节点都被跳过"的节点才跳过——
-              // 两条分支汇合的节点仍由活跃分支供给，绝不能连带跳过
+              // 直接目标跳过；下游节点仅在所有父节点都被跳过时跳过，保留活跃分支的汇合节点。
               const seeds = new Set(startIds);
               const queue = [...startIds];
               while (queue.length > 0) {
@@ -746,8 +744,7 @@ export class WorkflowEngine {
         }
 
         try {
-          // 节点边界取消竞态：cancel_* 可能赶在 start_* 之前落地并被其入口复位，
-          // 进入 invoke 前最后确认一次本地取消标志
+          // 在调用后端前再次检查取消标志，覆盖取消请求早于节点启动的情况。
           if (this.cancelFlag) {
             this.status = 'cancelled';
             callbacks.onNodeStatusChange(nodeId, 'idle', '已取消');

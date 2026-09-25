@@ -36,7 +36,7 @@ function resolveThumb(path: string, maxEdge: number): Promise<string> {
     pending = (async () => {
       await acquireSlot();
       try {
-        // 放行原图所在目录：缩略图失败的兜底直显、以及同目录的灯箱原图都依赖它
+        // 放行原图所在目录，供原图直显和灯箱加载使用。
         await ensureAssetScope(path, { file: true });
         const thumbPath = await invoke<string>('get_image_thumbnail', { path, maxEdge });
         const url = convertFileSrc(thumbPath);

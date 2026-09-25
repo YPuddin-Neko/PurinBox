@@ -522,8 +522,7 @@ export default function HybridTaggerTab() {
         },
       });
 
-      // 阶段一期间点了取消：start_tagging 被取消后仍返回 Ok，
-      // 绝不能继续进入 LLM 精修——那会照样烧 API 并就地改写数据集标签
+      // start_tagging 取消后仍可能返回 Ok；取消时停止后续精修，避免继续请求并改写标签文件。
       if (cancelRequestedRef.current) throw '已取消';
 
       // LLM 二次确认与调优（就地更新标签文件）
