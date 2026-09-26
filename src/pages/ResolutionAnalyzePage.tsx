@@ -38,23 +38,34 @@ interface AnalyzeResult {
 interface ResolutionCluster {
   members: ResolutionGroup[];
   totalCount: number;
-  /** 计算的推荐分辨率（组内按数量加权：面积取几何平均，宽高比取算术平均，对齐 64） */
+  /** 计算的推荐分辨率（组内按数量加权：面积取几何平均，宽高比取算术平均，对齐到所选倍数） */
   computed: { w: number; h: number };
 }
 
 const resKey = (w: number, h: number) => `${w}x${h}`;
 
-function computeClusterMiddle(members: ResolutionGroup[]): { w: number; h: number } {
+const ALIGN_STEPS = [16, 32, 64] as const;
+const ALIGN_STEP_KEY = 'resolution_align_step';
+
+function loadAlignStep(): number {
+  try {
+    const v = Number(localStorage.getItem(ALIGN_STEP_KEY));
+    if ((ALIGN_STEPS as readonly number[]).includes(v)) return v;
+  } catch { /* 存储不可用时用默认值 */ }
+  return 64;
+}
+
+function computeClusterMiddle(members: ResolutionGroup[], step: number): { w: number; h: number } {
   const total = members.reduce((s, m) => s + m.count, 0);
   const logArea = members.reduce((s, m) => s + m.count * Math.log(m.width * m.height), 0) / total;
   const area = Math.exp(logArea);
   const ar = members.reduce((s, m) => s + m.count * (m.width / m.height), 0) / total;
-  const snap = (v: number) => Math.max(64, Math.round(v / 64) * 64);
+  const snap = (v: number) => Math.max(step, Math.round(v / step) * step);
   return { w: snap(Math.sqrt(area * ar)), h: snap(Math.sqrt(area / ar)) };
 }
 
 /** 按宽高比容差聚类（groups 需已按数量降序，数量多的分辨率作为组的种子） */
-function buildClusters(groups: ResolutionGroup[], tolerancePct: number): ResolutionCluster[] {
+function buildClusters(groups: ResolutionGroup[], tolerancePct: number, step: number): ResolutionCluster[] {
   const tol = Math.max(0, tolerancePct) / 100;
   const raw: { members: ResolutionGroup[]; arWeightedSum: number; countSum: number }[] = [];
   for (const g of groups) {
@@ -74,7 +85,7 @@ function buildClusters(groups: ResolutionGroup[], tolerancePct: number): Resolut
   return raw.map(c => ({
     members: c.members,
     totalCount: c.countSum,
-    computed: computeClusterMiddle(c.members),
+    computed: computeClusterMiddle(c.members, step),
   }));
 }
 
@@ -97,6 +108,7 @@ export default function ResolutionAnalyzePage() {
 
   // ── 分辨率聚合 ──
   const [arTolerance, setArTolerance] = useState(5);
+  const [alignStep, setAlignStep] = useState(loadAlignStep);
   const [aggExportPath, setAggExportPath] = useState('');
   const [aggExporting, setAggExporting] = useState(false);
   const [resultExporting, setResultExporting] = useState(false);
@@ -105,13 +117,17 @@ export default function ResolutionAnalyzePage() {
   const [clusterTargets, setClusterTargets] = useState<Record<number, string>>({});
 
   const clusters = useMemo(
-    () => (result ? buildClusters(result.groups, Number.isFinite(arTolerance) ? arTolerance : 5) : []),
-    [result, arTolerance],
+    () => (result ? buildClusters(result.groups, Number.isFinite(arTolerance) ? arTolerance : 5, alignStep) : []),
+    [result, arTolerance, alignStep],
   );
   const multiClusters = useMemo(() => clusters.filter(c => c.members.length > 1), [clusters]);
   const singleClusters = useMemo(() => clusters.filter(c => c.members.length === 1), [clusters]);
 
-  // 容差或结果变化后组会重算，清空已选目标
+  useEffect(() => {
+    try { localStorage.setItem(ALIGN_STEP_KEY, String(alignStep)); } catch { /* 忽略 */ }
+  }, [alignStep]);
+
+  // 容差、对齐倍数或结果变化后组会重算，清空已选目标
   useEffect(() => {
     setClusterTargets({});
   }, [clusters]);
@@ -369,7 +385,7 @@ export default function ResolutionAnalyzePage() {
               <span className="tool-panel-title">{t('resolutionAnalyze.analysisOptions')}</span>
             </div>
             <div className="tool-panel-body">
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-4)' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 'var(--space-4)' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label">{t('resolutionAnalyze.rareThreshold')}</label>
                   <input
@@ -398,6 +414,14 @@ export default function ResolutionAnalyzePage() {
                   <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)', margin: '4px 0 0' }}>
                     {t('resolutionAnalyze.aggregateToleranceDesc')}
                   </p>
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label">{t('resolutionAnalyze.alignStep')}</label>
+                  <CustomSelect
+                    value={String(alignStep)}
+                    options={ALIGN_STEPS.map(n => ({ value: String(n), label: t('resolutionAnalyze.alignStepOption', { n }) }))}
+                    onChange={(v) => setAlignStep(Number(v))}
+                  />
                 </div>
               </div>
             </div>

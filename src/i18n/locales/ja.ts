@@ -267,6 +267,8 @@ const ja = {
     analysisOptions: '分析オプション',
     aggregateTolerance: '集約許容差 (%)',
     aggregateToleranceDesc: 'アスペクト比の差がこの割合以内の解像度を同じグループにまとめます',
+    alignStep: 'アライメント',
+    alignStepOption: '{{n}} の倍数',
     aggregationTitle: '解像度集約',
     groupCount: '{{n}} グループ',
     noSimilarGroups: '近い比率のグループなし',

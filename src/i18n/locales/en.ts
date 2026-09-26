@@ -267,6 +267,8 @@ const en = {
     analysisOptions: 'Analysis Options',
     aggregateTolerance: 'Grouping Tolerance (%)',
     aggregateToleranceDesc: 'Resolutions whose aspect ratios differ within this percentage are grouped together',
+    alignStep: 'Alignment',
+    alignStepOption: 'Multiple of {{n}}',
     aggregationTitle: 'Resolution Aggregation',
     groupCount: '{{n}} groups',
     noSimilarGroups: 'No similar aspect ratios',

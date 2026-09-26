@@ -281,6 +281,8 @@ const zhCN = {
     analysisOptions: '分析选项',
     aggregateTolerance: '聚合容差 (%)',
     aggregateToleranceDesc: '宽高比相差在此百分比内的分辨率会被归为同一组',
+    alignStep: '对齐倍数',
+    alignStepOption: '{{n}} 倍',
     aggregationTitle: '分辨率聚合',
     groupCount: '{{n}} 组可聚合',
     noSimilarGroups: '无相近比例的分组',
