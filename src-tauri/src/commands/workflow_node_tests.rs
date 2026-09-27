@@ -54,6 +54,17 @@ fn file_count(dir: &Path) -> usize {
         .unwrap_or(0)
 }
 
+/// 每张源图都有同名输出，且输出的实际编码格式与源图一致
+fn assert_formats_kept(input: &Path, out: &Path) {
+    let real_format = |p: &Path| image::guess_format(&std::fs::read(p).unwrap()).unwrap();
+    for entry in std::fs::read_dir(input).unwrap().flatten() {
+        let src = entry.path();
+        let dst = out.join(entry.file_name());
+        assert!(dst.exists(), "缺少输出 {}", dst.display());
+        assert_eq!(real_format(&dst), real_format(&src), "{}", dst.display());
+    }
+}
+
 fn cleanup(root: &Path) {
     let _ = std::fs::remove_dir_all(root);
 }
@@ -79,6 +90,7 @@ async fn node_scale() {
     let r = scale_images(app.handle().clone(), opts).await.unwrap();
     assert_eq!(r.fail_count, 0, "缩放不应有失败: {:?}", r.errors);
     assert_eq!(file_count(&out), 5, "输出应包含全部 5 张图");
+    assert_formats_kept(&input, &out);
     cleanup(&root);
 }
 
@@ -104,6 +116,7 @@ async fn node_crop() {
     let r = crop_images(app.handle().clone(), opts).await.unwrap();
     assert_eq!(r.fail_count, 0, "裁切不应有失败: {:?}", r.errors);
     assert_eq!(file_count(&out), 5);
+    assert_formats_kept(&input, &out);
     cleanup(&root);
 }
 
@@ -124,6 +137,7 @@ async fn node_flip() {
     let r = flip_images(app.handle().clone(), opts).await.unwrap();
     assert_eq!(r.fail_count, 0, "翻转不应有失败: {:?}", r.errors);
     assert_eq!(file_count(&out), 5);
+    assert_formats_kept(&input, &out);
     cleanup(&root);
 }
 
@@ -177,6 +191,7 @@ async fn node_alpha_convert() {
         converted.pixels().all(|p| p[3] == 255),
         "转换后不应存在透明像素"
     );
+    assert_formats_kept(&input, &out);
     cleanup(&root);
 }
 
@@ -198,6 +213,7 @@ async fn node_blur_noise() {
     let r = blur_noise_images(app.handle().clone(), opts).await.unwrap();
     assert_eq!(r.fail_count, 0, "模糊/噪点不应有失败: {:?}", r.errors);
     assert_eq!(file_count(&out), 5);
+    assert_formats_kept(&input, &out);
     cleanup(&root);
 }
 
@@ -218,6 +234,7 @@ async fn node_perspective() {
     let r = perspective_transform(app.handle().clone(), opts).await.unwrap();
     assert_eq!(r.fail_count, 0, "透视变换不应有失败: {:?}", r.errors);
     assert_eq!(file_count(&out), 5);
+    assert_formats_kept(&input, &out);
     cleanup(&root);
 }
 

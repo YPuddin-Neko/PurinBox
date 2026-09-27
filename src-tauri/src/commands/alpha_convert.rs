@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
+use super::image_io::{load_image, save_like_source};
 use super::{
     collect_image_files_with_recursive_excluding, output_path_for_input, ProcessResult,
     ProgressEvent,
@@ -192,12 +193,7 @@ fn process_alpha(
     options: &AlphaConvertOptions,
     bg_color: &[u8; 3],
 ) -> Result<bool, String> {
-    let img = image::ImageReader::open(file_path)
-        .map_err(|e| format!("无法打开图片: {}", e))?
-        .with_guessed_format()
-        .map_err(|e| format!("无法识别图片格式: {}", e))?
-        .decode()
-        .map_err(|e| format!("无法解码图片: {}", e))?;
+    let (img, source) = load_image(file_path)?;
 
     if !has_alpha(&img) {
         let filename = file_path
@@ -227,22 +223,52 @@ fn process_alpha(
         rgb.put_pixel(x, y, image::Rgb([r, g, b]));
     }
 
-    let stem = file_path
-        .file_stem()
+    let file_name = file_path
+        .file_name()
         .ok_or("无效的文件名")?
         .to_string_lossy();
-    let output_name = format!("{}.png", stem);
     let output_path = output_path_for_input(
         input_root,
         file_path,
         output_dir,
-        &output_name,
+        file_name.as_ref(),
         options.recursive,
     )?;
 
-    DynamicImage::ImageRgb8(rgb)
-        .save(&output_path)
-        .map_err(|e| format!("无法保存图片: {}", e))?;
+    save_like_source(DynamicImage::ImageRgb8(rgb), &output_path, &source)?;
 
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_source_name_and_format() {
+        let root = std::env::temp_dir().join(format!("purinbox_alpha_keep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (input, out) = (root.join("in"), root.join("out"));
+        std::fs::create_dir_all(&input).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
+        let src = input.join("w.webp");
+        image::RgbaImage::from_pixel(16, 16, image::Rgba([0, 0, 0, 0]))
+            .save(&src)
+            .unwrap();
+        let options: AlphaConvertOptions = serde_json::from_value(serde_json::json!({
+            "input_path": input.to_string_lossy(),
+            "output_path": out.to_string_lossy(),
+            "background": "white",
+        }))
+        .unwrap();
+
+        assert!(process_alpha(&src, &input, &out, &options, &[255, 255, 255]).unwrap());
+        let bytes = std::fs::read(out.join("w.webp")).unwrap();
+        assert_eq!(image::guess_format(&bytes).unwrap(), image::ImageFormat::WebP);
+        let img = image::load_from_memory(&bytes).unwrap();
+        assert!(!img.color().has_alpha());
+        assert_eq!(img.to_rgb8().get_pixel(8, 8).0, [255, 255, 255]);
+        assert!(!out.join("w.png").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

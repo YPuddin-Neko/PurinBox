@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
+use super::image_io::{load_image, save_like_source};
 use super::{
     collect_image_files_with_recursive_excluding, output_path_for_input, ProcessResult,
     ProgressEvent,
@@ -169,12 +170,7 @@ fn process_perspective(
 ) -> Result<(), String> {
     use image::{GenericImageView, RgbaImage};
 
-    let img = image::ImageReader::open(file_path)
-        .map_err(|e| format!("无法打开图片: {}", e))?
-        .with_guessed_format()
-        .map_err(|e| format!("无法识别图片格式: {}", e))?
-        .decode()
-        .map_err(|e| format!("无法解码图片: {}", e))?;
+    let (img, source) = load_image(file_path)?;
 
     let (w, h) = img.dimensions();
     let rgba = img.to_rgba8();
@@ -277,20 +273,13 @@ fn process_perspective(
     if crate::commands::path_key_ci(&output_path) == crate::commands::path_key_ci(file_path) {
         return Err("输出与输入为同一文件，已跳过（请更换输出目录）".to_string());
     }
-    // JPEG/BMP 不支持透明通道，保存前拍平为 RGB（越界区域呈黑边，符合数据增强惯例）
-    let out_ext = output_path
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    if matches!(out_ext.as_str(), "jpg" | "jpeg" | "bmp") {
-        image::DynamicImage::ImageRgba8(out)
-            .to_rgb8()
-            .save(&output_path)
-            .map_err(|e| format!("无法保存图片: {}", e))?;
+    // 源图为 JPEG/BMP 时保存前拍平为 RGB（越界区域呈黑边，符合数据增强惯例）
+    let out = if matches!(source.format, image::ImageFormat::Jpeg | image::ImageFormat::Bmp) {
+        image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(out).to_rgb8())
     } else {
-        out.save(&output_path)
-            .map_err(|e| format!("无法保存图片: {}", e))?;
-    }
+        image::DynamicImage::ImageRgba8(out)
+    };
+    save_like_source(out, &output_path, &source)?;
     Ok(())
 }
 

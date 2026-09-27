@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
+use super::image_io::{load_image, save_like_source};
 use super::{
     collect_image_files_with_recursive_excluding, output_path_for_input, ProcessResult,
     ProgressEvent,
@@ -207,12 +208,7 @@ fn process_crop(
     output_dir: &Path,
     options: &CropOptions,
 ) -> Result<String, String> {
-    let img = image::ImageReader::open(file_path)
-        .map_err(|e| format!("无法打开图片: {}", e))?
-        .with_guessed_format()
-        .map_err(|e| format!("无法识别图片格式: {}", e))?
-        .decode()
-        .map_err(|e| format!("无法解码图片: {}", e))?;
+    let (img, source) = load_image(file_path)?;
 
     let (orig_w, orig_h) = img.dimensions();
     let filename = file_path
@@ -243,9 +239,7 @@ fn process_crop(
             let x = (orig_w - tw) / 2;
             let y = (orig_h - th) / 2;
             let cropped = img.crop_imm(x, y, tw, th);
-            cropped
-                .save(&output_path)
-                .map_err(|e| format!("无法保存图片: {}", e))?;
+            save_like_source(cropped, &output_path, &source)?;
             Ok(format!(
                 "[中心裁切] {} ({}x{} → {}x{})",
                 filename, orig_w, orig_h, tw, th
@@ -266,9 +260,7 @@ fn process_crop(
             let x = anchored_offset(scaled_w, tw, anchor, "left", "right");
             let y = anchored_offset(scaled_h, th, anchor, "top", "bottom");
             let cropped = resized.crop_imm(x, y, tw, th);
-            cropped
-                .save(&output_path)
-                .map_err(|e| format!("无法保存图片: {}", e))?;
+            save_like_source(cropped, &output_path, &source)?;
             Ok(format!(
                 "[填满裁切] {} ({}x{} → 缩放 {}x{} → 裁切 {}x{}, 保留 {})",
                 filename,
@@ -309,9 +301,7 @@ fn process_crop(
             let x = (orig_w - tw) / 2;
             let y = (orig_h - th) / 2;
             let cropped = img.crop_imm(x, y, tw, th);
-            cropped
-                .save(&output_path)
-                .map_err(|e| format!("无法保存图片: {}", e))?;
+            save_like_source(cropped, &output_path, &source)?;
             Ok(format!(
                 "[比例裁切] {} ({}x{} → {}x{}, 比例 {:.2})",
                 filename, orig_w, orig_h, tw, th, target_ratio
@@ -338,14 +328,94 @@ fn process_crop(
             let tw = orig_w - cl - cr;
             let th = orig_h - ct - cb;
             let cropped = img.crop_imm(cl, ct, tw, th);
-            cropped
-                .save(&output_path)
-                .map_err(|e| format!("无法保存图片: {}", e))?;
+            save_like_source(cropped, &output_path, &source)?;
             Ok(format!(
                 "[边缘裁切] {} ({}x{} → {}x{}, 上{}下{}左{}右{})",
                 filename, orig_w, orig_h, tw, th, ct, cb, cl, cr
             ))
         }
         _ => Err("无效的裁切模式".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fixture(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "purinbox_crop_keep_{}_{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let (input, output) = (root.join("in"), root.join("out"));
+        std::fs::create_dir_all(&input).unwrap();
+        std::fs::create_dir_all(&output).unwrap();
+        (root, input, output)
+    }
+
+    fn run(input: &Path, output: &Path) -> Vec<Result<String, String>> {
+        let options: CropOptions = serde_json::from_value(serde_json::json!({
+            "input_path": input.to_string_lossy(),
+            "output_path": output.to_string_lossy(),
+            "mode": "center",
+            "target_width": 32,
+            "target_height": 32,
+            "aspect_ratio": 1.0,
+            "crop_top": 0, "crop_bottom": 0, "crop_left": 0, "crop_right": 0,
+        }))
+        .unwrap();
+        collect_image_files_with_recursive_excluding(input, false, Some(output))
+            .unwrap()
+            .iter()
+            .map(|f| process_crop(f, input, output, &options))
+            .collect()
+    }
+
+    fn real_format(p: &Path) -> image::ImageFormat {
+        image::guess_format(&std::fs::read(p).unwrap()).unwrap()
+    }
+
+    fn rgb(w: u32, h: u32, c: [u8; 3]) -> image::DynamicImage {
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(c)))
+    }
+
+    #[test]
+    fn output_keeps_actual_format_and_name() {
+        let (root, input, out) = fixture("format");
+        rgb(64, 64, [10, 20, 30])
+            .save_with_format(input.join("png_inside.jpg"), image::ImageFormat::Png)
+            .unwrap();
+        rgb(64, 64, [30, 20, 10])
+            .save_with_format(input.join("jpeg_inside.png"), image::ImageFormat::Jpeg)
+            .unwrap();
+        rgb(64, 64, [60, 90, 120]).save(input.join("c.webp")).unwrap();
+
+        let results = run(&input, &out);
+        assert!(results.iter().all(|r| r.is_ok()), "{:?}", results);
+        assert_eq!(real_format(&out.join("png_inside.jpg")), image::ImageFormat::Png);
+        assert_eq!(real_format(&out.join("jpeg_inside.png")), image::ImageFormat::Jpeg);
+        assert_eq!(real_format(&out.join("c.webp")), image::ImageFormat::WebP);
+        let cropped = image::load_from_memory(&std::fs::read(out.join("png_inside.jpg")).unwrap())
+            .unwrap();
+        assert_eq!(cropped.dimensions(), (32, 32));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn uncropped_files_are_copied_unchanged() {
+        let (root, input, out) = fixture("copy");
+        // 小于目标尺寸，走"无需裁切"分支
+        rgb(16, 16, [0, 120, 0]).save(input.join("small.jpg")).unwrap();
+
+        let results = run(&input, &out);
+        assert!(results.iter().all(|r| r.is_ok()), "{:?}", results);
+        assert_eq!(
+            std::fs::read(out.join("small.jpg")).unwrap(),
+            std::fs::read(input.join("small.jpg")).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

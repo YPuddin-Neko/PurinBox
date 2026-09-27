@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::Emitter;
 
+use super::image_io::{probe_image, save_like_source, SourceInfo};
 use super::{
     collect_image_files_with_recursive_excluding, finalize_part_file, output_path_for_input,
     prepare_part_file, ProcessResult, ProgressEvent,
@@ -891,8 +892,7 @@ fn run_ncnn_upscale(
         ));
     }
 
-    // 不同扩展名的同名文件会映射到同一个 .png 输出，记录已占用的输出防止静默覆盖；
-    // 输出还可能撞上另一张源图（原地模式下 a.jpg 的 a.png 输出覆盖已存在的源图 a.png）
+    // 记录源图与已占用的输出，防止覆盖另一张源图或本批其他输出
     let input_set: std::collections::HashSet<String> =
         files.iter().map(|p| crate::commands::path_key_ci(p)).collect();
     let mut used_outputs: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -931,15 +931,42 @@ fn run_ncnn_upscale(
             },
         );
 
-        // Build output filename — keep name, force png output
-        let stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
-        let out_name = format!("{}.png", stem);
+        // 输出沿用原文件名与格式；引擎只写 PNG，非 PNG 源图先写到临时 PNG，完成后按源图格式写回
+        let source = match probe_image(file_path) {
+            Ok(s) => s,
+            Err(e) => {
+                fail_count += 1;
+                let err_msg = format!("{}: {}", filename, e);
+                errors.push(err_msg.clone());
+                let _ = app.emit(
+                    "upscale-progress",
+                    ProgressEvent {
+                        current: i as u32 + 1,
+                        total,
+                        filename: filename.clone(),
+                        status: "error".to_string(),
+                        message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
+                        ..Default::default()
+                    },
+                );
+                continue;
+            }
+        };
         let out_file =
-            output_path_for_input(input, file_path, output_dir, &out_name, options.recursive)?;
+            output_path_for_input(input, file_path, output_dir, &filename, options.recursive)?;
+        let engine_out = if source.format == image::ImageFormat::Png {
+            out_file.clone()
+        } else {
+            std::env::temp_dir().join(format!(
+                "purinbox-upscale-{}-{}.png",
+                std::process::id(),
+                i
+            ))
+        };
 
         // 大小写不敏感比较：photo.PNG 的输出 photo.png 在 Windows/macOS 上就是它自己
         let out_key = crate::commands::path_key_ci(&out_file);
-        // 输出与输入是同一个文件（输入=输出目录里的 PNG）：跳过，避免原图被就地覆盖
+        // 输出与输入是同一个文件（输出目录就是输入目录）：跳过，避免原图被就地覆盖
         if out_key == crate::commands::path_key_ci(file_path) {
             fail_count += 1;
             let err_msg = format!("{}: 输出与输入为同一文件，已跳过（请更换输出目录）", filename);
@@ -975,10 +1002,10 @@ fn run_ncnn_upscale(
             );
             continue;
         }
-        // 同名不同扩展的输入会争抢同一个输出名：后到者报错而不是静默覆盖
+        // 两张源图映射到同一个输出（大小写不同的同名文件）：后到者报错而不是静默覆盖
         if !used_outputs.insert(out_key) {
             fail_count += 1;
-            let err_msg = format!("{}: 输出文件名与其他输入冲突（同名不同扩展），已跳过", filename);
+            let err_msg = format!("{}: 输出文件名与其他输入冲突，已跳过", filename);
             errors.push(err_msg.clone());
             let _ = app.emit(
                 "upscale-progress",
@@ -994,7 +1021,7 @@ fn run_ncnn_upscale(
             continue;
         }
         // 清掉旧输出，避免 NCNN 失败但返回 0 时沿用残留文件。
-        let _ = std::fs::remove_file(&out_file);
+        let _ = std::fs::remove_file(&engine_out);
 
         // Build command
         let mut cmd = std::process::Command::new(&bin);
@@ -1008,7 +1035,7 @@ fn run_ncnn_upscale(
         cmd.arg("-i")
             .arg(file_path)
             .arg("-o")
-            .arg(&out_file)
+            .arg(&engine_out)
             .arg("-s")
             .arg(options.scale.to_string())
             .arg("-t")
@@ -1088,9 +1115,35 @@ fn run_ncnn_upscale(
             *guard = None;
         }
 
-        match output {
-            Ok(output) => {
-                if output.status.success() && out_file.exists() {
+        let written = matches!(&output, Ok(o) if o.status.success()) && engine_out.exists();
+        let finalized = if written && engine_out != out_file {
+            finalize_engine_output(&engine_out, &out_file, &source)
+        } else {
+            Ok(())
+        };
+        if engine_out != out_file {
+            let _ = std::fs::remove_file(&engine_out);
+        }
+
+        match (output, finalized) {
+            (Ok(_), Err(e)) => {
+                fail_count += 1;
+                let err_msg = format!("{}: {}", filename, e);
+                errors.push(err_msg.clone());
+                let _ = app.emit(
+                    "upscale-progress",
+                    ProgressEvent {
+                        current: i as u32 + 1,
+                        total,
+                        filename: filename.clone(),
+                        status: "error".to_string(),
+                        message: format!("[{}/{}] ✗ {}", i + 1, total, err_msg),
+                        ..Default::default()
+                    },
+                );
+            }
+            (Ok(output), Ok(())) => {
+                if written {
                     success_count += 1;
                     let _ = app.emit(
                         "upscale-progress",
@@ -1125,7 +1178,7 @@ fn run_ncnn_upscale(
                     );
                 }
             }
-            Err(e) => {
+            (Err(e), _) => {
                 fail_count += 1;
                 let err_msg = format!("{}: 执行失败 - {}", filename, e);
                 errors.push(err_msg.clone());
@@ -1168,6 +1221,16 @@ fn run_ncnn_upscale(
         total,
         errors,
     })
+}
+
+/// 引擎只输出 PNG：把结果按源图格式写回最终路径
+fn finalize_engine_output(
+    engine_png: &Path,
+    out_file: &Path,
+    source: &SourceInfo,
+) -> Result<(), String> {
+    let img = image::open(engine_png).map_err(|e| format!("读取超分结果失败: {}", e))?;
+    save_like_source(img, out_file, source)
 }
 
 // ===== Python Upscale =====
@@ -1461,5 +1524,37 @@ pub fn force_cancel_upscale() {
         if let Some(pid) = guard.take() {
             super::kill_process_tree(pid);
         }
+    }
+}
+
+#[cfg(test)]
+mod keep_format_tests {
+    use super::*;
+
+    #[test]
+    fn engine_png_is_rewritten_in_source_format() {
+        let root = std::env::temp_dir().join(format!("purinbox_upscale_keep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let src = root.join("a.jpg");
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(16, 16, |x, y| {
+            image::Rgb([(x * 16) as u8, (y * 16) as u8, 90])
+        }))
+        .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 98))
+        .unwrap();
+        std::fs::write(&src, buf.into_inner()).unwrap();
+        let engine_png = root.join("engine.png");
+        image::RgbImage::from_pixel(64, 64, image::Rgb([10, 200, 30]))
+            .save(&engine_png)
+            .unwrap();
+
+        let out = root.join("out").join("a.jpg");
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        finalize_engine_output(&engine_png, &out, &probe_image(&src).unwrap()).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(image::guess_format(&bytes).unwrap(), image::ImageFormat::Jpeg);
+        assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 64);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

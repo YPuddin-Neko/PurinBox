@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
+use super::image_io::{load_image, save_like_source};
 use super::{
     collect_image_files_with_recursive_excluding, output_path_for_input, ProcessResult,
     ProgressEvent,
@@ -167,17 +168,12 @@ fn process_blur_noise(
     output_dir: &Path,
     options: &BlurNoiseOptions,
 ) -> Result<(), String> {
-    let mut img = image::ImageReader::open(file_path)
-        .map_err(|e| format!("无法打开图片: {}", e))?
-        .with_guessed_format()
-        .map_err(|e| format!("无法识别图片格式: {}", e))?
-        .decode()
-        .map_err(|e| format!("无法解码图片: {}", e))?;
+    let (mut img, source) = load_image(file_path)?;
 
     // 高斯模糊
     if options.blur_radius > 0.0 {
         let sigma = options.blur_radius.max(0.1) as f32;
-        img = image::DynamicImage::ImageRgba8(image::imageops::blur(&img, sigma));
+        img = img.blur(sigma);
     }
 
     // 高斯噪点
@@ -231,7 +227,6 @@ fn process_blur_noise(
         file_name.as_ref(),
         options.recursive,
     )?;
-    img.save(&output_path)
-        .map_err(|e| format!("无法保存图片: {}", e))?;
+    save_like_source(img, &output_path, &source)?;
     Ok(())
 }

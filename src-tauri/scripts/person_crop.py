@@ -199,8 +199,12 @@ def crop_box(img, x1, y1, x2, y2, padding_ratio=0.05):
 def process_image(models, image_path, options, output_dir):
     """处理单张图片 — 每种裁切类型用独立模型检测"""
     from PIL import Image
-    
-    img = Image.open(image_path).convert('RGB')
+    from image_save import SourceInfo, save_like_source
+
+    # 按原图模式裁切（保留透明通道与位深），检测模型另行读图
+    img = Image.open(image_path)
+    img.load()
+    source = SourceInfo(image_path)
     stem = Path(image_path).stem
     ext = Path(image_path).suffix or '.png'
     results = []
@@ -218,12 +222,8 @@ def process_image(models, image_path, options, output_dir):
         except Exception:
             orig_tags = ''  # 标签读取失败只降级，不阻断裁切本身
     
-    _PIL_FMT = {'jpg': 'JPEG', 'jpeg': 'JPEG', 'png': 'PNG', 'webp': 'WEBP', 'bmp': 'BMP',
-                'tif': 'TIFF', 'tiff': 'TIFF', 'gif': 'GIF'}
-
     def save_crop(cropped_img, out_name):
-        """同名冲突加计数器（链式使用时 x_0_full 会撞名互相覆盖）；
-        先写临时名再原子替换，被取消杀死时不留半截图片顶着正名。"""
+        """同名冲突加计数器（链式使用时 x_0_full 会撞名互相覆盖）；按源图格式写出。"""
         out_path = Path(output_dir) / out_name
         if out_path.exists():
             base, sfx = out_path.stem, out_path.suffix
@@ -231,13 +231,7 @@ def process_image(models, image_path, options, output_dir):
             while out_path.exists():
                 out_path = Path(output_dir) / f'{base}_{n}{sfx}'
                 n += 1
-        fmt = _PIL_FMT.get(out_path.suffix.lstrip('.').lower())
-        if fmt:
-            tmp = out_path.with_name(out_path.name + '.tmp')
-            cropped_img.save(tmp, format=fmt)
-            os.replace(tmp, out_path)
-        else:
-            cropped_img.save(out_path)
+        save_like_source(cropped_img, out_path, source)
         return out_path
 
     def save_tag_for(img_out_path, extra_tag=''):

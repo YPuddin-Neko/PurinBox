@@ -18,6 +18,7 @@ pub mod image_cluster;
 pub mod image_crop;
 pub mod image_dedup;
 pub mod image_flip;
+pub mod image_io;
 pub mod image_scale;
 pub mod person_crop;
 pub mod perspective;

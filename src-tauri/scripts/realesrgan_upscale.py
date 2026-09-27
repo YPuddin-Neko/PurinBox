@@ -172,6 +172,7 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from cuda_dll_helper import register_cuda_dlls
     register_cuda_dlls()
+    from image_save import SourceInfo, save_array_like_source
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
@@ -225,13 +226,21 @@ def main():
         fname = os.path.basename(fpath)
         emit_progress(i + 1, total, fname, "processing")
         try:
+            # 输出沿用原文件名与格式；输出目录就是输入目录时跳过，避免原图被就地覆盖
+            out_dir = output_subdir(args.input, args.output, fpath, args.recursive)
+            out_path = os.path.join(out_dir, fname)
+            if os.path.normcase(os.path.abspath(out_path)) == os.path.normcase(os.path.abspath(fpath)):
+                raise ValueError("输出与输入为同一文件，已跳过（请更换输出目录）")
+            source = SourceInfo(fpath)
+
             # cv2.imread 在 Windows 上不支持 Unicode 路径，用 numpy 中转
             img = cv2.imdecode(np.fromfile(fpath, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
             if img is None:
                 raise ValueError("无法读取图片")
 
             # 预处理
-            if img.ndim == 2:
+            is_gray = img.ndim == 2
+            if is_gray:
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
             if img.shape[2] == 4:
                 alpha = img[:, :, 3:4]
@@ -242,14 +251,10 @@ def main():
 
             # BGR → RGB
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            # 按位深归一化: 16-bit PNG (uint16) 除以 65535，8-bit 除以 255
-            if img.dtype == np.uint16:
-                img_f = img.astype(np.float32) / 65535.0
-                if has_alpha:
-                    # alpha 统一转 uint8，便于后续与 uint8 输出拼接
-                    alpha = (alpha.astype(np.float32) / 65535.0 * 255.0).round().astype(np.uint8)
-            else:
-                img_f = img.astype(np.float32) / 255.0
+            # 按位深归一化: 16-bit PNG (uint16) 除以 65535，8-bit 除以 255；输出保持源图位深
+            is16 = img.dtype == np.uint16
+            max_val = 65535.0 if is16 else 255.0
+            img_f = img.astype(np.float32) / max_val
             # HWC → NCHW
             tensor = np.transpose(img_f, (2, 0, 1))[np.newaxis, ...]
 
@@ -286,7 +291,7 @@ def main():
 
             # 后处理: NCHW → HWC, RGB → BGR
             output = output.squeeze(0).clip(0, 1)
-            output = (np.transpose(output, (1, 2, 0)) * 255.0).round().astype(np.uint8)
+            output = (np.transpose(output, (1, 2, 0)) * max_val).round().astype(img.dtype)
             output = cv2.cvtColor(output, cv2.COLOR_RGB2BGR)
 
             # 如果目标倍率 != native_scale，resize
@@ -303,19 +308,10 @@ def main():
                     alpha_up = alpha_up[:, :, np.newaxis]
                 output = np.concatenate([output, alpha_up], axis=2)
 
-            stem = os.path.splitext(fname)[0]
-            out_dir = output_subdir(args.input, args.output, fpath, args.recursive)
+            if is_gray and not has_alpha:
+                output = cv2.cvtColor(output, cv2.COLOR_BGR2GRAY)
             os.makedirs(out_dir, exist_ok=True)
-            out_path = os.path.join(out_dir, f"{stem}.png")
-            # cv2.imwrite 在 Windows 上不支持 Unicode 路径，用 imencode 中转
-            success_write, buf = cv2.imencode('.png', output)
-            if success_write:
-                # 先写临时名再原子替换：取消杀进程时不留半截 PNG 顶着正名
-                tmp_path = out_path + ".tmp"
-                buf.tofile(tmp_path)
-                os.replace(tmp_path, out_path)
-            else:
-                raise ValueError("编码图片失败")
+            save_array_like_source(output, out_path, source)
             success += 1
             emit_progress(i + 1, total, fname, "success", f"[{i+1}/{total}] ✓ {fname}")
         except Exception as e:

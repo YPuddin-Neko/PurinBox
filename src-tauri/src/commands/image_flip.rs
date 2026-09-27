@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
+use super::image_io::{load_image, save_like_source};
 use super::{
     collect_image_files_with_recursive_excluding, output_path_for_input, ProcessResult,
     ProgressEvent,
@@ -164,12 +165,7 @@ fn process_flip(
     output_dir: &Path,
     options: &FlipOptions,
 ) -> Result<(), String> {
-    let img = image::ImageReader::open(file_path)
-        .map_err(|e| format!("无法打开图片: {}", e))?
-        .with_guessed_format()
-        .map_err(|e| format!("无法识别图片格式: {}", e))?
-        .decode()
-        .map_err(|e| format!("无法解码图片: {}", e))?;
+    let (img, source) = load_image(file_path)?;
 
     let flipped = match options.direction.as_str() {
         "horizontal" => img.fliph(),
@@ -189,8 +185,6 @@ fn process_flip(
         file_name.as_ref(),
         options.recursive,
     )?;
-    flipped
-        .save(&output_path)
-        .map_err(|e| format!("无法保存图片: {}", e))?;
+    save_like_source(flipped, &output_path, &source)?;
     Ok(())
 }
