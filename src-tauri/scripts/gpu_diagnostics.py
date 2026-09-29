@@ -229,7 +229,7 @@ def emit_gpu_report(emit_i18n, use_gpu=True):
     return True
 
 
-def resolve_ort_providers(emit_i18n, use_gpu=True, coreml_options=None):
+def resolve_ort_providers(emit_i18n, use_gpu=True, coreml_options=None, cuda_options=None):
     """onnxruntime 各功能统一的 ExecutionProvider 选择入口。
 
     先按统一流程探测本机环境并输出日志，再结合 onnxruntime 实际可用的
@@ -237,6 +237,7 @@ def resolve_ort_providers(emit_i18n, use_gpu=True, coreml_options=None):
 
     coreml_options — 可选 dict，需要定制 CoreML 行为时传入
                      （如 {"MLComputeUnits": "ALL"} 启用 ANE+GPU+CPU）
+    cuda_options — 可选 dict，传给 CUDAExecutionProvider
 
     返回 providers 列表，可直接传给 ort.InferenceSession。
     """
@@ -250,7 +251,8 @@ def resolve_ort_providers(emit_i18n, use_gpu=True, coreml_options=None):
     available = ort.get_available_providers()
 
     if "CUDAExecutionProvider" in available:
-        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        cuda = ("CUDAExecutionProvider", cuda_options) if cuda_options else "CUDAExecutionProvider"
+        return [cuda, "CPUExecutionProvider"]
     if "CoreMLExecutionProvider" in available:
         coreml = ("CoreMLExecutionProvider", coreml_options) if coreml_options \
             else "CoreMLExecutionProvider"

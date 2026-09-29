@@ -457,7 +457,11 @@ pub fn run_tagging(
         .env("PYTHONIOENCODING", "utf-8");
 
     // Windows: 无窗口 + GPU 模式注入 CUDA/cuDNN DLL 路径（共享实现见 python_proc）
-    python_proc::configure_python_command(&mut cmd, options.use_gpu);
+    python_proc::configure_python_command_with_priority(
+        &mut cmd,
+        options.use_gpu,
+        options.use_gpu && preprocess_mode == "pixai_v1",
+    );
 
     let mut child = cmd
         .spawn()

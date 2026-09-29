@@ -891,7 +891,19 @@ def main():
 
                 # === ONNX Runtime 后端 ===
                 # 统一流程：探测环境（显卡型号 / CUDA / cuDNN）+ 输出日志 + 决定 providers
-                providers = resolve_ort_providers(log_i18n, use_gpu=use_gpu)
+                cuda_options = None
+                if preprocess_mode == "pixai_v1":
+                    # 减少 cuDNN 的启动搜索和 CUDA 内存池扩张，避免大模型推理抢占过多显存。
+                    cuda_options = {
+                        "cudnn_conv_algo_search": "HEURISTIC",
+                        "arena_extend_strategy": "kSameAsRequested",
+                        "do_copy_in_default_stream": "1",
+                    }
+                providers = resolve_ort_providers(
+                    log_i18n,
+                    use_gpu=use_gpu,
+                    cuda_options=cuda_options,
+                )
                 gpu_provider = providers[0] if providers[0] != "CPUExecutionProvider" else None
 
                 # 尝试创建 session，GPU 失败时自动回退 CPU

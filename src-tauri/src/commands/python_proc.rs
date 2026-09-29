@@ -190,8 +190,26 @@ pub fn find_script(script_name: &str) -> Result<PathBuf, String> {
 /// - 其他平台: 无操作
 #[cfg(target_os = "windows")]
 pub fn configure_python_command(cmd: &mut Command, use_gpu: bool) {
+    configure_python_command_with_priority(cmd, use_gpu, false);
+}
+
+/// 为需要大量 GPU 计算的后台任务降低进程调度优先级。
+/// Windows 桌面合成仍可优先获得 CPU/GPU 调度时间，推理空闲时吞吐不变。
+#[cfg(target_os = "windows")]
+pub fn configure_python_command_with_priority(
+    cmd: &mut Command,
+    use_gpu: bool,
+    background_priority: bool,
+) {
     use std::os::windows::process::CommandExt;
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
+    let priority = if background_priority {
+        BELOW_NORMAL_PRIORITY_CLASS
+    } else {
+        0
+    };
+    cmd.creation_flags(CREATE_NO_WINDOW | priority);
 
     if use_gpu {
         cmd.env("PATH", build_cuda_enhanced_path());
@@ -200,6 +218,15 @@ pub fn configure_python_command(cmd: &mut Command, use_gpu: bool) {
 
 #[cfg(not(target_os = "windows"))]
 pub fn configure_python_command(cmd: &mut Command, _use_gpu: bool) {
+    configure_python_command_with_priority(cmd, false, false);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn configure_python_command_with_priority(
+    cmd: &mut Command,
+    _use_gpu: bool,
+    _background_priority: bool,
+) {
     // 让子进程自成进程组：kill_process_tree 的 `kill -9 -PID` 需要 PGID==PID 才能
     // 连同 torch/onnxruntime 派生的 worker 一起杀掉，否则永远走单杀回退留下孤儿
     use std::os::unix::process::CommandExt;
