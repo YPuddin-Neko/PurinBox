@@ -1,30 +1,33 @@
-import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
-import { open } from '@tauri-apps/plugin-dialog';
-import { useTaskQueue } from '../components/TaskContext';
-import { useTranslation } from 'react-i18next';
 import {
-  ScanFace, FolderOpen, Loader2, Info, User,
-  PersonStanding, CircleUser, Eye, Download,
-  Cpu, Gpu,
+  CircleUser,
+  Download,
+  Eye,
+  Loader2,
+  PersonStanding,
+  ScanFace,
+  User
 } from 'lucide-react';
-import ProgressLog, { getTimeStr, useLogState } from '../components/ProgressLog';
-import ProcessButton from '../components/ProcessButton';
-import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
-import RecursiveScanToggle from '../components/RecursiveScanToggle';
-import InputPathPickerButton from '../components/InputPathPickerButton';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { PersonCropOptions } from '../api/commandOptions';
 import Checkbox from '../components/Checkbox';
-import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
-import { hasTauriRuntime } from '../utils/tauriRuntime';
+import ProcessButton from '../components/ProcessButton';
+import ProgressLog from '../components/ProgressLog';
+import DeviceToggle from '../components/ui/DeviceToggle';
+import NumberInput from '../components/ui/NumberInput';
+import PageHeader from '../components/ui/PageHeader';
+import PathFields from '../components/ui/PathFields';
+import { useBatchTask, type ProcessResult } from '../hooks/useBatchTask';
+import { hasTauriRuntime, listen } from '../utils/tauriRuntime';
 
-interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
-interface CropModelInfo { id: string; name: string; crop_type: string; size_mb: number; downloaded: boolean; path: string; }
-interface DlProgress { downloaded: number; total: number; percent: number; speed_mbps: number; status: string; message: string; }
+interface CropModelInfo { crop_type: string; downloaded: boolean; }
+interface DlProgress { percent: number; speed_mbps: number; status: string; message: string; }
 
 export default function PersonCropPage() {
   const { t } = useTranslation();
+  const task = useBatchTask({ event: 'person-crop-progress', taskId: 'person-crop', pythonEnv: true });
+  const downloadActive = useRef(false);
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
@@ -45,14 +48,6 @@ export default function PersonCropPage() {
   const [eyesTag, setEyesTag] = useState('eyes view');
   const [eyesScale, setEyesScale] = useState(2.4);
   const [keepOriginalTags, setKeepOriginalTags] = useState(false);
-  const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressCurrent, setProgressCurrent] = useState(0);
-  const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasError, setHasError] = useState(false);
-  const taskLogs = useUnifiedTaskLogs(setLogs);
 
   const loadModels = useCallback(async () => {
     if (!hasTauriRuntime()) {
@@ -64,96 +59,43 @@ export default function PersonCropPage() {
 
   useEffect(() => { loadModels(); }, []);
 
-
   const downloadAll = async () => {
+    downloadActive.current = true;
     setDownloading(true);
-    taskLogs.appendLog(t('personCrop.downloadStart'), 'info');
+    task.logger.appendLog(t('personCrop.downloadStart'), 'info');
     try {
-      await invoke('download_person_crop_model', { modelId: 'all' });
-      loadModels();
+      await invoke('download_person_crop_model');
     } catch (e: any) {
-      taskLogs.appendCatchError(e, t('personCrop.downloadFailed'));
-    } finally { setDownloading(false); }
+      task.logger.appendCatchError(e, t('personCrop.downloadFailed'));
+    } finally { downloadActive.current = false; setDownloading(false); }
   };
 
   useEffect(() => {
     let active = true;
     const p = listen<DlProgress>('person-crop-download', (e) => {
-      if (!active) return;
-      const d = e.payload;
-      if (d.status === 'done' || d.status === 'cancelled') {
-        taskLogs.appendDownloadLog(d, { doneStatus: payload => payload.status === 'done' ? 'success' : 'info' });
-        if (d.status === 'done') loadModels();
-      } else if (d.status === 'error') {
-        setDownloading(false);
-        taskLogs.appendDownloadLog(d);
-      } else {
-        taskLogs.appendDownloadLog(d);
-      }
+      if (!active || !downloadActive.current) return;
+      task.logger.appendDownloadLog(e.payload);
+      if (e.payload.status === 'done') loadModels();
     });
     return () => { active = false; p.then(fn => fn()); };
-  }, [loadModels, taskLogs]);
+  }, [loadModels, task.logger]);
 
-  useEffect(() => {
-    let active = true;
-    const p = listen<ProgressPayload>('person-crop-progress', (event) => {
-      if (!active) return;
-      const d = event.payload;
-      setProgressCurrent(d.current); setProgressTotal(d.total);
-      if (d.total > 0) setProgress((d.current / d.total) * 100);
-      if (d.status === 'done') setIsDone(true);
-      if (d.status === 'error') setHasError(true);
-      if (d.status !== 'processing') {
-        taskLogs.appendProgressLog(d);
-      }
-    });
-    return () => { active = false; p.then(fn => fn()); };
-  }, [taskLogs]);
+  const handleProcess = () => {
 
-  // Python 环境事件（统一 hook）
-  usePythonEnvEvents(processing, setLogs, taskLogs);
-
-  const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') }); if (s) setOutputPath(s as string); };
-
-  const { addTask, updateTask } = useTaskQueue();
-
-  const handleProcess = async () => {
-    if (!inputPath || !outputPath) return;
-    // 提交前规范数字参数。
-    const num = (v: number, fallback: number, min: number, max: number) => (Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback);
-    const pConf = num(personConf, 0.3, 0.1, 0.9), uConf = num(upperConf, 0.5, 0.1, 0.9);
-    const hConf = num(headConf, 0.4, 0.1, 0.9), eConf = num(eyesConf, 0.3, 0.1, 0.9);
-    const hScale = num(headScale, 1.5, 1.0, 3.0), eScale = num(eyesScale, 2.4, 1.0, 4.0);
-    if (pConf !== personConf) setPersonConf(pConf);
-    if (uConf !== upperConf) setUpperConf(uConf);
-    if (hConf !== headConf) setHeadConf(hConf);
-    if (eConf !== eyesConf) setEyesConf(eConf);
-    if (hScale !== headScale) setHeadScale(hScale);
-    if (eScale !== eyesScale) setEyesScale(eScale);
-    setProcessing(true); addTask('person-crop', t('personCrop.taskName'));
-    setProgress(0); setProgressCurrent(0); setProgressTotal(0); setIsDone(false); setHasError(false);
-    taskLogs.setInitialLog(t('personCrop.startMsg'));
-    try {
-      await invoke<ProcessResult>('start_person_crop', {
+    return task.run({
+      taskName: t('personCrop.taskName'), startLog: t('personCrop.startMsg'), exec: () => invoke<ProcessResult>('start_person_crop', {
         options: {
           input_path: inputPath, output_path: outputPath, use_gpu: useGpu,
-          person_enabled: personEnabled, person_conf: pConf,
-          upper_enabled: upperEnabled, upper_conf: uConf, upper_tag: upperTag,
-          head_enabled: headEnabled, head_conf: hConf, head_tag: headTag, head_scale: hScale,
-          eyes_enabled: eyesEnabled, eyes_conf: eConf, eyes_tag: eyesTag, eyes_scale: eScale,
+          person_enabled: personEnabled, person_conf: personConf,
+          upper_enabled: upperEnabled, upper_conf: upperConf, upper_tag: upperTag,
+          head_enabled: headEnabled, head_conf: headConf, head_tag: headTag, head_scale: headScale,
+          eyes_enabled: eyesEnabled, eyes_conf: eyesConf, eyes_tag: eyesTag, eyes_scale: eyesScale,
           keep_original_tags: keepOriginalTags,
           recursive,
-        },
-      });
-    } catch (e: any) {
-      const errorText = taskLogs.appendCatchError(e, t('pages.errorPrefix'));
-      updateTask('person-crop', { status: /已取消|cancel/i.test(errorText) ? 'cancelled' : 'error', message: errorText });
-      setHasError(true); setIsDone(true);
-    } finally { setProcessing(false); }
+        } satisfies PersonCropOptions,
+      })
+    });
   };
-
-  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
 
   const detCard = (
     enabled: boolean, setEnabled: (v: boolean) => void,
@@ -180,8 +122,8 @@ export default function PersonCropPage() {
     <div className="form-group">
       <label className="form-label">{t('personCrop.confThreshold')}</label>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-        <input type="range" min={0.1} max={0.9} step={0.05} value={value} onChange={e => onChange(e.target.value === "" ? "" as any : Number(e.target.value))} style={{ flex: 1, accentColor: color }} />
-        <input className="form-input" type="number" value={value} onChange={e => onChange(e.target.value === "" ? "" as any : Number(e.target.value))} step={0.05} min={0.1} max={0.9} style={{ width: 70, textAlign: 'center' }} />
+        <input type="range" min={0.1} max={0.9} step={0.05} value={value} onChange={e => onChange(Number(e.target.value))} style={{ flex: 1, accentColor: color }} />
+        <NumberInput value={value} onChange={onChange} step={0.05} min={0.1} max={0.9} style={{ width: 70, textAlign: 'center' }} />
       </div>
     </div>
   );
@@ -210,75 +152,33 @@ export default function PersonCropPage() {
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <ScanFace style={{ width: 28, height: 28, color: '#fb923c' }} />
-          <h1 className="page-title">{t('personCrop.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('personCrop.subtitle')}</p>
-      </div>
+      <PageHeader icon={ScanFace} color={'#fb923c'} title={t('personCrop.title')} subtitle={t('personCrop.subtitle')} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径设置 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">{t('personCrop.cropSettings')}</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-              <div className="form-group">
-                <div className="form-label-row">
-                  <label className="form-label">{t('blurNoise.inputFolder')}</label>
-                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
-                </div>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <InputPathPickerButton onSelect={setInputPath} />
-                </div>
+          <PathFields allowFile title={t('personCrop.cropSettings')} input={inputPath} onInput={setInputPath} output={outputPath} onOutput={setOutputPath} recursive={recursive} onRecursive={setRecursive}>{/* 模型状态 + 下载 */}<div className="form-group">
+            <label className="form-label">{t('personCrop.detModel')}</label>
+            <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+              <div style={{ flex: 1, padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>
+                {ms.allReady ? (
+                  <span style={{ color: '#4ade80' }}>✓ {t('personCrop.allReady')} ({ms.ready}/{ms.total})</span>
+                ) : (
+                  <span style={{ color: '#fbbf24' }}>⬇ {t('personCrop.needDownload')} ({ms.ready}/{ms.total} {t('personCrop.ready')})</span>
+                )}
               </div>
-              <div className="form-group">
-                <label className="form-label">{t('blurNoise.outputFolder')}</label>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
-                </div>
-              </div>
-              {/* 模型状态 + 下载 */}
-              <div className="form-group">
-                <label className="form-label">{t('personCrop.detModel')}</label>
-                <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
-                  <div style={{ flex: 1, padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>
-                    {ms.allReady ? (
-                      <span style={{ color: '#4ade80' }}>✓ {t('personCrop.allReady')} ({ms.ready}/{ms.total})</span>
-                    ) : (
-                      <span style={{ color: '#fbbf24' }}>⬇ {t('personCrop.needDownload')} ({ms.ready}/{ms.total} {t('personCrop.ready')})</span>
-                    )}
-                  </div>
-                  <button className="btn btn-secondary" onClick={downloadAll} disabled={downloading || ms.allReady}
-                    style={{ height: 36, padding: '0 12px', gap: 6, display: 'flex', alignItems: 'center' }}>
-                    {downloading ? <Loader2 style={{ width: 15, height: 15, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 15, height: 15 }} />}
-                    {downloading ? t('personCrop.downloading') : t('personCrop.downloadModel')}
-                  </button>
-                </div>
-                <div style={{ marginTop: 6, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>
-                  {t('personCrop.modelSource')} <a href="https://huggingface.co/deepghs" target="_blank" rel="noreferrer" style={{ color: '#818cf8' }}>deepghs</a> — {t('personCrop.modelSourceDesc')}
-                </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                {([{ val: false, label: 'CPU', icon: <Cpu style={{ width: 13, height: 13 }} />, color: '#fbbf24' },
-                  { val: true, label: 'GPU', icon: <Gpu style={{ width: 13, height: 13 }} />, color: '#4ade80' }] as const).map(d => (
-                  <button key={d.label} onClick={() => { setUseGpu(d.val); localStorage.setItem('person_crop_gpu', String(d.val)); }} style={{
-                    padding: '4px 12px', borderRadius: 'var(--radius-sm)', fontSize: 11, fontWeight: 700,
-                    cursor: 'pointer', transition: 'all 0.15s',
-                    display: 'flex', alignItems: 'center', gap: 4,
-                    border: `1.5px solid ${useGpu === d.val ? d.color : 'var(--color-border)'}`,
-                    background: useGpu === d.val ? `${d.color}12` : 'transparent',
-                    color: useGpu === d.val ? d.color : 'var(--color-text-tertiary)',
-                  }}>
-                    {d.icon} {d.label}
-                  </button>
-                ))}
-              </div>
+              <button className="btn btn-secondary" onClick={downloadAll} disabled={task.processing || downloading || ms.allReady}
+                style={{ height: 36, padding: '0 12px', gap: 6, display: 'flex', alignItems: 'center' }}>
+                {downloading ? <Loader2 style={{ width: 15, height: 15, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 15, height: 15 }} />}
+                {downloading ? t('personCrop.downloading') : t('personCrop.downloadModel')}
+              </button>
             </div>
-          </div>
+            <div style={{ marginTop: 6, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>
+              {t('personCrop.modelSource')} <a href="https://huggingface.co/deepghs" target="_blank" rel="noreferrer" style={{ color: '#818cf8' }}>deepghs</a>
+            </div>
+          </div><div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+              <DeviceToggle useGpu={useGpu} onChange={v => { setUseGpu(v); localStorage.setItem('person_crop_gpu', String(v)); }} />
+            </div></PathFields>
 
           {/* 检测选项 */}
           <div className="tool-panel">
@@ -286,19 +186,13 @@ export default function PersonCropPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               {detCard(personEnabled, setPersonEnabled, <PersonStanding style={{ width: 18, height: 18 }} />, t('personCrop.fullBody'), '#4ade80', 'rgba(74, 222, 128, ', 'person', <>
                 {confSlider(personConf, setPersonConf, '#4ade80')}
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(74, 222, 128, 0.06)', border: '1px solid rgba(74, 222, 128, 0.1)', marginTop: 8 }}>
-                  <Info style={{ width: 13, height: 13, color: '#4ade80', marginTop: 2, minWidth: 13 }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('personCrop.fullBodyTip')}</span>
-                </div>
+
               </>)}
 
               {detCard(upperEnabled, setUpperEnabled, <User style={{ width: 18, height: 18 }} />, t('personCrop.halfBody'), '#818cf8', 'rgba(129, 140, 248, ', 'halfbody', <>
                 {confSlider(upperConf, setUpperConf, '#818cf8')}
                 {tagInput(upperTag, setUpperTag, 'upper body')}
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(129, 140, 248, 0.06)', border: '1px solid rgba(129, 140, 248, 0.1)', marginTop: 8 }}>
-                  <Info style={{ width: 13, height: 13, color: '#818cf8', marginTop: 2, minWidth: 13 }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('personCrop.halfBodyTip')}</span>
-                </div>
+
               </>)}
 
               {detCard(headEnabled, setHeadEnabled, <CircleUser style={{ width: 18, height: 18 }} />, t('personCrop.headDet'), '#f59e0b', 'rgba(245, 158, 11, ', 'head', <>
@@ -308,15 +202,12 @@ export default function PersonCropPage() {
                     <span>{t('personCrop.scaleFactor')}</span>
                     <span style={{ fontFamily: 'monospace', color: '#f59e0b', fontSize: 'var(--font-size-sm)' }}>{headScale.toFixed(1)}x</span>
                   </label>
-                  <input type="range" min="1.0" max="3.0" step="0.1" value={headScale} onChange={e => setHeadScale(e.target.value === "" ? "" as any : Number(e.target.value))}
+                  <input type="range" min="1.0" max="3.0" step="0.1" value={headScale} onChange={e => setHeadScale(Number(e.target.value))}
                     style={{ width: '100%', accentColor: '#f59e0b' }} />
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}><span>1.0x {t('personCrop.headOnly')}</span><span>3.0x {t('personCrop.moreAround')}</span></div>
                 </div>
                 {tagInput(headTag, setHeadTag, 'head view')}
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(245, 158, 11, 0.06)', border: '1px solid rgba(245, 158, 11, 0.1)', marginTop: 8 }}>
-                  <Info style={{ width: 13, height: 13, color: '#f59e0b', marginTop: 2, minWidth: 13 }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('personCrop.headTip')}</span>
-                </div>
+
               </>)}
 
               {detCard(eyesEnabled, setEyesEnabled, <Eye style={{ width: 18, height: 18 }} />, t('personCrop.eyesDet'), '#f472b6', 'rgba(244, 114, 182, ', 'eyes', <>
@@ -326,15 +217,12 @@ export default function PersonCropPage() {
                     <span>{t('personCrop.scaleFactor')}</span>
                     <span style={{ fontFamily: 'monospace', color: '#f472b6', fontSize: 'var(--font-size-sm)' }}>{eyesScale.toFixed(1)}x</span>
                   </label>
-                  <input type="range" min="1.0" max="4.0" step="0.1" value={eyesScale} onChange={e => setEyesScale(e.target.value === "" ? "" as any : Number(e.target.value))}
+                  <input type="range" min="1.0" max="4.0" step="0.1" value={eyesScale} onChange={e => setEyesScale(Number(e.target.value))}
                     style={{ width: '100%', accentColor: '#f472b6' }} />
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}><span>1.0x {t('personCrop.eyesOnly')}</span><span>4.0x {t('personCrop.moreAround')}</span></div>
                 </div>
                 {tagInput(eyesTag, setEyesTag, 'eyes view')}
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(244, 114, 182, 0.06)', border: '1px solid rgba(244, 114, 182, 0.1)', marginTop: 8 }}>
-                  <Info style={{ width: 13, height: 13, color: '#f472b6', marginTop: 2, minWidth: 13 }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('personCrop.eyesTip')}</span>
-                </div>
+
               </>)}
             </div>
           </div>
@@ -347,23 +235,17 @@ export default function PersonCropPage() {
                 <Checkbox checked={keepOriginalTags} onChange={setKeepOriginalTags} color="#7c5cfc" size={16} />
                 <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-sm)' }}>{t('personCrop.keepTags')}</span>
               </label>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(124, 92, 252, 0.06)', border: '1px solid rgba(124, 92, 252, 0.1)' }}>
-                <Info style={{ width: 13, height: 13, color: '#7c5cfc', marginTop: 2, minWidth: 13 }} />
-                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-                  {t('personCrop.keepTagsTip')}
-                </span>
-              </div>
+
             </div>
           </div>
         </div>
 
         {/* 右侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <ProcessButton processing={processing} onStart={handleProcess}
-            disabled={!inputPath || !outputPath || !ms.allReady}
-            cancelCommand="cancel_person_crop" forceCancelCommand="force_cancel_person_crop" startText={t('personCrop.startCrop')} processingText={t('pages.processing')}
-            onCancelLog={addCancelLog} />
-          <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
+          <ProcessButton {...task.buttonProps} onStart={handleProcess}
+            disabled={!inputPath || !outputPath || !ms.allReady || downloading}
+            cancelCommand="cancel_person_crop" forceCancelCommand="force_cancel_person_crop" startText={t('personCrop.startCrop')} />
+          <ProgressLog {...task.progressLogProps} />
         </div>
       </div>
     </div>

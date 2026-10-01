@@ -2,23 +2,15 @@ use super::get_models_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// 输入数据格式
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[allow(clippy::upper_case_acronyms)]
-pub enum InputFormat {
-    /// [Batch, Height, Width, Channels] — TensorFlow 风格
-    #[default]
-    NHWC,
-    /// [Batch, Channels, Height, Width] — PyTorch 风格
-    NCHW,
-}
-
 /// 模型定义
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelDefinition {
     pub id: String,
     pub name: String,
-    pub description: String,
+    #[serde(default)]
+    pub requires_token: bool,
+    #[serde(default)]
+    pub heavy_gpu: bool,
     pub repo_id: String,
     pub model_filename: String,
     pub tags_filename: String,
@@ -26,8 +18,6 @@ pub struct ModelDefinition {
     pub extra_files: Vec<String>,
     pub input_size: u32,
     pub is_builtin: bool,
-    #[serde(default)]
-    pub input_format: InputFormat,
     #[serde(default = "default_preprocess_mode")]
     pub preprocess_mode: String,
     /// 输出语义：auto（旧启发式，NCHW 视为 logits）| probability（概率，多输出时取
@@ -51,7 +41,7 @@ fn default_output_kind() -> String {
     "auto".to_string()
 }
 
-fn basename(path: &str) -> String {
+pub(super) fn basename(path: &str) -> String {
     std::path::Path::new(path)
         .file_name()
         .unwrap_or_default()
@@ -74,111 +64,89 @@ impl ModelDefinition {
         }
         files
     }
+
+    /// 模型目录里所需文件是否齐全
+    pub fn is_downloaded(&self) -> bool {
+        let dir = super::get_model_dir(&self.id);
+        self.required_local_files()
+            .iter()
+            .all(|filename| dir.join(filename).exists())
+    }
+}
+
+fn builtin(
+    id: &str,
+    name: &str,
+    repo_id: &str,
+    tags_filename: &str,
+    input_size: u32,
+) -> ModelDefinition {
+    ModelDefinition {
+        id: id.into(),
+        name: name.into(),
+        requires_token: false,
+        heavy_gpu: false,
+        repo_id: repo_id.into(),
+        model_filename: "model.onnx".into(),
+        tags_filename: tags_filename.into(),
+        extra_files: vec![],
+        input_size,
+        is_builtin: true,
+        preprocess_mode: "wd".into(),
+        output_kind: "auto".into(),
+        general_threshold: None,
+        character_threshold: None,
+        category_thresholds: BTreeMap::new(),
+    }
 }
 
 /// 获取内置模型列表
 pub fn get_builtin_models() -> Vec<ModelDefinition> {
     vec![
+        builtin(
+            "wd-swinv2-tagger-v3",
+            "WD SwinV2 Tagger v3",
+            "SmilingWolf/wd-swinv2-tagger-v3",
+            "selected_tags.csv",
+            448,
+        ),
+        builtin(
+            "wd-vit-tagger-v3",
+            "WD ViT Tagger v3",
+            "SmilingWolf/wd-vit-tagger-v3",
+            "selected_tags.csv",
+            448,
+        ),
+        builtin(
+            "wd-convnext-tagger-v3",
+            "WD ConvNeXt Tagger v3",
+            "SmilingWolf/wd-convnext-tagger-v3",
+            "selected_tags.csv",
+            448,
+        ),
+        builtin(
+            "wd-eva02-large-tagger-v3",
+            "WD EVA02 Large Tagger v3",
+            "SmilingWolf/wd-eva02-large-tagger-v3",
+            "selected_tags.csv",
+            448,
+        ),
         ModelDefinition {
-            id: "wd-swinv2-tagger-v3".into(),
-            name: "WD SwinV2 Tagger v3".into(),
-            description: "基于 SwinV2 的高精度打标模型，推荐使用".into(),
-            repo_id: "SmilingWolf/wd-swinv2-tagger-v3".into(),
-            model_filename: "model.onnx".into(),
-            tags_filename: "selected_tags.csv".into(),
-            extra_files: vec![],
-            input_size: 448,
-            is_builtin: true,
-            input_format: InputFormat::NHWC,
-            preprocess_mode: "wd".into(),
-            output_kind: "auto".into(),
-            general_threshold: None,
-            character_threshold: None,
-            category_thresholds: BTreeMap::new(),
-        },
-        ModelDefinition {
-            id: "wd-vit-tagger-v3".into(),
-            name: "WD ViT Tagger v3".into(),
-            description: "基于 Vision Transformer 的打标模型".into(),
-            repo_id: "SmilingWolf/wd-vit-tagger-v3".into(),
-            model_filename: "model.onnx".into(),
-            tags_filename: "selected_tags.csv".into(),
-            extra_files: vec![],
-            input_size: 448,
-            is_builtin: true,
-            input_format: InputFormat::NHWC,
-            preprocess_mode: "wd".into(),
-            output_kind: "auto".into(),
-            general_threshold: None,
-            character_threshold: None,
-            category_thresholds: BTreeMap::new(),
-        },
-        ModelDefinition {
-            id: "wd-convnext-tagger-v3".into(),
-            name: "WD ConvNeXt Tagger v3".into(),
-            description: "基于 ConvNeXt 架构的打标模型，速度较快".into(),
-            repo_id: "SmilingWolf/wd-convnext-tagger-v3".into(),
-            model_filename: "model.onnx".into(),
-            tags_filename: "selected_tags.csv".into(),
-            extra_files: vec![],
-            input_size: 448,
-            is_builtin: true,
-            input_format: InputFormat::NHWC,
-            preprocess_mode: "wd".into(),
-            output_kind: "auto".into(),
-            general_threshold: None,
-            character_threshold: None,
-            category_thresholds: BTreeMap::new(),
-        },
-        ModelDefinition {
-            id: "wd-eva02-large-tagger-v3".into(),
-            name: "WD EVA02 Large Tagger v3".into(),
-            description: "基于 EVA02 Large 的高精度模型，体积较大".into(),
-            repo_id: "SmilingWolf/wd-eva02-large-tagger-v3".into(),
-            model_filename: "model.onnx".into(),
-            tags_filename: "selected_tags.csv".into(),
-            extra_files: vec![],
-            input_size: 448,
-            is_builtin: true,
-            input_format: InputFormat::NHWC,
-            preprocess_mode: "wd".into(),
-            output_kind: "auto".into(),
-            general_threshold: None,
-            character_threshold: None,
-            category_thresholds: BTreeMap::new(),
-        },
-        ModelDefinition {
-            id: "wd-eva02-tagger-2026-canary".into(),
-            name: "WD EVA02 Tagger 2026 Canary".into(),
-            description: "基于 EVA02 Large 的 2026 增量版，标签更新".into(),
-            repo_id: "Misaka41Z/wd-eva02-tagger-2026-canary-onnx-v2".into(),
-            model_filename: "model.onnx".into(),
-            tags_filename: "selected_tags.csv".into(),
-            extra_files: vec![],
-            input_size: 448,
-            is_builtin: true,
-            // 该 ONNX 是 timm 原始布局导出：NCHW + RGB 归一化，与 SmilingWolf
             // 该 ONNX 使用 timm 的 NCHW + RGB 归一化预处理；SmilingWolf 导出使用 NHWC + BGR。
-            input_format: InputFormat::NCHW,
             preprocess_mode: "wd_nchw".into(),
             output_kind: "probability".into(),
-            // 没有官方分类阈值时沿用工具箱默认值。
-            general_threshold: None,
-            character_threshold: None,
-            category_thresholds: BTreeMap::new(),
+            ..builtin(
+                "wd-eva02-tagger-2026-canary",
+                "WD EVA02 Tagger 2026 Canary",
+                "Misaka41Z/wd-eva02-tagger-2026-canary-onnx-v2",
+                "selected_tags.csv",
+                448,
+            )
         },
         ModelDefinition {
-            id: "pixai-tagger-v1.0".into(),
-            name: "PixAI Tagger v1.0".into(),
-            description: "PixAI 1.0，支持 30,877 个标签及风格识别".into(),
-            repo_id: "noaione/pixai-tagger-v1.0-onnx".into(),
-            model_filename: "model.onnx".into(),
-            tags_filename: "tags.json".into(),
             extra_files: vec!["model.onnx.data".into()],
-            input_size: 1008,
-            is_builtin: true,
-            input_format: InputFormat::NCHW,
             preprocess_mode: "pixai_v1".into(),
+            heavy_gpu: true,
             output_kind: "logits".into(),
             general_threshold: Some(0.17),
             character_threshold: Some(0.27),
@@ -193,75 +161,57 @@ pub fn get_builtin_models() -> Vec<ModelDefinition> {
             .into_iter()
             .map(|(name, threshold)| (name.into(), threshold))
             .collect(),
+            ..builtin(
+                "pixai-tagger-v1.0",
+                "PixAI Tagger v1.0",
+                "noaione/pixai-tagger-v1.0-onnx",
+                "tags.json",
+                1008,
+            )
         },
         ModelDefinition {
-            id: "pixai-tagger-v0.9".into(),
-            name: "PixAI Tagger v0.9".into(),
-            description: "PixAI 官方打标模型，角色标签覆盖较新".into(),
-            repo_id: "deepghs/pixai-tagger-v0.9-onnx".into(),
-            model_filename: "model.onnx".into(),
-            tags_filename: "selected_tags.csv".into(),
-            extra_files: vec![],
-            input_size: 448,
-            is_builtin: true,
-            input_format: InputFormat::NCHW,
             preprocess_mode: "pixai".into(),
             output_kind: "probability".into(),
             // 官方推荐阈值（deepghs thresholds.csv / README）：general 0.3, character 0.85
             general_threshold: Some(0.3),
             character_threshold: Some(0.85),
-            category_thresholds: BTreeMap::new(),
+            ..builtin(
+                "pixai-tagger-v0.9",
+                "PixAI Tagger v0.9",
+                "deepghs/pixai-tagger-v0.9-onnx",
+                "selected_tags.csv",
+                448,
+            )
         },
+        builtin(
+            "wd-v1-4-moat-tagger-v2",
+            "WD MOAT Tagger v2",
+            "SmilingWolf/wd-v1-4-moat-tagger-v2",
+            "selected_tags.csv",
+            448,
+        ),
         ModelDefinition {
-            id: "wd-v1-4-moat-tagger-v2".into(),
-            name: "WD MOAT Tagger v2".into(),
-            description: "基于 MOAT 架构的 v2 打标模型".into(),
-            repo_id: "SmilingWolf/wd-v1-4-moat-tagger-v2".into(),
-            model_filename: "model.onnx".into(),
-            tags_filename: "selected_tags.csv".into(),
-            extra_files: vec![],
-            input_size: 448,
-            is_builtin: true,
-            input_format: InputFormat::NHWC,
-            preprocess_mode: "wd".into(),
-            output_kind: "auto".into(),
-            general_threshold: None,
-            character_threshold: None,
-            category_thresholds: BTreeMap::new(),
-        },
-        ModelDefinition {
-            id: "cl-tagger-v2-01a".into(),
-            name: "CL Tagger v2.01a".into(),
-            description: "CL Tagger v2 最新预览版，需要 Hugging Face Token 下载".into(),
-            repo_id: "cella110n/cl_tagger_v2".into(),
             model_filename: "v2_01a/model.onnx".into(),
-            tags_filename: "v2_01a/model_vocabulary.json".into(),
+            requires_token: true,
             extra_files: vec!["v2_01a/model.onnx.data".into()],
-            input_size: 384,
-            is_builtin: true,
-            input_format: InputFormat::NCHW,
             preprocess_mode: "siglip2".into(),
-            output_kind: "auto".into(),
-            general_threshold: None,
-            character_threshold: None,
-            category_thresholds: BTreeMap::new(),
+            ..builtin(
+                "cl-tagger-v2-01a",
+                "CL Tagger v2.01a",
+                "cella110n/cl_tagger_v2",
+                "v2_01a/model_vocabulary.json",
+                384,
+            )
         },
         ModelDefinition {
-            id: "cl-tagger-1-02".into(),
-            name: "CL Tagger v1.02".into(),
-            description: "CL (CLIP-Like) 打标模型 v1.02，高精度 CLIP 架构".into(),
-            repo_id: "cella110n/cl_tagger".into(),
             model_filename: "cl_tagger_1_02/model.onnx".into(),
-            tags_filename: "cl_tagger_1_02/tag_mapping.json".into(),
-            extra_files: vec![],
-            input_size: 448,
-            is_builtin: true,
-            input_format: InputFormat::NHWC,
-            preprocess_mode: "wd".into(),
-            output_kind: "auto".into(),
-            general_threshold: None,
-            character_threshold: None,
-            category_thresholds: BTreeMap::new(),
+            ..builtin(
+                "cl-tagger-1-02",
+                "CL Tagger v1.02",
+                "cella110n/cl_tagger",
+                "cl_tagger_1_02/tag_mapping.json",
+                448,
+            )
         },
     ]
 }
@@ -300,7 +250,6 @@ pub fn add_local_model(
     model_path: String,
     tags_path: String,
     input_size: u32,
-    input_format: InputFormat,
 ) -> Result<String, String> {
     // 生成 ID
     let id = format!(
@@ -340,14 +289,14 @@ pub fn add_local_model(
     models.push(ModelDefinition {
         id: id.clone(),
         name,
-        description: "本地导入的自定义模型".into(),
+        requires_token: false,
+        heavy_gpu: false,
         repo_id: String::new(),
         model_filename: "model.onnx".into(),
         tags_filename: tags_dest_name,
         extra_files: vec![],
         input_size,
         is_builtin: false,
-        input_format,
         preprocess_mode: "auto".into(),
         output_kind: "auto".into(),
         general_threshold: None,
@@ -409,8 +358,38 @@ mod tests {
     fn old_model_configs_default_to_legacy_thresholds() {
         let mut value = serde_json::to_value(find_model("pixai-tagger-v0.9").unwrap()).unwrap();
         value.as_object_mut().unwrap().remove("category_thresholds");
+        value.as_object_mut().unwrap().remove("heavy_gpu");
+        value.as_object_mut().unwrap().remove("requires_token");
+        value["input_format"] = serde_json::json!("NCHW");
+        value["description"] = serde_json::json!("legacy description");
         let restored: ModelDefinition = serde_json::from_value(value).unwrap();
         assert!(restored.category_thresholds.is_empty());
+        assert!(!restored.heavy_gpu);
+        assert!(!restored.requires_token);
         assert_eq!(restored.character_threshold, Some(0.85));
+        let serialized = serde_json::to_value(restored).unwrap();
+        assert!(serialized.get("input_format").is_none());
+        assert!(serialized.get("description").is_none());
+    }
+
+    #[test]
+    fn builtin_capabilities_are_explicit() {
+        let models = get_builtin_models();
+        assert_eq!(
+            models
+                .iter()
+                .filter(|m| m.heavy_gpu)
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["pixai-tagger-v1.0"]
+        );
+        assert_eq!(
+            models
+                .iter()
+                .filter(|m| m.requires_token)
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["cl-tagger-v2-01a"]
+        );
     }
 }

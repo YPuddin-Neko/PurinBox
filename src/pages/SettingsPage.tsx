@@ -1,22 +1,25 @@
 import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, Terminal, RefreshCw as RefreshIcon, Database, Download, Upload, X, Play, KeyRound, FlaskConical } from 'lucide-react';
-import { useTheme } from '../components/ThemeProvider';
-import { useState, useEffect, useCallback } from 'react';
+import { useAppSettings } from '../components/ThemeProvider';
+import { useState, useEffect, useRef, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
-import { listen } from '../utils/tauriRuntime';
+import { hasTauriRuntime, listen } from '../utils/tauriRuntime';
 import { ConfirmModal, AlertModal } from '../components/Modal';
 import CustomSelect from '../components/CustomSelect';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { getAppVersion, packageAppVersion } from '../utils/appVersion';
-import { hasTauriRuntime } from '../utils/tauriRuntime';
+import { packageAppVersion, type UpdateCheckResult } from '../utils/appVersion';
 
 import SystemMonitor from '../components/SystemMonitor';
+import PageHeader from '../components/ui/PageHeader';
+import Switch from '../components/ui/Switch';
+import NumberInput from '../components/ui/NumberInput';
+import SegmentedTabs from '../components/ui/SegmentedTabs';
 
 // 密钥输入框组件（提升到模块顶层，避免每次重渲染重建组件类型导致输入丢焦点）
-const SecretInput = ({ value, onChange, placeholder, show, onToggle }: { value: string; onChange: (v: string) => void; placeholder: string; show: boolean; onToggle: () => void }) => (
+const SecretInput = ({ value, onChange, placeholder, show, onToggle, fontSize = 12 }: { value: string; onChange: (v: string) => void; placeholder?: string; show: boolean; onToggle: () => void; fontSize?: number }) => (
   <div style={{ position: 'relative' }}>
     <input className="form-input" type={show ? 'text' : 'password'} value={value} onChange={e => onChange(e.target.value)}
-      placeholder={placeholder} style={{ fontSize: 12, height: 32, paddingRight: 32 }} />
+      placeholder={placeholder} style={{ fontSize, height: 32, paddingRight: 32 }} />
     <button onClick={onToggle} style={{
       position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)',
       width: 24, height: 24, borderRadius: 4, border: 'none', background: 'none',
@@ -30,11 +33,68 @@ const SecretInput = ({ value, onChange, placeholder, show, onToggle }: { value: 
 
 const LinkButton = ({ href, text }: { href: string; text: string }) => (
   <a href={href} target="_blank" rel="noreferrer" style={{
-    fontSize: 10, color: '#60a5fa', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 3,
+    fontSize: 10, color: '#60a5fa', display: 'inline-flex', alignItems: 'center', gap: 3,
   }}>
     {text} <ExternalLink style={{ width: 9, height: 9 }} />
   </a>
 );
+
+interface CacheStats { total: number; db_size_bytes: number; zh_cn: number; ja: number; ko: number }
+interface PythonInfo { available: boolean; version: string; path: string }
+interface TagDbStats { total_tags: number; translated_tags: number; db_size_bytes: number; has_data: boolean; source_file: string; import_date: string }
+interface SaveMsg { text: string; ok: boolean }
+
+/** 设置项卡片的公共底色与边框 */
+const cardStyle: CSSProperties = { borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' };
+
+const formatTagDbVersion = (sourceFile: string) => sourceFile.match(/danbooru_(\d{4}-\d{2}-\d{2})/)?.[1] ?? sourceFile;
+
+/** 保存按钮的状态：保存中 + 结果提示，提示 3 秒后清除 */
+function useSaveFeedback() {
+  const { t } = useTranslation();
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<SaveMsg | null>(null);
+  const clearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (clearTimer.current) clearTimeout(clearTimer.current);
+  }, []);
+  const run = async (action: () => Promise<unknown>, successKey: string) => {
+    if (clearTimer.current) clearTimeout(clearTimer.current);
+    setSaving(true); setMsg(null);
+    try {
+      await action();
+      setMsg({ text: t(successKey), ok: true });
+    } catch (e: any) {
+      setMsg({ text: e?.message || String(e), ok: false });
+    } finally {
+      setSaving(false);
+      clearTimer.current = setTimeout(() => setMsg(null), 3000);
+    }
+  };
+  return { saving, msg, run };
+}
+
+const SaveButton = ({ saving, msg, disabled, onClick }: { saving: boolean; msg: SaveMsg | null; disabled: boolean; onClick: () => void }) => {
+  const { t } = useTranslation();
+  return (
+    <div style={{ display: 'flex', gap: 6 }}>
+      {msg && <span style={{ fontSize: 10, color: msg.ok ? '#4ade80' : '#f87171' }}>{msg.text}</span>}
+      <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }} onClick={onClick} disabled={saving || disabled}>
+        <Save style={{ width: 12, height: 12 }} /> {saving ? t('settings.proxySaving') : t('common.save')}
+      </button>
+    </div>
+  );
+};
+
+interface ProviderField {
+  /** localStorage 键，同时作为 React key */
+  storageKey: string;
+  label: string;
+  placeholder?: string;
+  value: string;
+  setValue: (v: string) => void;
+  secret?: { show: boolean; toggle: () => void };
+}
 
 export default function SettingsPage() {
   const { t } = useTranslation();
@@ -45,17 +105,17 @@ export default function SettingsPage() {
     setWorkflowEnabled,
     hybridTaggerEnabled,
     setHybridTaggerEnabled,
-  } = useTheme();
+  } = useAppSettings();
   const isDesktopRuntime = hasTauriRuntime();
   const desktopOnlyText = t('settings.desktopOnly');
 
   const intervalOptions = [
-    { value: 1000, label: t('settings.monitorSec', { n: 1 }), desc: t('settings.monitorRealtime') },
-    { value: 2000, label: t('settings.monitorSec', { n: 2 }), desc: t('settings.monitorFast') },
-    { value: 3000, label: t('settings.monitorSec', { n: 3 }), desc: t('settings.monitorDefault') },
-    { value: 5000, label: t('settings.monitorSec', { n: 5 }), desc: t('settings.monitorSave') },
-    { value: 10000, label: t('settings.monitorSec', { n: 10 }), desc: t('settings.monitorLow') },
-    { value: 0, label: t('settings.monitorOff'), desc: t('settings.monitorNone') },
+    { value: 1000, label: t('settings.monitorSec', { n: 1 }) },
+    { value: 2000, label: t('settings.monitorSec', { n: 2 }) },
+    { value: 3000, label: t('settings.monitorSec', { n: 3 }) },
+    { value: 5000, label: t('settings.monitorSec', { n: 5 }) },
+    { value: 10000, label: t('settings.monitorSec', { n: 10 }) },
+    { value: 0, label: t('settings.monitorOff') },
   ];
 
   const providerOptions = [
@@ -80,25 +140,25 @@ export default function SettingsPage() {
   const [bingRegion, setBingRegion] = useState(() => localStorage.getItem('bing_region') || '');
   const [showBingKey, setShowBingKey] = useState(false);
 
-  const [cacheStats, setCacheStats] = useState<{ total: number; db_size_bytes: number; zh_cn: number; ja: number; ko: number } | null>(null);
+  const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
   const [clearing, setClearing] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [cachePath, setCachePath] = useState<string>('');
-  const [appVersion, setAppVersion] = useState(packageAppVersion);
+  const appVersion = packageAppVersion;
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [resetPythonConfirmOpen, setResetPythonConfirmOpen] = useState(false);
   const [resettingPython, setResettingPython] = useState(false);
   const [alertMsg, setAlertMsg] = useState('');
-  const [pythonInfo, setPythonInfo] = useState<{ available: boolean; version: string; path: string } | null>(null);
+  const [pythonInfo, setPythonInfo] = useState<PythonInfo | null>(null);
 
   // 更新检查
   const [updateChecking, setUpdateChecking] = useState(false);
-  const [updateResult, setUpdateResult] = useState<{ has_update: boolean; latest_version: string; release_url: string } | null>(null);
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
   const [updateError, setUpdateError] = useState('');
 
   // 标签数据库
-  const [tagDbStats, setTagDbStats] = useState<{ total_tags: number; translated_tags: number; db_size_bytes: number; has_data: boolean; source_file: string; import_date: string } | null>(null);
+  const [tagDbStats, setTagDbStats] = useState<TagDbStats | null>(null);
   const [tagDbDownloading, setTagDbDownloading] = useState(false);
   const [tagDbTranslating, setTagDbTranslating] = useState(false);
   const [translateHover, setTranslateHover] = useState(false);
@@ -110,31 +170,56 @@ export default function SettingsPage() {
   // 代理设置
   const [proxyEnabled, setProxyEnabled] = useState(false);
   const [llmProxy, setLlmProxy] = useState(false);
-  const [proxyType, setProxyType] = useState('http');
+  const [proxyType, setProxyType] = useState<'http' | 'socks5'>('http');
   const [proxyHost, setProxyHost] = useState('127.0.0.1');
   const [proxyPort, setProxyPort] = useState(7890);
   const [proxyUser, setProxyUser] = useState('');
   const [proxyPass, setProxyPass] = useState('');
   const [showProxyPass, setShowProxyPass] = useState(false);
-  const [proxySaving, setProxySaving] = useState(false);
-  const [proxySaveMsg, setProxySaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const proxySave = useSaveFeedback();
 
   // Hugging Face
   const [huggingFaceToken, setHuggingFaceToken] = useState('');
   const [showHuggingFaceToken, setShowHuggingFaceToken] = useState(false);
-  const [huggingFaceSaving, setHuggingFaceSaving] = useState(false);
-  const [huggingFaceSaveMsg, setHuggingFaceSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const huggingFaceSave = useSaveFeedback();
 
   const toggleTranslate = (val: boolean) => { setTranslateEnabled(val); localStorage.setItem('translate_enabled', String(val)); };
   const changeProvider = (val: string) => { setProvider(val); localStorage.setItem('translate_provider', val); };
 
   const saveLS = (key: string, val: string, setter: (v: string) => void) => { setter(val); localStorage.setItem(key, val); };
 
+  const providerForms: Record<string, { name: string; applyUrl: string; fields: ProviderField[] }> = {
+    baidu: {
+      name: t('settings.providerBaidu'),
+      applyUrl: 'https://fanyi-api.baidu.com',
+      fields: [
+        { storageKey: 'baidu_appid', label: t('settings.baiduAppId'), value: baiduAppid, setValue: setBaiduAppid },
+        { storageKey: 'baidu_key', label: t('settings.baiduKey'), value: baiduKey, setValue: setBaiduKey,
+          secret: { show: showBaiduKey, toggle: () => setShowBaiduKey(!showBaiduKey) } },
+      ],
+    },
+    youdao: {
+      name: t('settings.providerYoudao'),
+      applyUrl: 'https://ai.youdao.com',
+      fields: [
+        { storageKey: 'youdao_app_key', label: t('settings.youdaoAppKey'), value: youdaoAppKey, setValue: setYoudaoAppKey },
+        { storageKey: 'youdao_app_secret', label: t('settings.youdaoAppSecret'), value: youdaoAppSecret, setValue: setYoudaoAppSecret,
+          secret: { show: showYoudaoKey, toggle: () => setShowYoudaoKey(!showYoudaoKey) } },
+      ],
+    },
+    bing: {
+      name: t('settings.providerBing'),
+      applyUrl: 'https://portal.azure.com/#create/Microsoft.CognitiveServicesTextTranslation',
+      fields: [
+        { storageKey: 'bing_key', label: t('settings.bingKey'), placeholder: t('settings.bingKeyPlaceholder'), value: bingKey, setValue: setBingKey,
+          secret: { show: showBingKey, toggle: () => setShowBingKey(!showBingKey) } },
+        { storageKey: 'bing_region', label: t('settings.bingRegion'), placeholder: t('settings.bingRegionPlaceholder'), value: bingRegion, setValue: setBingRegion },
+      ],
+    },
+  };
+  const providerForm = providerForms[provider];
+
   const handleTestTranslation = async () => {
-    if (!isDesktopRuntime) {
-      setTestResult({ ok: false, msg: desktopOnlyText });
-      return;
-    }
     setTesting(true); setTestResult(null);
     try {
       const result = await invoke<string>('test_translation', {
@@ -155,35 +240,40 @@ export default function SettingsPage() {
   };
 
   const loadCacheStats = async () => {
-    if (!hasTauriRuntime()) return;
-    try { setCacheStats(await invoke<{ total: number; db_size_bytes: number; zh_cn: number; ja: number; ko: number }>('get_translation_cache_stats')); } catch (e) { console.error(e); }
+    try { setCacheStats(await invoke<CacheStats>('get_translation_cache_stats')); } catch (e) { console.error(e); }
   };
 
-  const handleClearCache = async () => {
-    setClearConfirmOpen(true);
-  };
   const doClearCache = async () => {
     setClearing(true);
     try { await invoke('clear_translation_cache'); await loadCacheStats(); } catch (e) { console.error(e); } finally { setClearing(false); }
   };
 
   const loadPythonInfo = async () => {
-    if (!hasTauriRuntime()) return;
-    try { setPythonInfo(await invoke<{ available: boolean; version: string; path: string }>('get_python_env_info')); } catch { setPythonInfo(null); }
+    try { setPythonInfo(await invoke<PythonInfo>('get_python_env_info')); } catch { setPythonInfo(null); }
   };
 
-  const loadTagDbStats = useCallback(async () => {
-    if (!hasTauriRuntime()) return;
+  const runPythonAction = async (command: 'deploy_python_env' | 'reset_python_env', successKey: string, failKey: string) => {
+    setResettingPython(true);
     try {
-      const targetLang = localStorage.getItem('translate_target_lang') || 'zh-CN';
-      setTagDbStats(await invoke<{ total_tags: number; translated_tags: number; db_size_bytes: number; has_data: boolean; source_file: string; import_date: string }>('get_tag_db_stats', { targetLang }));
+      await invoke(command);
+      setAlertMsg(t(successKey));
+      loadPythonInfo();
+    } catch (e) {
+      setAlertMsg(`${t(failKey)}: ${e}`);
+    } finally {
+      setResettingPython(false);
+    }
+  };
+
+  // 目标语言从 localStorage 读：挂载时注册的 tag-db-progress 监听也会调用这里，读 state 会拿到旧值
+  const loadTagDbStats = async () => {
+    try {
+      const lang = localStorage.getItem('translate_target_lang') || 'zh-CN';
+      setTagDbStats(await invoke<TagDbStats>('get_tag_db_stats', { targetLang: lang }));
     } catch (e) { console.error(e); }
-  // Empty deps is intentional: localStorage is read fresh each call, no React state dependency needed
-  }, []);
+  };
 
   const handleDownloadTagDb = async () => {
-    if (!isDesktopRuntime) return;
-    // 如果已有数据，先检查是否有新版本
     if (tagDbStats?.has_data) {
       setTagDbDownloading(true); setTagDbProgress(t('settings.checkingUpdate'));
       try {
@@ -208,19 +298,16 @@ export default function SettingsPage() {
   };
 
   const handleTranslateTagDb = async () => {
-    if (!isDesktopRuntime) return;
     setTagDbTranslating(true); setTagDbProgress(t('settings.translating'));
     try { await invoke('translate_tag_db', { targetLang: localStorage.getItem('translate_target_lang') || 'zh-CN' }); await loadTagDbStats(); } catch (e: any) { setTagDbProgress(`${t('common.failed')}: ${e?.message || e}`); }
     finally { setTagDbTranslating(false); }
   };
 
   const handleClearTagDb = async () => {
-    if (!isDesktopRuntime) return;
     try { await invoke('clear_tag_db'); await loadTagDbStats(); setTagDbProgress(''); } catch (e: any) { console.error(e); }
   };
 
   useEffect(() => {
-    getAppVersion().then(setAppVersion);
 
     if (!hasTauriRuntime()) return;
 
@@ -250,69 +337,49 @@ export default function SettingsPage() {
   }, []);
 
   const loadProxySettings = async () => {
-    if (!hasTauriRuntime()) return;
     try {
       const [enabled, llm, ptype, host, port, user, pass] = await invoke<[boolean, boolean, string, string, number, string, string]>('load_proxy_config');
-      setProxyEnabled(enabled); setLlmProxy(llm); setProxyType(ptype); setProxyHost(host); setProxyPort(port); setProxyUser(user); setProxyPass(pass);
+      setProxyEnabled(enabled); setLlmProxy(llm); setProxyType(ptype === 'socks5' ? 'socks5' : 'http'); setProxyHost(host); setProxyPort(port); setProxyUser(user); setProxyPass(pass);
     } catch {}
   };
 
-  const handleSaveProxy = async () => {
-    if (!isDesktopRuntime) return;
-    setProxySaving(true); setProxySaveMsg(null);
-    // 提交前规范端口参数。
+  const handleSaveProxy = () => {
     const port = Number.isFinite(proxyPort) && proxyPort > 0 ? Math.floor(proxyPort) : 0;
     if (port !== proxyPort) setProxyPort(port);
-    try {
-      await invoke('save_proxy_config', { enabled: proxyEnabled, llmProxy, proxyType, host: proxyHost, port, username: proxyUser, password: proxyPass });
-      setProxySaveMsg({ text: t('settings.proxySaved'), ok: true });
-    } catch (e: any) { setProxySaveMsg({ text: e?.message || String(e), ok: false }); }
-    finally { setProxySaving(false); setTimeout(() => setProxySaveMsg(null), 3000); }
+    proxySave.run(
+      () => invoke('save_proxy_config', { enabled: proxyEnabled, llmProxy, proxyType, host: proxyHost, port, username: proxyUser, password: proxyPass }),
+      'settings.proxySaved',
+    );
   };
 
   const loadHuggingFaceSettings = async () => {
-    if (!hasTauriRuntime()) return;
     try {
       setHuggingFaceToken(await invoke<string>('load_huggingface_config'));
     } catch {}
   };
 
-  const handleSaveHuggingFace = async () => {
-    if (!isDesktopRuntime) return;
-    setHuggingFaceSaving(true); setHuggingFaceSaveMsg(null);
-    try {
-      await invoke('save_huggingface_config', { token: huggingFaceToken });
-      setHuggingFaceSaveMsg({ text: t('settings.huggingFaceSaved'), ok: true });
-    } catch (e: any) {
-      setHuggingFaceSaveMsg({ text: e?.message || String(e), ok: false });
-    } finally {
-      setHuggingFaceSaving(false);
-      setTimeout(() => setHuggingFaceSaveMsg(null), 3000);
-    }
+  const handleSaveHuggingFace = () => {
+    huggingFaceSave.run(() => invoke('save_huggingface_config', { token: huggingFaceToken }), 'settings.huggingFaceSaved');
   };
 
   const loadCachePath = async () => {
-    if (!hasTauriRuntime()) return;
     try { setCachePath(await invoke<string>('get_cache_path')); } catch (e) { console.error(e); }
   };
 
   const handleChangeCachePath = async () => {
-    if (!isDesktopRuntime) return;
     const selected = await open({ directory: true, title: t('settings.selectCacheDir') });
     if (selected && typeof selected === 'string') {
       try {
-        await invoke('set_cache_path', { path: selected });
-        setCachePath(selected);
+        setCachePath(await invoke<string>('set_cache_path', { path: selected }));
         await loadCacheStats();
       } catch (e: any) { setAlertMsg(`${t('settings.setCachePathFailed')}: ${e?.message || e}`); }
     }
   };
 
   const handleResetCachePath = async () => {
-    if (!isDesktopRuntime) return;
     try {
-      await invoke<string>('set_cache_path', { path: '' });
-      setCachePath(await invoke<string>('get_cache_path'));
+      // 传空串即重置为默认目录，返回值就是重置后的目录
+      setCachePath(await invoke<string>('set_cache_path', { path: '' }));
       await loadCacheStats();
     } catch (e: any) { setAlertMsg(`${t('settings.resetFailed')}: ${e?.message || e}`); }
   };
@@ -327,16 +394,9 @@ export default function SettingsPage() {
     <>
     <div className="page" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <div style={{ width: '100%', maxWidth: 640 }}>
-        <div className="page-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-            <Settings style={{ width: 28, height: 28, color: 'var(--color-text-secondary)' }} />
-            <h1 className="page-title">{t('settings.title')}</h1>
-          </div>
-          <p className="page-subtitle">{t('settings.aboutDesc')}</p>
-        </div>
+        <PageHeader icon={Settings} color="var(--color-accent-primary)" title={t('settings.title')} subtitle={t('settings.aboutDesc')} />
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          {/* System Monitor - 仅在监控开启时显示 */}
           {monitorInterval > 0 && isDesktopRuntime && <SystemMonitor />}
 
 
@@ -364,7 +424,6 @@ export default function SettingsPage() {
                     }}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{opt.label}</span>
-                        <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{opt.desc}</span>
                       </div>
                       {active && (
                         <div style={{ width: 16, height: 16, borderRadius: '50%', background: opt.value === 0 ? '#f87171' : 'var(--color-accent-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -392,53 +451,25 @@ export default function SettingsPage() {
                   enabled: workflowEnabled,
                   setEnabled: setWorkflowEnabled,
                   title: t('settings.workflowToggle'),
-                  description: t('settings.workflowToggleDesc'),
                 },
                 {
                   enabled: hybridTaggerEnabled,
                   setEnabled: setHybridTaggerEnabled,
                   title: t('settings.hybridTaggerToggle'),
-                  description: t('settings.hybridTaggerToggleDesc'),
                 },
               ].map((feature) => (
                 <div key={feature.title} style={{
+                  ...cardStyle,
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
-                  padding: '10px 12px', borderRadius: 'var(--radius-sm)',
-                  border: '1px solid var(--color-border)', background: 'var(--color-bg-input)',
+                  padding: '10px 12px',
                 }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-                      {feature.title}
-                      <span style={{
-                        marginLeft: 8, padding: '1px 5px', borderRadius: 3,
-                        fontSize: 9, fontWeight: 700, letterSpacing: '0.02em',
-                        color: '#fbbf24', border: '1px solid rgba(251, 191, 36, 0.45)',
-                        verticalAlign: 'middle',
-                      }}>
-                        Beta
-                      </span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                    {feature.title}
+                    <span className="beta-badge">
+                      Beta
                     </span>
-                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
-                      {feature.description}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={feature.enabled}
-                    onClick={() => feature.setEnabled(!feature.enabled)}
-                    style={{
-                      width: 36, height: 20, borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s',
-                      background: feature.enabled ? 'var(--color-accent-primary)' : 'var(--color-border)',
-                      position: 'relative', flexShrink: 0, border: 'none', padding: 0,
-                    }}
-                  >
-                    <span style={{
-                      width: 14, height: 14, borderRadius: '50%', background: '#fff',
-                      position: 'absolute', top: 3,
-                      left: feature.enabled ? 19 : 3, transition: 'left 0.2s',
-                    }} />
-                  </button>
+                  </span>
+                  <Switch checked={feature.enabled} onChange={feature.setEnabled} aria-label={feature.title} />
                 </div>
               ))}
             </div>
@@ -451,62 +482,28 @@ export default function SettingsPage() {
                 <Globe style={{ width: 16, height: 16, color: '#f59e0b' }} />
                 <span className="tool-panel-title">{t('settings.proxy')}</span>
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {proxySaveMsg && <span style={{ fontSize: 10, color: proxySaveMsg.ok ? '#4ade80' : '#f87171' }}>{proxySaveMsg.text}</span>}
-                <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }} onClick={handleSaveProxy} disabled={proxySaving || !isDesktopRuntime}>
-                  <Save style={{ width: 12, height: 12 }} /> {proxySaving ? t('settings.proxySaving') : t('common.save')}
-                </button>
-              </div>
+              <SaveButton saving={proxySave.saving} msg={proxySave.msg} disabled={!isDesktopRuntime} onClick={handleSaveProxy} />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               {/* 启用开关 + LLM 开关 + 代理类型 */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px' }}>
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.proxyEnabled')}</div>
-                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>{t('settings.proxy')}</div>
                   </div>
-                  <div onClick={() => setProxyEnabled(!proxyEnabled)} style={{
-                    width: 36, height: 20, borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s',
-                    background: proxyEnabled ? 'var(--color-accent-primary)' : 'var(--color-border)',
-                    position: 'relative',
-                  }}>
-                    <div style={{
-                      width: 14, height: 14, borderRadius: '50%', background: '#fff',
-                      position: 'absolute', top: 3,
-                      left: proxyEnabled ? 19 : 3, transition: 'left 0.2s',
-                    }} />
-                  </div>
+                  <Switch checked={proxyEnabled} onChange={setProxyEnabled} aria-label={t('settings.proxyEnabled')} />
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px' }}>
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.proxyLlm')}</div>
-                    <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>{t('settings.proxyLlmDesc')}</div>
                   </div>
-                  <div onClick={() => setLlmProxy(!llmProxy)} style={{
-                    width: 36, height: 20, borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s',
-                    background: llmProxy ? 'var(--color-accent-primary)' : 'var(--color-border)',
-                    position: 'relative',
-                  }}>
-                    <div style={{
-                      width: 14, height: 14, borderRadius: '50%', background: '#fff',
-                      position: 'absolute', top: 3,
-                      left: llmProxy ? 19 : 3, transition: 'left 0.2s',
-                    }} />
-                  </div>
+                  <Switch checked={llmProxy} onChange={setLlmProxy} aria-label={t('settings.proxyLlm')} />
                 </div>
-                <div style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                <div style={{ ...cardStyle, padding: '10px 12px' }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 5 }}>{t('settings.proxyType')}</div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    {(['http', 'socks5'] as const).map(t => (
-                      <button key={t} onClick={() => setProxyType(t)} style={{
-                        flex: 1, padding: '4px 0', borderRadius: 'var(--radius-sm)', fontSize: 11, fontWeight: 600, cursor: 'pointer',
-                        border: `1.5px solid ${proxyType === t ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                        background: proxyType === t ? 'rgba(124,92,252,0.08)' : 'transparent',
-                        color: proxyType === t ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
-                      }}>{t.toUpperCase()}</button>
-                    ))}
-                  </div>
+                  <SegmentedTabs className="ui-seg-compact" value={proxyType} onChange={setProxyType} tabs={[
+                    { id: 'http', label: 'HTTP' }, { id: 'socks5', label: 'SOCKS5' },
+                  ]} />
                 </div>
               </div>
 
@@ -518,7 +515,7 @@ export default function SettingsPage() {
                 </div>
                 <div style={{ width: 90 }}>
                   <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('settings.proxyPort')}</label>
-                  <input className="form-input" type="number" placeholder="7890" value={proxyPort} onChange={e => setProxyPort(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setProxyPort(0); }} style={{ height: 32 }} />
+                  <NumberInput min={0} max={65535} integer placeholder="7890" value={proxyPort} onChange={setProxyPort} style={{ height: 32 }} />
                 </div>
               </div>
 
@@ -526,22 +523,14 @@ export default function SettingsPage() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <div>
                   <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('settings.proxyUserOptional')}</label>
-                  <input className="form-input" placeholder={t('settings.proxyNoAuthHint')} value={proxyUser} onChange={e => setProxyUser(e.target.value)} style={{ height: 32 }} />
+                  <input className="form-input" placeholder="" value={proxyUser} onChange={e => setProxyUser(e.target.value)} style={{ height: 32 }} />
                 </div>
                 <div>
                   <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('settings.proxyPassOptional')}</label>
-                  <div style={{ position: 'relative' }}>
-                    <input className="form-input" type={showProxyPass ? 'text' : 'password'} placeholder={t('settings.proxyNoAuthHint')} value={proxyPass} onChange={e => setProxyPass(e.target.value)} style={{ paddingRight: 32, height: 32 }} />
-                    <button onClick={() => setShowProxyPass(!showProxyPass)} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', display: 'flex', padding: 2 }}>
-                      {showProxyPass ? <EyeOff style={{ width: 13, height: 13 }} /> : <Eye style={{ width: 13, height: 13 }} />}
-                    </button>
-                  </div>
+                  <SecretInput fontSize={13} value={proxyPass} onChange={setProxyPass} placeholder=""
+                    show={showProxyPass} onToggle={() => setShowProxyPass(!showProxyPass)} />
                 </div>
               </div>
-
-              <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.6, margin: 0 }}>
-                {t('settings.proxyDesc')}
-              </p>
             </div>
           </div>
 
@@ -552,15 +541,10 @@ export default function SettingsPage() {
                 <KeyRound style={{ width: 16, height: 16, color: '#f97316' }} />
                 <span className="tool-panel-title">{t('settings.tokenSettings')}</span>
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {huggingFaceSaveMsg && <span style={{ fontSize: 10, color: huggingFaceSaveMsg.ok ? '#4ade80' : '#f87171' }}>{huggingFaceSaveMsg.text}</span>}
-                <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }} onClick={handleSaveHuggingFace} disabled={huggingFaceSaving || !isDesktopRuntime}>
-                  <Save style={{ width: 12, height: 12 }} /> {huggingFaceSaving ? t('settings.proxySaving') : t('common.save')}
-                </button>
-              </div>
+              <SaveButton saving={huggingFaceSave.saving} msg={huggingFaceSave.msg} disabled={!isDesktopRuntime} onClick={handleSaveHuggingFace} />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div style={{ padding: '12px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ ...cardStyle, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.huggingFace')}</div>
                 </div>
@@ -592,25 +576,13 @@ export default function SettingsPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               {/* 开关 + 供应商 同一行 */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '12px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '12px 14px' }}>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.enableTranslation')}</div>
-                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>{t('settings.enableTranslationDesc')}</div>
                   </div>
-                  <div onClick={() => toggleTranslate(!translateEnabled)} style={{
-                    width: 40, height: 22, borderRadius: 11, cursor: 'pointer', transition: 'all 0.2s',
-                    background: translateEnabled ? 'var(--color-accent-primary)' : 'var(--color-bg-tertiary, rgba(255,255,255,0.06))',
-                    border: `1px solid ${translateEnabled ? 'var(--color-accent-primary)' : 'var(--color-border)'}`,
-                    position: 'relative', flexShrink: 0,
-                  }}>
-                    <div style={{
-                      width: 16, height: 16, borderRadius: '50%', background: '#fff',
-                      position: 'absolute', top: 2, left: translateEnabled ? 21 : 2,
-                      transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-                    }} />
-                  </div>
+                  <Switch checked={translateEnabled} onChange={toggleTranslate} aria-label={t('settings.enableTranslation')} />
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6, padding: '12px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+                <div style={{ ...cardStyle, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6, padding: '12px 14px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.translationProvider')}</label>
                     <button onClick={handleTestTranslation} disabled={testing || !isDesktopRuntime}
@@ -624,11 +596,10 @@ export default function SettingsPage() {
               </div>
 
               {/* 目标语言 */}
-              <div style={{ padding: '12px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+              <div style={{ ...cardStyle, padding: '12px 14px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.targetLanguage')}</div>
-                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>{t('settings.targetLanguageDesc')}</div>
                   </div>
                   <CustomSelect value={targetLang}
                     onChange={v => { setTargetLang(v); localStorage.setItem('translate_target_lang', v); if (isDesktopRuntime) loadTagDbStats(); }}
@@ -644,65 +615,29 @@ export default function SettingsPage() {
               </div>
 
               {/* 供应商配置 */}
-              {provider === 'baidu' && (
-                <div style={{ padding: '14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {providerForm && (
+                <div key={provider} style={{ ...cardStyle, padding: '14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {t('settings.providerBaidu')} API
-                    <LinkButton href="https://fanyi-api.baidu.com" text={t('settings.applyLink')} />
+                    {providerForm.name} API
+                    <LinkButton href={providerForm.applyUrl} text={t('settings.applyLink')} />
                   </div>
-                  <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.baiduAppId')}</label>
-                    <input className="form-input" value={baiduAppid} onChange={e => saveLS('baidu_appid', e.target.value, setBaiduAppid)}
-                      placeholder={t('settings.baiduAppIdPlaceholder')} style={{ fontSize: 12, height: 32 }} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.baiduKey')}</label>
-                    <SecretInput value={baiduKey} onChange={v => saveLS('baidu_key', v, setBaiduKey)}
-                      placeholder={t('settings.baiduKeyPlaceholder')} show={showBaiduKey} onToggle={() => setShowBaiduKey(!showBaiduKey)} />
-                  </div>
-                </div>
-              )}
-
-              {provider === 'youdao' && (
-                <div style={{ padding: '14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {t('settings.providerYoudao')} API
-                    <LinkButton href="https://ai.youdao.com" text={t('settings.applyLink')} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.youdaoAppKey')}</label>
-                    <input className="form-input" value={youdaoAppKey} onChange={e => saveLS('youdao_app_key', e.target.value, setYoudaoAppKey)}
-                      placeholder={t('settings.youdaoAppKeyPlaceholder')} style={{ fontSize: 12, height: 32 }} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.youdaoAppSecret')}</label>
-                    <SecretInput value={youdaoAppSecret} onChange={v => saveLS('youdao_app_secret', v, setYoudaoAppSecret)}
-                      placeholder={t('settings.youdaoAppSecretPlaceholder')} show={showYoudaoKey} onToggle={() => setShowYoudaoKey(!showYoudaoKey)} />
-                  </div>
-                </div>
-              )}
-
-              {provider === 'bing' && (
-                <div style={{ padding: '14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {t('settings.providerBing')} API
-                    <LinkButton href="https://portal.azure.com/#create/Microsoft.CognitiveServicesTextTranslation" text={t('settings.applyLink')} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.bingKey')}</label>
-                    <SecretInput value={bingKey} onChange={v => saveLS('bing_key', v, setBingKey)}
-                      placeholder={t('settings.bingKeyPlaceholder')} show={showBingKey} onToggle={() => setShowBingKey(!showBingKey)} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{t('settings.bingRegion')}</label>
-                    <input className="form-input" value={bingRegion} onChange={e => saveLS('bing_region', e.target.value, setBingRegion)}
-                      placeholder={t('settings.bingRegionPlaceholder')} style={{ fontSize: 12, height: 32 }} />
-                  </div>
+                  {providerForm.fields.map(f => (
+                    <div key={f.storageKey}>
+                      <label style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 3, display: 'block' }}>{f.label}</label>
+                      {f.secret ? (
+                        <SecretInput value={f.value} onChange={v => saveLS(f.storageKey, v, f.setValue)}
+                          placeholder={f.placeholder} show={f.secret.show} onToggle={f.secret.toggle} />
+                      ) : (
+                        <input className="form-input" value={f.value} onChange={e => saveLS(f.storageKey, e.target.value, f.setValue)}
+                          placeholder={f.placeholder} style={{ fontSize: 12, height: 32 }} />
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
 
               {/* 缓存路径 */}
-              <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ ...cardStyle, padding: '10px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.cachePath')}</div>
                   <div style={{ display: 'flex', gap: 4 }}>
@@ -721,7 +656,7 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+              <div style={{ ...cardStyle, padding: '10px 14px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.translationCache')}</div>
@@ -732,33 +667,31 @@ export default function SettingsPage() {
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button className="btn btn-ghost btn-sm" title={t('settings.exportCsv')} disabled={!isDesktopRuntime} onClick={async () => {
                       try {
-                        // save is statically imported at top
                         const path = await save({ title: t('settings.exportCsv'), defaultPath: 'translations.csv', filters: [{ name: 'CSV', extensions: ['csv'] }] });
                         if (path) {
                           const count = await invoke<number>('export_translation_csv', { path });
-                          alert(t('settings.exportSuccess', { count }));
+                          setAlertMsg(t('settings.exportSuccess', { count }));
                         }
-                      } catch (e: any) { alert(t('settings.exportFailed') + ': ' + e); }
+                      } catch (e: any) { setAlertMsg(t('settings.exportFailed') + ': ' + e); }
                     }} style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3 }}>
                       <Download style={{ width: 11, height: 11 }} /> {t('common.export')}
                     </button>
                     <button className="btn btn-ghost btn-sm" title={t('settings.importCsv')} disabled={!isDesktopRuntime} onClick={async () => {
                       try {
-                        const dialogOpen = open;
-                        const path = await dialogOpen({ title: t('settings.importCsv'), filters: [{ name: 'CSV', extensions: ['csv'] }] });
+                        const path = await open({ title: t('settings.importCsv'), filters: [{ name: 'CSV', extensions: ['csv'] }] });
                         if (path) {
                           const [imported, skipped, errors] = await invoke<[number, number, string]>('import_translation_csv', { path });
                           let msg = t('settings.importSuccess', { imported });
                           if (skipped > 0) msg += t('settings.importSkipped', { skipped });
                           if (errors) msg += `\n\n${errors}`;
-                          alert(msg);
+                          setAlertMsg(msg);
                           loadCacheStats();
                         }
-                      } catch (e: any) { alert(t('settings.importFailed') + ': ' + e); }
+                      } catch (e: any) { setAlertMsg(t('settings.importFailed') + ': ' + e); }
                     }} style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3 }}>
                       <Upload style={{ width: 11, height: 11 }} /> {t('common.import')}
                     </button>
-                    <button className="btn btn-secondary" onClick={handleClearCache} disabled={clearing || !cacheStats || cacheStats.total === 0 || !isDesktopRuntime}
+                    <button className="btn btn-secondary" onClick={() => setClearConfirmOpen(true)} disabled={clearing || !cacheStats || cacheStats.total === 0 || !isDesktopRuntime}
                       style={{ fontSize: 10, height: 26, padding: '0 8px', display: 'flex', alignItems: 'center', gap: 3, color: '#f87171' }}>
                       <Trash2 style={{ width: 11, height: 11 }} />
                       {clearing ? t('settings.clearing') : t('settings.clearCache')}
@@ -792,9 +725,9 @@ export default function SettingsPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
-                {t('settings.tagDatabaseDesc')}{t('settings.tagDbSource')}: <a href="https://github.com/DraconicDragon/dbr-e621-lists-archive" target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent-primary)', textDecoration: 'none' }}>DraconicDragon/dbr-e621-lists-archive</a>
+                {t('settings.tagDbSource')}: <a href="https://github.com/DraconicDragon/dbr-e621-lists-archive" target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent-primary)' }}>DraconicDragon/dbr-e621-lists-archive</a>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+              <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.tagData')}</div>
                   <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
@@ -804,18 +737,12 @@ export default function SettingsPage() {
                   </div>
                   {tagDbStats?.has_data && tagDbStats.source_file && (
                     <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span>{t('settings.versionLabel')}: {(() => {
-                        const m = tagDbStats.source_file.match(/danbooru_(\d{4}-\d{2}-\d{2})/);
-                        return m ? m[1] : tagDbStats.source_file;
-                      })()}</span>
+                      <span>{t('settings.versionLabel')}: {formatTagDbVersion(tagDbStats.source_file)}</span>
                       {tagDbStats.import_date && (
                         <span>· {t('settings.importedAt')} {new Date(parseInt(tagDbStats.import_date) * 1000).toLocaleDateString()}</span>
                       )}
                       {tagDbLatest && tagDbLatest !== tagDbStats.source_file && (
-                        <span style={{ color: '#fbbf24', fontWeight: 600 }}>· {t('settings.newVersionAvailable')}: {(() => {
-                          const m = tagDbLatest.match(/danbooru_(\d{4}-\d{2}-\d{2})/);
-                          return m ? m[1] : tagDbLatest;
-                        })()}</span>
+                        <span style={{ color: '#fbbf24', fontWeight: 600 }}>· {t('settings.newVersionAvailable')}: {formatTagDbVersion(tagDbLatest)}</span>
                       )}
                       {tagDbLatest && tagDbLatest === tagDbStats.source_file && (
                         <span style={{ color: '#4ade80' }}>· {t('settings.alreadyLatest')}</span>
@@ -843,7 +770,7 @@ export default function SettingsPage() {
                   </button>
                   {tagDbStats?.has_data && (
                     <button className="btn btn-secondary"
-                      onClick={tagDbTranslating ? async () => { await invoke('cancel_tag_db_download'); } : handleTranslateTagDb}
+                      onClick={tagDbTranslating ? async () => { await invoke('cancel_tag_db_translation'); } : handleTranslateTagDb}
                       disabled={tagDbDownloading || !isDesktopRuntime}
                       onMouseEnter={() => setTranslateHover(true)}
                       onMouseLeave={() => setTranslateHover(false)}
@@ -873,7 +800,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* 高级设置 */}
+          {/* 环境设置 */}
           <div className="tool-panel">
             <div className="tool-panel-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
@@ -883,7 +810,7 @@ export default function SettingsPage() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               {/* Python 环境信息 */}
-              <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+              <div style={{ ...cardStyle, padding: '10px 14px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div>
                     <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{t('settings.pythonEnv')}</div>
@@ -906,28 +833,17 @@ export default function SettingsPage() {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
                   <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{pythonInfo?.available ? t('settings.resetPythonEnv') : t('settings.deployPythonEnv')}</div>
-                  <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{pythonInfo?.available ? t('settings.resetConfirmMsg') : t('settings.deployPythonDesc')}</div>
+                  {!pythonInfo?.available && <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{t('settings.deployPythonDesc')}</div>}
                 </div>
                 {pythonInfo?.available ? (
-                  <button className="btn" onClick={() => setResetPythonConfirmOpen(true)} disabled={resettingPython}
-                    style={{ background: 'rgba(248,113,113,0.1)', color: '#f87171', border: '1px solid rgba(248,113,113,0.3)', fontSize: 12, padding: '6px 14px', gap: 6 }}>
+                  <button className="btn btn-danger" onClick={() => setResetPythonConfirmOpen(true)} disabled={resettingPython}
+                    style={{ fontSize: 12, padding: '6px 14px', gap: 6 }}>
                     {resettingPython ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RotateCcw style={{ width: 14, height: 14 }} />}
                     {t('settings.cacheReset')}
                   </button>
                 ) : (
-                  <button className="btn" onClick={async () => {
-                    if (!isDesktopRuntime) return;
-                    setResettingPython(true);
-                    try {
-                      await invoke('deploy_python_env');
-                      setAlertMsg(t('settings.deploySuccess'));
-                      loadPythonInfo();
-                    } catch (e: any) {
-                      setAlertMsg(`${t('settings.deployFailed')}: ${e}`);
-                    } finally {
-                      setResettingPython(false);
-                    }
-                  }} disabled={resettingPython || !isDesktopRuntime}
+                  <button className="btn" onClick={() => runPythonAction('deploy_python_env', 'settings.deploySuccess', 'settings.deployFailed')}
+                    disabled={resettingPython || !isDesktopRuntime}
                     style={{ background: 'rgba(74,222,128,0.1)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.3)', fontSize: 12, padding: '6px 14px', gap: 6 }}>
                     {resettingPython ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Play style={{ width: 14, height: 14 }} />}
                     {isDesktopRuntime ? t('settings.deployEnv') : desktopOnlyText}
@@ -947,15 +863,14 @@ export default function SettingsPage() {
             </div>
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', lineHeight: 1.8 }}>
               <p><strong>PurinBox</strong> · v{appVersion}</p>
-              <p>Tauri 2 + React + TypeScript</p>
               <p style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <a href="https://github.com/YPuddin-Neko/PurinBox" target="_blank" rel="noreferrer"
-                  style={{ color: '#60a5fa', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  style={{ color: '#60a5fa', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                   GitHub <ExternalLink style={{ width: 12, height: 12 }} />
                 </a>
               </p>
               {/* Update check */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)' }}>
+              <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, padding: '10px 14px' }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.checkForUpdate')}</div>
                   <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
@@ -966,13 +881,13 @@ export default function SettingsPage() {
                         ? updateResult.has_update
                           ? <span style={{ color: '#ef4444' }}>{t('settings.hasUpdate', { version: updateResult.latest_version })}</span>
                           : <span style={{ color: '#4ade80' }}>{t('settings.noUpdate')}</span>
-                        : t('settings.checkForUpdate')}
+                        : null}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   {updateResult?.has_update && updateResult.release_url && (
                     <a href={updateResult.release_url} target="_blank" rel="noreferrer"
-                      className="btn btn-primary" style={{ fontSize: 11, height: 28, padding: '0 12px', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 4 }}>
+                      className="btn btn-primary" style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4 }}>
                       <ExternalLink style={{ width: 11, height: 11 }} /> {t('settings.goToDownload')}
                     </a>
                   )}
@@ -980,7 +895,7 @@ export default function SettingsPage() {
                     onClick={async () => {
                       setUpdateChecking(true); setUpdateError(''); setUpdateResult(null);
                       try {
-                        const r = await invoke<{ has_update: boolean; latest_version: string; release_url: string }>('check_for_updates');
+                        const r = await invoke<UpdateCheckResult>('check_for_updates');
                         setUpdateResult(r);
                       } catch (e: any) { setUpdateError(String(e)); }
                       finally { setUpdateChecking(false); }
@@ -1001,8 +916,8 @@ export default function SettingsPage() {
         open={clearConfirmOpen}
         onClose={() => setClearConfirmOpen(false)}
         onConfirm={doClearCache}
-        title={t('settings.clearCache')}
-        message={t('settings.clearConfirmMsg')}
+        title={t('settings.clearCacheTitle')}
+        message={t('settings.clearCacheConfirmMsg')}
         confirmText={t('settings.clearCache')}
         variant="warning"
       />
@@ -1018,19 +933,7 @@ export default function SettingsPage() {
       <ConfirmModal
         open={resetPythonConfirmOpen}
         onClose={() => setResetPythonConfirmOpen(false)}
-        onConfirm={async () => {
-          setResetPythonConfirmOpen(false);
-          setResettingPython(true);
-          try {
-            await invoke('reset_python_env');
-            setAlertMsg(t('settings.resetSuccess'));
-            loadPythonInfo();
-          } catch (e: any) {
-            setAlertMsg(`${t('settings.resetFailed')}: ${e}`);
-          } finally {
-            setResettingPython(false);
-          }
-        }}
+        onConfirm={() => runPythonAction('reset_python_env', 'settings.resetSuccess', 'settings.resetFailed')}
         title={t('settings.resetConfirmTitle')}
         message={t('settings.resetConfirmDialog')}
         confirmText={t('settings.cacheReset')}

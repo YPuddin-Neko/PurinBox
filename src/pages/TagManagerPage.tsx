@@ -1,19 +1,21 @@
-import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import { useTagStats } from '../hooks/useTagStats';
+import { useTagTranslation } from '../hooks/useTagTranslation';
+import { useDragResize } from '../hooks/useDragResize';
+import { dedupeTags, splitTagInput, sameTags } from '../utils/tagText';
+import TagChipList from '../components/TagChipList';
+import ImageGridColumn from '../components/ImageGridColumn';
+import TagStatsPanel from '../components/TagStatsPanel';
+import ScopeToggle from '../components/ScopeToggle';
+import SegmentedTabs from '../components/ui/SegmentedTabs';
+import { useState, useRef, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ensureAssetScope } from '../utils/assetScope';
 import { open } from '@tauri-apps/plugin-dialog';
-import { listen } from '../utils/tauriRuntime';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { AlertModal } from '../components/Modal';
-import {
-  Tags, FolderOpen, Save, ChevronLeft, ChevronRight, X, Plus, Search,
-  Trash2, Image as ImageIcon, BarChart3, CheckCircle2, Loader2,
-  Replace, Filter, ListPlus, PlusCircle, MinusCircle, Languages, RefreshCw,
-  ArrowUpDown, Hash, BarChart, List, CopyX, Wand2
-} from 'lucide-react';
+import { Modal, AlertModal } from '../components/Modal';
+import { Tags, FolderOpen, Save, ChevronLeft, ChevronRight, X, Trash2, Image as ImageIcon, BarChart3, Loader2, Replace, Filter, ListPlus, PlusCircle, MinusCircle, Languages, List, CopyX, Wand2 } from 'lucide-react';
 import NaturalLangTab from '../components/NaturalLangTab';
-import JsonTagTab, { translateOwner, type JsonTagTabHandle } from '../components/JsonTagTab';
-import TagAutocomplete from '../components/TagAutocomplete';
+import JsonTagTab, { type JsonTagTabHandle } from '../components/JsonTagTab';
 import ImageLightbox from '../components/ImageLightbox';
 import ThumbImage from '../components/ThumbImage';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
@@ -25,34 +27,7 @@ type CaptionItem = { filename: string; path: string; caption: string; dirty: boo
 type TagDataset = { folder: string; images: { path: string; filename: string; tags: string[] }[] };
 type CaptionDataset = { folder: string; images: { path: string; filename: string; caption: string }[] };
 
-// 翻译映射（由 translate_tags 命令填充）
-const getTranslation = (tag: string, translations: Record<string, string>) => translations[tag] || '';
-
-// 标签配色：hash 分配，同一标签始终同色
-const chipColors = [
-  {bg:'rgba(124,92,252,0.10)',bd:'rgba(124,92,252,0.25)',tx:'#a78bfa'},
-  {bg:'rgba(96,165,250,0.10)',bd:'rgba(96,165,250,0.25)',tx:'#60a5fa'},
-  {bg:'rgba(74,222,128,0.10)',bd:'rgba(74,222,128,0.25)',tx:'#4ade80'},
-  {bg:'rgba(251,191,36,0.10)',bd:'rgba(251,191,36,0.25)',tx:'#fbbf24'},
-  {bg:'rgba(248,113,113,0.10)',bd:'rgba(248,113,113,0.25)',tx:'#f87171'},
-  {bg:'rgba(192,132,252,0.10)',bd:'rgba(192,132,252,0.25)',tx:'#c084fc'},
-  {bg:'rgba(45,212,191,0.10)',bd:'rgba(45,212,191,0.25)',tx:'#2dd4bf'},
-  {bg:'rgba(251,146,60,0.10)',bd:'rgba(251,146,60,0.25)',tx:'#fb923c'},
-  {bg:'rgba(236,72,153,0.10)',bd:'rgba(236,72,153,0.25)',tx:'#ec4899'},
-  {bg:'rgba(132,204,22,0.10)',bd:'rgba(132,204,22,0.25)',tx:'#84cc16'},
-  {bg:'rgba(14,165,233,0.10)',bd:'rgba(14,165,233,0.25)',tx:'#0ea5e9'},
-  {bg:'rgba(234,179,8,0.10)',bd:'rgba(234,179,8,0.25)',tx:'#eab308'},
-  {bg:'rgba(168,85,247,0.10)',bd:'rgba(168,85,247,0.25)',tx:'#a855f7'},
-  {bg:'rgba(20,184,166,0.10)',bd:'rgba(20,184,166,0.25)',tx:'#14b8a6'},
-  {bg:'rgba(239,68,68,0.10)',bd:'rgba(239,68,68,0.25)',tx:'#ef4444'},
-  {bg:'rgba(34,197,94,0.10)',bd:'rgba(34,197,94,0.25)',tx:'#22c55e'},
-];
-function getChipColor(tag: string) {
-  let h = 0;
-  for (let i = 0; i < tag.length; i++) h = ((h << 5) - h + tag.charCodeAt(i)) | 0;
-  return chipColors[Math.abs(h) % chipColors.length];
-}
-const normalizeDanbooruTag = (tag: string) => tag.trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
+const normalizeDanbooruTag = (tag: string) => tag.trim().toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
 
 // danbooru 原形：空格→下划线、括号转义为 \( \)。
 // 先把已有转义剥掉再统一重转，保证幂等（已转义的不会被转成 \\(）
@@ -69,9 +44,8 @@ const toDanbooruEscaped = (tag: string) =>
 // 不然一份 txt 里 "long hair" 和 "long_hair" 两种格式混着，训练时是两个 token
 const hasEscapedTags = (tags: string[]) => tags.some(t => t.includes('_') || t.includes('\\('));
 
-const phdr:React.CSSProperties={display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',borderBottom:'1px solid var(--color-border)',flexShrink:0};
-const ptitle:React.CSSProperties={fontSize:12,fontWeight:700,color:'var(--color-text-primary)',textTransform:'uppercase',letterSpacing:'0.5px'};
-const TAG_STATS_BATCH = 300;
+const phdr:React.CSSProperties={display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:6,padding:'10px 14px',borderBottom:'1px solid var(--color-border)',flexShrink:0};
+const ptitle:React.CSSProperties={fontSize:12,fontWeight:700,color:'var(--color-text-primary)',whiteSpace:'nowrap'};
 
 export default function TagManagerPage() {
   const { t } = useTranslation();
@@ -82,17 +56,9 @@ export default function TagManagerPage() {
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [searchText, setSearchText] = useState('');
   const [filterMode, setFilterMode] = useState<'all'|'tagged'|'untagged'>('all');
-  const [imgPage, setImgPage] = useState(0);
-  const IMG_PER_PAGE = 30;
 
-  const [globalSearch, setGlobalSearch] = useState('');
-  const [dragIdx, setDragIdx] = useState<number|null>(null);
-  const [dragOverIdx, setDragOverIdx] = useState<number|null>(null);
-  const [dropSide, setDropSide] = useState<'before'|'after'>('before');
   const [savingSingle, setSavingSingle] = useState(false);
   const [alertMsg, setAlertMsg] = useState('');
-  const [editingDanbooru, setEditingDanbooru] = useState(false);
-  const [editingTagIdx, setEditingTagIdx] = useState<number | null>(null);
   const [showLargePreview, setShowLargePreview] = useState(false);
 
   const [loading, setLoading] = useState(false);
@@ -105,72 +71,14 @@ export default function TagManagerPage() {
   // JsonTagTab 的 loading/saving 通过回调上报为 state（渲染期读 ref 不会触发重渲染，按钮禁用态会陈旧）
   const [jsonLoading, setJsonLoading] = useState(false);
   const [jsonSaving, setJsonSaving] = useState(false);
-  const [tagSortBy, setTagSortBy] = useState<'freq'|'name'>('freq');
-  const [tagSortDir, setTagSortDir] = useState<'asc'|'desc'>('desc');
 
-  // ── 列宽拖拽 ──
-  const [col1W, setCol1W] = useState(220);
-  const [col3W, setCol3W] = useState(250);
-  const resizeRef = useRef<{ col: 'col1' | 'col3'; startX: number; startW: number } | null>(null);
-  const handleResizeStart = useCallback((col: 'col1' | 'col3', e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = col === 'col1' ? col1W : col3W;
-    resizeRef.current = { col, startX, startW };
-    const onMove = (ev: MouseEvent) => {
-      if (!resizeRef.current) return;
-      const delta = ev.clientX - resizeRef.current.startX;
-      const newW = Math.max(160, Math.min(500, resizeRef.current.startW + (resizeRef.current.col === 'col1' ? delta : -delta)));
-      if (resizeRef.current.col === 'col1') setCol1W(newW);
-      else setCol3W(newW);
-    };
-    const onUp = () => {
-      resizeRef.current = null;
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      document.body.style.cursor = '';
-      resizeCleanupRef.current = null;
-    };
-    resizeCleanupRef.current = onUp;
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    document.body.style.cursor = 'col-resize';
-  }, [col1W, col3W]);
-
-  // 卸载时移除拖拽监听。
-  const resizeCleanupRef = useRef<(() => void) | null>(null);
-  useEffect(() => () => { resizeCleanupRef.current?.(); }, []);
-
-  // ── 预览/标签区高度拖拽 ──
-  const col2Ref = useRef<HTMLDivElement>(null);
-  const [previewFlex, setPreviewFlex] = useState(3); // flex ratio: preview=3, tags=1
-  const rowResizeRef = useRef<{ startY: number; startFlex: number } | null>(null);
-  const handleRowResizeStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    rowResizeRef.current = { startY: e.clientY, startFlex: previewFlex };
-    const onMove = (ev: MouseEvent) => {
-      if (!rowResizeRef.current || !col2Ref.current) return;
-      const containerH = col2Ref.current.getBoundingClientRect().height;
-      const delta = ev.clientY - rowResizeRef.current.startY;
-      const deltaRatio = (delta / containerH) * 4; // total flex = previewFlex + 1
-      const newFlex = Math.max(0.5, Math.min(6, rowResizeRef.current.startFlex + deltaRatio));
-      setPreviewFlex(newFlex);
-    };
-    const onUp = () => {
-      rowResizeRef.current = null;
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      document.body.style.cursor = '';
-      resizeCleanupRef.current = null;
-    };
-    resizeCleanupRef.current = onUp;
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    document.body.style.cursor = 'row-resize';
-  }, [previewFlex]);
-  // ── 右栏新功能状态 ──
-  const [tagListMode, setTagListMode] = useState<'all'|'common'>('all');
-  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
+  const col1 = useDragResize({ initial: 220, min: 160, max: 500 });
+  const col3 = useDragResize({ initial: 250, min: 160, max: 500, direction: -1 });
+  const preview = useDragResize({ initial: 330, min: 100, max: 500, axis: 'y' });
+  const col1W = col1.size, col3W = col3.size;
+  const handleResizeStart = (column: 'col1' | 'col3', e: React.MouseEvent) => (column === 'col1' ? col1 : col3).onMouseDown(e);
+  const handleRowResizeStart = preview.onMouseDown;
+  // ── 右栏状态 ──
   const [showAddModal, setShowAddModal] = useState(false);
   const [addTagInput, setAddTagInput] = useState('');
   const [addPosition, setAddPosition] = useState<'start'|'end'>('start');
@@ -185,60 +93,15 @@ export default function TagManagerPage() {
   const [replaceSearch, setReplaceSearch] = useState('');
   const [replaceDropOpen, setReplaceDropOpen] = useState(false);
   const [tagFilterActive, setTagFilterActive] = useState(false);
-  const [translations, setTranslations] = useState<Record<string, string>>({});
-  const [translating, setTranslating] = useState(false);
-  const [translateProgress, setTranslateProgress] = useState<{ current: number; total: number } | null>(null);
-  const [showTranslateBar, setShowTranslateBar] = useState(false);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // ── 手动翻译标签 ──
-  const handleTranslate = useCallback(async () => {
-    const enabled = localStorage.getItem('translate_enabled') === 'true';
-    if (!enabled) return;
-    const allTags = [...new Set(images.flatMap(img => img.tags))];
-    if (allTags.length === 0) return;
-    const provider = localStorage.getItem('translate_provider') || 'google';
-    translateOwner.current = 'danbooru';
-    setTranslating(true);
-    setTranslateProgress({ current: 0, total: allTags.length });
-    setShowTranslateBar(true);
-    if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
-
-    const unlisten = await listen<{ current: number; total: number }>('translate-progress', (e) => {
-      if (translateOwner.current !== 'danbooru') return; // 非当前翻译所有者，忽略事件
-      setTranslateProgress({ current: e.payload.current, total: e.payload.total });
-    });
-
-    try {
-      const result = await invoke<{ translations: { source: string; translated: string }[]; cached_count: number; translated_count: number }>('translate_tags', {
-        tags: allTags,
-        targetLang: localStorage.getItem('translate_target_lang') || 'zh-CN',
-        provider,
-        baiduAppid: localStorage.getItem('baidu_appid') || '',
-        baiduKey: localStorage.getItem('baidu_key') || '',
-        youdaoAppKey: localStorage.getItem('youdao_app_key') || '',
-        youdaoAppSecret: localStorage.getItem('youdao_app_secret') || '',
-        bingKey: localStorage.getItem('bing_key') || '',
-        bingRegion: localStorage.getItem('bing_region') || '',
-      });
-      setTranslations(prev => {
-        const next = { ...prev };
-        result.translations.forEach(item => { if (item.translated) next[item.source] = item.translated; });
-        return next;
-      });
-      setTranslateProgress({ current: allTags.length, total: allTags.length });
-      hideTimerRef.current = setTimeout(() => { setShowTranslateBar(false); setTranslateProgress(null); }, 3000);
-    } catch (e: any) {
-      console.error('translate failed:', e);
-      setAlertMsg(`${t('tagManager.translateFail')}:\n${e?.message || e}`);
-      setShowTranslateBar(false);
-      setTranslateProgress(null);
-    } finally {
-      setTranslating(false);
-      if (translateOwner.current === 'danbooru') translateOwner.current = '';
-      unlisten();
-    }
-  }, [images, t]);
+  const { translations, translating, translateProgress, translate } = useTagTranslation();
+  const tagLists = useMemo(() => images.map(image => image.tags), [images]);
+  const stats = useTagStats(tagLists, folderPath, translations);
+  const { selectedTags, setSelectedTags, tagListMode, setTagListMode, filteredStats, tagStats, taggedCount, setGlobalSearch } = stats;
+  const handleTranslate = async () => {
+    if (localStorage.getItem('translate_enabled') !== 'true') return;
+    try { await translate(tagStats.map(([tag]) => tag)); }
+    catch (error) { setAlertMsg(t('tagManager.translateFail') + ': ' + String(error)); }
+  };
 
   // ── load folder ──
   const handleLoadFolder = async () => {
@@ -251,7 +114,7 @@ export default function TagManagerPage() {
         const result = await invoke<TagDataset>('load_tag_dataset', { folder: selected as string, recursive });
         setImages(result.images.map(img => ({ ...img, dirty: false })));
         setSelectedIdx(result.images.length > 0 ? 0 : -1);
-        setSearchText(''); setFilterMode('all'); setGlobalSearch(''); setImgPage(0);
+        setSearchText(''); setFilterMode('all'); setGlobalSearch('');
       } else {
         const result = await invoke<CaptionDataset>('load_caption_dataset', { folder: selected as string, recursive });
         setNlImages(result.images.map(img => ({ ...img, dirty: false })));
@@ -301,7 +164,6 @@ export default function TagManagerPage() {
   };
 
   const cur = selectedIdx >= 0 && selectedIdx < images.length ? images[selectedIdx] : null;
-  const taggedN = images.filter(i=>i.tags.length>0).length;
   const imgSrc = cur ? convertFileSrc(cur.path) : '';
 
   // 新标签按数据集现有格式规范化：已有 danbooru 原形标签就转义，否则保持空格形式。
@@ -321,92 +183,22 @@ export default function TagManagerPage() {
     }));
   };
 
-  // ── tag stats ──
-  const tagStats = useMemo(() => {
-    const m:Record<string,number>={};
-    images.forEach(img=>img.tags.forEach(t=>{m[t]=(m[t]||0)+1;}));
-    return Object.entries(m).sort((a,b)=>b[1]-a[1]);
-  }, [images]);
-
-  const taggedCount = useMemo(() => images.filter(i => i.tags.length > 0).length, [images]);
-  const filteredStats = useMemo(() => {
-    const base = tagListMode === 'common'
-      ? tagStats.filter(([,c]) => taggedCount > 0 && c === taggedCount)
-      : tagStats;
-    // 排序
-    let sorted = [...base];
-    if (tagSortBy === 'freq') {
-      sorted.sort((a,b) => tagSortDir === 'desc' ? b[1] - a[1] : a[1] - b[1]);
-    } else {
-      sorted.sort((a,b) => tagSortDir === 'desc' ? b[0].localeCompare(a[0]) : a[0].localeCompare(b[0]));
-    }
-    if (!globalSearch) return sorted;
-    const q=globalSearch.toLowerCase();
-    return sorted.filter(([t])=>t.includes(q)||getTranslation(t,translations).includes(q));
-  }, [tagStats, globalSearch, tagListMode, taggedCount, translations, tagSortBy, tagSortDir]);
-
-  // 标签统计列表分批渲染（初始 300 条，"显示更多"每次 +300；筛选条件变化时重置）
-  const [statsLimit, setStatsLimit] = useState(TAG_STATS_BATCH);
-  useEffect(() => { setStatsLimit(TAG_STATS_BATCH); }, [globalSearch, tagListMode, images]);
-
   // ── 标签筛选图片 ──
   const filtered = useMemo(() => {
     let list = images.map((img,i) => ({...img,_i:i}));
     if (searchText) { const q=searchText.toLowerCase(); list=list.filter(img=>img.filename.toLowerCase().includes(q)||img.tags.some(t=>t.includes(q))); }
     if (filterMode==='tagged') list=list.filter(img=>img.tags.length>0);
     if (filterMode==='untagged') list=list.filter(img=>img.tags.length===0);
-    // 按选中标签筛选
     if (tagFilterActive && selectedTags.size > 0) {
       list = list.filter(img => [...selectedTags].every(t => img.tags.includes(t)));
     }
     return list;
   }, [images, searchText, filterMode, tagFilterActive, selectedTags]);
 
-  // 翻页时重置
-  const totalPages = Math.max(1, Math.ceil(filtered.length / IMG_PER_PAGE));
-  const pagedFiltered = filtered.slice(imgPage * IMG_PER_PAGE, (imgPage + 1) * IMG_PER_PAGE);
-  // 当 filtered 变化时重置页码
-  const prevFilteredLen = useRef(filtered.length);
-  if (filtered.length !== prevFilteredLen.current) { prevFilteredLen.current = filtered.length; if (imgPage >= Math.ceil(filtered.length / IMG_PER_PAGE)) { setImgPage(0); } }
-
-  // ── 标签选择 ──
-  const lastClickedTag = useRef<string>('');
-  const toggleTagSelect = (tag: string, e: React.MouseEvent) => {
-    const isCtrl = e.metaKey || e.ctrlKey;
-    const isShift = e.shiftKey;
-    setSelectedTags(prev => {
-      if (isShift && lastClickedTag.current && filteredStats.length > 0) {
-        // Shift: 范围选择
-        const tags = filteredStats.map(([t]) => t);
-        const lastIdx = tags.indexOf(lastClickedTag.current);
-        const curIdx = tags.indexOf(tag);
-        if (lastIdx >= 0 && curIdx >= 0) {
-          const from = Math.min(lastIdx, curIdx);
-          const to = Math.max(lastIdx, curIdx);
-          const next = new Set(isCtrl ? prev : []);
-          for (let i = from; i <= to; i++) next.add(tags[i]);
-          return next;
-        }
-      }
-      if (isCtrl) {
-        // Ctrl/Cmd: 切换单个
-        const next = new Set(prev);
-        if (next.has(tag)) next.delete(tag); else next.add(tag);
-        lastClickedTag.current = tag;
-        return next;
-      }
-      // 普通点击: 单选
-      lastClickedTag.current = tag;
-      if (prev.has(tag) && prev.size === 1) return new Set();
-      return new Set([tag]);
-    });
-    if (!e.shiftKey) lastClickedTag.current = tag;
-  };
-
   // ── 批量添加标签（按范围：当前图片 / 全部图片）──
   const handleBatchAdd = () => {
-    // 批量作用于全部图片，格式按整个数据集的现有惯例判定
-    const tags = addTagInput.split(/[,，]/).map(t => normalizeNewTag(t)).filter(Boolean);
+    // 新标签的格式按整个数据集的现有惯例判定（与应用范围无关）
+    const tags = splitTagInput(addTagInput, value => normalizeNewTag(value));
     if (tags.length === 0) return;
     if (addScope === 'current' && selectedIdx < 0) return;
     setImages(p => p.map((img, i) => {
@@ -424,7 +216,7 @@ export default function TagManagerPage() {
       });
       if (addPosition === 'start') newTags = [...toInsert, ...newTags];
       else newTags = [...newTags, ...toInsert];
-      return { ...img, tags: newTags, dirty: true };
+      return sameTags(img.tags, newTags) ? img : { ...img, tags: newTags, dirty: true };
     }));
     setShowAddModal(false); setAddTagInput('');
   };
@@ -443,32 +235,9 @@ export default function TagManagerPage() {
     setShowDeleteModal(false);
   };
 
-  const dedupeTagList = (tags: string[]) => {
-    const seen = new Set<string>();
-    let changed = false;
-    const next: string[] = [];
-    tags.forEach(raw => {
-      const tag = raw.trim();
-      if (!tag) {
-        changed = true;
-        return;
-      }
-      const key = tag.toLowerCase();
-      if (seen.has(key)) {
-        changed = true;
-        return;
-      }
-      seen.add(key);
-      next.push(tag);
-      if (tag !== raw) changed = true;
-    });
-    if (next.length !== tags.length) changed = true;
-    return { tags: next, changed };
-  };
-
   const handleDeduplicateTags = () => {
     setImages(prev => prev.map(img => {
-      const result = dedupeTagList(img.tags);
+      const result = dedupeTags(img.tags);
       return result.changed ? { ...img, tags: result.tags, dirty: true } : img;
     }));
   };
@@ -476,7 +245,7 @@ export default function TagManagerPage() {
   // ── 标签替换 ──
   const handleReplace = () => {
     const from = replaceFrom.trim();
-    const to = replaceTo.trim().toLowerCase();
+    const to = normalizeNewTag(replaceTo);
     // 匹配统一用小写比较（replaceTo 强制小写，replaceFrom 也按小写匹配）
     const fromKey = from.toLowerCase();
     if (!from || !to || fromKey === to) return;
@@ -484,7 +253,7 @@ export default function TagManagerPage() {
       if (!img.tags.some(t2 => t2.toLowerCase() === fromKey)) return img;
       const replaced = img.tags.map(t2 => t2.toLowerCase() === fromKey ? to : t2);
       // 替换后可能产生重复标签，去重（保序）
-      return { ...img, tags: dedupeTagList(replaced).tags, dirty: true };
+      return { ...img, tags: dedupeTags(replaced).tags, dirty: true };
     }));
     setShowReplaceModal(false); setReplaceFrom(''); setReplaceTo('');
     setSelectedTags(prev => { const n = new Set(prev); [...n].forEach(t2 => { if (t2.toLowerCase() === fromKey) n.delete(t2); }); return n; });
@@ -514,106 +283,6 @@ export default function TagManagerPage() {
   const goNext = useCallback(()=>{setSelectedIdx(i=>Math.min(images.length-1,i+1));},[images.length]);
 
 
-  const removeTag = (tag:string) => {
-    setImages(p=>p.map((img,i)=>i===selectedIdx?{...img,tags:img.tags.filter(t=>t!==tag),dirty:true}:img));
-  };
-
-  const replaceTagAt = (idx: number, raw: string) => {
-    const nextTag = normalizeNewTag(raw, cur);
-    if (!nextTag) { setEditingTagIdx(null); return; }
-    setImages(p => p.map((img, i) => {
-      if (i !== selectedIdx) return img;
-      const tags = [...img.tags];
-      const oldTag = tags[idx];
-      if (!oldTag || oldTag === nextTag) return img;
-      const duplicateIdx = tags.findIndex((t, ti) => ti !== idx && t.toLowerCase() === nextTag.toLowerCase());
-      if (duplicateIdx >= 0) tags.splice(idx, 1);
-      else tags[idx] = nextTag;
-      return { ...img, tags, dirty: true };
-    }));
-    setSelectedTags(prev => {
-      const oldTag = cur?.tags[idx];
-      if (!oldTag || !prev.has(oldTag)) return prev;
-      const next = new Set(prev);
-      next.delete(oldTag);
-      next.add(nextTag);
-      return next;
-    });
-    setEditingTagIdx(null);
-  };
-
-
-  // ── drag reorder (mouse-event based, no HTML5 DnD) ──
-  const chipRefs = useRef<(HTMLDivElement|null)[]>([]);
-  const dragState = useRef<{active:boolean,fromIdx:number,startX:number,startY:number,pointerId:number,target:HTMLElement|null}>({active:false,fromIdx:-1,startX:0,startY:0,pointerId:0,target:null});
-
-  const moveTag = (fromIdx: number, toIdx: number) => {
-    if (fromIdx === toIdx) return;
-    setImages(p => p.map((img, i) => {
-      if (i !== selectedIdx) return img;
-      const tags = [...img.tags];
-      const [moved] = tags.splice(fromIdx, 1);
-      tags.splice(toIdx, 0, moved);
-      return { ...img, tags, dirty: true };
-    }));
-  };
-
-  const handlePointerDown = (e: React.PointerEvent, idx: number) => {
-    if ((e.target as HTMLElement).closest('button')) return;
-    // 双击的第二次按下（detail>1）不启动拖拽，避免与 dblclick 竞争
-    if (e.detail > 1) return;
-    // 不调用 preventDefault()，否则会阻止 dblclick 事件触发（双击编辑失效）
-    // 文字选中已由 chip 上的 userSelect:'none' 防止
-    // 注意：不在这里 setPointerCapture，延迟到拖拽真正开始时才设置，
-    // 否则 Windows (WebView2/Blink) 会把 mouseup/click/dblclick 重定向到捕获元素
-    dragState.current = { active: false, fromIdx: idx, startX: e.clientX, startY: e.clientY, pointerId: e.pointerId, target: e.currentTarget as HTMLElement };
-  };
-
-  const handlePointerMove = (e: React.PointerEvent) => {
-    const ds = dragState.current;
-    if (ds.fromIdx < 0) return;
-    const dx = e.clientX - ds.startX, dy = e.clientY - ds.startY;
-    if (!ds.active && Math.abs(dx) + Math.abs(dy) > 5) {
-      ds.active = true;
-      setDragIdx(ds.fromIdx);
-      // 拖拽真正开始时才设置 pointer capture
-      try { ds.target?.setPointerCapture(ds.pointerId); } catch {}
-    }
-    if (!ds.active) return;
-    const els = chipRefs.current;
-    for (let i = 0; i < els.length; i++) {
-      const el = els[i];
-      if (!el || i === ds.fromIdx) continue;
-      const r = el.getBoundingClientRect();
-      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
-        const mid = r.left + r.width / 2;
-        const side = e.clientX < mid ? 'before' : 'after';
-        if (dragOverIdx !== i || dropSide !== side) {
-          setDragOverIdx(i);
-          setDropSide(side);
-        }
-        return;
-      }
-    }
-  };
-
-  const handlePointerUp = () => {
-    const ds = dragState.current;
-    if (ds.active && dragOverIdx !== null && dragOverIdx !== ds.fromIdx) {
-      // 计算实际插入位置
-      let toIdx = dragOverIdx;
-      if (dropSide === 'after') toIdx += 1;
-      // 如果从前面拖到后面，splice后索引要减1
-      if (ds.fromIdx < toIdx) toIdx -= 1;
-      moveTag(ds.fromIdx, toIdx);
-    }
-    // 释放 pointer capture（必须在实际捕获的元素上释放，而非事件所在的容器）
-    try { ds.target?.releasePointerCapture(ds.pointerId); } catch {}
-    dragState.current = { active: false, fromIdx: -1, startX: 0, startY: 0, pointerId: 0, target: null };
-    setDragIdx(null);
-    setDragOverIdx(null);
-  };
-
   // ── save single ──
   const handleSaveSingle = async () => {
     if (!cur) return;
@@ -626,15 +295,30 @@ export default function TagManagerPage() {
   };
 
   const handleKeyDown = useCallback((e:React.KeyboardEvent)=>{
-    // 光标在任何可编辑控件里时，方向键归它——textarea（nl 字段是多行）和
-    // contenteditable 早先没排除，在里面按左右会被拿去切换图片
+    if (mode !== 'danbooru') return;
+    // 焦点在输入框、文本域或 contenteditable 里时，方向键留给编辑控件，不切换图片
     const el = e.target as HTMLElement | null;
     if(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el?.isContentEditable) return;
     if(e.key==='ArrowLeft'){e.preventDefault();goPrev();}
     if(e.key==='ArrowRight'){e.preventDefault();goNext();}
-  },[goPrev,goNext]);
+  },[goPrev,goNext,mode]);
 
   const dirtyCount = images.filter(i=>i.dirty).length;
+
+  const handleSaveAllCaptions = async () => {
+    setSaving(true);
+    try {
+      const items = nlImages.filter(i => i.dirty).map(i => ({ path: i.path, content: i.caption }));
+      await invoke('save_all_caption_files', { items });
+      setNlImages(p => p.map(img => img.dirty ? { ...img, dirty: false } : img));
+    } catch (e) { console.error(e); } finally { setSaving(false); }
+  };
+
+  const topBar = mode === 'json'
+    ? { loading: jsonLoading, saving: jsonSaving, dirty: jsonDirtyCount, onLoad: () => jsonTabRef.current?.loadFolder(), onSave: () => jsonTabRef.current?.saveAll() }
+    : mode === 'natural'
+      ? { loading, saving, dirty: nlImages.filter(i => i.dirty).length, onLoad: handleLoadFolder, onSave: handleSaveAllCaptions }
+      : { loading, saving, dirty: dirtyCount, onLoad: handleLoadFolder, onSave: handleSaveAll };
 
   return (
     <>
@@ -650,120 +334,39 @@ export default function TagManagerPage() {
 
       {/* Tab Bar + Actions */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-4)', flexShrink: 0 }}>
-        <div style={{
-          display: 'flex', gap: 2,
-          background: 'var(--color-bg-card)', borderRadius: 'var(--radius-lg)',
-          padding: 3, border: '1px solid var(--color-border)',
-          width: 'fit-content',
-        }}>
-          <button onClick={()=>setMode('danbooru')} style={{
-            padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
-            cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
-            transition: 'all 0.2s', fontFamily: 'inherit',
-            background: mode==='danbooru' ? 'var(--color-accent-primary)' : 'transparent',
-            color: mode==='danbooru' ? '#fff' : 'var(--color-text-tertiary)',
-          }}>{t('tagManager.danbooruTab')}</button>
-          <button onClick={()=>setMode('natural')} style={{
-            padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
-            cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
-            transition: 'all 0.2s', fontFamily: 'inherit',
-            background: mode==='natural' ? 'var(--color-accent-primary)' : 'transparent',
-            color: mode==='natural' ? '#fff' : 'var(--color-text-tertiary)',
-          }}>{t('tagManager.naturalTab')}</button>
-          <button onClick={()=>setMode('json')} style={{
-            padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
-            cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
-            transition: 'all 0.2s', fontFamily: 'inherit',
-            background: mode==='json' ? 'var(--color-accent-primary)' : 'transparent',
-            color: mode==='json' ? '#fff' : 'var(--color-text-tertiary)',
-          }}>{t('tagManager.jsonTab')}</button>
-        </div>
+        <SegmentedTabs value={mode} onChange={setMode} tabs={[
+          { id: 'danbooru', label: t('tagManager.danbooruTab') },
+          { id: 'natural', label: t('tagManager.naturalTab') },
+          { id: 'json', label: t('tagManager.jsonTab') },
+        ]} />
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
           <RecursiveScanToggle checked={recursive} onChange={setRecursive} style={{ height: 34 }} />
-          {mode!=='json'&&<button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={handleLoadFolder} disabled={loading}>
-            {loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {loading?t('tagManager.loading'):t('tagManager.loadFolder')}
-          </button>}
-          {mode==='json'&&<button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={()=>jsonTabRef.current?.loadFolder()} disabled={jsonLoading}>
-            {jsonLoading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {jsonLoading?t('tagManager.loading'):t('tagManager.loadFolder')}
-          </button>}
-          {mode==='danbooru'&&<button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={dirtyCount===0||saving} onClick={handleSaveAll}>
-            {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{dirtyCount>0?` (${dirtyCount})`:''}
-          </button>}
-          {mode==='natural'&&(()=>{const nlDirty=nlImages.filter(i=>i.dirty).length;return(
-            <button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={nlDirty===0||saving} onClick={async()=>{
-              setSaving(true);
-              try{
-                const items=nlImages.filter(i=>i.dirty).map(i=>({path:i.path,content:i.caption}));
-                await invoke('save_all_caption_files',{items});
-                setNlImages(p=>p.map(img=>img.dirty?{...img,dirty:false}:img));
-              }catch(e){console.error(e);}finally{setSaving(false);}
-            }}>
-              {saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{nlDirty>0?` (${nlDirty})`:''}
-            </button>
-          );})()}
-          {mode==='json'&&(()=>{const jd=jsonDirtyCount;return(
-            <button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={jd===0||jsonSaving} onClick={()=>jsonTabRef.current?.saveAll()}>
-              {jsonSaving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{jd>0?` (${jd})`:''}
-            </button>
-          );})()}
+          <button className="btn btn-secondary" style={{gap:6,height:34,fontSize:12}} onClick={topBar.onLoad} disabled={topBar.loading}>
+            {topBar.loading?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<FolderOpen style={{width:14,height:14}} />} {topBar.loading?t('tagManager.loading'):t('tagManager.loadFolder')}
+          </button>
+          <button className="btn btn-primary" style={{gap:6,height:34,fontSize:12}} disabled={topBar.dirty===0||topBar.saving} onClick={topBar.onSave}>
+            {topBar.saving?<Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}} />:<Save style={{width:14,height:14}} />} {t('tagManager.saveAll')}{topBar.dirty>0?` (${topBar.dirty})`:''}
+          </button>
         </div>
       </div>
 
       {mode === 'danbooru' && (
       <div style={{flex:1,display:'flex',overflow:'hidden',minHeight:0}}>
 
-        {/* ─ Col1: Images ─ */}
-        <div style={{width:col1W,minWidth:160,maxWidth:500,flexShrink:0,display:'flex',flexDirection:'column',background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',overflow:'hidden'}}>
-          <div style={{padding:8,borderBottom:'1px solid var(--color-border)'}}>
-            <div style={{display:'flex',gap:4,position:'relative',marginBottom:6}}>
-              <div style={{position:'relative',flex:1}}>
-                <Search style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:13,height:13,color:'var(--color-text-tertiary)'}} />
-                <input className="form-input" placeholder={t('tagManager.search')} value={searchText} onChange={e=>setSearchText(e.target.value)} style={{paddingLeft:28,fontSize:11,height:30}} />
-              </div>
-              <button className="btn btn-ghost btn-sm" onClick={handleRefresh} disabled={!folderPath||loading} title={t('tagManager.refresh')} style={{width:30,height:30,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><RefreshCw style={{width:13,height:13,animation:loading?'spin 1s linear infinite':undefined}} /></button>
-            </div>
-            <div style={{display:'flex',gap:4}}>
-              {([{k:'all' as const,l:t('tagManager.filterAll'),n:images.length},{k:'untagged' as const,l:t('tagManager.filterUntagged'),n:images.length-taggedN},{k:'tagged' as const,l:t('tagManager.filterTagged'),n:taggedN}]).map(t2=>(
-                <button key={t2.k} onClick={()=>setFilterMode(t2.k)} style={{flex:1,padding:'3px 0',borderRadius:6,fontSize:10,fontWeight:500,background:filterMode===t2.k?'rgba(124,92,252,0.15)':'transparent',color:filterMode===t2.k?'#a78bfa':'var(--color-text-tertiary)',border:filterMode===t2.k?'1px solid rgba(124,92,252,0.25)':'1px solid transparent'}}>{t2.l} {t2.n}</button>
-              ))}
-            </div>
-          </div>
-          <div className="image-grid-perf" style={{flex:1,overflowY:'auto',padding:6}}>
-            {images.length===0?(
-              <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)'}}>
-                <FolderOpen style={{width:32,height:32,opacity:0.2}} />
-                <span style={{fontSize:11,opacity:0.6}}>{t('tagManager.loadFolderHint')}</span>
-              </div>
-            ):(
-              <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4}}>
-                {pagedFiltered.map(img=>{const sel=img._i===selectedIdx;return(
-                  <div key={img._i} onClick={()=>setSelectedIdx(img._i)} style={{position:'relative',aspectRatio:'1',borderRadius:8,overflow:'hidden',cursor:'pointer',border:`2px solid ${sel?'#7c5cfc':'transparent'}`,boxShadow:sel?'0 0 0 1px rgba(124,92,252,0.3)':'none',transition:'all 0.15s',background:'var(--color-bg-input)'}}>
-                    <ThumbImage path={img.path} alt={img.filename} style={{width:'100%',height:'100%',objectFit:'cover'}} />
-                    {img.tags.length>0&&<div style={{position:'absolute',bottom:2,right:2,minWidth:14,height:14,borderRadius:7,padding:'0 3px',background:img.dirty?'rgba(239,68,68,0.9)':'rgba(124,92,252,0.85)',fontSize:8,color:'#fff',fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center'}}>{img.tags.length}</div>}
-                  </div>
-                );})}
-              </div>
-            )}
-          </div>
-          {images.length>0&&<div style={{padding:'4px 10px',borderTop:'1px solid var(--color-border)',fontSize:10,color:'var(--color-text-tertiary)',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-            <span>{filtered.length===images.length?t('tagManager.nImages',{n:images.length}):t('tagManager.nOfTotal',{n:filtered.length,total:images.length})}</span>
-            {totalPages>1&&<div style={{display:'flex',alignItems:'center',gap:4}}>
-              <button onClick={()=>setImgPage(p=>Math.max(0,p-1))} disabled={imgPage<=0} style={{width:20,height:20,borderRadius:4,border:'1px solid var(--color-border)',background:imgPage<=0?'transparent':'rgba(124,92,252,0.08)',color:imgPage<=0?'var(--color-text-tertiary)':'#a78bfa',cursor:imgPage<=0?'default':'pointer',display:'flex',alignItems:'center',justifyContent:'center',padding:0}}><ChevronLeft style={{width:11,height:11}} /></button>
-              <span style={{fontSize:10,minWidth:40,textAlign:'center'}}>{imgPage+1}/{totalPages}</span>
-              <button onClick={()=>setImgPage(p=>Math.min(totalPages-1,p+1))} disabled={imgPage>=totalPages-1} style={{width:20,height:20,borderRadius:4,border:'1px solid var(--color-border)',background:imgPage>=totalPages-1?'transparent':'rgba(124,92,252,0.08)',color:imgPage>=totalPages-1?'var(--color-text-tertiary)':'#a78bfa',cursor:imgPage>=totalPages-1?'default':'pointer',display:'flex',alignItems:'center',justifyContent:'center',padding:0}}><ChevronRight style={{width:11,height:11}} /></button>
-            </div>}
-          </div>}
-        </div>
+        <ImageGridColumn key={folderPath} width={col1W} items={filtered} total={images.length} tagged={taggedCount}
+          search={searchText} onSearch={setSearchText} filter={filterMode} onFilter={setFilterMode}
+          selected={selectedIdx} onSelect={setSelectedIdx} onRefresh={folderPath ? handleRefresh : undefined} loading={loading}
+          badge={image => image.tags.length || null} />
 
         {/* resize handle 1 */}
-        <div onMouseDown={e=>handleResizeStart('col1',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title={t('tagManager.dragWidth')}>
+        <div onMouseDown={e=>handleResizeStart('col1',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
           <div style={{width:2,height:32,borderRadius:1,background:'var(--color-border)',transition:'background 0.15s'}} />
         </div>
 
         {/* ─ Col2: Preview + Tags ─ */}
-        <div ref={col2Ref} style={{flex:1,display:'flex',flexDirection:'column',minWidth:0,overflow:'hidden'}}>
+        <div style={{flex:1,display:'flex',flexDirection:'column',minWidth:0,overflow:'hidden'}}>
           {/* preview */}
-          <div style={{flex:previewFlex,display:'flex',flexDirection:'column',background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',overflow:'hidden',minHeight:80}}>
+          <div style={{height:preview.size,flexShrink:0,display:'flex',flexDirection:'column',background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',overflow:'hidden',minHeight:80}}>
             <div style={phdr}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <ImageIcon style={{width:14,height:14,color:'#7c5cfc'}} />
@@ -784,14 +387,14 @@ export default function TagManagerPage() {
               ):(
                 <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:8,color:'var(--color-text-tertiary)'}}>
                   <ImageIcon style={{width:56,height:56,opacity:0.2}} />
-                  <span style={{fontSize:12,opacity:0.6}}>{images.length===0?t('tagManager.loadToShowImg'):t('tagManager.selectToPreview')}</span>
+                  <span style={{fontSize:12,opacity:0.6}}>{images.length===0?'':t('tagManager.selectToPreview')}</span>
                 </div>
               )}
             </div>
           </div>
 
           {/* row resize handle */}
-          <div onMouseDown={handleRowResizeStart} style={{height:6,cursor:'row-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title={t('tagManager.dragHeight')}>
+          <div onMouseDown={handleRowResizeStart} style={{height:6,cursor:'row-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
             <div style={{width:32,height:2,borderRadius:1,background:'var(--color-border)',transition:'background 0.15s'}} />
           </div>
 
@@ -807,79 +410,15 @@ export default function TagManagerPage() {
                 {savingSingle?<Loader2 style={{width:10,height:10,animation:'spin 1s linear infinite'}} />:<Save style={{width:10,height:10}} />} {t('tagManager.save')}
               </button>
             </div>
-            <div style={{flex:1,padding:'10px 14px',display:'flex',flexWrap:'wrap',gap:5,alignContent:'flex-start',overflowY:'auto',touchAction:'none'}}
-              onPointerMove={handlePointerMove} onPointerUp={handlePointerUp}>
-              {cur?.tags.map((tag,ti)=>{
-                const c=getChipColor(tag);const tr=getTranslation(tag,translations);
-                const isDragging=dragIdx===ti;
-                const isOverBefore=dragOverIdx===ti && dropSide==='before';
-                const isOverAfter=dragOverIdx===ti && dropSide==='after';
-                if(editingTagIdx===ti){
-                  return(
-                    <div key={ti} style={{width:Math.max(60,Math.min(200,tag.length*7+24))}}>
-                      <TagAutocomplete
-                        autoFocus
-                        initialValue={tag}
-                        placeholder={t('tagManager.inputTagPlaceholder')}
-                        clearOnSelect={true}
-                        onSelect={(v)=>replaceTagAt(ti,v)}
-                        onBlur={()=>setEditingTagIdx(null)}
-                        onKeyDown={(e)=>{ if(e.key==='Escape')setEditingTagIdx(null); }}
-                        inputStyle={{fontSize:11,height:26,border:'none',background:'var(--color-bg-input)',padding:'0 8px',outline:'none'}}
-                      />
-                    </div>
-                  );
-                }
-                return(
-                  <div key={ti} ref={el=>{chipRefs.current[ti]=el;}} style={{position:'relative',display:'inline-flex'}}
-                    onPointerDown={e=>handlePointerDown(e,ti)}
-                    onDoubleClick={e=>{if((e.target as HTMLElement).closest('button'))return;e.stopPropagation();setEditingDanbooru(false);setEditingTagIdx(ti);}}>
-                    {isOverBefore&&<div style={{position:'absolute',left:-3,top:2,bottom:2,width:2,borderRadius:1,background:'#7c5cfc',zIndex:1}} />}
-                    <div style={{display:'inline-flex',alignItems:'center',gap:3,padding:'3px 8px 3px 8px',borderRadius:16,background:c.bg,border:`1px solid ${c.bd}`,fontSize:11,color:c.tx,lineHeight:1.2,cursor:'grab',transition:'opacity 0.12s',opacity:isDragging?0.35:1,userSelect:'none'}}>
-                      <span>{tag}{tr&&<span style={{color:'var(--color-text-tertiary)',fontSize:10,marginLeft:3}}>({tr})</span>}</span>
-                      <button onClick={()=>removeTag(tag)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:14,height:14,borderRadius:'50%',background:'transparent',color:c.tx,opacity:0.4,transition:'all 0.12s',flexShrink:0}}
-                        onMouseEnter={e=>{e.currentTarget.style.opacity='1';e.currentTarget.style.background='rgba(248,113,113,0.15)';e.currentTarget.style.color='#f87171';}}
-                        onMouseLeave={e=>{e.currentTarget.style.opacity='0.4';e.currentTarget.style.background='transparent';e.currentTarget.style.color=c.tx;}}
-                      ><X style={{width:9,height:9}} /></button>
-                    </div>
-                    {isOverAfter&&<div style={{position:'absolute',right:-3,top:2,bottom:2,width:2,borderRadius:1,background:'#7c5cfc',zIndex:1}} />}
-                  </div>
-                );
-              })}
-              {!cur&&<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('tagManager.selectToEdit')}</span>}
-              {cur&&cur.tags.length===0&&!editingDanbooru&&<span onClick={()=>setEditingDanbooru(true)} style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic',cursor:'pointer'}}>{t('tagManager.noTagsClick')}</span>}
-              {cur&&(cur.tags.length>0)&&!editingDanbooru&&<button onClick={()=>setEditingDanbooru(true)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:20,height:20,borderRadius:'50%',background:'rgba(74,222,128,0.10)',border:'1px solid rgba(74,222,128,0.25)',color:'#4ade80',cursor:'pointer',flexShrink:0,opacity:0.5,transition:'opacity 0.15s'}}
-                onMouseEnter={e=>e.currentTarget.style.opacity='1'} onMouseLeave={e=>e.currentTarget.style.opacity='0.5'}
-              ><Plus style={{width:11,height:11}} /></button>}
-              {cur&&editingDanbooru&&<TagAutocomplete
-                autoFocus
-                placeholder={t('tagManager.inputTagPlaceholder')}
-                clearOnSelect={true}
-                keepOpen={true}
-                onSelect={(raw) => {
-                  // 支持一次输入多个：逗号分隔；格式跟随当前图片的现有惯例
-                  // （danbooru 原形 ↔ 空格形式，见 normalizeNewTag）
-                  const incoming = raw.split(/[,，]/)
-                    .map(s => normalizeNewTag(s, cur))
-                    .filter(Boolean);
-                  if (!incoming.length) return;
-                  setImages(p => p.map((img, i) => {
-                    if (i !== selectedIdx) return img;
-                    const next = [...img.tags];
-                    incoming.forEach(v => { if (!next.includes(v)) next.push(v); });
-                    return next.length === img.tags.length ? img : { ...img, tags: next, dirty: true };
-                  }));
-                }}
-                onBlur={() => setEditingDanbooru(false)}
-                onKeyDown={(e) => { if (e.key === 'Escape') setEditingDanbooru(false); }}
-                inputStyle={{ fontSize: 11, height: 26, border: 'none', background: 'transparent', padding: '0 6px', flex: '1 0 80px', minWidth: 80, maxWidth: 200, outline: 'none' }}
-              />}
+            <div style={{ flex: 1, padding: '10px 14px', overflowY: 'auto' }}>
+              {cur && <TagChipList key={cur.path} values={cur.tags} translations={translations} normalize={raw => normalizeNewTag(raw, cur)}
+                onChange={tags => setImages(previous => previous.map(image => image.path === cur.path && !sameTags(image.tags, tags) ? { ...image, tags, dirty: true } : image))} />}
             </div>
           </div>
         </div>
 
         {/* resize handle 2 */}
-        <div onMouseDown={e=>handleResizeStart('col3',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}} title={t('tagManager.dragWidth')}>
+        <div onMouseDown={e=>handleResizeStart('col3',e)} style={{width:6,cursor:'col-resize',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
           <div style={{width:2,height:32,borderRadius:1,background:'var(--color-border)',transition:'background 0.15s'}} />
         </div>
 
@@ -905,84 +444,8 @@ export default function TagManagerPage() {
                 </button>
               </div>
             </div>
-            <div style={{padding:'8px 10px',borderBottom:'1px solid var(--color-border)'}}>  
-              <div style={{display:'flex',gap:4}}>
-                <div style={{position:'relative',flex:1}}>
-                  <Search style={{position:'absolute',left:8,top:'50%',transform:'translateY(-50%)',width:12,height:12,color:'var(--color-text-tertiary)'}} />
-                  <input className="form-input" placeholder={t('tagManager.searchTags')} value={globalSearch} onChange={e=>setGlobalSearch(e.target.value)} style={{paddingLeft:26,fontSize:11,height:28}} />
-                </div>
-                <button className="btn btn-ghost btn-sm" onClick={()=>setTagSortBy(b=>b==='freq'?'name':'freq')}
-                  title={tagSortBy==='freq'?t('tagManager.sortByFreq'):t('tagManager.sortByName')}
-                  style={{width:28,height:28,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:tagSortBy==='freq'?'#60a5fa':'#a78bfa'}}>
-                  {tagSortBy==='freq'?<BarChart style={{width:13,height:13}} />:<Hash style={{width:13,height:13}} />}
-                </button>
-                <button className="btn btn-ghost btn-sm" onClick={()=>setTagSortDir(d=>d==='desc'?'asc':'desc')}
-                  title={tagSortDir==='desc'?t('tagManager.descOrder'):t('tagManager.ascOrder')}
-                  style={{width:28,height:28,padding:0,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,color:'var(--color-text-tertiary)'}}>
-                  <ArrowUpDown style={{width:13,height:13,transform:tagSortDir==='asc'?'scaleY(-1)':undefined,transition:'transform 0.2s'}} />
-                </button>
-              </div>
-            </div>
-            {tagFilterActive&&<div style={{padding:'4px 10px',background:'linear-gradient(90deg,rgba(124,92,252,0.08),rgba(124,92,252,0.02))',borderBottom:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:6}}>
-              <Filter style={{width:10,height:10,color:'#7c5cfc',flexShrink:0}} />
-              <span style={{fontSize:10,color:'#a78bfa',flex:1}}>{t('tagManager.filtering')} <b>{filtered.length}</b>/{images.length}</span>
-              <button onClick={()=>setTagFilterActive(false)} style={{display:'flex',alignItems:'center',justifyContent:'center',width:16,height:16,borderRadius:'50%',background:'rgba(248,113,113,0.1)',border:'none',cursor:'pointer',color:'#f87171',padding:0,flexShrink:0}}><X style={{width:8,height:8}} /></button>
-            </div>}
-            <div style={{flex:1,overflowY:'auto',userSelect:'none'}}>
-              {filteredStats.slice(0,statsLimit).map(([tag,count])=>{
-                const c=getChipColor(tag);const pct=images.length>0?(count/images.length)*100:0;
-                const inCur=cur?.tags.includes(tag);const tr=getTranslation(tag,translations);
-                const isSel=selectedTags.has(tag);
-                return(
-                  <div key={tag} onMouseDown={e=>e.preventDefault()} onClick={e=>toggleTagSelect(tag,e)}
-                    style={{display:'flex',alignItems:'center',gap:8,padding:'7px 12px',cursor:'pointer',borderBottom:'1px solid rgba(255,255,255,0.03)',
-                      background:isSel?'rgba(124,92,252,0.12)':inCur?'rgba(124,92,252,0.04)':'transparent',
-                      borderLeft:isSel?'2px solid #7c5cfc':'2px solid transparent',transition:'all 0.12s'}}
-                    onMouseEnter={e=>{if(!isSel)e.currentTarget.style.background=inCur?'rgba(124,92,252,0.08)':'var(--color-bg-hover)';}}
-                    onMouseLeave={e=>{e.currentTarget.style.background=isSel?'rgba(124,92,252,0.12)':inCur?'rgba(124,92,252,0.04)':'transparent';}}
-                  >
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:11,fontWeight:500,color:c.tx,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                        {tag}{tr&&<span style={{color:'var(--color-text-tertiary)',fontWeight:400,fontSize:10,marginLeft:4}}>{tr}</span>}
-                      </div>
-                      <div style={{height:3,borderRadius:2,background:'var(--color-bg-input)',marginTop:3,overflow:'hidden'}}>
-                        <div style={{width:`${pct}%`,height:'100%',borderRadius:2,background:`linear-gradient(90deg,${c.bd},${c.tx})`}} />
-                      </div>
-                    </div>
-                    <span style={{fontSize:10,color:'var(--color-text-tertiary)',minWidth:28,textAlign:'right',flexShrink:0}}>{count}</span>
-                    {inCur&&<CheckCircle2 style={{width:12,height:12,color:'#4ade80',flexShrink:0}} />}
-                  </div>
-                );
-              })}
-              {filteredStats.length>statsLimit&&(
-                <button className="btn btn-ghost" style={{width:'100%',height:30,fontSize:10,borderRadius:0}}
-                  onClick={()=>setStatsLimit(l=>l+TAG_STATS_BATCH)}>
-                  {t('common.showMore',{n:filteredStats.length-statsLimit})}
-                </button>
-              )}
-              {images.length===0&&<div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100%',gap:8,color:'var(--color-text-tertiary)',padding:20}}><Tags style={{width:28,height:28,opacity:0.2}} /><span style={{fontSize:11,opacity:0.6}}>{t('tagManager.loadTagsHint')}</span></div>}
-              {images.length>0&&filteredStats.length===0&&<div style={{padding:20,textAlign:'center',fontSize:11,color:'var(--color-text-tertiary)'}}>{globalSearch?t('tagManager.noMatch'):tagListMode==='common'?t('tagManager.commonTags'):t('tagManager.noTags')}</div>}
-            </div>
-            <div style={{padding:'6px 12px',borderTop:'1px solid var(--color-border)',fontSize:10,color:'var(--color-text-tertiary)',display:'flex',justifyContent:'space-between'}}>
-              {selectedTags.size>0?<span style={{color:'#a78bfa'}}>{t('tagManager.selected',{n:selectedTags.size})}</span>:<span>{t('tagManager.nTagTypes',{n:tagStats.length})}</span>}
-              <span>{taggedN}/{images.length} {t('tagManager.tagged')}</span>
-            </div>
-            {showTranslateBar && translateProgress && (
-              <div style={{padding:'5px 12px',borderTop:'1px solid var(--color-border)',display:'flex',alignItems:'center',gap:8,background:'rgba(96,165,250,0.04)'}}>
-                <span style={{fontSize:10,fontWeight:600,color:'#60a5fa',flexShrink:0}}>{t('tagManager.translateProgress')}</span>
-                <div style={{flex:1,height:3,borderRadius:2,background:'var(--color-border)',overflow:'hidden'}}>
-                  <div style={{
-                    width:`${translateProgress.total > 0 ? (translateProgress.current / translateProgress.total) * 100 : 0}%`,
-                    height:'100%',borderRadius:2,
-                    background: translateProgress.current >= translateProgress.total ? '#4ade80' : 'linear-gradient(90deg, #7c5cfc, #00d4ff)',
-                    transition:'width 0.3s ease'
-                  }} />
-                </div>
-                <span style={{fontSize:10,color: translateProgress.current >= translateProgress.total ? '#4ade80' : 'var(--color-text-tertiary)',whiteSpace:'nowrap',fontVariantNumeric:'tabular-nums'}}>
-                  {translateProgress.current >= translateProgress.total ? '✓ ' : ''}{translateProgress.current}/{translateProgress.total}
-                </span>
-              </div>
-            )}
+            <TagStatsPanel stats={stats} translations={translations} currentTags={new Set(cur?.tags ?? [])} total={images.length}
+              filteredCount={filtered.length} filterActive={tagFilterActive} onClearFilter={() => setTagFilterActive(false)} progress={translateProgress} />
           </div>
 
           {/* 工具栏 */}
@@ -1018,9 +481,8 @@ export default function TagManagerPage() {
       </div>
 
       {/* ═ 批量添加弹窗 ═ */}
-      {showAddModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
-        <div style={{background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',padding:20,width:380,maxWidth:'90vw'}} onClick={e=>e.stopPropagation()}>
-          <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>{t('tagManager.batchAddTitle')}</h3>
+      <Modal open={showAddModal} onClose={() => setShowAddModal(false)} title={t('tagManager.batchAddTitle')}>
+
           <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>{t('tagManager.tagContent')}</label>
           <input className="form-input" placeholder="1girl, solo, smile" value={addTagInput}
             onChange={e=>setAddTagInput(e.target.value)}
@@ -1033,15 +495,8 @@ export default function TagManagerPage() {
               <input type="radio" checked={addPosition==='end'} onChange={()=>setAddPosition('end')} /> {t('tagManager.append')}
             </label>
           </div>
-          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>{t('tagManager.applyScope')}</label>
-          <div style={{display:'flex',gap:12,marginBottom:12}}>
-            <label style={{fontSize:11,color:'var(--color-text-secondary)',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}>
-              <input type="radio" checked={addScope==='all'} onChange={()=>setAddScope('all')} /> {t('tagManager.scopeAllImages')}
-            </label>
-            <label style={{fontSize:11,color:cur?'var(--color-text-secondary)':'var(--color-text-tertiary)',display:'flex',alignItems:'center',gap:4,cursor:cur?'pointer':'not-allowed'}}>
-              <input type="radio" checked={addScope==='current'} disabled={!cur} onChange={()=>setAddScope('current')} /> {t('tagManager.scopeCurrentImage')}
-            </label>
-          </div>
+          <ScopeToggle value={addScope} onChange={setAddScope} hasCurrent={!!cur} />
+
           <Checkbox checked={addOverwrite} onChange={setAddOverwrite} size={14}
             label={t('tagManager.overwriteIfExist')}
             style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:16}} />
@@ -1051,13 +506,10 @@ export default function TagManagerPage() {
               {addScope==='all'?t('tagManager.addToAll'):t('tagManager.addToCurrentOne')}
             </button>
           </div>
-        </div>
-      </div>}
-
+      </Modal>
       {/* ═ 批量删除弹窗 ═ */}
-      {showDeleteModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
-        <div style={{background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',padding:20,width:380,maxWidth:'90vw'}} onClick={e=>e.stopPropagation()}>
-          <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>{t('tagManager.batchDeleteTitle')}</h3>
+      <Modal open={showDeleteModal} onClose={() => setShowDeleteModal(false)} title={t('tagManager.batchDeleteTitle')}>
+
           <div style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:10}}>
             {t('tagManager.deleteTagsHint',{n:selectedTags.size})}
           </div>
@@ -1066,28 +518,18 @@ export default function TagManagerPage() {
               <span key={tag} style={{fontSize:10,padding:'1px 7px',borderRadius:4,border:'1px solid rgba(248,113,113,0.45)',background:'rgba(248,113,113,0.06)',color:'var(--color-text-secondary)'}}>{tag}</span>
             ))}
           </div>
-          <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>{t('tagManager.applyScope')}</label>
-          <div style={{display:'flex',gap:12,marginBottom:16}}>
-            <label style={{fontSize:11,color:'var(--color-text-secondary)',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}>
-              <input type="radio" checked={deleteScope==='all'} onChange={()=>setDeleteScope('all')} /> {t('tagManager.scopeAllImages')}
-            </label>
-            <label style={{fontSize:11,color:cur?'var(--color-text-secondary)':'var(--color-text-tertiary)',display:'flex',alignItems:'center',gap:4,cursor:cur?'pointer':'not-allowed'}}>
-              <input type="radio" checked={deleteScope==='current'} disabled={!cur} onChange={()=>setDeleteScope('current')} /> {t('tagManager.scopeCurrentImage')}
-            </label>
-          </div>
+          <ScopeToggle value={deleteScope} onChange={setDeleteScope} hasCurrent={!!cur} />
+
           <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
             <button className="btn btn-secondary" style={{height:30,fontSize:11}} onClick={()=>setShowDeleteModal(false)}>{t('tagManager.cancel')}</button>
             <button className="btn btn-primary" style={{height:30,fontSize:11,background:'#ef4444',borderColor:'#ef4444'}} onClick={handleBatchDelete} disabled={deleteScope==='current'&&!cur}>
               {deleteScope==='all'?t('tagManager.deleteFromAll'):t('tagManager.deleteFromCurrentOne')}
             </button>
           </div>
-        </div>
-      </div>}
-
+      </Modal>
       {/* ═ 替换弹窗 ═ */}
-      {showReplaceModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}}>
-        <div style={{background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',padding:20,width:380,maxWidth:'90vw'}} onClick={e=>e.stopPropagation()}>
-          <h3 style={{margin:'0 0 14px',fontSize:14,fontWeight:700,color:'var(--color-text-primary)'}}>{t('tagManager.replaceTitle')}</h3>
+      <Modal open={showReplaceModal} onClose={() => setShowReplaceModal(false)} title={t('tagManager.replaceTitle')}>
+
           <label style={{fontSize:11,color:'var(--color-text-secondary)',marginBottom:4,display:'block'}}>{t('tagManager.originalTag')}</label>
           <div style={{position:'relative',marginBottom:10}}>
             <input className="form-input" placeholder={t('tagManager.searchAndSelect')} value={replaceDropOpen ? replaceSearch : replaceFrom}
@@ -1129,9 +571,7 @@ export default function TagManagerPage() {
             <button className="btn btn-secondary" style={{height:30,fontSize:11}} onClick={()=>{setShowReplaceModal(false);setReplaceDropOpen(false);}}>{t('tagManager.cancel')}</button>
             <button className="btn btn-primary" style={{height:30,fontSize:11}} onClick={handleReplace} disabled={!replaceFrom.trim()||!replaceTo.trim()}>{t('tagManager.replaceAll')}</button>
           </div>
-        </div>
-      </div>}
-    </div>
+      </Modal>    </div>
 
       <AlertModal
         open={!!alertMsg}

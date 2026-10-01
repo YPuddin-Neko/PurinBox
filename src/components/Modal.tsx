@@ -1,4 +1,5 @@
-import { useEffect, useRef, ReactNode } from 'react';
+import { useEffect, ReactNode, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, Info, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -8,11 +9,13 @@ interface ModalProps {
   title?: string;
   children: ReactNode;
   variant?: 'info' | 'warning' | 'error';
+  maxWidth?: number;
+  headerExtra?: ReactNode;
+  bodyStyle?: CSSProperties;
 }
 
-export function Modal({ open, onClose, title, children, variant = 'info' }: ModalProps) {
+export function Modal({ open, onClose, title, children, variant = 'info', maxWidth = 480, headerExtra, bodyStyle }: ModalProps) {
   const { t } = useTranslation();
-  const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -25,36 +28,38 @@ export function Modal({ open, onClose, title, children, variant = 'info' }: Moda
 
   const iconColor = variant === 'error' ? '#f87171' : variant === 'warning' ? '#fbbf24' : '#60a5fa';
 
-  return (
-    <div ref={overlayRef} onClick={e => { if (e.target === overlayRef.current) onClose(); }}
+  return createPortal(
+    <div onClick={e => { if (e.target === e.currentTarget) onClose(); }}
       style={{
         position: 'fixed', inset: 0, zIndex: 99998,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)',
         animation: 'fadeIn 0.15s ease',
       }}>
-      <div style={{
+      <div role="dialog" aria-modal="true" aria-label={title || t('modal.hint')} style={{
         background: 'var(--color-bg-secondary)', border: '1px solid var(--color-border)',
-        borderRadius: 12, padding: '20px 24px', minWidth: 320, maxWidth: 480,
+        borderRadius: 12, padding: '20px 24px', width: 'calc(100vw - 32px)', maxWidth,
+        maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
         boxShadow: '0 16px 48px rgba(0,0,0,0.3)', animation: 'slideUp 0.2s ease',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
             {variant === 'error' || variant === 'warning'
               ? <AlertTriangle style={{ width: 18, height: 18, color: iconColor }} />
               : <Info style={{ width: 18, height: 18, color: iconColor }} />}
-            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)' }}>{title || t('modal.hint')}</span>
+            <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)', overflowWrap: 'anywhere' }}>{title || t('modal.hint')}</span>
           </div>
+          {headerExtra}
           <button onClick={onClose} style={{
             background: 'none', border: 'none', cursor: 'pointer', padding: 4, borderRadius: 6,
             color: 'var(--color-text-tertiary)', display: 'flex',
           }}><X style={{ width: 16, height: 16 }} /></button>
         </div>
-        <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--color-text-secondary)', whiteSpace: 'pre-wrap' }}>
+        <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--color-text-secondary)', whiteSpace: 'pre-wrap', overflow: 'auto', minHeight: 0, ...bodyStyle }}>
           {children}
         </div>
       </div>
-    </div>
+    </div>, document.body
   );
 }
 
@@ -78,8 +83,7 @@ export function ConfirmModal({ open, onClose, onConfirm, title, message, confirm
       <div>{message}</div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
         <button className="btn btn-secondary btn-sm" onClick={onClose}>{cct}</button>
-        <button className="btn btn-primary btn-sm" onClick={() => { onConfirm(); onClose(); }}
-          style={variant === 'error' ? { background: 'rgba(248,113,113,0.15)', color: '#f87171', borderColor: 'rgba(248,113,113,0.3)' } : undefined}>
+        <button className={`btn btn-sm ${variant === 'error' ? 'btn-danger' : 'btn-primary'}`} onClick={() => { onConfirm(); onClose(); }}>
           {ct}
         </button>
       </div>

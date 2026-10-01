@@ -1,27 +1,23 @@
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Mutex;
-use tauri::Emitter;
 
-use super::{
-    OnnxModelInfo, ProcessResult, ProgressEvent, TagCategory, TagDefinition, TaggerOptions,
-};
-use crate::commands::python_proc;
-use crate::commands::{collect_image_files, collect_image_files_recursive};
+use super::models::ModelDefinition;
+use super::{OnnxModelInfo, ProcessResult, ProgressEvent, TaggerOptions};
+use crate::commands::python_proc::{self, ProtocolReader, Recv, PYTHON_SILENCE_LIMIT};
+use crate::commands::{collect_image_files_with_recursive, file_name_lossy, report_failed_copies};
 
 /// 全局打标取消标志
 static TAGGING_CANCELLED: AtomicBool = AtomicBool::new(false);
 
-/// 全局 Python 进程（切换硬件时会杀死重建）
+/// 当前打标/转换任务的 Python 子进程（每次任务新建），取消时经此终止
 static PYTHON_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 
 /// 取消打标
 pub fn cancel_tagging() {
     TAGGING_CANCELLED.store(true, Ordering::SeqCst);
-    // 杀死正在运行的 Python 进程
     kill_python_process();
 }
 
@@ -39,6 +35,9 @@ pub fn is_tagging_cancelled() -> bool {
 /// 转换模式也必须登记，否则取消时杀不到那个进程。
 pub(crate) fn register_python_process(child: Child) {
     *PYTHON_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
+    if is_tagging_cancelled() {
+        kill_python_process();
+    }
 }
 
 /// 取出全局句柄（已被取消杀掉时为 None），供调用方 wait 回收
@@ -52,65 +51,10 @@ pub fn kill_python_process() {
     crate::commands::kill_child_tree(&PYTHON_PROCESS);
 }
 
-/// 协议读取的静默上限：超过该时长没有任何输出行，视为 Python 进程卡死
-const PYTHON_SILENCE_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
-
-enum ProtocolRead {
-    Line(std::io::Result<String>),
-    Disconnected,
-    Timeout,
-}
-
-/// 以短 tick 轮询协议行。接收端不能裸 recv() 死等：
-/// Python 卡死（进程存活但不再输出）时任务会永久停滞；
-/// 取消时进程树被杀、通道断开，经 Disconnected 正常收尾。
-fn recv_protocol_line(line_rx: &mpsc::Receiver<std::io::Result<String>>) -> ProtocolRead {
-    let start = std::time::Instant::now();
-    loop {
-        match line_rx.recv_timeout(std::time::Duration::from_secs(2)) {
-            Ok(v) => return ProtocolRead::Line(v),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if start.elapsed() >= PYTHON_SILENCE_LIMIT {
-                    return ProtocolRead::Timeout;
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => return ProtocolRead::Disconnected,
-        }
-    }
-}
-
-/// 运行命令并隐藏 Windows 控制台窗口，返回 stdout 或错误信息
-fn run_hidden_cmd(program: &str, args: &[&str]) -> Result<String, String> {
-    let mut cmd = Command::new(program);
-    cmd.args(args).env("PYTHONIOENCODING", "utf-8");
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-
-    match cmd.output() {
-        Ok(output) if output.status.success() => {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            Err(format!(
-                "exit code: {:?}, stderr: {}",
-                output.status.code(),
-                stderr
-            ))
-        }
-        Err(e) => Err(format!("{}", e)),
-    }
-}
-
 /// 自动检测 ONNX 模型的输入信息（使用 Python 调用）
 pub fn detect_model_info(model_path: &str) -> Result<OnnxModelInfo, String> {
-    // 使用 Python 快速检测模型信息
-    let python = find_python()?;
-    let script = get_script_path()?;
+    let python = crate::commands::python_env::get_python_exe().ok_or("未找到可用的 Python 环境")?;
+    let script = python_proc::find_script("tagger_inference.py")?;
 
     let mut cmd = Command::new(&python);
     cmd.args([script.to_string_lossy().as_ref(), "--detect", model_path])
@@ -118,15 +62,11 @@ pub fn detect_model_info(model_path: &str) -> Result<OnnxModelInfo, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("PYTHONIOENCODING", "utf-8");
-    // Windows 下隐藏控制台窗口（此前漏配，点"自动检测"会闪黑框）
+    // Windows 下隐藏控制台窗口
     python_proc::configure_python_command(&mut cmd, false);
-    let child = cmd
-        .spawn()
+    let output = cmd
+        .output()
         .map_err(|e| format!("启动 Python 失败: {}", e))?;
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("等待 Python 失败: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -151,13 +91,11 @@ pub fn detect_model_info(model_path: &str) -> Result<OnnxModelInfo, String> {
                     .and_then(|v| v.as_array())
                     .map(|a| a.iter().filter_map(|v| v.as_i64()).collect())
                     .unwrap_or_default();
-                let channels = val.get("channels").and_then(|v| v.as_i64()).unwrap_or(3);
 
                 return Ok(OnnxModelInfo {
                     input_size,
                     input_format,
                     input_shape: shape,
-                    channels,
                 });
             }
         }
@@ -166,308 +104,103 @@ pub fn detect_model_info(model_path: &str) -> Result<OnnxModelInfo, String> {
     Err("无法解析模型信息".into())
 }
 
-/// 从 CSV 文件加载标签定义
-pub fn load_tags(csv_path: &Path) -> Result<Vec<TagDefinition>, String> {
-    let mut reader =
-        csv::Reader::from_path(csv_path).map_err(|e| format!("无法读取标签文件: {}", e))?;
-
-    let mut tags = Vec::new();
-    for result in reader.records() {
-        let record = result.map_err(|e| format!("CSV 解析错误: {}", e))?;
-        if record.len() >= 3 {
-            let name = record.get(1).unwrap_or("").to_string();
-            let cat_id: i32 = record.get(2).unwrap_or("0").parse().unwrap_or(0);
-            if let Some(category) = TagCategory::from_csv_id(cat_id) {
-                tags.push(TagDefinition { name, category });
-            }
-        }
-    }
-    Ok(tags)
-}
-
-/// 从 JSON 文件加载标签定义 (CL Tagger 格式)
-pub fn load_tags_json(json_path: &Path) -> Result<Vec<TagDefinition>, String> {
-    let content =
-        std::fs::read_to_string(json_path).map_err(|e| format!("无法读取标签文件: {}", e))?;
-
-    let value: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| format!("JSON 解析错误: {}", e))?;
-
-    if let Some(idx_to_tag) = value.get("idx_to_tag") {
-        return load_vocabulary_json_tags(idx_to_tag, &value);
-    }
-    if let Some(groups) = value
-        .get("categories")
-        .and_then(|v| v.as_array())
-        .filter(|groups| groups.iter().any(|g| g.get("tags").is_some()))
-    {
-        return load_grouped_json_tags(groups, &value);
-    }
-
-    load_legacy_json_tags(&value)
-}
-
-fn load_grouped_json_tags(
-    groups: &[serde_json::Value],
-    root: &serde_json::Value,
-) -> Result<Vec<TagDefinition>, String> {
-    let invalid = || "JSON 标签文件的分类索引或数量无效".to_string();
-    let mut groups: Vec<_> = groups.iter().collect();
-    groups.sort_by_key(|group| group.get("offset").and_then(|v| v.as_u64()));
-    let mut tags = Vec::new();
-    for group in groups {
-        let offset = group
-            .get("offset")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(invalid)?;
-        let count = group
-            .get("count")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(invalid)?;
-        let names = group
-            .get("tags")
-            .and_then(|v| v.as_array())
-            .ok_or_else(invalid)?;
-        if offset != tags.len() as u64 || count != names.len() as u64 {
-            return Err(invalid());
-        }
-        let category = category_from_value(group.get("name"), None);
-        for name in names {
-            tags.push(TagDefinition {
-                name: name.as_str().ok_or_else(invalid)?.to_string(),
-                category: category.clone(),
-            });
-        }
-    }
-    if root.get("num_classes").and_then(|v| v.as_u64()) != Some(tags.len() as u64) {
-        return Err(invalid());
-    }
-    Ok(tags)
-}
-
-fn load_legacy_json_tags(value: &serde_json::Value) -> Result<Vec<TagDefinition>, String> {
-    let map = value
-        .as_object()
-        .ok_or_else(|| "JSON 标签文件格式不支持".to_string())?;
-    let mut tags: Vec<(usize, TagDefinition)> = Vec::new();
-    for (idx_str, val) in map {
-        let idx: usize = idx_str.parse().unwrap_or(0);
-        let tag_name = val
-            .get("tag")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let category = category_from_value(val.get("category"), None);
-        tags.push((
-            idx,
-            TagDefinition {
-                name: tag_name,
-                category,
-            },
-        ));
-    }
-    tags.sort_by_key(|(idx, _)| *idx);
-    Ok(tags.into_iter().map(|(_, tag)| tag).collect())
-}
-
-fn load_vocabulary_json_tags(
-    idx_to_tag: &serde_json::Value,
-    root: &serde_json::Value,
-) -> Result<Vec<TagDefinition>, String> {
-    let mut indexed_tags: Vec<(usize, String)> = Vec::new();
-
-    if let Some(arr) = idx_to_tag.as_array() {
-        for (idx, tag) in arr.iter().enumerate() {
-            if let Some(name) = tag.as_str() {
-                indexed_tags.push((idx, name.to_string()));
-            }
-        }
-    } else if let Some(map) = idx_to_tag.as_object() {
-        for (idx_str, tag) in map {
-            if let Some(name) = tag.as_str() {
-                let idx = idx_str.parse::<usize>().unwrap_or(indexed_tags.len());
-                indexed_tags.push((idx, name.to_string()));
-            }
-        }
+pub(super) fn emit_summary<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    result: &ProcessResult,
+    skipped: u32,
+    cancelled: bool,
+) {
+    let completed = result.success_count + result.fail_count;
+    let message = if cancelled {
+        format!(
+            "已取消: 已完成 {}/{}, 成功 {}, 失败 {}",
+            completed, result.total, result.success_count, result.fail_count
+        )
+    } else if skipped > 0 {
+        format!(
+            "打标完成: 成功 {}（含跳过 {}）, 失败 {}, 共 {}",
+            result.success_count, skipped, result.fail_count, result.total
+        )
     } else {
-        return Err("model_vocabulary.json 缺少 idx_to_tag".into());
-    }
-
-    indexed_tags.sort_by_key(|(idx, _)| *idx);
-    let tag_to_category = root.get("tag_to_category").and_then(|v| v.as_object());
-    let idx_to_category = root.get("idx_to_category").and_then(|v| v.as_object());
-    let categories = root.get("categories");
-
-    Ok(indexed_tags
-        .into_iter()
-        .map(|(idx, name)| {
-            let category_value = tag_to_category
-                .and_then(|map| map.get(&name))
-                .or_else(|| idx_to_category.and_then(|map| map.get(&idx.to_string())));
-            TagDefinition {
-                name,
-                category: category_from_value(category_value, categories),
-            }
-        })
-        .collect())
-}
-
-fn category_from_value(
-    value: Option<&serde_json::Value>,
-    categories: Option<&serde_json::Value>,
-) -> TagCategory {
-    let raw = match value {
-        Some(v) if v.is_string() => {
-            let s = v.as_str().unwrap_or_default();
-            if let Ok(idx) = s.parse::<usize>() {
-                resolve_category_index(idx, categories).unwrap_or_else(|| s.to_string())
-            } else {
-                s.to_string()
-            }
-        }
-        Some(v) if v.is_u64() => {
-            resolve_category_index(v.as_u64().unwrap_or(0) as usize, categories)
-                .unwrap_or_else(|| "General".to_string())
-        }
-        _ => "General".to_string(),
+        format!(
+            "打标完成: 成功 {}, 失败 {}, 共 {}",
+            result.success_count, result.fail_count, result.total
+        )
     };
-
-    match raw.to_lowercase().replace('-', "_").as_str() {
-        "artist" => TagCategory::Artist,
-        "style" => TagCategory::Style,
-        "copyright" | "copyrights" => TagCategory::Copyright,
-        "character" | "characters" => TagCategory::Character,
-        "meta" => TagCategory::Meta,
-        "rating" => TagCategory::Rating,
-        "quality" => TagCategory::Quality,
-        "model" => TagCategory::Model,
-        _ => TagCategory::General,
-    }
+    ProgressEvent::new("done", message)
+        .at(
+            if cancelled { completed } else { result.total },
+            result.total,
+        )
+        .emit(app, "tagger-progress");
 }
 
-fn resolve_category_index(index: usize, categories: Option<&serde_json::Value>) -> Option<String> {
-    let categories = categories?;
-    if let Some(arr) = categories.as_array() {
-        return arr
-            .get(index)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-    }
-    if let Some(obj) = categories.as_object() {
-        return obj
-            .get(&index.to_string())
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-    }
-    None
-}
-
-/// 查找 Python 可执行文件
-pub(crate) fn find_python() -> Result<String, String> {
-    // 1. 优先使用 python_env 模块管理的环境
-    if let Some(python) = super::python_env::get_python_exe() {
-        return Ok(python);
-    }
-
-    // 2. 检查系统 Python（需要有 onnxruntime）
-    for name in &["python3", "python"] {
-        if let Ok(output) = run_hidden_cmd(name, &["--version"]) {
-            if output.contains("Python 3")
-                && run_hidden_cmd(name, &["-c", "import onnxruntime"]).is_ok()
-            {
-                return Ok(name.to_string());
-            }
+fn should_skip(path: &Path, options: &TaggerOptions) -> bool {
+    options.existing_tags_action == "skip"
+        && if options.output_format == "json" {
+            path.with_extension("json").exists()
+        } else {
+            path.with_extension("txt").exists()
+                || (options.also_skip_json && path.with_extension("json").exists())
         }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let candidates = [
-            r"C:\Python312\python.exe",
-            r"C:\Python311\python.exe",
-            r"C:\Python310\python.exe",
-        ];
-        for path in &candidates {
-            if std::path::Path::new(path).exists() {
-                return Ok(path.to_string());
-            }
-        }
-    }
-
-    Err("未找到可用的 Python 环境".into())
 }
 
-/// 获取推理脚本路径
-fn get_script_path() -> Result<std::path::PathBuf, String> {
-    python_proc::find_script("tagger_inference.py")
-}
-
-/// 检查 Python 环境是否满足要求
-pub fn check_python_env() -> Result<(String, String), String> {
-    let python = find_python()?;
-
-    // 检查 onnxruntime
-    let check_script = "import onnxruntime as ort; print(ort.__version__); print(','.join(ort.get_available_providers()))";
-    let output = run_hidden_cmd(&python, &["-c", check_script]);
-
-    match output {
-        Ok(stdout) => {
-            let lines: Vec<&str> = stdout.trim().lines().collect();
-            let ort_version = lines.first().unwrap_or(&"unknown").to_string();
-            let providers = lines.get(1).unwrap_or(&"CPUExecutionProvider").to_string();
-            Ok((ort_version, providers))
-        }
-        Err(_) => Err(format!(
-            "onnxruntime 未安装。请运行:\n  {} -m pip install onnxruntime\n\
-                 如需 GPU 加速:\n  {} -m pip install onnxruntime-gpu",
-            python, python
-        )),
+// 所有提前返回路径都必须回收已登记的子进程。
+pub(super) struct ProcessGuard;
+impl Drop for ProcessGuard {
+    fn drop(&mut self) {
+        kill_python_process();
     }
 }
 
-/// 执行批量打标（通过 Python 子进程）
-#[allow(clippy::too_many_arguments)]
 pub fn run_tagging(
     app: &tauri::AppHandle,
     options: &TaggerOptions,
-    model_path: &Path,
-    tags_path: &Path,
-    _tag_defs: &[TagDefinition],
-    _input_size: u32,
-    _is_nchw: bool,
-    preprocess_mode: &str,
-    output_kind: &str,
-    category_thresholds: &std::collections::BTreeMap<String, f32>,
+    python: &str,
+    model: &ModelDefinition,
+    model_dir: &Path,
 ) -> Result<ProcessResult, String> {
-    // 停止现有推理进程，确保全局句柄只对应当前任务。
+    let script = python_proc::find_script("tagger_inference.py")?;
+    run_tagging_process(app, options, python, model, model_dir, &script)
+}
+
+fn run_tagging_process<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    options: &TaggerOptions,
+    python: &str,
+    model: &ModelDefinition,
+    model_dir: &Path,
+    script: &Path,
+) -> Result<ProcessResult, String> {
     kill_python_process();
+    let input_dir = Path::new(&options.input_path);
+    let files = collect_image_files_with_recursive(input_dir, options.recursive)?;
+    let total = files.len() as u32;
+    let mut result = ProcessResult {
+        total,
+        ..Default::default()
+    };
+    if is_tagging_cancelled() {
+        emit_summary(app, &result, 0, true);
+        return Ok(result);
+    }
 
-    // 查找 Python
-    let python = find_python()?;
-    let script = get_script_path()?;
-
-    // 启动 Python 子进程
-    let mut cmd = Command::new(&python);
-    cmd.arg(script.to_string_lossy().as_ref())
+    let mut cmd = Command::new(python);
+    cmd.arg(script)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("NO_COLOR", "1")
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONIOENCODING", "utf-8");
-
-    // Windows: 无窗口 + GPU 模式注入 CUDA/cuDNN DLL 路径（共享实现见 python_proc）
     python_proc::configure_python_command_with_priority(
         &mut cmd,
         options.use_gpu,
-        options.use_gpu && preprocess_mode == "pixai_v1",
+        options.use_gpu && model.heavy_gpu,
     );
-
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("启动 Python 进程失败: {}", e))?;
-
-    // 取出管道句柄（take 出管道后 Child 仍可 kill/wait）
     let (mut stdin, stdout, stderr) =
         match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
             (Some(i), Some(o), Some(e)) => (i, o, e),
@@ -477,680 +210,377 @@ pub fn run_tagging(
                 return Err("无法获取 Python 进程管道".into());
             }
         };
-
-    // 把 Child 句柄存入全局，这样 cancel_tagging() -> kill_python_process() 才能真正杀掉进程
-    *PYTHON_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
-
-    // 启动 stderr 读取线程（解码后过滤 onnxruntime/CUDA 噪音，其余转发到日志）
+    register_python_process(child);
+    let _guard = ProcessGuard;
     let app_err = app.clone();
-    std::thread::spawn(move || {
-        python_proc::for_each_stderr_line(stderr, |clean| {
-            let lower = clean.to_lowercase();
-            if lower.contains("context leak")
-                || lower.contains("msgtracer")
-                || lower.contains("number of partitions supported by coreml")
-                || lower.contains("cudnn")
-                || lower.contains("cuda_path")
-                || lower.contains("onnxruntime")
-                || lower.contains("could not load")
-                || lower.contains("loaded library")
-            {
-                return;
+    let stderr_reader = std::thread::spawn(move || {
+        python_proc::for_each_stderr_line(stderr, |line| {
+            if !python_proc::is_runtime_noise(&line) && !is_tagging_cancelled() {
+                ProgressEvent::new("warning", format!("[Python] {}", line))
+                    .emit(&app_err, "tagger-progress");
             }
-            let _ = app_err.emit(
-                "tagger-progress",
-                ProgressEvent {
-                    current: 0,
-                    total: 0,
-                    filename: String::new(),
-                    status: "warning".to_string(),
-                    message: format!("[Python] {}", clean),
-                    ..Default::default()
-                },
-            );
         });
     });
-
+    let reader = ProtocolReader::spawn(stdout);
     let init_cmd = serde_json::json!({
         "cmd": "init",
-        "model_path": model_path.to_string_lossy(),
-        "tags_path": tags_path.to_string_lossy(),
+        "model_path": model_dir.join("model.onnx").to_string_lossy(),
+        "tags_path": model_dir.join(model.tags_basename()).to_string_lossy(),
         "use_gpu": options.use_gpu,
-        "input_size": _input_size,
-        "preprocess_mode": preprocess_mode,
-        "output_kind": output_kind,
-        "category_thresholds": category_thresholds,
+        "input_size": model.input_size,
+        "preprocess_mode": model.preprocess_mode,
+        "output_kind": model.output_kind,
+        "category_thresholds": model.category_thresholds,
+        "conservative_cuda": model.heavy_gpu,
     });
-
     if let Err(e) = writeln!(stdin, "{}", init_cmd) {
-        kill_python_process();
+        if is_tagging_cancelled() {
+            emit_summary(app, &result, 0, true);
+            return Ok(result);
+        }
         return Err(format!("发送 init 命令失败: {}", e));
     }
 
-    // stdout 读取线程：阻塞的行读取放到独立线程，通过 channel 把行发给主逻辑，
-    // 这样模型加载的超时检查不会被阻塞的读取卡住
-    let (line_tx, line_rx) = mpsc::channel::<std::io::Result<String>>();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            let is_err = line.is_err();
-            if line_tx.send(line).is_err() || is_err {
-                break;
-            }
-        }
-        // 线程退出时 line_tx 被 drop，接收端收到 Disconnected 即等价于 EOF
-    });
-
-    // 等待 ready（120 秒加载超时，即使 Python 无任何输出挂死也能触发）
-    let mut ready = false;
-    let load_deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     loop {
+        let received = reader.recv_until(deadline);
         if is_tagging_cancelled() {
-            kill_python_process();
-            return Ok(ProcessResult {
-                success_count: 0,
-                fail_count: 0,
-                total: 0,
-                errors: vec![],
-            });
+            emit_summary(app, &result, 0, true);
+            return Ok(result);
         }
-
-        let now = std::time::Instant::now();
-        if now >= load_deadline {
-            kill_python_process();
-            return Err("模型加载超时(120秒)".into());
-        }
-
-        let line = match line_rx.recv_timeout(load_deadline - now) {
-            Ok(Ok(line)) => line,
-            // 读取出错或进程退出（EOF）：跳出循环按未就绪处理
-            Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                kill_python_process();
-                return Err("模型加载超时(120秒)".into());
-            }
-        };
-
-        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-            let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            match msg_type {
-                "log" => {
-                    let text = msg
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let i18n_key = msg
-                        .get("i18n_key")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let i18n_params = msg.get("i18n_params").cloned();
-                    let _ = app.emit(
-                        "tagger-progress",
-                        ProgressEvent {
-                            current: 0,
-                            total: 0,
-                            filename: String::new(),
-                            status: "info".to_string(),
-                            message: text,
-                            i18n_key,
-                            i18n_params,
-                        },
-                    );
-                }
+        match received {
+            Recv::Msg(msg) => match msg["type"].as_str().unwrap_or("") {
+                "ready" => break,
+                "log" => ProgressEvent::python_log(&msg, 0, 0).emit(app, "tagger-progress"),
                 "error" => {
-                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                    let _ = app.emit(
-                        "tagger-progress",
-                        ProgressEvent {
-                            current: 0,
-                            total: 0,
-                            filename: String::new(),
-                            status: "error".to_string(),
-                            message: text.to_string(),
-                            ..Default::default()
-                        },
-                    );
-                    kill_python_process();
-                    return Err(format!("Python 推理错误: {}", text));
-                }
-                "ready" => {
-                    ready = true;
-                    break;
+                    return Err(format!(
+                        "Python 推理错误: {}",
+                        msg["message"].as_str().unwrap_or("")
+                    ));
                 }
                 _ => {}
+            },
+            Recv::Closed => return Err("Python 进程未能成功初始化".into()),
+            Recv::TimedOut => return Err("模型加载超时(120秒)".into()),
+        }
+    }
+
+    ProgressEvent::new("info", format!("读取到 {} 张图片", total))
+        .at(0, total)
+        .emit(app, "tagger-progress");
+    let base_cmd = serde_json::json!(options);
+    let mut skipped = 0;
+    let mut failed_files = Vec::new();
+    'batches: for chunk in files.chunks(options.batch_size.max(1) as usize) {
+        if is_tagging_cancelled() {
+            break;
+        }
+        let mut pending = Vec::new();
+        for path in chunk {
+            if should_skip(path, options) {
+                skipped += 1;
+                result.success_count += 1;
+                let name = file_name_lossy(path);
+                ProgressEvent::new(
+                    "success",
+                    format!("[跳过] {}（已有标签或原文件受保护）", name),
+                )
+                .at(result.success_count + result.fail_count, total)
+                .file(name)
+                .emit(app, "tagger-progress");
+            } else {
+                pending.push(path.clone());
             }
         }
-    }
-
-    if !ready {
-        kill_python_process();
-        if is_tagging_cancelled() {
-            return Ok(ProcessResult {
-                success_count: 0,
-                fail_count: 0,
-                total: 0,
-                errors: vec![],
-            });
+        if pending.is_empty() {
+            continue;
         }
-        return Err("Python 进程未能成功初始化".into());
-    }
-
-    // 收集图片文件（失败时杀掉已启动的 Python 进程，避免泄漏）
-    let input_dir = Path::new(&options.input_path);
-    let files_result = if options.recursive {
-        collect_image_files_recursive(input_dir)
-    } else {
-        collect_image_files(input_dir)
-    };
-    let files = match files_result {
-        Ok(f) => f,
-        Err(e) => {
-            kill_python_process();
-            return Err(e);
-        }
-    };
-    let total = files.len() as u32;
-    let mut success_count = 0u32;
-    let mut fail_count = 0u32;
-    // 保护性跳过（已有标签 / 原标签文件不可读时拒写）单独计数，别伪装成"完成"
-    let mut skip_count = 0u32;
-    let mut errors = Vec::new();
-    // 打不上标的图收集起来，跑完复制进 Fail/ 供重跑，和 LLM 打标一致
-    let mut failed_files: Vec<std::path::PathBuf> = Vec::new();
-
-    let enabled_cats: Vec<&str> = options
-        .enabled_categories
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
-
-    // 逐图片发送 tag 命令
-    let _ = app.emit(
-        "tagger-progress",
-        ProgressEvent {
-            current: 0,
-            total,
-            filename: String::new(),
-            status: "info".to_string(),
-            message: format!("读取到 {} 张图片", total),
-            ..Default::default()
-        },
-    );
-
-    let batch_size = options.batch_size.max(1) as usize;
-
-    let mut i = 0usize;
-    while i < files.len() {
-        if is_tagging_cancelled() {
-            let _ = app.emit(
-                "tagger-progress",
-                ProgressEvent {
-                    current: i as u32,
-                    total,
-                    filename: String::new(),
-                    status: "error".to_string(),
-                    message: format!("打标已取消（已完成 {}/{}）", i, total),
-                    ..Default::default()
-                },
-            );
-            let _ = app.emit(
-                "tagger-progress",
-                ProgressEvent {
-                    current: i as u32,
-                    total,
-                    filename: String::new(),
-                    status: "done".to_string(),
-                    message: format!("打标已取消: 成功 {}, 失败 {}", success_count, fail_count),
-                    ..Default::default()
-                },
-            );
+        let name = file_name_lossy(&pending[0]);
+        let current = result.success_count + result.fail_count + 1;
+        let message = if pending.len() > 1 {
+            format!(
+                "正在处理: {} 等 {} 张 ({}/{})",
+                name,
+                pending.len(),
+                current,
+                total
+            )
+        } else {
+            format!("正在处理: {} ({}/{})", name, current, total)
+        };
+        ProgressEvent::new("processing", message)
+            .at(current, total)
+            .file(name)
+            .emit(app, "tagger-progress");
+        let images: Vec<_> = pending
+            .iter()
+            .map(|path| {
+                let mut value = base_cmd.clone();
+                value["image_path"] = serde_json::json!(path.to_string_lossy());
+                value
+            })
+            .collect();
+        if let Err(e) = writeln!(
+            stdin,
+            "{}",
+            serde_json::json!({"cmd": "tag_batch", "images": images})
+        ) {
+            if !is_tagging_cancelled() {
+                fail_pending(
+                    &mut result,
+                    &mut failed_files,
+                    &pending,
+                    format!("批量发送失败: {}", e),
+                );
+            }
             break;
         }
 
-        let end = (i + batch_size).min(files.len());
-        let batch_files = &files[i..end];
-        let batch_len = batch_files.len();
-
-        let first_name = batch_files[0]
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let _ = app.emit(
-            "tagger-progress",
-            ProgressEvent {
-                current: i as u32 + 1,
-                total,
-                filename: first_name.clone(),
-                status: "processing".to_string(),
-                message: if batch_len > 1 {
-                    format!(
-                        "正在处理: {} 等 {} 张 ({}/{})",
-                        first_name,
-                        batch_len,
-                        i + 1,
-                        total
+        while !pending.is_empty() {
+            let received = reader.recv(PYTHON_SILENCE_LIMIT);
+            // 取消会关闭管道；在解释 EOF/error 前检查，不能把中断中的图片归入 Fail/。
+            if is_tagging_cancelled() {
+                break 'batches;
+            }
+            match received {
+                Recv::Msg(msg) => match msg["type"].as_str().unwrap_or("") {
+                    "log" => ProgressEvent::python_log(
+                        &msg,
+                        result.success_count + result.fail_count + 1,
+                        total,
                     )
-                } else {
-                    format!("正在处理: {} ({}/{})", first_name, i + 1, total)
+                    .emit(app, "tagger-progress"),
+                    "result" | "error" => {
+                        let path = msg["image_path"].as_str().map(PathBuf::from);
+                        let index = path
+                            .as_ref()
+                            .and_then(|p| pending.iter().position(|f| f == p));
+                        let index = match index {
+                            Some(i) => i,
+                            None if path.is_none() && pending.len() == 1 => 0,
+                            None if path.is_none() && msg["type"] == "error" => {
+                                fail_pending(
+                                    &mut result,
+                                    &mut failed_files,
+                                    &pending,
+                                    msg["message"]
+                                        .as_str()
+                                        .unwrap_or("Python 推理错误")
+                                        .to_string(),
+                                );
+                                break 'batches;
+                            }
+                            _ => continue,
+                        };
+                        let file = pending.remove(index);
+                        let name = file_name_lossy(&file);
+                        let (status, message) = if msg["type"] == "result" {
+                            result.success_count += 1;
+                            if msg["skipped"].as_bool().unwrap_or(false) {
+                                skipped += 1;
+                                (
+                                    "success",
+                                    format!("[跳过] {}（已有标签或原文件受保护）", name),
+                                )
+                            } else {
+                                (
+                                    "success",
+                                    format!(
+                                        "[完成] {} → {} 个标签",
+                                        name,
+                                        msg["tag_count"].as_u64().unwrap_or(0)
+                                    ),
+                                )
+                            }
+                        } else {
+                            result.fail_count += 1;
+                            let text = msg["message"].as_str().unwrap_or("unknown");
+                            result.errors.push(format!("{}: {}", name, text));
+                            failed_files.push(file);
+                            ("error", format!("[错误] {}: {}", name, text))
+                        };
+                        ProgressEvent::new(status, message)
+                            .at(result.success_count + result.fail_count, total)
+                            .file(name)
+                            .emit(app, "tagger-progress");
+                    }
+                    _ => {}
                 },
-                ..Default::default()
-            },
-        );
-
-        if batch_len == 1 {
-            // 单张模式
-            let file_path = &batch_files[0];
-            let filename = file_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let tag_cmd = serde_json::json!({
-                "cmd": "tag",
-                "image_path": file_path.to_string_lossy(),
-                "general_threshold": options.general_threshold,
-                "character_threshold": options.character_threshold,
-                "enabled_categories": enabled_cats,
-                "exclude_tags": options.exclude_tags,
-                "append_tags": options.append_tags,
-                "append_position": options.append_position,
-                "json_append_field": options.json_append_field,
-                "replace_underscore": options.replace_underscore,
-                "output_format": options.output_format,
-                "json_simplified": options.json_simplified,
-                "escape_parentheses": options.escape_parentheses,
-                "sort_by": options.sort_by,
-                "existing_tags_action": options.existing_tags_action,
-                "also_skip_json": options.also_skip_json,
-            });
-            if let Err(e) = writeln!(stdin, "{}", tag_cmd) {
-                fail_count += 1;
-                failed_files.push(file_path.clone());
-                errors.push(format!("{}: 发送命令失败: {}", filename, e));
-                break;
-            }
-            loop {
-                match recv_protocol_line(&line_rx) {
-                    ProtocolRead::Line(Ok(line)) => {
-                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                            let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                            match msg_type {
-                                "result" => {
-                                    let tag_count =
-                                        msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                                    let was_skipped = msg
-                                        .get("skipped")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false);
-                                    if was_skipped {
-                                        skip_count += 1;
-                                    }
-                                    success_count += 1;
-                                    let _ = app.emit(
-                                        "tagger-progress",
-                                        ProgressEvent {
-                                            current: i as u32 + 1,
-                                            total,
-                                            filename: filename.clone(),
-                                            status: "success".to_string(),
-                                            message: if was_skipped {
-                                                format!("[跳过] {}（已有标签或原文件受保护）", filename)
-                                            } else {
-                                                format!("[完成] {} → {} 个标签", filename, tag_count)
-                                            },
-                                            ..Default::default()
-                                        },
-                                    );
-                                    break;
-                                }
-                                "error" => {
-                                    let text = msg
-                                        .get("message")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("unknown");
-                                    fail_count += 1;
-                                    failed_files.push(file_path.clone());
-                                    errors.push(format!("{}: {}", filename, text));
-                                    let _ = app.emit(
-                                        "tagger-progress",
-                                        ProgressEvent {
-                                            current: i as u32 + 1,
-                                            total,
-                                            filename: filename.clone(),
-                                            status: "error".to_string(),
-                                            message: format!("[错误] {}: {}", filename, text),
-                                            ..Default::default()
-                                        },
-                                    );
-                                    break;
-                                }
-                                "log" => {
-                                    let text = msg
-                                        .get("message")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let i18n_key = msg
-                                        .get("i18n_key")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
-                                    let i18n_params = msg.get("i18n_params").cloned();
-                                    let _ = app.emit(
-                                        "tagger-progress",
-                                        ProgressEvent {
-                                            current: i as u32 + 1,
-                                            total,
-                                            filename: filename.clone(),
-                                            status: "info".to_string(),
-                                            message: text,
-                                            i18n_key,
-                                            i18n_params,
-                                        },
-                                    );
-                                }
-                                _ => {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    ProtocolRead::Line(Err(e)) => {
-                        fail_count += 1;
-                        failed_files.push(file_path.clone());
-                        errors.push(format!("{}: 读取失败: {}", filename, e));
-                        break;
-                    }
-                    ProtocolRead::Disconnected => {
-                        fail_count += 1;
-                        failed_files.push(file_path.clone());
-                        errors.push(format!("{}: Python 进程退出", filename));
-                        break;
-                    }
-                    ProtocolRead::Timeout => {
-                        fail_count += 1;
-                        failed_files.push(file_path.clone());
-                        errors.push(format!(
-                            "{}: Python 超过 {} 秒无响应，已终止进程",
-                            filename,
+                Recv::Closed | Recv::TimedOut => {
+                    let message = if matches!(received, Recv::TimedOut) {
+                        format!(
+                            "Python 超过 {} 秒无响应，已终止进程",
                             PYTHON_SILENCE_LIMIT.as_secs()
-                        ));
-                        kill_python_process();
-                        break;
-                    }
-                }
-            }
-        } else {
-            // 批量模式
-            let images: Vec<serde_json::Value> = batch_files
-                .iter()
-                .map(|fp| {
-                    serde_json::json!({
-                        "image_path": fp.to_string_lossy(),
-                        "general_threshold": options.general_threshold,
-                        "character_threshold": options.character_threshold,
-                        "enabled_categories": enabled_cats,
-                        "exclude_tags": options.exclude_tags,
-                        "append_tags": options.append_tags,
-                        "append_position": options.append_position,
-                        "json_append_field": options.json_append_field,
-                        "replace_underscore": options.replace_underscore,
-                        "output_format": options.output_format,
-                        "json_simplified": options.json_simplified,
-                        "escape_parentheses": options.escape_parentheses,
-                        "sort_by": options.sort_by,
-                        "existing_tags_action": options.existing_tags_action,
-                        "also_skip_json": options.also_skip_json,
-                    })
-                })
-                .collect();
-            let batch_cmd = serde_json::json!({ "cmd": "tag_batch", "images": images });
-            if let Err(e) = writeln!(stdin, "{}", batch_cmd) {
-                fail_count += batch_len as u32;
-                failed_files.extend(batch_files.iter().cloned());
-                errors.push(format!("批量发送失败: {}", e));
-                break;
-            }
-            let mut results_read = 0usize;
-            while results_read < batch_len {
-                match recv_protocol_line(&line_rx) {
-                    ProtocolRead::Line(Ok(line)) => {
-                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                            let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                            match msg_type {
-                                "result" => {
-                                    let img_path = msg
-                                        .get("image_path")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let fname = std::path::Path::new(img_path)
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                        .to_string();
-                                    let tag_count =
-                                        msg.get("tag_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                                    let was_skipped = msg
-                                        .get("skipped")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false);
-                                    if was_skipped {
-                                        skip_count += 1;
-                                    }
-                                    success_count += 1;
-                                    results_read += 1;
-                                    let _ = app.emit(
-                                        "tagger-progress",
-                                        ProgressEvent {
-                                            current: (i + results_read) as u32,
-                                            total,
-                                            filename: fname.clone(),
-                                            status: "success".to_string(),
-                                            message: if was_skipped {
-                                                format!("[跳过] {}（已有标签或原文件受保护）", fname)
-                                            } else {
-                                                format!("[完成] {} → {} 个标签", fname, tag_count)
-                                            },
-                                            ..Default::default()
-                                        },
-                                    );
-                                }
-                                "error" => {
-                                    let img_path = msg
-                                        .get("image_path")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let fname = std::path::Path::new(img_path)
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                        .to_string();
-                                    let text = msg
-                                        .get("message")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("unknown");
-                                    fail_count += 1;
-                                    results_read += 1;
-                                    if !img_path.is_empty() {
-                                        failed_files.push(std::path::PathBuf::from(img_path));
-                                    }
-                                    errors.push(format!("{}: {}", fname, text));
-                                    let _ = app.emit(
-                                        "tagger-progress",
-                                        ProgressEvent {
-                                            current: (i + results_read) as u32,
-                                            total,
-                                            filename: fname.clone(),
-                                            status: "error".to_string(),
-                                            message: format!("[错误] {}: {}", fname, text),
-                                            ..Default::default()
-                                        },
-                                    );
-                                }
-                                "log" => {
-                                    let text = msg
-                                        .get("message")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let i18n_key = msg
-                                        .get("i18n_key")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
-                                    let i18n_params = msg.get("i18n_params").cloned();
-                                    let _ = app.emit(
-                                        "tagger-progress",
-                                        ProgressEvent {
-                                            current: (i + results_read) as u32 + 1,
-                                            total,
-                                            filename: String::new(),
-                                            status: "info".to_string(),
-                                            message: text,
-                                            i18n_key,
-                                            i18n_params,
-                                        },
-                                    );
-                                }
-                                _ => {
-                                    results_read += 1;
-                                }
-                            }
-                        }
-                    }
-                    ProtocolRead::Line(Err(e)) => {
-                        fail_count += (batch_len - results_read) as u32;
-                        // Python 按顺序回结果，没回到的就是这批里剩下的那几张
-                        failed_files.extend(batch_files[results_read..].iter().cloned());
-                        errors.push(format!("批量读取失败: {}", e));
-                        break;
-                    }
-                    ProtocolRead::Disconnected => {
-                        fail_count += (batch_len - results_read) as u32;
-                        failed_files.extend(batch_files[results_read..].iter().cloned());
-                        errors.push("Python 进程退出".to_string());
-                        break;
-                    }
-                    ProtocolRead::Timeout => {
-                        fail_count += (batch_len - results_read) as u32;
-                        failed_files.extend(batch_files[results_read..].iter().cloned());
-                        errors.push(format!(
-                            "Python 超过 {} 秒无响应，已终止进程；本批剩余 {} 张记为失败",
-                            PYTHON_SILENCE_LIMIT.as_secs(),
-                            batch_len - results_read
-                        ));
-                        kill_python_process();
-                        break;
-                    }
+                        )
+                    } else {
+                        "Python 进程退出".to_string()
+                    };
+                    fail_pending(&mut result, &mut failed_files, &pending, message);
+                    kill_python_process();
+                    break 'batches;
                 }
             }
         }
-        i = end;
     }
 
-    // 发送 quit 命令
-    let _ = writeln!(stdin, r#"{{"cmd":"quit"}}"#);
-    // 取出全局句柄并等待进程退出（若已被取消杀掉则为 None）
-    if let Some(mut child) = PYTHON_PROCESS.lock().ok().and_then(|mut g| g.take()) {
+    let _ = writeln!(stdin, "{{\"cmd\":\"quit\"}}");
+    drop(stdin);
+    if let Some(mut child) = take_python_process() {
         let _ = child.wait();
     }
-
-    // 打不上标的图集中到数据集根目录下的 Fail/，与 LLM 打标同名同位置，方便挑出来重跑
-    if !failed_files.is_empty() {
-        let (status, message) = match crate::commands::copy_files_into_artifact_dir(
-            input_dir,
-            input_dir,
-            &failed_files,
-            crate::commands::FAIL_DIR_NAME,
-            options.recursive,
-        ) {
-            Ok(copied) => (
-                "info",
-                format!("已将 {} 张失败图片复制到 Fail/ 文件夹", copied),
-            ),
-            Err(e) => ("error", e),
-        };
-        let _ = app.emit(
-            "tagger-progress",
-            ProgressEvent {
-                current: total,
-                total,
-                filename: String::new(),
-                status: status.to_string(),
-                message,
-                ..Default::default()
-            },
-        );
-    }
-
-    // 取消路径已发过"打标已取消"的 done 事件，这里不再发"完成"覆盖它
-    if !is_tagging_cancelled() {
-        let _ = app.emit(
-            "tagger-progress",
-            ProgressEvent {
-                current: total,
-                total,
-                filename: String::new(),
-                status: "done".to_string(),
-                message: if skip_count > 0 {
-                    format!(
-                        "打标完成: 成功 {}（含跳过 {}）, 失败 {}, 共 {}",
-                        success_count, skip_count, fail_count, total
-                    )
-                } else {
-                    format!(
-                        "打标完成: 成功 {}, 失败 {}, 共 {}",
-                        success_count, fail_count, total
-                    )
-                },
-                ..Default::default()
-            },
-        );
-    }
-
-    Ok(ProcessResult {
-        success_count,
-        fail_count,
+    let _ = stderr_reader.join();
+    report_failed_copies(
+        app,
+        "tagger-progress",
+        input_dir,
+        &failed_files,
+        options.recursive,
         total,
-        errors,
-    })
+    );
+    emit_summary(app, &result, skipped, is_tagging_cancelled());
+    Ok(result)
+}
+
+fn fail_pending(
+    result: &mut ProcessResult,
+    failed: &mut Vec<PathBuf>,
+    pending: &[PathBuf],
+    message: String,
+) {
+    result.fail_count += pending.len() as u32;
+    failed.extend_from_slice(pending);
+    result.errors.push(message);
 }
 
 #[cfg(test)]
-mod vocabulary_tests {
+mod tests {
     use super::*;
+    use crate::commands::batch::capture_events;
+    use crate::commands::http_download::test_support::TempDir;
+    use serde_json::json;
+    use tauri::Listener;
 
-    fn grouped_fixture() -> serde_json::Value {
-        serde_json::json!({
-            "num_classes": 3,
-            "categories": [
-                {"name": "style", "offset": 2, "count": 1, "tags": ["watercolor"]},
-                {"name": "general", "offset": 0, "count": 2, "tags": ["1girl", "solo"]}
-            ]
-        })
+    fn options(root: &Path) -> TaggerOptions {
+        serde_json::from_value(json!({
+            "input_path": root, "model_id": "mock", "general_threshold": 0.35,
+            "character_threshold": 0.85, "enabled_categories": ["general"],
+            "use_gpu": false, "batch_size": 3,
+        }))
+        .unwrap()
     }
 
     #[test]
-    fn grouped_vocabulary_uses_global_offsets_and_preserves_style() {
-        let root = grouped_fixture();
-        let tags = load_grouped_json_tags(root["categories"].as_array().unwrap(), &root).unwrap();
-        assert_eq!(
-            tags.iter().map(|tag| tag.name.as_str()).collect::<Vec<_>>(),
-            ["1girl", "solo", "watercolor"]
-        );
-        assert_eq!(tags[2].category, TagCategory::Style);
+    fn existing_label_skip_matches_output_format() {
+        let temp = TempDir::new("tagger_skip");
+        let path = temp.join("image.png");
+        let mut opts = options(&temp);
+        opts.existing_tags_action = "skip".into();
+        std::fs::write(path.with_extension("json"), "{}").unwrap();
+        assert!(!should_skip(&path, &opts));
+        opts.also_skip_json = true;
+        assert!(should_skip(&path, &opts));
+        opts.also_skip_json = false;
+        opts.output_format = "json".into();
+        assert!(should_skip(&path, &opts));
+        std::fs::remove_file(path.with_extension("json")).unwrap();
+        std::fs::write(path.with_extension("txt"), "").unwrap();
+        assert!(!should_skip(&path, &opts));
+        opts.output_format = "txt".into();
+        assert!(should_skip(&path, &opts));
+        opts.existing_tags_action = "overwrite".into();
+        assert!(!should_skip(&path, &opts));
     }
 
     #[test]
-    fn grouped_vocabulary_rejects_index_and_count_mismatches() {
-        for (path, value) in [
-            ("/categories/0/offset", serde_json::json!(1)),
-            ("/categories/1/count", serde_json::json!(3)),
-            ("/num_classes", serde_json::json!(4)),
-        ] {
-            let mut root = grouped_fixture();
-            *root.pointer_mut(path).unwrap() = value;
-            assert!(load_grouped_json_tags(root["categories"].as_array().unwrap(), &root).is_err());
+    fn protocol_results_skip_and_cancellation_are_accounted_by_path() {
+        let _lock = super::super::TAGGER_TEST_LOCK.lock().unwrap();
+        let temp = TempDir::new("tagger_protocol");
+        let script = temp.join("fake.py");
+        std::fs::write(
+            &script,
+            r#"
+import json, sys, time
+def emit(**v): print(json.dumps(v), flush=True)
+mode = ''
+for line in sys.stdin:
+    cmd = json.loads(line)
+    if cmd['cmd'] == 'init':
+        mode = cmd['preprocess_mode']
+        if mode == 'cancel_load':
+            emit(type='log', message='cancel_now')
+            time.sleep(30)
+        emit(type='ready')
+    elif cmd['cmd'] == 'tag_batch':
+        images = cmd['images']
+        if mode == 'cancel_infer':
+            emit(type='log', message='cancel_now')
+            time.sleep(30)
+        if mode == 'skip':
+            assert len(images) == 1, images
+            emit(type='result', image_path=images[0]['image_path'], tag_count=2)
+        else:
+            emit(type='error', image_path=images[2]['image_path'], message='preprocess failed')
+            emit(type='result', image_path=images[0]['image_path'], tag_count=2)
+            sys.exit(1)
+    elif cmd['cmd'] == 'quit': break
+"#,
+        )
+        .unwrap();
+        let python = Path::new(env!("CARGO_MANIFEST_DIR")).join("../env/python/venv/bin/python3");
+        let python = if python.exists() {
+            python.to_string_lossy().into_owned()
+        } else {
+            "python3".into()
+        };
+        let mut model = super::super::models::get_builtin_models().remove(0);
+        for mode in ["reordered", "skip", "cancel_load", "cancel_infer"] {
+            let input = temp.join(mode);
+            std::fs::create_dir_all(&input).unwrap();
+            for name in ["a.png", "b.png", "c.png"] {
+                std::fs::write(input.join(name), "fixture").unwrap();
+            }
+            model.preprocess_mode = mode.into();
+            let mut opts = options(&input);
+            if mode == "skip" {
+                opts.existing_tags_action = "skip".into();
+                std::fs::write(input.join("a.txt"), "saved").unwrap();
+                std::fs::write(input.join("b.txt"), "saved").unwrap();
+            }
+            reset_tagging_cancel();
+            let app = tauri::test::mock_app();
+            let log = capture_events(app.handle(), "tagger-progress");
+            app.listen_any("tagger-progress", |event| {
+                let value: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+                if value["message"] == "cancel_now" {
+                    cancel_tagging();
+                }
+            });
+            let result =
+                run_tagging_process(app.handle(), &opts, &python, &model, &temp, &script).unwrap();
+            let events = log.lock().unwrap();
+            let terminal: Vec<_> = events.iter().filter(|e| e["status"] == "done").collect();
+            assert_eq!(terminal.len(), 1, "{mode}: {events:?}");
+            match mode {
+                "reordered" => {
+                    assert_eq!((result.success_count, result.fail_count), (1, 2));
+                    assert!(!input.join("Fail/a.png").exists());
+                    assert!(input.join("Fail/b.png").exists());
+                    assert!(input.join("Fail/c.png").exists());
+                }
+                "skip" => assert_eq!((result.success_count, result.fail_count), (3, 0)),
+                _ => {
+                    assert_eq!((result.success_count, result.fail_count), (0, 0));
+                    assert!(!input.join("Fail").exists());
+                    assert!(terminal[0]["message"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("已取消"));
+                    assert_eq!(terminal[0]["current"], 0);
+                    assert!(!events.iter().any(|e| e["status"] == "error"));
+                }
+            }
         }
+        reset_tagging_cancel();
+        assert!(take_python_process().is_none());
     }
 }

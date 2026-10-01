@@ -8,8 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use super::{
-    collect_image_files_with_recursive, collect_image_files_with_recursive_excluding,
-    ProgressEvent,
+    collect_image_files_with_recursive, collect_image_files_with_recursive_excluding, ProgressEvent,
 };
 
 static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
@@ -37,8 +36,6 @@ pub struct ResolutionGroup {
     pub count: u32,
     /// 占总数百分比
     pub percent: f64,
-    /// 宽高比（保留两位小数）
-    pub aspect_ratio: f64,
     /// 常见宽高比标签，如 "16:9"，无法归类时为空
     pub aspect_label: String,
     /// 是否为稀有分辨率（count <= rare_threshold）
@@ -61,13 +58,6 @@ pub struct ResolutionAnalyzeResult {
     pub max_width: u32,
     pub min_height: u32,
     pub max_height: u32,
-}
-
-/// 按文件头猜测格式读取尺寸，避免后缀与实际格式不一致导致失败
-fn read_image_dimensions(path: &Path) -> image::ImageResult<(u32, u32)> {
-    image::ImageReader::open(path)?
-        .with_guessed_format()?
-        .into_dimensions()
 }
 
 /// 归类常见宽高比
@@ -119,7 +109,7 @@ fn analyze_sync(
     options: &ResolutionAnalyzeOptions,
 ) -> Result<ResolutionAnalyzeResult, String> {
     let input = Path::new(&options.input_path);
-    if !input.exists() || !input.is_dir() {
+    if !input.is_dir() {
         return Err(format!("输入目录不存在: {}", options.input_path));
     }
 
@@ -129,35 +119,31 @@ fn analyze_sync(
     }
     let total = files.len() as u32;
 
-    analyze_files(&files, options.rare_threshold, |current, status, message, filename| {
-        let _ = app.emit(
-            "resolution-analyze-progress",
-            ProgressEvent {
-                current,
-                total,
-                filename,
-                status: status.to_string(),
-                message,
-                ..Default::default()
-            },
-        );
-    })
+    analyze_files(
+        &files,
+        options.rare_threshold,
+        |current, status, message, filename| {
+            let _ = app.emit(
+                "resolution-analyze-progress",
+                ProgressEvent::new(status, message)
+                    .at(current, total)
+                    .file(filename),
+            );
+        },
+    )
 }
 
 /// 分析核心：与 Tauri 解耦，便于单元测试。
-/// `on_progress(current, status, message, filename)` 用于上报进度。
+/// `emit(current, status, message, filename)` 用于上报进度。
 fn analyze_files<F>(
     files: &[PathBuf],
     rare_threshold: u32,
-    mut on_progress: F,
+    mut emit: F,
 ) -> Result<ResolutionAnalyzeResult, String>
 where
     F: FnMut(u32, &str, String, String),
 {
     let total = files.len() as u32;
-    let mut emit = |current: u32, status: &str, message: String, filename: String| {
-        on_progress(current, status, message, filename);
-    };
 
     let mut dist: HashMap<(u32, u32), Vec<String>> = HashMap::new();
     let mut failed_files: Vec<String> = Vec::new();
@@ -175,7 +161,7 @@ where
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        match read_image_dimensions(path) {
+        match super::image_io::read_dimensions(path) {
             Ok((w, h)) => {
                 dist.entry((w, h))
                     .or_default()
@@ -228,7 +214,6 @@ where
                 height: h,
                 count,
                 percent: (count as f64 / valid_total as f64) * 100.0,
-                aspect_ratio: ((w as f64 / h.max(1) as f64) * 100.0).round() / 100.0,
                 aspect_label: aspect_label_for(w, h),
                 is_rare,
                 // 仅稀有分辨率保留路径，控制返回体大小
@@ -313,7 +298,7 @@ fn aggregate_sync(
     options: &ResolutionAggregateOptions,
 ) -> Result<String, String> {
     let input = Path::new(&options.input_path);
-    if !input.exists() || !input.is_dir() {
+    if !input.is_dir() {
         return Err(format!("输入目录不存在: {}", options.input_path));
     }
     if options.plan.is_empty() {
@@ -325,12 +310,17 @@ fn aggregate_sync(
 
     // 输出目录==输入目录时，收集排除逻辑会整体失效（excluded != input 不成立），
     // 上次导出的产物会被再次归组，每次重导出文件数近似翻倍，直接拒绝
-    let same_dir = match (std::fs::canonicalize(input), std::fs::canonicalize(out_root)) {
+    let same_dir = match (
+        std::fs::canonicalize(input),
+        std::fs::canonicalize(out_root),
+    ) {
         (Ok(a), Ok(b)) => a == b,
         _ => input == out_root,
     };
     if same_dir {
-        return Err("输出目录不能与输入目录相同：导出产物会在下次导出/分析时被当作输入重复归组".into());
+        return Err(
+            "输出目录不能与输入目录相同：导出产物会在下次导出/分析时被当作输入重复归组".into(),
+        );
     }
 
     // 分辨率 → 计划条目索引；文件夹名剥掉路径分隔符防止逃逸
@@ -340,7 +330,13 @@ fn aggregate_sync(
         let safe: String = entry
             .folder
             .chars()
-            .map(|c| if matches!(c, '/' | '\\' | ':') { '_' } else { c })
+            .map(|c| {
+                if matches!(c, '/' | '\\' | ':') {
+                    '_'
+                } else {
+                    c
+                }
+            })
             .collect();
         let safe = safe.trim().trim_matches('.').to_string();
         if safe.is_empty() {
@@ -363,14 +359,7 @@ fn aggregate_sync(
     let emit = |current: u32, status: &str, message: String| {
         let _ = app.emit(
             "resolution-analyze-progress",
-            ProgressEvent {
-                current,
-                total,
-                filename: String::new(),
-                status: status.to_string(),
-                message,
-                ..Default::default()
-            },
+            ProgressEvent::new(status, message).at(current, total),
         );
     };
 
@@ -387,7 +376,7 @@ fn aggregate_sync(
             return Err(format!("已取消，已复制 {} 个文件", copied));
         }
 
-        match read_image_dimensions(path) {
+        match super::image_io::read_dimensions(path) {
             Ok((w, h)) => {
                 if let Some(&idx) = lookup.get(&(w, h)) {
                     let dir = out_root.join(&folder_names[idx]);
@@ -403,7 +392,7 @@ fn aggregate_sync(
                         .file_name()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| format!("image_{}", i));
-                    let dst = super::bucket_preview::unique_copy_destination(&dir, &filename);
+                    let dst = super::unique_copy_destination(&dir, &filename);
                     match std::fs::copy(path, &dst) {
                         Ok(_) => copied += 1,
                         Err(e) => failed.push(format!("{}: {}", path.display(), e)),
@@ -418,7 +407,11 @@ fn aggregate_sync(
 
         let current = i as u32 + 1;
         if current.is_multiple_of(20) || current == total {
-            emit(current, "processing", format!("正在聚合 {}/{}", current, total));
+            emit(
+                current,
+                "processing",
+                format!("正在聚合 {}/{}", current, total),
+            );
         }
     }
 
@@ -438,7 +431,6 @@ fn aggregate_sync(
         },
     );
     // 详细汇总由命令返回值带回前端记录日志；done 事件负责把全局任务面板收尾
-    // （此前只发 processing 不发终态，任务会永远停在"运行中"）
     emit(total, "done", "聚合导出完成".to_string());
     Ok(summary)
 }
@@ -454,7 +446,8 @@ mod tests {
     }
 
     fn tmpdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("purinbox_res_test_{}_{}", tag, std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("purinbox_res_test_{}_{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -534,6 +527,4 @@ mod tests {
         // 防御除零
         assert_eq!(aspect_label_for(100, 0), "");
     }
-
-
 }

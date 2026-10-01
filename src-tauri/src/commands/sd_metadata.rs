@@ -15,7 +15,6 @@ pub struct SdImageMeta {
     pub positive: String,
     pub negative: String,
     pub params: String,
-    pub artist: String,
     /// a1111 / comfyui / novelai / unknown
     pub source: String,
 }
@@ -93,20 +92,8 @@ pub fn read_single_sd_metadata(file_path: String) -> Result<Option<SdImageMeta>,
     if ext != "png" {
         return Ok(None);
     }
-    let filename = path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    Ok(read_png_metadata(&path).map(|meta| SdImageMeta {
-        path: file_path,
-        filename,
-        positive: meta.positive,
-        negative: meta.negative,
-        params: meta.params,
-        artist: meta.artist,
-        source: meta.source,
-    }))
+    let filename = super::file_name_lossy(&path);
+    Ok(read_png_metadata(&path).map(|meta| meta.into_meta(file_path, filename)))
 }
 
 // ── Scan logic ──
@@ -129,22 +116,13 @@ fn scan_sync(
         std::collections::HashMap::new();
 
     for (i, file_path) in files.iter().enumerate() {
-        let filename = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
+        let filename = super::file_name_lossy(file_path);
 
         let _ = app.emit(
             "sd-metadata-progress",
-            ProgressEvent {
-                current: i as u32 + 1,
-                total,
-                filename: filename.clone(),
-                status: "processing".to_string(),
-                message: format!("[{}/{}] {}", i + 1, total, filename),
-                ..Default::default()
-            },
+            ProgressEvent::new("processing", format!("[{}/{}] {}", i + 1, total, filename))
+                .at(i as u32 + 1, total)
+                .file(filename.clone()),
         );
 
         // Only parse PNG files for tEXt metadata
@@ -163,15 +141,7 @@ fn scan_sync(
             Some(meta) => {
                 *source_counts.entry(meta.source.clone()).or_insert(0) += 1;
                 has_meta += 1;
-                items.push(SdImageMeta {
-                    path: file_path.to_string_lossy().to_string(),
-                    filename,
-                    positive: meta.positive,
-                    negative: meta.negative,
-                    params: meta.params,
-                    artist: meta.artist,
-                    source: meta.source,
-                });
+                items.push(meta.into_meta(file_path.to_string_lossy().to_string(), filename));
             }
             None => {
                 no_meta += 1;
@@ -184,14 +154,11 @@ fn scan_sync(
 
     let _ = app.emit(
         "sd-metadata-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!("扫描完成: {} 张图片, {} 有元数据", total, has_meta),
-            ..Default::default()
-        },
+        ProgressEvent::new(
+            "done",
+            format!("扫描完成: {} 张图片, {} 有元数据", total, has_meta),
+        )
+        .at(total, total),
     );
 
     Ok(SdScanResult {
@@ -228,45 +195,28 @@ fn export_sync(
 
         let txt_path = match options.mode.as_str() {
             "custom" => {
-                let dest = options.dest_folder.as_deref().unwrap_or(".");
-                let mut dest_dir = Path::new(dest).to_path_buf();
-                if let Some(root) = options.input_root.as_deref() {
-                    let root_path = Path::new(root);
-                    if root_path.is_dir() {
-                        if let Ok(relative) = src_path.strip_prefix(root_path) {
-                            if let Some(parent) = relative.parent() {
-                                if !parent.as_os_str().is_empty() {
-                                    dest_dir = dest_dir.join(parent);
-                                }
-                            }
-                        }
-                    }
-                }
-                if !dest_dir.exists() {
-                    let _ = std::fs::create_dir_all(&dest_dir);
-                }
-                dest_dir.join(format!("{}.txt", stem))
+                let dest = Path::new(options.dest_folder.as_deref().unwrap_or("."));
+                // 没有 input_root 时传空路径：它不是目录，不会拼相对子目录
+                let root = Path::new(options.input_root.as_deref().unwrap_or(""));
+                super::output_path_for_input(root, src_path, dest, &format!("{}.txt", stem), true)
             }
             _ => {
                 // same path
                 let parent = src_path.parent().unwrap_or(Path::new("."));
-                parent.join(format!("{}.txt", stem))
+                Ok(parent.join(format!("{}.txt", stem)))
             }
         };
 
         let _ = app.emit(
             "sd-metadata-progress",
-            ProgressEvent {
-                current: i as u32 + 1,
-                total,
-                filename: format!("{}.txt", stem),
-                status: "processing".to_string(),
-                message: format!("[{}/{}] {}.txt", i + 1, total, stem),
-                ..Default::default()
-            },
+            ProgressEvent::new("processing", format!("[{}/{}] {}.txt", i + 1, total, stem))
+                .at(i as u32 + 1, total)
+                .file(format!("{}.txt", stem)),
         );
 
-        match std::fs::write(&txt_path, &item.positive) {
+        match txt_path
+            .and_then(|path| std::fs::write(path, &item.positive).map_err(|e| e.to_string()))
+        {
             Ok(_) => success += 1,
             Err(e) => {
                 fail += 1;
@@ -277,14 +227,11 @@ fn export_sync(
 
     let _ = app.emit(
         "sd-metadata-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!("导出完成: 成功 {}, 失败 {}, 跳过 {}", success, fail, skip),
-            ..Default::default()
-        },
+        ProgressEvent::new(
+            "done",
+            format!("导出完成: 成功 {}, 失败 {}, 跳过 {}", success, fail, skip),
+        )
+        .at(total, total),
     );
 
     Ok(ExportResult {
@@ -301,8 +248,20 @@ struct RawMeta {
     positive: String,
     negative: String,
     params: String,
-    artist: String,
     source: String,
+}
+
+impl RawMeta {
+    fn into_meta(self, path: String, filename: String) -> SdImageMeta {
+        SdImageMeta {
+            path,
+            filename,
+            positive: self.positive,
+            negative: self.negative,
+            params: self.params,
+            source: self.source,
+        }
+    }
 }
 
 fn read_png_metadata(path: &PathBuf) -> Option<RawMeta> {
@@ -338,7 +297,7 @@ fn read_png_metadata(path: &PathBuf) -> Option<RawMeta> {
                 text_chunks.push((key, value));
             }
         }
-        // zTXt chunk (compressed text — most A1111/ComfyUI images use this)
+        // zTXt chunk (compressed text)
         else if chunk_type == b"zTXt" {
             let data = &buf[data_start..data_end];
             if let Some(null_pos) = data.iter().position(|&b| b == 0) {
@@ -383,7 +342,7 @@ fn read_png_metadata(path: &PathBuf) -> Option<RawMeta> {
     // Try ComfyUI format: key="prompt" (JSON)
     for (key, value) in &text_chunks {
         if key == "prompt" && value.trim_start().starts_with('{') {
-            if let Some(meta) = parse_comfyui(value, &text_chunks) {
+            if let Some(meta) = parse_comfyui(value) {
                 return Some(meta);
             }
         }
@@ -410,7 +369,6 @@ fn read_png_metadata(path: &PathBuf) -> Option<RawMeta> {
                 positive: value.clone(),
                 negative: String::new(),
                 params: String::new(),
-                artist: String::new(),
                 source: "unknown".to_string(),
             });
         }
@@ -488,12 +446,11 @@ fn parse_a1111(raw: &str) -> RawMeta {
         positive,
         negative,
         params,
-        artist: String::new(),
         source: "a1111".to_string(),
     }
 }
 
-fn parse_comfyui(prompt_json: &str, _all_chunks: &[(String, String)]) -> Option<RawMeta> {
+fn parse_comfyui(prompt_json: &str) -> Option<RawMeta> {
     // ComfyUI prompt JSON: { "node_id": { "class_type": "...", "inputs": { ... } } }
     let parsed: serde_json::Value = serde_json::from_str(prompt_json).ok()?;
     let obj = parsed.as_object()?;
@@ -502,39 +459,34 @@ fn parse_comfyui(prompt_json: &str, _all_chunks: &[(String, String)]) -> Option<
     let mut negative_parts: Vec<String> = Vec::new();
 
     for (_node_id, node) in obj {
-        let class_type = node.get("class_type")?.as_str().unwrap_or("");
-        let inputs = node.get("inputs")?;
+        let Some(class_type) = node.get("class_type").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(inputs) = node.get("inputs").and_then(|v| v.as_object()) else {
+            continue;
+        };
 
         // CLIPTextEncode is the standard prompt node
         if class_type == "CLIPTextEncode" {
             if let Some(text) = inputs.get("text").and_then(|t| t.as_str()) {
                 if !text.trim().is_empty() {
-                    // Try to determine if positive or negative by checking connections
-                    // Simple heuristic: check if node connects to a "negative" conditioning
+                    // Collected as positive for now; the KSampler pass below moves negatives out
                     positive_parts.push(text.to_string());
                 }
             }
         }
     }
 
-    // Better heuristic: look for KSampler nodes to determine positive/negative
+    // KSampler's `negative` input is a [node_id, slot] link to the negative prompt node
     for (_node_id, node) in obj {
         let class_type = node
             .get("class_type")
             .and_then(|c| c.as_str())
             .unwrap_or("");
         if class_type == "KSampler" || class_type == "KSamplerAdvanced" {
-            let inputs = node.get("inputs")?;
-            // positive input links to a node
-            if let Some(pos_link) = inputs.get("positive").and_then(|v| v.as_array()) {
-                if let Some(pos_node_id) = pos_link
-                    .first()
-                    .and_then(|v| v.as_str())
-                    .or_else(|| pos_link.first().and_then(|v| v.as_u64()).map(|_| ""))
-                {
-                    let _ = pos_node_id; // we already collected all CLIPTextEncode
-                }
-            }
+            let Some(inputs) = node.get("inputs").and_then(|v| v.as_object()) else {
+                continue;
+            };
             if let Some(neg_link) = inputs.get("negative").and_then(|v| v.as_array()) {
                 if let Some(neg_id) = neg_link.first() {
                     let neg_id_str = if neg_id.is_string() {
@@ -567,7 +519,6 @@ fn parse_comfyui(prompt_json: &str, _all_chunks: &[(String, String)]) -> Option<
         positive: positive_parts.join(", "),
         negative: negative_parts.join(", "),
         params: String::new(),
-        artist: String::new(),
         source: "comfyui".to_string(),
     })
 }
@@ -684,7 +635,27 @@ fn parse_novelai(comment: &str, source_ver: &str) -> Option<RawMeta> {
         positive: full_positive,
         negative,
         params: param_parts.join(", "),
-        artist: String::new(),
         source: "novelai".to_string(),
     })
+}
+
+#[cfg(test)]
+mod comfyui_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_nodes_do_not_discard_valid_prompts() {
+        let prompt = serde_json::json!({
+            "0": {"inputs": {}},
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "positive"}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "negative"}},
+            "3": {"class_type": "KSampler"},
+            "4": {"class_type": "KSampler", "inputs": {"negative": ["2", 0]}},
+            "5": {"class_type": false, "inputs": null},
+            "6": {"class_type": "CLIPTextEncode"}
+        });
+        let meta = parse_comfyui(&prompt.to_string()).unwrap();
+        assert_eq!(meta.positive, "positive");
+        assert_eq!(meta.negative, "negative");
+    }
 }

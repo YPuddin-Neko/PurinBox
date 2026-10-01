@@ -1,38 +1,24 @@
-import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
-import { open } from '@tauri-apps/plugin-dialog';
-import { useTaskQueue } from '../components/TaskContext';
-import { useTranslation } from 'react-i18next';
 import {
-  Scaling,
-  FolderOpen,
-  ArrowUpCircle,
   ArrowDownCircle,
+  ArrowUpCircle,
   Info,
+  Scaling
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { ScaleOptions } from '../api/commandOptions';
 import ProcessButton from '../components/ProcessButton';
-import RecursiveScanToggle from '../components/RecursiveScanToggle';
-import InputPathPickerButton from '../components/InputPathPickerButton';
-
-interface ProcessResult {
-  success_count: number;
-  fail_count: number;
-  total: number;
-  errors: string[];
-}
-
-interface ProgressPayload {
-  current: number;
-  total: number;
-  filename: string;
-  status: string;
-  message: string;
-}
+import ProgressLog from '../components/ProgressLog';
+import ChoiceCard from '../components/ui/ChoiceCard';
+import NumberInput from '../components/ui/NumberInput';
+import PageHeader from '../components/ui/PageHeader';
+import PathFields from '../components/ui/PathFields';
+import { useBatchTask, type ProcessResult } from '../hooks/useBatchTask';
 
 export default function ScalePage() {
   const { t } = useTranslation();
+  const task = useBatchTask({ event: 'scale-progress', taskId: 'scale' });
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
@@ -42,240 +28,91 @@ export default function ScalePage() {
   const [upHeight, setUpHeight] = useState(1024);
   const [downWidth, setDownWidth] = useState(512);
   const [downHeight, setDownHeight] = useState(512);
-  const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressCurrent, setProgressCurrent] = useState(0);
-  const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasError, setHasError] = useState(false);
 
-  // Listen for progress events
-  useEffect(() => {
-    let active = true;
-    const p = listen<ProgressPayload>('scale-progress', (event) => {
-      if (!active) return;
-      const d = event.payload;
-      setProgressCurrent(d.current);
-      setProgressTotal(d.total);
-      if (d.total > 0) {
-        setProgress((d.current / d.total) * 100);
-      }
-      if (d.status === 'done') {
-        setIsDone(true);
-      }
-      if (d.status === 'error') {
-        setHasError(true);
-      }
-      // Only add meaningful log entries (not processing status)
-      if (d.status !== 'processing') {
-        setLogs((prev) => [...prev, {
-          time: getTimeStr(),
-          message: d.message,
-          status: d.status === 'done' ? 'info' : d.status as LogEntry['status'],
-        }]);
-      }
-    });
-    return () => { active = false; p.then(fn => fn()); };
-  }, []);
+  const mode = enableUpscale && enableDownscale ? 'both'
+    : enableUpscale ? 'upscale'
+      : enableDownscale ? 'downscale'
+        : '';
 
-  const selectOutputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') });
-    if (selected) setOutputPath(selected as string);
-  };
-
-  const { addTask, updateTask } = useTaskQueue();
-
-  // Determine mode string
-  const getMode = () => {
-    if (enableUpscale && enableDownscale) return 'both';
-    if (enableUpscale) return 'upscale';
-    if (enableDownscale) return 'downscale';
-    return '';
-  };
-
-  const getModeLabel = () => {
-    const mode = getMode();
-    if (mode === 'both') return t('scale.startBoth');
-    if (mode === 'upscale') return t('scale.startUp');
-    if (mode === 'downscale') return t('scale.startDown');
-    return '';
-  };
-
-  const handleProcess = async () => {
-    const mode = getMode();
-    if (!inputPath || !outputPath || !mode) return;
-    // 提交前规范数字参数。
-    const num = (v: number, fallback: number) => (Number.isFinite(v) && v >= 1 ? v : fallback);
-    const upW = num(upWidth, 1024), upH = num(upHeight, 1024);
-    const downW = num(downWidth, 512), downH = num(downHeight, 512);
-    if (upW !== upWidth) setUpWidth(upW);
-    if (upH !== upHeight) setUpHeight(upH);
-    if (downW !== downWidth) setDownWidth(downW);
-    if (downH !== downHeight) setDownHeight(downH);
-    setProcessing(true);
-    addTask('scale', t('scale.taskName'));
-    setProgress(0);
-    setProgressCurrent(0);
-    setProgressTotal(0);
-    setIsDone(false);
-    setHasError(false);
-
-    const targetW = mode === 'downscale' ? downW : upW;
-    const targetH = mode === 'downscale' ? downH : upH;
-    const label = getModeLabel();
-    setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${label}${t('pages.process')} → ${targetW}×${targetH}`, status: 'info' }]);
-    try {
-      await invoke<ProcessResult>('scale_images', {
+  const handleProcess = () => {
+    if (!mode) return;
+    const targetW = mode === 'downscale' ? downWidth : upWidth;
+    const targetH = mode === 'downscale' ? downHeight : upHeight;
+    return task.run({
+      taskName: t('scale.taskName'), startLog: t('scale.startMsg', { mode: { both: t('scale.startBoth'), upscale: t('scale.startUp'), downscale: t('scale.startDown') }[mode], width: targetW, height: targetH }), exec: () => invoke<ProcessResult>('scale_images', {
         options: {
           input_path: inputPath,
           output_path: outputPath,
           mode,
           target_width: targetW,
           target_height: targetH,
-          down_target_width: mode === 'both' ? downW : 0,
-          down_target_height: mode === 'both' ? downH : 0,
+          down_target_width: mode === 'both' ? downWidth : 0,
+          down_target_height: mode === 'both' ? downHeight : 0,
           recursive,
-        },
-      });
-      // done
-    } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('scale', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
-      setHasError(true);
-      setIsDone(true);
-    } finally {
-      setProcessing(false);
-    }
+        } satisfies ScaleOptions,
+      })
+    });
   };
 
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
-  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
-
-  const canStart = inputPath && outputPath && (enableUpscale || enableDownscale);
+  const canStart = inputPath && outputPath && mode;
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <Scaling style={{ width: 28, height: 28, color: '#818cf8' }} />
-          <h1 className="page-title">{t('scale.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('scale.subtitle')}</p>
-      </div>
+      <PageHeader icon={Scaling} color={'#818cf8'} title={t('scale.title')} subtitle={t('scale.subtitle')} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         {/* 左侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径设置 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-              <div className="form-group">
-                <div className="form-label-row">
-                  <label className="form-label">{t('pages.inputPath')}</label>
-                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
-                </div>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectInputPath')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <InputPathPickerButton onSelect={setInputPath} />
-                </div>
-              </div>
-              <div className="form-group">
-                <label className="form-label">{t('pages.outputPath')}</label>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <PathFields allowFile input={inputPath} onInput={setInputPath} output={outputPath} onOutput={setOutputPath} recursive={recursive} onRecursive={setRecursive} />
 
           {/* 缩放选项 */}
           <div className="tool-panel">
             <div className="tool-panel-header"><span className="tool-panel-title">{t('scale.scaleOptions')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               {/* 上采样 */}
-              <div onClick={() => setEnableUpscale(!enableUpscale)} style={{
-                padding: 'var(--space-4)', borderRadius: 'var(--radius-md)',
-                border: `1px solid ${enableUpscale ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                background: enableUpscale ? 'rgba(124, 92, 252, 0.06)' : 'var(--color-bg-input)',
-                cursor: 'pointer', transition: 'all 0.2s',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
-                  <div style={{
-                    width: 18, height: 18, borderRadius: 4,
-                    border: `2px solid ${enableUpscale ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`,
-                    background: enableUpscale ? 'var(--color-accent-primary)' : 'transparent',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    transition: 'all 0.15s',
-                  }}>
-                    {enableUpscale && <span style={{ color: '#fff', fontSize: 12, fontWeight: 700, lineHeight: 1 }}>✓</span>}
-                  </div>
-                  <ArrowUpCircle style={{ width: 18, height: 18, color: enableUpscale ? '#4ade80' : 'var(--color-text-tertiary)' }} />
-                  <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{t('scale.upscale')}</span>
-                </div>
+              <ChoiceCard selected={enableUpscale} onSelect={() => setEnableUpscale(!enableUpscale)} indicator="check" body={<>
                 <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', opacity: enableUpscale ? 1 : 0.4, pointerEvents: enableUpscale ? 'auto' : 'none' }}>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label">{t('scale.width')}</label>
-                    <input className="form-input" type="number" value={upWidth} onChange={(e) => setUpWidth(e.target.value === '' ? '' as any : Number(e.target.value))} onBlur={(e) => { if (e.target.value === '') setUpWidth(1); }} onClick={(e) => e.stopPropagation()} min={1} />
+                    <NumberInput className="form-input" value={upWidth} min={1} onChange={setUpWidth} fallback={1024} integer />
                   </div>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label">{t('scale.height')}</label>
-                    <input className="form-input" type="number" value={upHeight} onChange={(e) => setUpHeight(e.target.value === '' ? '' as any : Number(e.target.value))} onBlur={(e) => { if (e.target.value === '') setUpHeight(1); }} onClick={(e) => e.stopPropagation()} min={1} />
+                    <NumberInput className="form-input" value={upHeight} min={1} onChange={setUpHeight} fallback={1024} integer />
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(74, 222, 128, 0.06)', border: '1px solid rgba(74, 222, 128, 0.1)' }}>
-                  <Info style={{ width: 14, height: 14, color: '#4ade80', marginTop: 2, minWidth: 14 }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-                    {t('scale.upscaleDesc')}
-                  </span>
-                </div>
-              </div>
+
+              </>}>
+
+                <ArrowUpCircle style={{ width: 18, height: 18, color: enableUpscale ? '#4ade80' : 'var(--color-text-tertiary)' }} />
+                <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{t('scale.upscale')}</span>
+              </ChoiceCard>
 
               {/* 下采样 */}
-              <div onClick={() => setEnableDownscale(!enableDownscale)} style={{
-                padding: 'var(--space-4)', borderRadius: 'var(--radius-md)',
-                border: `1px solid ${enableDownscale ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                background: enableDownscale ? 'rgba(124, 92, 252, 0.06)' : 'var(--color-bg-input)',
-                cursor: 'pointer', transition: 'all 0.2s',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
-                  <div style={{
-                    width: 18, height: 18, borderRadius: 4,
-                    border: `2px solid ${enableDownscale ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`,
-                    background: enableDownscale ? 'var(--color-accent-primary)' : 'transparent',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    transition: 'all 0.15s',
-                  }}>
-                    {enableDownscale && <span style={{ color: '#fff', fontSize: 12, fontWeight: 700, lineHeight: 1 }}>✓</span>}
-                  </div>
-                  <ArrowDownCircle style={{ width: 18, height: 18, color: enableDownscale ? '#60a5fa' : 'var(--color-text-tertiary)' }} />
-                  <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{t('scale.downscale')}</span>
-                </div>
+              <ChoiceCard selected={enableDownscale} onSelect={() => setEnableDownscale(!enableDownscale)} indicator="check" body={<>
                 <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', opacity: enableDownscale ? 1 : 0.4, pointerEvents: enableDownscale ? 'auto' : 'none' }}>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label">{t('scale.width')}</label>
-                    <input className="form-input" type="number" value={downWidth} onChange={(e) => setDownWidth(e.target.value === '' ? '' as any : Number(e.target.value))} onBlur={(e) => { if (e.target.value === '') setDownWidth(1); }} onClick={(e) => e.stopPropagation()} min={1} />
+                    <NumberInput className="form-input" value={downWidth} min={1} onChange={setDownWidth} fallback={512} integer />
                   </div>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label">{t('scale.height')}</label>
-                    <input className="form-input" type="number" value={downHeight} onChange={(e) => setDownHeight(e.target.value === '' ? '' as any : Number(e.target.value))} onBlur={(e) => { if (e.target.value === '') setDownHeight(1); }} onClick={(e) => e.stopPropagation()} min={1} />
+                    <NumberInput className="form-input" value={downHeight} min={1} onChange={setDownHeight} fallback={512} integer />
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(96, 165, 250, 0.06)', border: '1px solid rgba(96, 165, 250, 0.1)' }}>
-                  <Info style={{ width: 14, height: 14, color: '#60a5fa', marginTop: 2, minWidth: 14 }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-                    {t('scale.downscaleDesc')}
-                  </span>
-                </div>
-              </div>
+
+              </>}>
+
+                <ArrowDownCircle style={{ width: 18, height: 18, color: enableDownscale ? '#60a5fa' : 'var(--color-text-tertiary)' }} />
+                <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{t('scale.downscale')}</span>
+              </ChoiceCard>
 
               {/* 提示文字 */}
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(251, 191, 36, 0.06)', border: '1px solid rgba(251, 191, 36, 0.15)' }}>
                 <Info style={{ width: 14, height: 14, color: '#fbbf24', marginTop: 2, minWidth: 14 }} />
                 <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-                  {t('scale.resizeHint')}
+                  {t('scale.areaRule')}<br />{t('scale.resizeHint')}
                 </span>
               </div>
             </div>
@@ -285,21 +122,12 @@ export default function ScalePage() {
         {/* 右侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 执行按钮 */}
-          <ProcessButton processing={processing} onStart={handleProcess}
+          <ProcessButton {...task.buttonProps} onStart={handleProcess}
             disabled={!canStart}
-            cancelCommand="cancel_scale" startText={t('scale.startScale')} processingText={t('pages.processing')}
-            onCancelLog={addCancelLog} />
+            cancelCommand="cancel_scale" startText={t('scale.startScale')} />
 
           {/* 进度条和日志 */}
-          <ProgressLog
-            progress={progress}
-            current={progressCurrent}
-            total={progressTotal}
-            logs={logs}
-            isDone={isDone}
-            hasError={hasError}
-            onClearLogs={clearLogs}
-          />
+          <ProgressLog {...task.progressLogProps} />
         </div>
       </div>
     </div>

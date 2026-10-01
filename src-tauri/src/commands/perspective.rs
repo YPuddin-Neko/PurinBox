@@ -1,15 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Emitter;
 
 use super::image_io::{load_image, save_like_source};
-use super::{
-    collect_image_files_with_recursive_excluding, output_path_for_input, ProcessResult,
-    ProgressEvent,
-};
+use super::{collect_image_files_with_recursive_excluding, same_name_output, ProcessResult};
 
-static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+use super::batch::{BatchJob, FileBatch, FileOutcome};
+
+static JOB: BatchJob = BatchJob::new("透视变换");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerspectiveOptions {
@@ -26,19 +23,12 @@ pub async fn perspective_transform<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: PerspectiveOptions,
 ) -> Result<ProcessResult, String> {
-    // 互斥：页面与工作流节点共用全局取消标志，并发会互吞取消
-    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let _busy = crate::commands::BusyGuard::acquire(&RUNNING, "透视变换")?;
-
-    CANCEL_FLAG.store(false, Ordering::SeqCst);
-    tokio::task::spawn_blocking(move || perspective_sync(&app, &options))
-        .await
-        .map_err(|e| format!("任务执行失败: {}", e))?
+    JOB.run(move || perspective_sync(&app, &options)).await
 }
 
 #[tauri::command]
 pub fn cancel_perspective() {
-    CANCEL_FLAG.store(true, Ordering::SeqCst);
+    JOB.cancel();
 }
 
 fn perspective_sync<R: tauri::Runtime>(
@@ -47,119 +37,27 @@ fn perspective_sync<R: tauri::Runtime>(
 ) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
-
-    // intensity 是 0.0~0.5 的比例值（UI 滑杆 0.02~0.30）。
-    // 量纲错误的值（如旧工作流默认的 10）会让几乎所有像素反查越界，输出全黑图
     if !(0.0..=0.5).contains(&options.intensity) {
         return Err(format!(
             "透视强度 {} 超出有效范围 0.0~0.5（该值为比例，不是百分比）",
             options.intensity
         ));
     }
-
-    if !output_dir.exists() {
-        std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
-    }
-
+    std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
     let files =
         collect_image_files_with_recursive_excluding(input, options.recursive, Some(output_dir))?;
-    let total = files.len() as u32;
-    let mut success_count = 0u32;
-    let mut fail_count = 0u32;
-    let mut errors = Vec::new();
-
-    for (i, file_path) in files.iter().enumerate() {
-        if CANCEL_FLAG.load(Ordering::SeqCst) {
-            let _ = app.emit(
-                "perspective-progress",
-                ProgressEvent {
-                    current: i as u32,
-                    total,
-                    filename: String::new(),
-                    status: "done".to_string(),
-                    message: format!("已取消: 已处理 {}, 共 {}", i, total),
-                    ..Default::default()
+    Ok(
+        FileBatch::new(app, "perspective-progress", JOB.cancel_flag())
+            .error_prefix("[失败] ")
+            .run(
+                &files,
+                |item| {
+                    process_perspective(item.path, input, output_dir, options)?;
+                    Ok(FileOutcome::done(format!("[透视变换] {} ✓", item.name)))
                 },
-            );
-            break;
-        }
-
-        let filename = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        let _ = app.emit(
-            "perspective-progress",
-            ProgressEvent {
-                current: i as u32 + 1,
-                total,
-                filename: filename.clone(),
-                status: "processing".to_string(),
-                message: format!("正在处理: {}", filename),
-                ..Default::default()
-            },
-        );
-
-        match process_perspective(file_path, input, output_dir, options) {
-            Ok(_) => {
-                success_count += 1;
-                let _ = app.emit(
-                    "perspective-progress",
-                    ProgressEvent {
-                        current: i as u32 + 1,
-                        total,
-                        filename: filename.clone(),
-                        status: "success".to_string(),
-                        message: format!("[透视变换] {} ✓", filename),
-                        ..Default::default()
-                    },
-                );
-            }
-            Err(e) => {
-                fail_count += 1;
-                let err_msg = format!("{}: {}", filename, e);
-                errors.push(err_msg.clone());
-                let _ = app.emit(
-                    "perspective-progress",
-                    ProgressEvent {
-                        current: i as u32 + 1,
-                        total,
-                        filename: filename.clone(),
-                        status: "error".to_string(),
-                        message: format!("[失败] {}", err_msg),
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-    }
-
-    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
-    if !CANCEL_FLAG.load(Ordering::SeqCst) {
-        let _ = app.emit(
-            "perspective-progress",
-            ProgressEvent {
-                current: total,
-                total,
-                filename: String::new(),
-                status: "done".to_string(),
-                message: format!(
-                    "处理完成: 成功 {}, 失败 {}, 共 {}",
-                    success_count, fail_count, total
-                ),
-                ..Default::default()
-            },
-        );
-    }
-
-    Ok(ProcessResult {
-        success_count,
-        fail_count,
-        total,
-        errors,
-    })
+                |c| c.summary("处理完成"),
+            ),
+    )
 }
 
 fn process_perspective(
@@ -168,71 +66,84 @@ fn process_perspective(
     output_dir: &Path,
     options: &PerspectiveOptions,
 ) -> Result<(), String> {
-    use image::{GenericImageView, RgbaImage};
+    use image::DynamicImage;
 
     let (img, source) = load_image(file_path)?;
 
-    let (w, h) = img.dimensions();
-    let rgba = img.to_rgba8();
+    // 按路径种子选一个透视方向（4 种），同一路径结果可复现
+    let variant = path_seed(file_path) % 4;
 
-    // 随机选择一个透视方向（使用文件名hash作为伪随机种子，确保可复现）
-    let seed: u64 = file_path
-        .to_string_lossy()
-        .bytes()
-        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-    let variant = seed % 4; // 4种透视方向
-
-    let fw = w as f64;
-    let fh = h as f64;
     let d = options.intensity;
 
-    // 源四角 → 目标四角 (归一化坐标)
+    // 源四角（单位正方形）→ 目标四角 (归一化坐标)
     // 从目标像素反查源像素位置（逆映射）
-    let (src_corners, dst_corners) = match variant {
-        0 => {
-            // 从上方俯视：顶部收窄
-            (
-                [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
-                [(d, d * 0.5), (1.0 - d, d * 0.5), (1.0, 1.0), (0.0, 1.0)],
-            )
-        }
-        1 => {
-            // 从下方仰视：底部收窄
-            (
-                [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
-                [
-                    (0.0, 0.0),
-                    (1.0, 0.0),
-                    (1.0 - d, 1.0 - d * 0.5),
-                    (d, 1.0 - d * 0.5),
-                ],
-            )
-        }
-        2 => {
-            // 从左侧看：左边收窄
-            (
-                [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
-                [(d * 0.5, d), (1.0, 0.0), (1.0, 1.0), (d * 0.5, 1.0 - d)],
-            )
-        }
-        _ => {
-            // 从右侧看：右边收窄
-            (
-                [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
-                [
-                    (0.0, 0.0),
-                    (1.0 - d * 0.5, d),
-                    (1.0 - d * 0.5, 1.0 - d),
-                    (0.0, 1.0),
-                ],
-            )
-        }
+    const SRC_CORNERS: [(f64, f64); 4] = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+    let dst_corners = match variant {
+        // 从上方俯视：顶部收窄
+        0 => [(d, d * 0.5), (1.0 - d, d * 0.5), (1.0, 1.0), (0.0, 1.0)],
+        // 从下方仰视：底部收窄
+        1 => [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0 - d, 1.0 - d * 0.5),
+            (d, 1.0 - d * 0.5),
+        ],
+        // 从左侧看：左边收窄
+        2 => [(d * 0.5, d), (1.0, 0.0), (1.0, 1.0), (d * 0.5, 1.0 - d)],
+        // 从右侧看：右边收窄
+        _ => [
+            (0.0, 0.0),
+            (1.0 - d * 0.5, d),
+            (1.0 - d * 0.5, 1.0 - d),
+            (0.0, 1.0),
+        ],
     };
 
     // 计算 3x3 透视变换矩阵 (dst→src)
-    let mat = compute_perspective_matrix(&dst_corners, &src_corners);
+    let mat = compute_perspective_matrix(&dst_corners, &SRC_CORNERS);
 
-    let mut out = RgbaImage::new(w, h);
+    let out = match img.color() {
+        image::ColorType::L16
+        | image::ColorType::La16
+        | image::ColorType::Rgb16
+        | image::ColorType::Rgba16 => {
+            DynamicImage::ImageRgba16(warp_rgba(&img.to_rgba16(), &mat, true))
+        }
+        image::ColorType::Rgb32F | image::ColorType::Rgba32F => {
+            DynamicImage::ImageRgba32F(warp_rgba(&img.to_rgba32f(), &mat, false))
+        }
+        _ => DynamicImage::ImageRgba8(warp_rgba(&img.to_rgba8(), &mat, true)),
+    };
+    let output_path = same_name_output(input_root, file_path, output_dir, options.recursive)?;
+    // 数据增强不能原地替换源图。
+    if crate::commands::path_key_ci(&output_path) == crate::commands::path_key_ci(file_path) {
+        return Err("输出与输入为同一文件，已跳过（请更换输出目录）".to_string());
+    }
+    // JPEG/BMP 不保留透明边界，越界区域采用黑边。
+    let out = if matches!(
+        source.format,
+        image::ImageFormat::Jpeg | image::ImageFormat::Bmp
+    ) {
+        DynamicImage::ImageRgb8(out.to_rgb8())
+    } else {
+        out
+    };
+    save_like_source(out, &output_path, &source)
+}
+
+fn warp_rgba<T: image::Primitive>(
+    rgba: &image::ImageBuffer<image::Rgba<T>, Vec<T>>,
+    mat: &[f64; 9],
+    quantize: bool,
+) -> image::ImageBuffer<image::Rgba<T>, Vec<T>>
+where
+    f64: From<T>,
+    image::Rgba<T>: image::Pixel<Subpixel = T>,
+{
+    let (w, h) = rgba.dimensions();
+    let (fw, fh) = (w as f64, h as f64);
+
+    let mut out = image::ImageBuffer::new(w, h);
     for py in 0..h {
         for px in 0..w {
             let nx = px as f64 / fw;
@@ -251,39 +162,35 @@ fn process_perspective(
 
             // 双线性插值
             if src_x >= 0.0 && src_x < fw - 1.0 && src_y >= 0.0 && src_y < fh - 1.0 {
-                let pixel = bilinear_sample(&rgba, src_x, src_y, w, h);
+                let pixel = bilinear_sample(rgba, src_x, src_y, w, h, quantize);
                 out.put_pixel(px, py, pixel);
             }
             // 超出范围的像素保持透明/黑色
         }
     }
 
-    let file_name = file_path
-        .file_name()
-        .ok_or("无效的文件名")?
-        .to_string_lossy();
-    let output_path = output_path_for_input(
-        input_root,
-        file_path,
-        output_dir,
-        file_name.as_ref(),
-        options.recursive,
-    )?;
-    // 输出目录==输入目录时输出与输入同路径（大小写不敏感判定），保存会把原图就地替换
-    if crate::commands::path_key_ci(&output_path) == crate::commands::path_key_ci(file_path) {
-        return Err("输出与输入为同一文件，已跳过（请更换输出目录）".to_string());
-    }
-    // 源图为 JPEG/BMP 时保存前拍平为 RGB（越界区域呈黑边，符合数据增强惯例）
-    let out = if matches!(source.format, image::ImageFormat::Jpeg | image::ImageFormat::Bmp) {
-        image::DynamicImage::ImageRgb8(image::DynamicImage::ImageRgba8(out).to_rgb8())
-    } else {
-        image::DynamicImage::ImageRgba8(out)
-    };
-    save_like_source(out, &output_path, &source)?;
-    Ok(())
+    out
 }
 
-fn bilinear_sample(img: &image::RgbaImage, x: f64, y: f64, w: u32, h: u32) -> image::Rgba<u8> {
+/// 由完整路径算出的确定性伪随机种子：同一路径种子不变，换目录后种子随之改变
+pub(super) fn path_seed(path: &Path) -> u64 {
+    path.to_string_lossy()
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64))
+}
+
+fn bilinear_sample<T: image::Primitive>(
+    img: &image::ImageBuffer<image::Rgba<T>, Vec<T>>,
+    x: f64,
+    y: f64,
+    w: u32,
+    h: u32,
+    quantize: bool,
+) -> image::Rgba<T>
+where
+    f64: From<T>,
+    image::Rgba<T>: image::Pixel<Subpixel = T>,
+{
     let x0 = x.floor() as u32;
     let y0 = y.floor() as u32;
     let x1 = (x0 + 1).min(w - 1);
@@ -296,12 +203,17 @@ fn bilinear_sample(img: &image::RgbaImage, x: f64, y: f64, w: u32, h: u32) -> im
     let p01 = img.get_pixel(x0, y1);
     let p11 = img.get_pixel(x1, y1);
 
-    let lerp = |a: u8, b: u8, c: u8, d: u8| -> u8 {
-        let v = (a as f64) * (1.0 - fx) * (1.0 - fy)
-            + (b as f64) * fx * (1.0 - fy)
-            + (c as f64) * (1.0 - fx) * fy
-            + (d as f64) * fx * fy;
-        v.round().clamp(0.0, 255.0) as u8
+    let lerp = |a: T, b: T, c: T, d: T| -> T {
+        let v = f64::from(a) * (1.0 - fx) * (1.0 - fy)
+            + f64::from(b) * fx * (1.0 - fy)
+            + f64::from(c) * (1.0 - fx) * fy
+            + f64::from(d) * fx * fy;
+        let v = if quantize {
+            v.round().clamp(0.0, T::DEFAULT_MAX_VALUE.into())
+        } else {
+            v
+        };
+        T::from(v).unwrap()
     };
 
     image::Rgba([
@@ -316,32 +228,14 @@ fn bilinear_sample(img: &image::RgbaImage, x: f64, y: f64, w: u32, h: u32) -> im
 #[allow(clippy::needless_range_loop)]
 fn compute_perspective_matrix(src: &[(f64, f64); 4], dst: &[(f64, f64); 4]) -> [f64; 9] {
     // 使用 DLT (Direct Linear Transform) 算法
-    // 构建 8x8 线性方程组 A * h = b
-    let mut a_mat = [[0.0f64; 8]; 8];
-    let mut b_vec = [0.0f64; 8];
-
-    for i in 0..4 {
-        let (sx, sy) = src[i];
-        let (dx, dy) = dst[i];
-        let row1 = i * 2;
-        let row2 = i * 2 + 1;
-
-        a_mat[row1] = [sx, sy, 1.0, 0.0, 0.0, 0.0, -dx * sx, -dx * sy];
-        b_vec[row1] = dx;
-
-        a_mat[row2] = [0.0, 0.0, 0.0, sx, sy, 1.0, -dy * sx, -dy * sy];
-        b_vec[row2] = dy;
+    // 构建 8x8 线性方程组 A * h = b，直接写成增广矩阵 [A | b]
+    let mut aug = [[0.0f64; 9]; 8];
+    for (i, (&(sx, sy), &(dx, dy))) in src.iter().zip(dst).enumerate() {
+        aug[i * 2] = [sx, sy, 1.0, 0.0, 0.0, 0.0, -dx * sx, -dx * sy, dx];
+        aug[i * 2 + 1] = [0.0, 0.0, 0.0, sx, sy, 1.0, -dy * sx, -dy * sy, dy];
     }
 
     // 高斯消元
-    let mut aug = [[0.0f64; 9]; 8];
-    for i in 0..8 {
-        for j in 0..8 {
-            aug[i][j] = a_mat[i][j];
-        }
-        aug[i][8] = b_vec[i];
-    }
-
     for col in 0..8 {
         // 选主元
         let mut max_row = col;
@@ -371,6 +265,39 @@ fn compute_perspective_matrix(src: &[(f64, f64); 4], dst: &[(f64, f64); 4]) -> [
         }
     }
 
-    let h: Vec<f64> = (0..8).map(|i| aug[i][8]).collect();
-    [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1.0]
+    std::array::from_fn(|i| if i < 8 { aug[i][8] } else { 1.0 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn perspective_preserves_16bit_pixels() {
+        let root = super::super::image_io::test_dir("perspective16");
+        let output = root.join("out");
+        std::fs::create_dir_all(&output).unwrap();
+        for ext in ["png", "tiff"] {
+            let source = root.join(format!("source.{ext}"));
+            let pixels = image::ImageBuffer::from_fn(5, 5, |x, y| {
+                image::Rgba([12345u16 + x as u16, 23456 + y as u16, 34567, 45678])
+            });
+            pixels.save(&source).unwrap();
+            let options = PerspectiveOptions {
+                input_path: root.to_string_lossy().into_owned(),
+                output_path: output.to_string_lossy().into_owned(),
+                intensity: 0.0,
+                recursive: false,
+            };
+            process_perspective(&source, &root, &output, &options).unwrap();
+            let image = image::open(output.join(format!("source.{ext}"))).unwrap();
+            assert_eq!(image.color(), image::ColorType::Rgba16);
+            assert_eq!(image.to_rgba16().get_pixel(2, 2), pixels.get_pixel(2, 2));
+        }
+        let pixels = image::ImageBuffer::from_fn(2, 2, |x, y| {
+            image::Rgba([1001u16 + (x + y * 2) as u16 * 1000, 0, 0, 65535])
+        });
+        assert_eq!(bilinear_sample(&pixels, 0.5, 0.5, 2, 2, true)[0], 2501);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

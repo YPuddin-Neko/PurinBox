@@ -1,9 +1,19 @@
-/** 打标模型的系列分组与版本排序（普通打标/辅助打标的模型选择共用） */
+/** 打标模型信息、系列分组与版本排序（普通打标/辅助打标的模型选择共用） */
 
 export interface TaggerModelLike {
   id: string;
   name: string;
   is_builtin: boolean;
+}
+
+/** get_tagger_models 返回的模型信息 */
+export interface TaggerModelInfo extends TaggerModelLike {
+  requires_token: boolean;
+  input_size: number;
+  is_downloaded: boolean;
+  supported_categories: string[];
+  general_threshold?: number | null;
+  character_threshold?: number | null;
 }
 
 /** 自定义模型统一归入的系列键 */
@@ -31,7 +41,7 @@ function versionKey(name: string): number[] | null {
 }
 
 /** 版本新的在前；无版本信息（未导入的自定义模型等）排最后按名称排序；同版本保持传入顺序 */
-export function compareByVersionDesc<T extends TaggerModelLike>(a: T, b: T): number {
+function compareByVersionDesc<T extends TaggerModelLike>(a: T, b: T): number {
   const ka = versionKey(a.name);
   const kb = versionKey(b.name);
   if (ka && kb) {
@@ -47,7 +57,7 @@ export function compareByVersionDesc<T extends TaggerModelLike>(a: T, b: T): num
   return a.name.localeCompare(b.name);
 }
 
-export interface ModelGroup<T extends TaggerModelLike> {
+interface ModelGroup<T extends TaggerModelLike> {
   family: string;
   models: T[];
 }

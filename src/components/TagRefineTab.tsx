@@ -1,25 +1,20 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useLlmApiConfig } from '../hooks/useLlmApiConfig';
+import LlmApiPanel from './LlmApiPanel';
+import { toIntervalMs, toThreads, toImageSize } from '../utils/taggerOptions';
+import { IMAGE_DETAILS, isOneOf, type ImageDetail, type TagRefineOptions } from '../api/commandOptions';
+import { useBatchTask } from '../hooks/useBatchTask';
+import { useBatchRunStats } from '../hooks/useBatchRunStats';
+import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
-import {
-  FolderOpen, FolderOutput, Loader2, Globe, Key, Bot,
-  RefreshCw, MessageSquare, Timer, Layers, Image,
-  CheckCircle2, XCircle, Info, ScrollText, Trash2, AlertTriangle, Save, Thermometer,
-  Eye, EyeOff, Focus
-} from 'lucide-react';
-import { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
-import { useTaskQueue } from '../components/TaskContext';
+import { FolderOpen, FolderOutput, MessageSquare, Timer, Layers, Image, Thermometer, Focus } from 'lucide-react';
+import ProgressLog from './ProgressLog';
 import { useTranslation } from 'react-i18next';
 import CustomSelect from '../components/CustomSelect';
 import ProcessButton from '../components/ProcessButton';
 import RecursiveScanToggle from './RecursiveScanToggle';
 import InputPathPickerButton from './InputPathPickerButton';
 import { IMAGE_DETAIL_OPTIONS } from '../utils/imageDetail';
-import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
-
-interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 
 const defaultRefinePrompt = `You are an expert anime image tagger. You will receive an image and its existing tags.
 
@@ -45,192 +40,42 @@ export default function TagRefineTab() {
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
-  const [preset, setPreset] = useState('openai');
-  const [customEndpoint, setCustomEndpoint] = useState('');
-  // 每个预设各存一份 key，切换预设时输入框跟着换，不能只存单个值
-  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
-  const [modelName, setModelName] = useState('');
-  const [modelList, setModelList] = useState<string[]>([]);
-  const [fetchingModels, setFetchingModels] = useState(false);
-  const [fetchMsg, setFetchMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [prompt, setPrompt] = useState(defaultRefinePrompt);
   const [intervalSec, setIntervalSec] = useState('-1');
   const [concurrency, setConcurrency] = useState('1');
   const [temperature, setTemperature] = useState('0.3');
   const [topP, setTopP] = useState('0');
   const [imageSize, setImageSize] = useState('1024');
-  const [imageDetail, setImageDetail] = useState('');
-  const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [pCur, setPCur] = useState(0);
-  const [pTot, setPTot] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasErr, setHasErr] = useState(false);
-  const [successCnt, setSuccessCnt] = useState(0);
-  const [failCnt, setFailCnt] = useState(0);
-  const [warnCnt, setWarnCnt] = useState(0);
-  const [saveMsg, setSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
-  const [startTime, setStartTime] = useState<number>(0);
-  const [elapsed, setElapsed] = useState('');
-  const errorFilesRef = useRef<string[]>([]);
-  const warnFilesRef = useRef<string[]>([]);
-  const [showKey, setShowKey] = useState(false);
-  const taskLogs = useUnifiedTaskLogs(setLogs);
-
-  const PRESETS: Record<string, { label: string; url: string }> = {
-    openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
-    gemini: { label: 'Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/' },
-    deepseek: { label: 'DeepSeek', url: 'https://api.deepseek.com/v1/' },
-    custom: { label: t('tagSort.customLabel'), url: '' },
-  };
-
-  const endpoint = preset === 'custom' ? customEndpoint : (PRESETS[preset]?.url || '');
-  const apiKey = apiKeys[preset] || '';
-  const setApiKey = (v: string) => setApiKeys(prev => ({ ...prev, [preset]: v }));
-
-  useEffect(() => {
-    invoke<{ preset: string; custom_endpoint: string; api_keys: Record<string, string> }>('load_api_config').then((cfg) => {
-      if (cfg.preset) setPreset(cfg.preset);
-      if (cfg.custom_endpoint) setCustomEndpoint(cfg.custom_endpoint);
-      if (cfg.api_keys) setApiKeys(cfg.api_keys);
-    }).catch(() => {});
-  }, []);
-
-  const handleSaveConfig = async () => {
-    try {
-      await invoke('save_api_config', { preset, customEndpoint, apiKeys });
-      setSaveMsg({ text: t('tagSort.configSaved'), ok: true });
-    } catch (e: any) {
-      setSaveMsg({ text: `${t('tagSort.saveFailed')}: ${String(e)}`, ok: false });
-    }
-    setTimeout(() => setSaveMsg(null), 2000);
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    const listenPromise = listen<ProgressPayload>('tag-refine-progress', (e) => {
-      if (cancelled) return;
-      const p = e.payload;
-      setPCur(p.current); setPTot(p.total);
-      if (p.total > 0) setProgress((p.current / p.total) * 100);
-      if (p.status === 'done') { setIsDone(true); setProcessing(false); }
-      if (p.status === 'error') {
-        setHasErr(true); setFailCnt(c => c + 1);
-        const m = p.message.match(/\[错误\] ([^:]+)/);
-        if (m) errorFilesRef.current = [...errorFilesRef.current, m[1]];
-      }
-      if (p.status === 'success') {
-        setSuccessCnt(c => c + 1);
-        if (p.message.includes('⚠')) {
-          setWarnCnt(c => c + 1);
-          const m = p.message.match(/\[完成\] ([^ ]+)/);
-          if (m) warnFilesRef.current = [...warnFilesRef.current, m[1]];
-        }
-      }
-      taskLogs.appendProgressLog(p);
-    });
-    return () => { cancelled = true; listenPromise.then(fn => fn()); };
-  }, [taskLogs]);
-
-  const handleFetchModels = async () => {
-    if (!endpoint) return;
-    setFetchingModels(true);
-    try {
-      const models = await invoke<string[]>('fetch_llm_models', { apiEndpoint: endpoint, apiKey: apiKey });
-      setModelList(models);
-      if (models.length > 0 && !models.includes(modelName)) setModelName(models[0]);
-      setFetchMsg({ text: t('tagSort.fetchOk', { n: models.length }), ok: true });
-    } catch (e: any) {
-      setFetchMsg({ text: `${t('tagSort.fetchFail')}: ${String(e)}`, ok: false });
-    } finally {
-      setFetchingModels(false);
-      setTimeout(() => setFetchMsg(null), 3000);
-    }
-  };
-
-  const { addTask, updateTask } = useTaskQueue();
-
+  const [imageDetail, setImageDetail] = useState<ImageDetail>('');
+  const api = useLlmApiConfig();
+  const stats = useBatchRunStats();
+  const task = useBatchTask({ event: 'tag-refine-progress', taskId: 'tag-refine',
+    onEvent: stats.onEvent, logStatus: p => p.status === 'warning' ? 'warning' : undefined });
   const handleStart = async () => {
-    if (!inputPath || !outputPath || !endpoint || !modelName) return;
-    setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
-    setSuccessCnt(0); setFailCnt(0); setWarnCnt(0); errorFilesRef.current = []; warnFilesRef.current = [];
-    setStartTime(Date.now()); setElapsed('');
-    addTask('tag-refine', t('tagRefine.taskName'));
-    const sec = parseFloat(intervalSec);
-    const intervalMs = sec < 0 ? -1 : Math.round(sec * 1000);
-    const threads = Math.max(1, parseInt(concurrency) || 1);
-    taskLogs.setInitialLog(t('tagRefine.startMsg', { model: modelName, threads, interval: sec < 0 ? t('tagSort.noInterval') : intervalSec + 's' }));
-    try {
-      await invoke<ProcessResult>('start_tag_refining', {
-        options: {
+    if (task.processing || !inputPath || !outputPath || !api.ready) return;
+    stats.reset();
+    const intervalMs = toIntervalMs(intervalSec);
+    const threads = toThreads(concurrency);
+    await task.run({
+      taskName: t('tagRefine.taskName'),
+      startLog: t('tagRefine.startMsg', { model: api.modelName, api: api.endpoint, threads, interval: intervalMs < 0 ? t('tagSort.noInterval') : `${intervalMs / 1000}s` }),
+      exec: () => invoke('start_tag_refining', { options: {
           input_path: inputPath,
           output_path: outputPath,
-          api_endpoint: endpoint,
-          api_key: apiKey,
-          model_name: modelName,
+          api_endpoint: api.endpoint,
+          api_key: api.apiKey,
+          model_name: api.modelName,
           prompt: prompt,
-          temperature: Number.isFinite(parseFloat(temperature)) ? parseFloat(temperature) : 0.3,
-          max_tokens: -1,
-          image_size: parseInt(imageSize) || 1024,
+          temperature: Number(temperature),
+          image_size: toImageSize(imageSize),
           image_detail: imageDetail,
           request_interval_ms: intervalMs,
           concurrency: threads,
-          top_p: parseFloat(topP) || 0,
+          top_p: Number(topP),
           recursive,
-        },
-      });
-    } catch (e: any) {
-      const errorText = taskLogs.appendCatchError(e, t('pages.errorPrefix'));
-      updateTask('tag-refine', { status: /已取消|cancel/i.test(errorText) ? 'cancelled' : 'error', message: errorText });
-      setHasErr(true); setIsDone(true);
-    } finally { setProcessing(false); }
-  };
-
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); setSuccessCnt(0); setFailCnt(0); setWarnCnt(0); errorFilesRef.current = []; warnFilesRef.current = []; setElapsed(''); }, []);
-  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
-
-  useEffect(() => {
-    if (!processing || startTime === 0) return;
-    const timer = setInterval(() => {
-      const sec = Math.floor((Date.now() - startTime) / 1000);
-      const m = Math.floor(sec / 60); const s = sec % 60;
-      setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [processing, startTime]);
-
-  useEffect(() => {
-    if (!isDone) return;
-    if (startTime > 0) {
-      const sec = Math.floor((Date.now() - startTime) / 1000);
-      const m = Math.floor(sec / 60); const s = sec % 60;
-      setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
-    }
-    const errs = errorFilesRef.current;
-    const warns = warnFilesRef.current;
-    if (errs.length > 0) setLogs(p => [...p, { time: getTimeStr(), message: `${t('tagSort.failedFiles')}: ${errs.join(', ')}`, status: 'error' }]);
-    if (warns.length > 0) setLogs(p => [...p, { time: getTimeStr(), message: `${t('tagSort.warnFiles')}: ${warns.join(', ')}`, status: 'info' }]);
-  }, [isDone, t]);
-
-  const logContainerRef = useRef<HTMLDivElement>(null);
-  const isNearBottomRef = useRef(true);
-  const handleLogScroll = () => {
-    const el = logContainerRef.current;
-    if (!el) return;
-    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-  };
-  useEffect(() => {
-    if (isNearBottomRef.current && logContainerRef.current) logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-  }, [logs.length]);
-
-  const statusIcon = (status: LogEntry['status']) => {
-    switch (status) {
-      case 'success': return <CheckCircle2 className="log-entry-icon success" />;
-      case 'error': return <XCircle className="log-entry-icon error" />;
-      case 'processing': return <Loader2 className="log-entry-icon processing" />;
-      default: return <Info className="log-entry-icon info" />;
-    }
+      } satisfies TagRefineOptions }),
+    });
+    stats.summarize(task.logger);
   };
 
   return (
@@ -266,69 +111,7 @@ export default function TagRefineTab() {
             </div>
           </div>
 
-          {/* API 设置 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header">
-              <span className="tool-panel-title">{t('tagSort.apiSettings')}</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                {saveMsg && <span style={{ fontSize: 11, color: saveMsg.ok ? '#4ade80' : '#f87171' }}>{saveMsg.ok ? '✓' : '✗'} {saveMsg.text}</span>}
-                <button className="btn btn-ghost btn-sm" onClick={handleSaveConfig} style={{ padding: '2px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <Save style={{ width: 12, height: 12 }} /> {t('tagSort.saveConfig')}
-                </button>
-              </div>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Globe style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('tagSort.apiEndpoint')}</label>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  {Object.entries(PRESETS).map(([key, { label }]) => (
-                    <button key={key} className={`btn btn-sm ${preset === key ? 'btn-primary' : 'btn-secondary'}`}
-                      onClick={() => setPreset(key)} style={{ flex: 1, fontSize: 11 }}>{label}</button>
-                  ))}
-                </div>
-                {preset === 'custom' && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 6 }}>
-                    <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>{t('tagSort.apiAddress')}</span>
-                    <span title={t('tagSort.openaiFormatOnly')} style={{ cursor: 'help', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, borderRadius: '50%', fontSize: 9, fontWeight: 700, color: 'var(--color-text-tertiary)', border: '1px solid var(--color-border)' }}>?</span>
-                  </div>
-                )}
-                {preset === 'custom' && (
-                  <>
-                    <input className="form-input" placeholder="https://api.example.com/v1/" value={customEndpoint} onChange={e => setCustomEndpoint(e.target.value)} style={{ marginTop: 4 }} />
-                    {customEndpoint && (
-                      <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2, fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                        → {customEndpoint}{customEndpoint.endsWith('/') ? '' : '/'}chat/completions
-                      </div>
-                    )}
-                  </>
-                )}
-                {preset !== 'custom' && (
-                  <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{endpoint}</div>
-                )}
-              </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Key style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> API Key</label>
-                <div style={{ position: 'relative' }}>
-                  <input className="form-input" type={showKey ? 'text' : 'password'} placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} style={{ paddingRight: 32 }} />
-                  <button onClick={() => setShowKey(!showKey)} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', display: 'flex', padding: 2 }}>
-                    {showKey ? <EyeOff style={{ width: 14, height: 14 }} /> : <Eye style={{ width: 14, height: 14 }} />}
-                  </button>
-                </div>
-              </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Bot style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('tagSort.modelLabel')}</span>
-                  <button className="btn btn-ghost btn-sm" onClick={handleFetchModels} disabled={fetchingModels || !endpoint} style={{ padding: '2px 8px', fontSize: 11 }}>
-                    {fetchingModels ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 12, height: 12 }} />} {t('tagSort.fetchModels')}
-                  </button>
-                </label>
-                {modelList.length > 0 ? (
-                  <CustomSelect value={modelName} onChange={v => setModelName(v)} options={modelList.map(m => ({ value: m, label: m }))} />
-                ) : (
-                  <input className="form-input" placeholder={t('tagSort.modelPlaceholder')} value={modelName} onChange={e => setModelName(e.target.value)} />
-                )}
-                {fetchMsg && <div style={{ fontSize: 11, marginTop: 4, color: fetchMsg.ok ? '#4ade80' : '#f87171' }}>{fetchMsg.ok ? '✓' : '✗'} {fetchMsg.text}</div>}
-              </div>
+          <LlmApiPanel api={api}>
               <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
                 <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
                   <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Timer style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('tagSort.interval')}</label>
@@ -336,7 +119,7 @@ export default function TagRefineTab() {
                 </div>
                 <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
                   <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Layers style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('tagSort.concurrency')}</label>
-                  <input className="form-input" type="number" min="1" max="32" step="1" value={concurrency} onChange={e => setConcurrency(e.target.value)} title={t('tagSort.concurrencyTip')} />
+                  <input className="form-input" type="number" min="1" max="32" step="1" value={concurrency} onChange={e => setConcurrency(e.target.value)} />
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
@@ -350,9 +133,9 @@ export default function TagRefineTab() {
                 <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
                   <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <span>Top P</span>
-                    <span style={{ fontSize: 11, color: 'var(--color-accent-primary)', fontFamily: 'monospace' }}>{topP || '0'}</span>
+                    <span style={{ fontSize: 11, color: 'var(--color-accent-primary)', fontFamily: 'monospace' }}>{topP}</span>
                   </label>
-                  <input type="range" min="0" max="1" step="0.05" value={topP || '0'} onChange={e => setTopP(e.target.value === '0' ? '' : e.target.value)} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
+                  <input type="range" min="0" max="1" step="0.05" value={topP} onChange={e => setTopP(e.target.value)} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
                 </div>
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
@@ -363,10 +146,9 @@ export default function TagRefineTab() {
               </div>
               <div className="form-group" style={{ marginBottom: 0 }}>
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Focus style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('tagRefine.imageDetail')}</label>
-                <CustomSelect value={imageDetail} onChange={setImageDetail} options={IMAGE_DETAIL_OPTIONS(t)} style={{ width: 160 }} />
+                <CustomSelect value={imageDetail} onChange={v => { if (isOneOf(IMAGE_DETAILS, v)) setImageDetail(v); }} options={IMAGE_DETAIL_OPTIONS(t)} style={{ width: 160 }} />
               </div>
-            </div>
-          </div>
+          </LlmApiPanel>
         </div>
 
         {/* 右栏 */}
@@ -380,7 +162,6 @@ export default function TagRefineTab() {
             <div className="form-group" style={{ marginBottom: 0 }}>
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <MessageSquare style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> Prompt
-                <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>（{t('tagRefine.promptHint')}）</span>
               </label>
               <textarea className="form-input" rows={8} value={prompt} onChange={e => setPrompt(e.target.value)}
                 style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: 12 }} />
@@ -388,59 +169,13 @@ export default function TagRefineTab() {
           </div>
 
           {/* 操作按钮 */}
-          <ProcessButton processing={processing} onStart={handleStart}
-            disabled={!inputPath || !outputPath || !endpoint || !modelName}
-            cancelCommand="cancel_tag_refining" startText={t('tagRefine.startRefine')} processingText={t('tagRefine.refining')}
-            onCancelLog={addCancelLog} />
+          <ProcessButton {...task.buttonProps} onStart={handleStart}
+            disabled={!inputPath || !outputPath || !api.ready}
+            cancelCommand="cancel_tag_refining" startText={t('tagRefine.startRefine')} processingText={t('tagRefine.refining')} />
 
           {/* 进度日志 */}
-          <div className="progress-section">
-            <div className="progress-header">
-              <span className="progress-label">{isDone ? t('tagSort.progressDone') : t('tagSort.progressLabel')}</span>
-              <span className="progress-percent">
-                {(() => {
-                  if (!startTime || pCur <= 0) return null;
-                  const el = (Date.now() - startTime) / 1000;
-                  if (el < 0.5) return null;
-                  const spd = pCur / el;
-                  const txt = spd >= 1 ? `${spd.toFixed(1)} it/s` : `${(1 / spd).toFixed(1)} s/it`;
-                  return <span style={{ marginRight: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{txt}</span>;
-                })()}
-                {Math.round(progress)}%
-              </span>
-            </div>
-            <div className="progress-bar-lg">
-              <div className={`progress-fill-lg ${isDone ? (hasErr ? 'has-error' : 'done') : ''}`} style={{ width: `${progress}%` }} />
-            </div>
-            <div className="progress-count">{pCur} / {pTot} {t('tagSort.fileCount')}</div>
-
-            <div className="log-panel" style={{ marginTop: 'var(--space-4)' }}>
-              <div className="log-panel-header">
-                <div className="log-panel-title"><ScrollText style={{ width: 14, height: 14 }} /> {t('tagSort.logTitle')}</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', fontSize: 12 }}>
-                  {elapsed && <span style={{ color: 'var(--color-text-tertiary)' }}>⏱ {elapsed}</span>}
-                  {successCnt > 0 && <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: '#4ade80' }}><CheckCircle2 style={{ width: 12, height: 12 }} /> {successCnt}</span>}
-                  {failCnt > 0 && <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: '#f87171' }}><XCircle style={{ width: 12, height: 12 }} /> {failCnt}</span>}
-                  {warnCnt > 0 && <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: '#fbbf24' }}><AlertTriangle style={{ width: 12, height: 12 }} /> {warnCnt}</span>}
-                  <span className="log-panel-count">{t('tagSort.logCount', { n: logs.length })}</span>
-                  <button className="btn btn-ghost btn-sm" onClick={clearLogs} style={{ padding: '2px 6px' }}><Trash2 style={{ width: 12, height: 12 }} /></button>
-                </div>
-              </div>
-
-              <div className="log-content" ref={logContainerRef} onScroll={handleLogScroll}>
-                {logs.length === 0 ? (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>{t('tagSort.noLogs')}</div>
-                ) : logs.map((log, i) => (
-                  <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
-                    <span className="log-entry-time">{log.time}</span>
-                    {statusIcon(log.status)}
-                    <span className={`log-entry-message ${log.status}`}
-                      style={log.message.includes('⚠') ? { color: '#fbbf24' } : undefined}>{log.message}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
+          <ProgressLog {...task.progressLogProps} headerExtra={stats.headerExtra}
+            onClearLogs={() => { task.progressLogProps.onClearLogs(); stats.reset(); }} />
         </div>
       </div>
     </div>

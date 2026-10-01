@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, Dispatch, SetStateAction } from 'react';
+import { useState, useEffect, useRef, useCallback, Dispatch, SetStateAction, ReactNode } from 'react';
 import { CheckCircle2, XCircle, Loader2, Info, ScrollText, Trash2, Download, Timer, AlertTriangle } from 'lucide-react';
 import '../styles/progress.css';
 import { useTranslation } from 'react-i18next';
@@ -13,15 +13,17 @@ export interface LogEntry {
 }
 
 interface ProgressLogProps {
-  progress: number; // 0 - 100
   current: number;
   total: number;
+  /** 应传 useLogState 的结果：条数上限在 state 层，这里按原样全部渲染 */
   logs: LogEntry[];
   isDone: boolean;
   hasError: boolean;
   onClearLogs?: () => void;
   /** 外部传入的开始时间戳，优先使用 */
   externalStartTime?: number;
+  /** 日志面板标题栏右侧、计时之后的附加内容（如成功/失败/警告计数） */
+  headerExtra?: ReactNode;
 }
 
 function getTimeStr(): string {
@@ -42,7 +44,7 @@ const MAX_LOGS = 500;
 
 /**
  * 带上限的日志 state：超过 MAX_LOGS 时丢弃最旧条目。
- * 显示层截断只省 DOM——state 不封顶的话，长任务（几万张图）里数组无限增长，
+ * 上限放在 state 而不只在显示层：state 不封顶的话，长任务（几万张图）里数组无限增长，
  * 且每次追加的展开拷贝成本随长度线性上涨。所有日志页应使用此 hook 而非裸 useState。
  */
 export function useLogState(): [LogEntry[], Dispatch<SetStateAction<LogEntry[]>>] {
@@ -56,39 +58,31 @@ export function useLogState(): [LogEntry[], Dispatch<SetStateAction<LogEntry[]>>
   return [logs, setLogs];
 }
 
-export default function ProgressLog({ progress, current, total, logs, isDone, hasError, onClearLogs, externalStartTime }: ProgressLogProps) {
+export default function ProgressLog({ current, total, logs, isDone, hasError, onClearLogs, externalStartTime, headerExtra }: ProgressLogProps) {
   const { t } = useTranslation();
-  const [startTime, setStartTime] = useState<number>(0);
+  const [internalStart, setInternalStart] = useState(0);
   const [elapsed, setElapsed] = useState('');
 
-  // 记录开始时间（外部优先）
-  useEffect(() => {
-    if (externalStartTime && externalStartTime > 0) {
-      setStartTime(externalStartTime);
-    } else if (current >= 1 && startTime === 0) {
-      setStartTime(Date.now());
-    }
-    if (current === 0 && !externalStartTime) {
-      setStartTime(0);
-      setElapsed('');
-    }
-  }, [current, startTime, externalStartTime]);
+  const progress = total > 0 ? Math.min(100, Math.max(0, (current / total) * 100)) : 0;
 
-  // 实时计时器
+  // 没有外部起点时从第一个计数开始计时，计数归零时复位
   useEffect(() => {
-    if (startTime === 0 || isDone) return;
-    const timer = setInterval(() => {
-      setElapsed(formatElapsed(Date.now() - startTime));
-    }, 1000);
+    setInternalStart(prev => (!externalStartTime && current >= 1 ? prev || Date.now() : 0));
+  }, [current, externalStartTime]);
+
+  const startTime = externalStartTime && externalStartTime > 0 ? externalStartTime : internalStart;
+
+  useEffect(() => {
+    if (startTime === 0) {
+      setElapsed('');
+      return;
+    }
+    const update = () => setElapsed(formatElapsed(Date.now() - startTime));
+    update();
+    if (isDone) return;
+    const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
   }, [startTime, isDone]);
-
-  // 完成时定格耗时
-  useEffect(() => {
-    if (isDone && startTime > 0) {
-      setElapsed(formatElapsed(Date.now() - startTime));
-    }
-  }, [isDone, startTime]);
 
   // Auto-scroll to bottom only if user is near bottom
   const logContainerRef = useRef<HTMLDivElement>(null);
@@ -106,7 +100,6 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
     }
   }, [logs.length, logs[logs.length - 1]?.dlPercent]);
 
-  // 计算速度
   const getSpeed = () => {
     if (startTime === 0 || current <= 0) return '';
     const el = (Date.now() - startTime) / 1000;
@@ -116,13 +109,6 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
   };
 
   const speed = getSpeed();
-
-  // Cap logs to prevent unbounded memory/DOM growth
-  const displayLogs = useMemo(() => {
-    if (logs.length <= MAX_LOGS) return logs;
-    return logs.slice(logs.length - MAX_LOGS);
-  }, [logs]);
-  const truncated = logs.length - displayLogs.length;
 
   const statusIcon = (status: LogEntry['status']) => {
     switch (status) {
@@ -135,7 +121,7 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
       case 'download':
         return <Download className="log-entry-icon info" style={{ animation: 'pulse 1.5s infinite' }} />;
       case 'warning':
-        return <AlertTriangle className="log-entry-icon" style={{ color: '#fbbf24' }} />;
+        return <AlertTriangle className="log-entry-icon warning" />;
       case 'info':
       default:
         return <Info className="log-entry-icon info" />;
@@ -144,7 +130,6 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
 
   return (
     <div className="progress-section">
-      {/* Progress Bar */}
       <div className="progress-header">
         <span className="progress-label">
           {isDone ? t('progressLog.done') : t('progressLog.progress')}
@@ -164,7 +149,6 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
         {current} / {total} {t('progressLog.files')}
       </div>
 
-      {/* Log Panel */}
         <div className="log-panel" style={{ marginTop: 'var(--space-4)' }}>
           <div className="log-panel-header">
             <div className="log-panel-title">
@@ -178,7 +162,8 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
                   {elapsed}
                 </span>
               )}
-              <span className="log-panel-count">{truncated > 0 ? `${displayLogs.length}/${logs.length}` : logs.length} {t('progressLog.entries')}</span>
+              {headerExtra}
+              <span className="log-panel-count">{logs.length} {t('progressLog.entries')}</span>
               {onClearLogs && (
                 <button
                   className="btn btn-ghost btn-sm"
@@ -192,17 +177,11 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
             </div>
           </div>
           <div className="log-content" ref={logContainerRef} onScroll={handleScroll}>
-            {displayLogs.length === 0 ? (
+            {logs.length === 0 ? (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>{t('progressLog.noLogs')}</div>
-            ) : (<>
-              {truncated > 0 && (
-                <div style={{ padding: '4px 12px', fontSize: 10, color: 'var(--color-text-tertiary)', textAlign: 'center', borderBottom: '1px solid var(--color-border)', background: 'rgba(124,92,252,0.04)' }}>
-                  ⋯ {truncated} {t('progressLog.entriesHidden')}
-                </div>
-              )}
-              {displayLogs.map((log, i) => (
+            ) : logs.map((log, i) => (
               log.status === 'download' && log.dlPercent != null ? (
-                <div key={i} className={`log-entry ${i === displayLogs.length - 1 ? 'log-entry-new' : ''}`} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+                <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)' }}>
                     <span className="log-entry-time">{log.time}</span>
                     {statusIcon(log.status)}
@@ -217,14 +196,13 @@ export default function ProgressLog({ progress, current, total, logs, isDone, ha
                   </div>
                 </div>
               ) : (
-                <div key={i} className={`log-entry ${i === displayLogs.length - 1 ? 'log-entry-new' : ''}`}>
+                <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
                   <span className="log-entry-time">{log.time}</span>
                   {statusIcon(log.status)}
                   <span className={`log-entry-message ${log.status}`}>{log.message}</span>
                 </div>
               )
             ))}
-            </>)}
           </div>
         </div>
     </div>

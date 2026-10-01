@@ -1,11 +1,47 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Emitter;
 
 use super::{ProcessResult, ProgressEvent};
 
-static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+use super::batch::{BatchJob, FileBatch, FileOutcome};
+
+static JOB: BatchJob = BatchJob::new("文件保留");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri::Listener;
+
+    #[test]
+    fn cancellation_after_last_file_emits_one_done() {
+        let root = super::super::image_io::test_dir("keeper_cancel");
+        std::fs::write(root.join("keep.txt"), b"keep").unwrap();
+        let app = tauri::test::mock_app();
+        let log = super::super::batch::capture_events(app.handle(), "keeper-progress");
+        app.listen_any("keeper-progress", |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            if payload["filename"] == "keep.txt" {
+                JOB.cancel();
+            }
+        });
+        let result = keep_files_sync(
+            app.handle(),
+            &FileKeeperOptions {
+                folder_path: root.to_string_lossy().into_owned(),
+                keep_extensions: vec!["txt".into()],
+            },
+        )
+        .unwrap();
+        JOB.cancel_flag()
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(result.total, 1);
+        let events = log.lock().unwrap();
+        assert_eq!(events.iter().filter(|e| e["status"] == "done").count(), 1);
+        assert_eq!(events.last().unwrap()["message"], "已取消: 已处理 1, 共 1");
+        assert_eq!(std::fs::read(root.join("keep.txt")).unwrap(), b"keep");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileKeeperOptions {
@@ -18,26 +54,22 @@ pub async fn keep_specified_files(
     app: tauri::AppHandle,
     options: FileKeeperOptions,
 ) -> Result<ProcessResult, String> {
-    CANCEL_FLAG.store(false, Ordering::SeqCst);
-    tokio::task::spawn_blocking(move || keep_files_sync(&app, &options))
-        .await
-        .map_err(|e| format!("任务执行失败: {}", e))?
+    JOB.run(move || keep_files_sync(&app, &options)).await
 }
 
 #[tauri::command]
 pub fn cancel_keeper() {
-    CANCEL_FLAG.store(true, Ordering::SeqCst);
+    JOB.cancel();
 }
 
-fn keep_files_sync(
-    app: &tauri::AppHandle,
+fn keep_files_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     options: &FileKeeperOptions,
 ) -> Result<ProcessResult, String> {
     let folder = Path::new(&options.folder_path);
-    if !folder.exists() || !folder.is_dir() {
+    if !folder.is_dir() {
         return Err(format!("文件夹不存在: {}", options.folder_path));
     }
-
     let mut all_files = Vec::new();
     for entry in walkdir::WalkDir::new(folder)
         .max_depth(1)
@@ -49,132 +81,51 @@ fn keep_files_sync(
             all_files.push(p.to_path_buf());
         }
     }
-
     all_files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-
     let total = all_files.len() as u32;
-    let mut success_count = 0u32;
-    let mut fail_count = 0u32;
-    let mut kept_count = 0u32;
-    let mut errors = Vec::new();
-
     let keep_exts: Vec<String> = options
         .keep_extensions
         .iter()
         .map(|e| e.to_lowercase())
         .collect();
-
-    let _ = app.emit(
-        "keeper-progress",
-        ProgressEvent {
-            current: 0,
+    ProgressEvent::new(
+        "processing",
+        format!(
+            "开始处理: 共 {} 个文件, 保留后缀: {}",
             total,
-            filename: String::new(),
-            status: "processing".to_string(),
-            message: format!(
-                "开始处理: 共 {} 个文件, 保留后缀: {}",
-                total,
-                keep_exts.join(", ")
-            ),
-            ..Default::default()
-        },
-    );
-
-    for (i, file_path) in all_files.iter().enumerate() {
-        if CANCEL_FLAG.load(Ordering::SeqCst) {
-            let _ = app.emit(
-                "keeper-progress",
-                ProgressEvent {
-                    current: i as u32,
-                    total,
-                    filename: String::new(),
-                    status: "done".to_string(),
-                    message: format!("已取消: 已处理 {}, 共 {}", i, total),
-                    ..Default::default()
-                },
-            );
-            break;
-        }
-        let filename = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let ext = file_path
-            .extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-
-        let should_keep = keep_exts.contains(&ext);
-
-        if should_keep {
-            kept_count += 1;
-            let _ = app.emit(
-                "keeper-progress",
-                ProgressEvent {
-                    current: i as u32 + 1,
-                    total,
-                    filename: filename.clone(),
-                    status: "success".to_string(),
-                    message: format!("[保留] {} (.{})", filename, ext),
-                    ..Default::default()
-                },
-            );
-        } else {
-            match std::fs::remove_file(file_path) {
-                Ok(_) => {
-                    success_count += 1;
-                    let _ = app.emit(
-                        "keeper-progress",
-                        ProgressEvent {
-                            current: i as u32 + 1,
-                            total,
-                            filename: filename.clone(),
-                            status: "success".to_string(),
-                            message: format!("[删除] {} (.{})", filename, ext),
-                            ..Default::default()
-                        },
-                    );
+            keep_exts.join(", ")
+        ),
+    )
+    .at(0, total)
+    .emit(app, "keeper-progress");
+    Ok(FileBatch::new(app, "keeper-progress", JOB.cancel_flag())
+        .no_processing()
+        .error_prefix("[错误] ")
+        .run(
+            &all_files,
+            |item| {
+                let ext = item
+                    .path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                if keep_exts.contains(&ext) {
+                    return Ok(FileOutcome::skipped(format!(
+                        "[保留] {} (.{})",
+                        item.name, ext
+                    )));
                 }
-                Err(e) => {
-                    fail_count += 1;
-                    let err_msg = format!("{}: {}", filename, e);
-                    errors.push(err_msg.clone());
-                    let _ = app.emit(
-                        "keeper-progress",
-                        ProgressEvent {
-                            current: i as u32 + 1,
-                            total,
-                            filename: filename.clone(),
-                            status: "error".to_string(),
-                            message: format!("[错误] {}", err_msg),
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
-        }
-    }
-
-    let _ = app.emit(
-        "keeper-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
-                "完成: 保留 {} 个, 删除 {} 个, 失败 {} 个, 共 {} 个文件",
-                kept_count, success_count, fail_count, total
-            ),
-            ..Default::default()
-        },
-    );
-
-    Ok(ProcessResult {
-        success_count,
-        fail_count,
-        total,
-        errors,
-    })
+                std::fs::remove_file(item.path).map_err(|e| e.to_string())?;
+                Ok(FileOutcome::done(format!(
+                    "[删除] {} (.{})",
+                    item.name, ext
+                )))
+            },
+            |c| {
+                format!(
+                    "完成: 保留 {} 个, 删除 {} 个, 失败 {} 个, 共 {} 个文件",
+                    c.skipped, c.success, c.failed, c.total
+                )
+            },
+        ))
 }

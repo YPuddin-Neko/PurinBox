@@ -8,7 +8,7 @@ const pending = new Map<string, Promise<void>>();
 /**
  * 运行时放行 asset 协议目录。
  *
- * assetProtocol 的 scope 已从 `**` 收窄为空（渲染进程不再默认可读全盘），
+ * assetProtocol 的静态 scope 为空（启动时只放行应用自己的缩略图缓存目录），
  * 任何要用 convertFileSrc 展示的用户目录（数据集、扫描输入等）都必须先经这里放行。
  *
  * 传目录直接放行整棵子树；传文件路径时带上 `{ file: true }`——

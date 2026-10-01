@@ -1,6 +1,8 @@
+use super::config_paths::{
+    b64_decode, b64_encode, load_json_config, load_json_config_or_default, save_json_config,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 /// API 配置（磁盘存储格式）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,30 +48,6 @@ const KEYRING_SERVICE: &str = "PurinBox";
 /// 落盘标记值：真实 key 在系统密钥环里，配置文件只留标记
 const KEYRING_MARKER: &str = "@keyring";
 
-/// 配置文件读取路径（含旧 exe 同目录 config/ 的自动迁移）
-fn config_path() -> PathBuf {
-    super::config_paths::resolve_config_file(CONFIG_FILE)
-}
-
-/// 编码 API Key（base64；仅作密钥环不可用时的回退与旧配置兼容读取）
-fn encode_key(key: &str) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(key.as_bytes())
-}
-
-/// 解码 API Key
-fn decode_key(encoded: &str) -> String {
-    use base64::Engine;
-    if encoded.is_empty() {
-        return String::new();
-    }
-    base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .unwrap_or_default()
-}
-
 fn keyring_entry(preset: &str) -> Option<keyring::Entry> {
     keyring::Entry::new(KEYRING_SERVICE, &format!("api-key:{}", preset)).ok()
 }
@@ -82,7 +60,7 @@ fn store_key(preset: &str, key: &str) -> String {
             return KEYRING_MARKER.to_string();
         }
     }
-    encode_key(key)
+    b64_encode(key)
 }
 
 /// 读取 API Key：密钥环标记走系统密钥环，其余按 base64 解码（兼容旧配置）
@@ -92,7 +70,7 @@ fn load_key(preset: &str, stored: &str) -> String {
             .and_then(|entry| entry.get_password().ok())
             .unwrap_or_default();
     }
-    decode_key(stored)
+    b64_decode(stored)
 }
 
 /// 显式清除某个预设的 key 时同步删除密钥环条目
@@ -102,7 +80,6 @@ fn delete_key(preset: &str) {
     }
 }
 
-/// 保存 API 配置
 #[tauri::command]
 pub fn save_api_config(
     preset: String,
@@ -114,11 +91,7 @@ pub fn save_api_config(
 
     // 与已存储的 key 合并：调用方（如精修/辅助打标 Tab）可能只传当前预设一把 key，
     // 整体替换会抹掉其他预设已保存的 key。传空字符串表示显式清除该预设。
-    let mut stored_keys: HashMap<String, String> = std::fs::read_to_string(config_path())
-        .ok()
-        .and_then(|c| serde_json::from_str::<ApiConfig>(&c).ok())
-        .map(|old| old.api_keys)
-        .unwrap_or_default();
+    let mut stored_keys = load_json_config_or_default::<ApiConfig>(CONFIG_FILE).api_keys;
     for (k, v) in api_keys {
         if v.is_empty() {
             stored_keys.remove(&k);
@@ -136,29 +109,13 @@ pub fn save_api_config(
         api_key_encoded: String::new(),
     };
 
-    let json = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {}", e))?;
-    super::config_paths::write_file_atomic(&dir.join(CONFIG_FILE), json.as_bytes())
-        .map_err(|e| format!("写入配置失败: {}", e))?;
-    Ok(())
+    save_json_config(CONFIG_FILE, &config, "配置")
 }
 
-/// 加载 API 配置
 #[tauri::command]
 pub fn load_api_config() -> Result<ApiConfigResponse, String> {
-    let path = config_path();
-    if !path.exists() {
-        return Ok(ApiConfigResponse {
-            preset: "openai".to_string(),
-            custom_endpoint: String::new(),
-            api_keys: HashMap::new(),
-        });
-    }
+    let config: ApiConfig = load_json_config(CONFIG_FILE, "配置")?;
 
-    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取配置失败: {}", e))?;
-    let config: ApiConfig =
-        serde_json::from_str(&content).map_err(|e| format!("解析配置失败: {}", e))?;
-
-    // 解码所有 key
     let mut decoded_keys: HashMap<String, String> = config
         .api_keys
         .iter()
@@ -168,7 +125,7 @@ pub fn load_api_config() -> Result<ApiConfigResponse, String> {
 
     // 兼容旧版：如果有 api_key_encoded 但 api_keys 为空，迁移到当前 preset
     if decoded_keys.is_empty() && !config.api_key_encoded.is_empty() {
-        let old_key = decode_key(&config.api_key_encoded);
+        let old_key = b64_decode(&config.api_key_encoded);
         if !old_key.is_empty() {
             decoded_keys.insert(config.preset.clone(), old_key);
         }
@@ -179,4 +136,32 @@ pub fn load_api_config() -> Result<ApiConfigResponse, String> {
         custom_endpoint: config.custom_endpoint,
         api_keys: decoded_keys,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_fallback_keys_keep_legacy_decoding() {
+        for key in ["", "test-key", "密钥"] {
+            assert_eq!(load_key("custom", &b64_encode(key)), key);
+        }
+        assert_eq!(load_key("custom", "invalid base64"), "");
+    }
+
+    #[test]
+    fn legacy_config_can_be_read_without_reserializing_old_key_field() {
+        let encoded = b64_encode("old-key");
+        let config: ApiConfig = serde_json::from_value(serde_json::json!({
+            "preset": "custom", "custom_endpoint": "http://localhost/v1",
+            "api_key_encoded": encoded,
+        }))
+        .unwrap();
+        assert_eq!(b64_decode(&config.api_key_encoded), "old-key");
+        assert!(config.api_keys.is_empty());
+        let saved = serde_json::to_value(config).unwrap();
+        assert!(saved.get("api_key_encoded").is_none());
+        assert_eq!(ApiConfig::default().preset, "openai");
+    }
 }

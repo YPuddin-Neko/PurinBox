@@ -1,22 +1,23 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { BarChart3, Download, FolderOpen, FolderInput } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
+import ProgressLog from '../components/ProgressLog';
 import ProcessButton from '../components/ProcessButton';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
 import CustomSelect from '../components/CustomSelect';
 import ResolutionDonut from '../components/ResolutionDonut';
-import { useTaskQueue } from '../components/TaskContext';
+import { useBatchTask } from '../hooks/useBatchTask';
+import PageHeader from '../components/ui/PageHeader';
+import NumberInput from '../components/ui/NumberInput';
+import ExportBar from '../components/ExportBar';
 
 interface ResolutionGroup {
   width: number;
   height: number;
   count: number;
   percent: number;
-  aspect_ratio: number;
   aspect_label: string;
   is_rare: boolean;
   files: string[];
@@ -91,18 +92,14 @@ function buildClusters(groups: ResolutionGroup[], tolerancePct: number, step: nu
 
 export default function ResolutionAnalyzePage() {
   const { t } = useTranslation();
-  const { addTask, updateTask } = useTaskQueue();
+  const task = useBatchTask({ event: 'resolution-analyze-progress', taskId: 'resolution-analyze', logDone: false });
+  const { logger } = task;
   const [inputPath, setInputPath] = useState('');
   const [rareThreshold, setRareThreshold] = useState(10);
   const [recursive, setRecursive] = useState(false);
   const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressCurrent, setProgressCurrent] = useState(0);
-  const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useLogState();
   const [result, setResult] = useState<AnalyzeResult | null>(null);
-  const [isDone, setIsDone] = useState(false);
-  const [hasError, setHasError] = useState(false);
+  const analyzeGeneration = useRef(0);
   /** 当前查看文件列表的稀有分辨率（"宽x高"，null = 未选） */
   const [selectedRare, setSelectedRare] = useState<string | null>(null);
 
@@ -117,10 +114,11 @@ export default function ResolutionAnalyzePage() {
   const [clusterTargets, setClusterTargets] = useState<Record<number, string>>({});
 
   const clusters = useMemo(
-    () => (result ? buildClusters(result.groups, Number.isFinite(arTolerance) ? arTolerance : 5, alignStep) : []),
+    () => (result ? buildClusters(result.groups, arTolerance, alignStep) : []),
     [result, arTolerance, alignStep],
   );
   const multiClusters = useMemo(() => clusters.filter(c => c.members.length > 1), [clusters]);
+  const rareGroups = useMemo(() => (result ? result.groups.filter(g => g.is_rare) : []), [result]);
   const singleClusters = useMemo(() => clusters.filter(c => c.members.length === 1), [clusters]);
 
   useEffect(() => {
@@ -135,47 +133,11 @@ export default function ResolutionAnalyzePage() {
   // 输入目录/递归开关变化后，屏幕上的分析结果与当前设置不再对应；
   // 两个导出入口都按"点击时刻的 inputPath+recursive"重扫，必须让旧结果失效
   useEffect(() => {
+    analyzeGeneration.current += 1;
     setResult(null);
     setSelectedRare(null);
   }, [inputPath, recursive]);
 
-  /** 组的默认目标：计算推荐值；若与某成员相同则直接用该成员 */
-  const defaultClusterTarget = (c: ResolutionCluster) => resKey(c.computed.w, c.computed.h);
-
-  useEffect(() => {
-    let active = true;
-    // 事件名与后端 emit 保持一致（连字符风格，见 resolution_analyze.rs）
-    const p = listen('resolution-analyze-progress', (event: any) => {
-      if (!active) return;
-      const d = event.payload;
-      if (d.status === 'processing') {
-        setProgressCurrent(d.current ?? 0);
-        setProgressTotal(d.total ?? 0);
-        setProgress(d.total > 0 ? Math.round(((d.current ?? 0) / d.total) * 100) : 0);
-      } else if (d.status === 'done') {
-        setProcessing(false);
-        setIsDone(true);
-        updateTask('resolution-analyze', { status: 'done' });
-      } else if (d.status === 'error') {
-        setHasError(true);
-        updateTask('resolution-analyze', { status: 'error', message: d.message });
-      }
-      if (d.status !== 'processing') {
-        setLogs((prev) => [
-          ...prev,
-          {
-            time: getTimeStr(),
-            message: d.message,
-            status: d.status === 'done' ? 'info' : (d.status as LogEntry['status']),
-          },
-        ]);
-      }
-    });
-    return () => {
-      active = false;
-      p.then((unlisten) => unlisten());
-    };
-  }, [updateTask]);
 
   const selectInputFolder = async () => {
     const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
@@ -183,72 +145,23 @@ export default function ResolutionAnalyzePage() {
   };
 
   const handleAnalyze = async () => {
-    // 导出与分析共用同一事件通道，并发会让进度/任务状态互相打架
-    if (!inputPath || aggExporting || resultExporting) return;
-    // 提交前规范数字参数。
-    const threshold = Number.isFinite(rareThreshold) && rareThreshold >= 1 ? Math.floor(rareThreshold) : 10;
-    if (threshold !== rareThreshold) setRareThreshold(threshold);
-    setProcessing(true);
-    setProgress(0);
-    setProgressCurrent(0);
-    setProgressTotal(0);
-    setResult(null);
-    setIsDone(false);
-    setHasError(false);
-    setSelectedRare(null);
-
-    addTask('resolution-analyze', t('resolutionAnalyze.taskName'));
-    setLogs([{
-      time: getTimeStr(),
-      message: `${t('pages.startPrefix')}${t('resolutionAnalyze.analyzing')}...`,
-      status: 'info',
-    }]);
-
+    if (!inputPath || task.processing) return;
+    const generation = analyzeGeneration.current;
+    setProcessing(true); setResult(null); setSelectedRare(null);
     try {
-      const res = await invoke<AnalyzeResult>('analyze_resolutions', {
-        options: {
-          input_path: inputPath,
-          rare_threshold: threshold,
-          recursive,
-        },
+      const res = await task.run({
+        taskName: t('resolutionAnalyze.taskName'), startLog: t('resolutionAnalyze.analyzing'),
+        exec: () => invoke<AnalyzeResult>('analyze_resolutions', {
+          options: { input_path: inputPath, rare_threshold: rareThreshold, recursive },
+        }),
       });
-      setResult(res);
-      setLogs((prev) => [
-        ...prev,
-        {
-          time: getTimeStr(),
-          message: t('resolutionAnalyze.analyzeComplete', {
-            total: res.total_images,
-            distinct: res.distinct_count,
-          }),
-          status: 'success',
-        },
-      ]);
-    } catch (e: any) {
-      setLogs((prev) => [
-        ...prev,
-        {
-          time: getTimeStr(),
-          message: typeof e === 'string' ? e : e?.message || t('resolutionAnalyze.analyzeError'),
-          status: 'error',
-        },
-      ]);
-      setHasError(true);
-      setIsDone(true);
-      const errStr = String(e);
-      updateTask('resolution-analyze', {
-        status: /已取消|cancel/i.test(errStr) ? 'cancelled' : 'error',
-        message: errStr,
-      });
-    } finally {
-      setProcessing(false);
-    }
-  };
-
-  const clearLogs = () => {
-    setLogs([]);
-    setIsDone(false);
-    setHasError(false);
+      if (res && generation === analyzeGeneration.current) {
+        setResult(res);
+        logger.appendLog(t('resolutionAnalyze.analyzeComplete', {
+          total: res.total_images, distinct: res.distinct_count,
+        }), res.failed_count > 0 ? 'warning' : 'success');
+      }
+    } finally { setProcessing(false); }
   };
 
   const selectAggExportFolder = async () => {
@@ -261,18 +174,12 @@ export default function ResolutionAnalyzePage() {
   };
 
   const handleAggregateExport = async () => {
-    if (!result || !inputPath || !aggExportPath || clusters.length === 0 || resultExporting) return;
+    if (!result || !inputPath || !aggExportPath || clusters.length === 0 || task.processing) return;
     setAggExporting(true);
-    setLogs((prev) => [...prev, {
-      time: getTimeStr(),
-      message: `${t('pages.startPrefix')}${t('resolutionAnalyze.aggregationTitle')}...`,
-      status: 'info',
-    }]);
     try {
-      // 多成员组用所选目标；独立分辨率导出到各自同名文件夹
       const plan = [
         ...multiClusters.map((c, i) => ({
-          folder: clusterTargets[i] ?? defaultClusterTarget(c),
+          folder: clusterTargets[i] ?? resKey(c.computed.w, c.computed.h),
           resolutions: c.members.map(m => [m.width, m.height]),
         })),
         ...singleClusters.map(c => ({
@@ -280,76 +187,42 @@ export default function ResolutionAnalyzePage() {
           resolutions: [[c.members[0].width, c.members[0].height]],
         })),
       ];
-      const msg = await invoke<string>('export_resolution_aggregation', {
-        options: {
-          input_path: inputPath,
-          recursive,
-          output_path: aggExportPath,
-          plan,
-        },
+      const msg = await task.run({
+        taskName: t('resolutionAnalyze.aggregationTitle'), startLog: t('resolutionAnalyze.aggregationTitle'), keepLogs: true,
+        exec: () => invoke<string>('export_resolution_aggregation', {
+          options: { input_path: inputPath, recursive, output_path: aggExportPath, plan },
+        }),
       });
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: msg, status: 'success' }]);
-    } catch (e: any) {
-      const errStr = typeof e === 'string' ? e : e?.message || String(e);
-      setLogs((prev) => [...prev, {
-        time: getTimeStr(),
-        message: errStr,
-        status: /已取消|cancel/i.test(errStr) ? 'warning' : 'error',
-      }]);
-    } finally {
-      setAggExporting(false);
-    }
+      if (msg) logger.appendLog(msg, 'success');
+    } finally { setAggExporting(false); }
   };
 
   const handleResultExport = async () => {
-    if (!result || !inputPath || result.groups.length === 0 || aggExporting) return;
-    const outputPath = await open({
-      directory: true,
-      multiple: false,
-      title: t('resolutionAnalyze.selectResultExportFolder'),
-    });
-    if (!outputPath) return;
-
+    if (!result || !inputPath || result.groups.length === 0 || task.processing || resultExporting) return;
     setResultExporting(true);
-    setLogs((prev) => [...prev, {
-      time: getTimeStr(),
-      message: t('resolutionAnalyze.resultExportStart'),
-      status: 'info',
-    }]);
     try {
-      const msg = await invoke<string>('export_resolution_aggregation', {
-        options: {
-          input_path: inputPath,
-          recursive,
-          output_path: outputPath as string,
-          plan: result.groups.map((group) => ({
-            folder: resKey(group.width, group.height),
-            resolutions: [[group.width, group.height]],
-          })),
-        },
+      const outputPath = await open({ directory: true, multiple: false, title: t('resolutionAnalyze.selectResultExportFolder') });
+      if (!outputPath) return;
+      const msg = await task.run({
+        taskName: t('resolutionAnalyze.export'), startLog: t('resolutionAnalyze.resultExportStart'), keepLogs: true,
+        exec: () => invoke<string>('export_resolution_aggregation', {
+          options: {
+            input_path: inputPath, recursive, output_path: outputPath as string,
+            plan: result.groups.map(group => ({
+              folder: resKey(group.width, group.height), resolutions: [[group.width, group.height]],
+            })),
+          },
+        }),
       });
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: msg, status: 'success' }]);
-    } catch (e: any) {
-      const errStr = typeof e === 'string' ? e : e?.message || String(e);
-      setLogs((prev) => [...prev, {
-        time: getTimeStr(),
-        message: errStr,
-        status: /已取消|cancel/i.test(errStr) ? 'warning' : 'error',
-      }]);
-    } finally {
-      setResultExporting(false);
-    }
+      if (msg) logger.appendLog(msg, 'success');
+    } catch (error) {
+      logger.appendCatchError(error, t('pages.errorPrefix'));
+    } finally { setResultExporting(false); }
   };
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <BarChart3 style={{ width: 28, height: 28, color: '#4ade80' }} />
-          <h1 className="page-title">{t('resolutionAnalyze.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('resolutionAnalyze.subtitle')}</p>
-      </div>
+      <PageHeader icon={BarChart3} color="#4ade80" title={t('resolutionAnalyze.title')} subtitle={t('resolutionAnalyze.subtitle')} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-5)' }}>
         {/* 左侧 */}
@@ -358,7 +231,7 @@ export default function ResolutionAnalyzePage() {
             <div className="tool-panel-header">
               <span className="tool-panel-title">{t('pages.pathSettings')}</span>
             </div>
-            <div className="tool-panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
                 <div className="form-label-row">
                   <label className="form-label">{t('pages.inputPathShort')}</label>
@@ -384,36 +257,18 @@ export default function ResolutionAnalyzePage() {
             <div className="tool-panel-header">
               <span className="tool-panel-title">{t('resolutionAnalyze.analysisOptions')}</span>
             </div>
-            <div className="tool-panel-body">
+            <div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 'var(--space-4)' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label">{t('resolutionAnalyze.rareThreshold')}</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    value={rareThreshold}
-                    onChange={(e) => setRareThreshold(Math.max(1, parseInt(e.target.value) || 1))}
-                    onBlur={(e) => { if (e.target.value === "") setRareThreshold(10); }}
-                    min={1}
-                  />
+                  <NumberInput value={rareThreshold} onChange={setRareThreshold} min={1} integer fallback={10} />
                   <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)', margin: '4px 0 0' }}>
                     {t('resolutionAnalyze.rareThresholdDesc')}
                   </p>
                 </div>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label">{t('resolutionAnalyze.aggregateTolerance')}</label>
-                  <input
-                    className="form-input"
-                    type="number"
-                    value={arTolerance}
-                    onChange={(e) => setArTolerance(Math.min(50, Math.max(0, parseInt(e.target.value) || 0)))}
-                    onBlur={(e) => { if (e.target.value === "") setArTolerance(5); }}
-                    min={0}
-                    max={50}
-                  />
-                  <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)', margin: '4px 0 0' }}>
-                    {t('resolutionAnalyze.aggregateToleranceDesc')}
-                  </p>
+                  <NumberInput value={arTolerance} onChange={setArTolerance} min={0} max={50} integer fallback={5} />
                 </div>
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label">{t('resolutionAnalyze.alignStep')}</label>
@@ -427,10 +282,10 @@ export default function ResolutionAnalyzePage() {
             </div>
           </div>
 
-          {/* 分辨率聚合：比例相近的分辨率归组，每组可选成员分辨率或计算推荐值；导出栏样式与分桶预览一致 */}
+          {/* 比例相近的分辨率归组，每组可选成员分辨率或计算推荐值 */}
           {result && clusters.length > 0 && (
             <div className="tool-panel">
-              <div className="tool-panel-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div className="tool-panel-header">
                 <span className="tool-panel-title">{t('resolutionAnalyze.aggregationTitle')}</span>
                 <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
                   {multiClusters.length > 0
@@ -438,7 +293,7 @@ export default function ResolutionAnalyzePage() {
                     : t('resolutionAnalyze.noSimilarGroups')}
                 </span>
               </div>
-              <div className="tool-panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
                 <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)', margin: 0, lineHeight: 1.6 }}>
                   {t('resolutionAnalyze.aggregationDesc')}
                   {singleClusters.length > 0 && ` ${t('resolutionAnalyze.singlesNote', { n: singleClusters.length })}`}
@@ -497,7 +352,7 @@ export default function ResolutionAnalyzePage() {
                             <CustomSelect
                               compact
                               style={{ flex: 1, minWidth: 0 }}
-                              value={clusterTargets[i] ?? defaultClusterTarget(c)}
+                              value={clusterTargets[i] ?? computedKey}
                               options={options}
                               onChange={(v) => setClusterTargets(prev => ({ ...prev, [i]: v }))}
                             />
@@ -508,23 +363,7 @@ export default function ResolutionAnalyzePage() {
                   </div>
                 )}
 
-                {/* 导出栏：与分桶预览的导出栏同款 */}
-                <div style={{
-                  flexShrink: 0, padding: '10px 16px',
-                  borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)',
-                  background: 'var(--color-bg-secondary)',
-                  display: 'flex', alignItems: 'center', gap: 12,
-                }}>
-                  <div onClick={() => setEnableAggExport(!enableAggExport)} style={{
-                    width: 18, height: 18, borderRadius: 4, cursor: 'pointer',
-                    border: `2px solid ${enableAggExport ? 'var(--color-accent-primary)' : 'var(--color-border)'}`,
-                    background: enableAggExport ? 'var(--color-accent-primary)' : 'transparent',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    transition: 'all 0.2s', flexShrink: 0,
-                  }}>
-                    {enableAggExport && <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 5L4 7L8 3" stroke="#fff" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                  </div>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)', whiteSpace: 'nowrap' }}>{t('resolutionAnalyze.exportAggregation')}</span>
+                <ExportBar enabled={enableAggExport} onChange={setEnableAggExport} label={t('resolutionAnalyze.exportAggregation')} disabled={aggExporting}>
                   {enableAggExport && (
                     <>
                       <div style={{ flex: 1, display: 'flex', gap: 'var(--space-2)' }}>
@@ -542,7 +381,7 @@ export default function ResolutionAnalyzePage() {
                       )}
                     </>
                   )}
-                </div>
+                </ExportBar>
               </div>
             </div>
           )}
@@ -558,23 +397,15 @@ export default function ResolutionAnalyzePage() {
             cancelCommand="cancel_resolution_analyze"
             startText={t('resolutionAnalyze.startAnalyze')}
             processingText={t('pages.processing')}
-            onCancelLog={(msg) => setLogs((prev) => [...prev, { time: getTimeStr(), message: msg, status: 'warning' }])}
+            onCancelLog={task.buttonProps.onCancelLog}
           />
 
-          <ProgressLog
-            progress={progress}
-            current={progressCurrent}
-            total={progressTotal}
-            logs={logs}
-            isDone={isDone}
-            hasError={hasError}
-            onClearLogs={clearLogs}
-          />
+          <ProgressLog {...task.progressLogProps} />
 
           {/* 分析结果：统计条 + 分布环形图 + 稀有分辨率（利用日志下方空间） */}
           {result && (
             <div className="tool-panel">
-              <div className="tool-panel-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div className="tool-panel-header">
                 <span className="tool-panel-title">{t('resolutionAnalyze.analysisResults')}</span>
                 <button
                   className="btn btn-ghost btn-sm"
@@ -588,7 +419,7 @@ export default function ResolutionAnalyzePage() {
                   {resultExporting ? t('resolutionAnalyze.exportingResult') : t('resolutionAnalyze.exportResult')}
                 </button>
               </div>
-              <div className="tool-panel-body" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
                 {/* 概览统计：窄栏内自动换行 */}
                 <div style={{
                   display: 'flex', flexWrap: 'wrap', rowGap: 4,
@@ -612,23 +443,19 @@ export default function ResolutionAnalyzePage() {
 
                 <ResolutionDonut groups={result.groups} totalImages={result.total_images} />
 
-                {/* 稀有分辨率：点击查看文件 */}
-                {result.groups.some(g => g.is_rare) && (
+                {rareGroups.length > 0 && (
                   <div>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 4 }}>
                       <span style={{ fontSize: 11, fontWeight: 600, color: '#ef4444' }}>
-                        {t('resolutionAnalyze.rareTitle', { n: result.groups.filter(g => g.is_rare).length })}
-                      </span>
-                      <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-                        {t('resolutionAnalyze.clickRareHint')}
+                        {t('resolutionAnalyze.rareTitle', { n: rareGroups.length })}
                       </span>
                     </div>
                     <div style={{
                       display: 'flex', flexWrap: 'wrap', gap: 4,
-                      maxHeight: 132, overflowY: 'auto', overscrollBehavior: 'contain',
+                      maxHeight: 132, overflowY: 'auto',
                     }}>
-                      {result.groups.filter(g => g.is_rare).map((g) => {
-                        const key = `${g.width}x${g.height}`;
+                      {rareGroups.map((g) => {
+                        const key = resKey(g.width, g.height);
                         const sel = selectedRare === key;
                         return (
                           <button
@@ -653,7 +480,7 @@ export default function ResolutionAnalyzePage() {
                       })}
                     </div>
                     {selectedRare && (() => {
-                      const g = result.groups.find(x => `${x.width}x${x.height}` === selectedRare);
+                      const g = result.groups.find(x => resKey(x.width, x.height) === selectedRare);
                       if (!g) return null;
                       return (
                         <div style={{
@@ -661,7 +488,7 @@ export default function ResolutionAnalyzePage() {
                           border: '1px solid rgba(239, 68, 68, 0.3)',
                           background: 'rgba(239, 68, 68, 0.04)',
                           fontSize: 10, color: 'var(--color-text-secondary)',
-                          maxHeight: 110, overflowY: 'auto', overscrollBehavior: 'contain',
+                          maxHeight: 110, overflowY: 'auto',
                           wordBreak: 'break-all',
                         }}>
                           {g.files.map((f, i) => (
@@ -680,7 +507,7 @@ export default function ResolutionAnalyzePage() {
                     border: '1px solid #ef4444',
                     background: 'rgba(239, 68, 68, 0.05)',
                     fontSize: 10, color: 'var(--color-text-secondary)',
-                    maxHeight: 100, overflowY: 'auto', overscrollBehavior: 'contain',
+                    maxHeight: 100, overflowY: 'auto',
                     wordBreak: 'break-all',
                   }}>
                     <div style={{ fontWeight: 600, color: '#ef4444', marginBottom: 2 }}>

@@ -3,55 +3,63 @@
 AI Tagger 推理脚本 - 由 Tauri 后端调用
 使用 onnxruntime Python 包进行 ONNX 模型推理
 
-通信协议: JSON lines (stdin/stdout)
-- 输入: {"cmd": "init", "model_path": "...", "tags_path": "...", "use_gpu": false}
-- 输入: {"cmd": "tag", "image_path": "...", "general_threshold": 0.35, "character_threshold": 0.85, "enabled_categories": ["general", "character"]}
+常驻模式通信协议: JSON lines (stdin/stdout)
+- 输入: {"cmd": "init", "model_path": "...", "tags_path": "...", "use_gpu": false,
+         "input_size": 448, "preprocess_mode": "auto", "output_kind": "auto",
+         "category_thresholds": {...}, "conservative_cuda": false}
+  打标选项：general_threshold / character_threshold / enabled_categories / exclude_tags /
+  append_tags / append_position / json_append_field / replace_underscore / output_format /
+  json_simplified / escape_parentheses / sort_by / existing_tags_action
+  已有标签的 skip 判断由 Rust 在发送前完成
+- 输入: {"cmd": "tag_batch", "images": [{"image_path": "...", <打标选项>}, ...]}
+  每张图回一条 result 或 error（带 image_path）
 - 输入: {"cmd": "quit"}
-- 输出: {"type": "ready", "info": "...", "input_format": "NHWC", "input_size": 448}
-- 输出: {"type": "result", "image_path": "...", "tags": [...], "tag_count": 10}
-- 输出: {"type": "error", "message": "..."}
-- 输出: {"type": "log", "message": "..."}
+- 输出: {"type": "ready"}
+- 输出: {"type": "result", "image_path": "...", "tag_count": 10}，跳过写入时另带 "skipped": true
+- 输出: {"type": "error", "message": "..."}，能确定图片时另带 "image_path"
+- 输出: {"type": "log", "message": "..."}，可带 "i18n_key" / "i18n_params"
+
+一次性模式（处理完即退出）:
+- --detect <model_path>: 输出一行 {"type": "model_info", "input_size", "input_format", "input_shape"}，
+  失败时写 stderr 并以退出码 1 结束
+- --convert --input <目录或图片> --tags-path <词表> [--simplified] [--recursive]:
+  txt → JSON，输出 progress / log 行，最后一行 {"type": "done", "converted", "skipped", "failed", "total"}；
+  参数错误时输出 {"type": "error", "message": "..."}
 """
 
 import sys
-import os
 import json
 import csv
 import traceback
 import numpy as np
 from pathlib import Path
 
-def _emit(data):
-    """输出 JSON line 到 stdout (Windows GBK 安全)"""
-    line = json.dumps(data, ensure_ascii=False) + "\n"
-    sys.stdout.buffer.write(line.encode("utf-8"))
-    sys.stdout.buffer.flush()
+from purin_proto import (bootstrap, done, emit, error, log, log_i18n, progress, read_text_compat,
+                         result, utf8_stdin, write_text_atomic)
 
-def log(msg):
-    """输出日志到 stdout (JSON line)"""
-    _emit({"type": "log", "message": msg})
+def _pad_square(image, fill):
+    from PIL import Image
+    w, h = image.size
+    side = max(w, h)
+    if w == h:
+        return image
+    canvas = Image.new("RGB", (side, side), fill)
+    canvas.paste(image, ((side - w) // 2, (side - h) // 2))
+    return canvas
 
-def log_i18n(key, params=None):
-    d = {"type": "log", "i18n_key": key, "message": key}
-    if params:
-        d["i18n_params"] = params
-    _emit(d)
 
-def error(msg):
-    """输出错误到 stdout (JSON line)"""
-    _emit({"type": "error", "message": msg})
+def _to_nchw(image, bgr=False):
+    data = np.asarray(image, dtype=np.float32) / 255.0
+    if bgr:
+        data = data[:, :, ::-1]
+    return ((data - 0.5) / 0.5).transpose(2, 0, 1)[np.newaxis, ...]
 
-def result(data):
-    """输出结果到 stdout (JSON line)"""
-    _emit(data)
 
 def preprocess_image(image_path, target_size, input_format, preprocess_mode="auto"):
-    """预处理图片"""
     from PIL import Image
 
-    image = Image.open(image_path)
-
-    # 处理透明通道
+    with Image.open(image_path) as source:
+        image = source.copy()
     if image.mode not in ["RGB", "RGBA"]:
         image = image.convert("RGBA") if "transparency" in image.info else image.convert("RGB")
     if image.mode == "RGBA":
@@ -59,17 +67,8 @@ def preprocess_image(image_path, target_size, input_format, preprocess_mode="aut
         background.paste(image, mask=image.split()[3])
         image = background
 
-    if preprocess_mode == "siglip2":
-        image = image.resize((target_size, target_size), Image.BICUBIC)
-        img_array = np.array(image, dtype=np.float32) / 255.0
-        img_array = img_array.transpose(2, 0, 1)
-        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
-        std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
-        img_array = (img_array - mean) / std
-        return img_array[np.newaxis, ...].astype(np.float32)
-
     if preprocess_mode == "pixai_v1":
-        # v1 的 ONNX runner：等比 bilinear 缩放后居中黑填充，RGB 归一化到 [-1, 1]。
+        # v1 使用等比 bilinear 缩放、居中黑填充和 RGB [-1, 1] 归一化。
         w, h = image.size
         if (w, h) != (target_size, target_size):
             scale = min(target_size / h, target_size / w)
@@ -78,81 +77,20 @@ def preprocess_image(image_path, target_size, input_format, preprocess_mode="aut
             canvas = Image.new("RGB", (target_size, target_size), (0, 0, 0))
             canvas.paste(image, ((target_size - size[0]) // 2, (target_size - size[1]) // 2))
             image = canvas
-        data = np.asarray(image, dtype=np.float32) / 255.0
-        return ((data - 0.5) / 0.5).transpose(2, 0, 1)[np.newaxis, ...]
+        return _to_nchw(image)
 
-    if preprocess_mode == "pixai":
-        # PixAI Tagger：对齐 deepghs 导出的 preprocess.json——
-        # 直接拉伸 resize（无方形填充）、RGB、bilinear、normalize(0.5, 0.5)
-        image = image.resize((target_size, target_size), Image.BILINEAR)
-        img_array = np.array(image, dtype=np.float32) / 255.0
-        img_array = img_array.transpose(2, 0, 1)
-        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
-        std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
-        img_array = (img_array - mean) / std
-        return img_array[np.newaxis, ...].astype(np.float32)
+    if preprocess_mode in ("siglip2", "pixai"):
+        resample = Image.Resampling.BICUBIC if preprocess_mode == "siglip2" else Image.Resampling.BILINEAR
+        return _to_nchw(image.resize((target_size, target_size), resample))
 
-    if preprocess_mode == "wd_nchw":
-        # WD 系的 PyTorch 布局导出（如 wd-eva02-2026-canary 的 timm 导出）：
-        # 与 SmilingWolf 的 NHWC BGR 原始像素导出不同——
-        # 方形白填充 + bicubic + RGB + normalize(0.5, 0.5)，输出已是概率
-        w, h = image.size
-        if w != h:
-            new_size = max(w, h)
-            new_image = Image.new("RGB", (new_size, new_size), (255, 255, 255))
-            new_image.paste(image, ((new_size - w) // 2, (new_size - h) // 2))
-            image = new_image
-        image = image.resize((target_size, target_size), Image.BICUBIC)
-        img_array = np.array(image, dtype=np.float32) / 255.0
-        img_array = img_array.transpose(2, 0, 1)
-        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
-        std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
-        img_array = (img_array - mean) / std
-        return img_array[np.newaxis, ...].astype(np.float32)
+    image = _pad_square(image, (255, 255, 255))
+    if preprocess_mode == "wd_nchw" or input_format == "NCHW":
+        image = image.resize((target_size, target_size), Image.Resampling.BICUBIC)
+        # CL 使用 BGR；WD 的 timm 导出使用 RGB。
+        return _to_nchw(image, bgr=preprocess_mode != "wd_nchw")
+    image = image.resize((target_size, target_size), Image.Resampling.LANCZOS)
+    return np.asarray(image, dtype=np.float32)[np.newaxis, :, :, ::-1]
 
-    if input_format == "NCHW":
-        # CL Tagger 预处理 (参考官方 HuggingFace Space)
-        # 1. Pad to square (白色填充, 使用 PIL)
-        w, h = image.size
-        if w != h:
-            new_size = max(w, h)
-            new_image = Image.new("RGB", (new_size, new_size), (255, 255, 255))
-            new_image.paste(image, ((new_size - w) // 2, (new_size - h) // 2))
-            image = new_image
-        # 2. Resize with BICUBIC
-        image = image.resize((target_size, target_size), Image.BICUBIC)
-        # 3. to numpy float32 / 255.0
-        img_array = np.array(image, dtype=np.float32) / 255.0
-        # 4. HWC -> CHW
-        img_array = img_array.transpose(2, 0, 1)
-        # 5. RGB -> BGR
-        img_array = img_array[::-1, :, :]
-        # 6. normalize: (x - 0.5) / 0.5
-        mean = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
-        std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(3, 1, 1)
-        img_array = (img_array - mean) / std
-        return img_array[np.newaxis, ...].astype(np.float32)  # [1, C, H, W]
-    else:
-        # WD Tagger 预处理 (NHWC, sd-scripts 风格)
-        image = np.array(image)
-        image = image[:, :, ::-1]  # RGB -> BGR
-        # pad to square
-        h, w = image.shape[:2]
-        size = max(h, w)
-        pad_x = size - w
-        pad_y = size - h
-        pad_l = pad_x // 2
-        pad_t = pad_y // 2
-        image = np.pad(image, ((pad_t, pad_y - pad_t), (pad_l, pad_x - pad_l), (0, 0)),
-                       mode="constant", constant_values=255)
-        # resize
-        from PIL import Image as PILImage
-        pil_img = PILImage.fromarray(image[:, :, ::-1])  # BGR -> RGB for PIL
-        pil_img = pil_img.resize((target_size, target_size), PILImage.LANCZOS)
-        image = np.array(pil_img)
-        image = image[:, :, ::-1]  # RGB -> BGR again
-        image = image.astype(np.float32)
-        return image[np.newaxis, ...]  # [1, H, W, C]
 
 def load_tags_csv(csv_path):
     """从 CSV 加载标签定义。
@@ -277,6 +215,13 @@ def load_vocabulary_json(data):
         })
     return tags
 
+def load_tags(tags_path):
+    """按扩展名选择词表加载函数：.json 走 JSON 词表，其余按 CSV。"""
+    if tags_path.endswith(".json"):
+        return load_tags_json(tags_path)
+    return load_tags_csv(tags_path)
+
+
 def select_tags(probs, tags, options, category_thresholds):
     """合并模型分类阈值与用户设置，供单张和批量推理共用。"""
     if len(probs) != len(tags):
@@ -323,31 +268,18 @@ def select_tags(probs, tags, options, category_thresholds):
     return selected, [tag[0] for tag in selected]
 
 
-def detect_model_format(session):
-    """检测模型输入格式"""
-    inp = session.get_inputs()[0]
-    shape = inp.shape  # e.g. [1, 448, 448, 3] or [1, 3, 448, 448] or ['N', 3, 448, 448]
-
-    # 过滤掉动态维度
-    dims = []
-    for d in shape:
-        if isinstance(d, int) and d > 0:
-            dims.append(d)
-        else:
-            dims.append(-1)
-
+def _input_layout(shape):
+    dims = [d if isinstance(d, int) and d > 0 else -1 for d in shape]
     if len(dims) == 4:
-        if dims[3] == 3 or dims[3] == 1:
-            # NHWC: [B, H, W, C]
-            size = dims[1] if dims[1] > 0 else (dims[2] if dims[2] > 0 else 448)
-            return "NHWC", size
-        elif dims[1] == 3 or dims[1] == 1:
-            # NCHW: [B, C, H, W]
-            size = dims[2] if dims[2] > 0 else (dims[3] if dims[3] > 0 else 448)
-            return "NCHW", size
-
-    # fallback
+        if dims[3] in (1, 3, 4):
+            return "NHWC", next((d for d in dims[1:3] if d > 0), 448)
+        if dims[1] in (1, 3, 4):
+            return "NCHW", next((d for d in dims[2:4] if d > 0), 448)
     return "NHWC", 448
+
+
+def detect_model_format(session):
+    return _input_layout(session.get_inputs()[0].shape)
 
 # ── 关键词集合：用于将 general 标签分为 appearance / environment / tags ──
 _APPEARANCE_KEYWORDS = {
@@ -394,7 +326,6 @@ _APPEARANCE_KEYWORDS = {
 
 _ENVIRONMENT_KEYWORDS = {
     # "background" 靠下面的部分匹配覆盖 simple/white/blurry/gradient background 等全部变体。
-    # 这个词此前整个漏了，导致最高频的一类背景标签全落进 tags
     "background", "scenery", "landscape", "horizon",
     "outdoors", "indoors", "sky", "cloud", "clouds", "water", "ocean", "sea",
     "lake", "river", "pool", "rain", "snow", "ice",
@@ -452,128 +383,43 @@ def _classify_general_tag(tag_name):
     return "tags"
 
 
-def _build_structured_json(selected_tags):
-    """
-    将 (tag_name, category) 列表构建为 AnimaLoraStudio 完整格式 JSON。
-    文档: fixed.quality / fixed.series / fixed.artist / character.name / ai_output.*
-    """
-    character_name = ""
-    series_name = ""
-    artist_name = ""
-    count_tags = []
-    appearance = []
-    tags_list = []
-    environment = []
-    quality_parts = []  # rating + quality 合并
+def _format_artist(artist_name):
+    return artist_name if not artist_name or artist_name.startswith("@") else f"@{artist_name}"
 
-    for tag_name, cat, *_ in selected_tags:
-        if cat == "character":
-            character_name = tag_name if not character_name else f"{character_name}, {tag_name}"
-        elif cat == "copyright":
-            series_name = tag_name if not series_name else f"{series_name}, {tag_name}"
-        elif cat == "rating":
-            quality_parts.insert(0, tag_name)  # rating 放前面
-        elif cat == "quality":
-            quality_parts.append(tag_name)
-        elif cat == "artist":
-            artist_name = tag_name if not artist_name else f"{artist_name}, {tag_name}"
-        elif cat in ("model", "style"):
-            tags_list.append(tag_name)
-        else:
-            lower = tag_name.lower()
-            if lower in _COUNT_TAGS:
-                count_tags.append(tag_name)
-            else:
-                sub = _classify_general_tag(tag_name)
-                if sub == "appearance":
-                    appearance.append(tag_name)
-                elif sub == "environment":
-                    environment.append(tag_name)
-                else:
-                    tags_list.append(tag_name)
 
-    # 完整 schema 恒定输出：没有数据的字段以空值占位，不省略键
-    # （对齐 JSON 标签编辑器的完整格式：fixed/character/from_path/ai_output）
+def _bucket_tags(selected_tags):
+    buckets = {key: [] for key in _JSON_APPEND_FIELD_MAP}
+    for name, category, *_ in selected_tags:
+        if category == "rating":
+            buckets["quality"].insert(0, name)
+            continue
+        if category == "artist":
+            name = _format_artist(name)
+        field = {"character": "character", "copyright": "series",
+                 "quality": "quality", "artist": "artist",
+                 "model": "tags", "style": "tags"}.get(category)
+        if field is None:
+            field = "count" if name.lower() in _COUNT_TAGS else _classify_general_tag(name)
+        buckets[field].append(name)
     return {
-        "fixed": {
-            "quality": ", ".join(quality_parts),
-            "series": series_name,
-            "artist": _format_artist(artist_name),
-        },
-        "character": {
-            "name": character_name,
-            "variant": "",
-        },
-        "from_path": {
-            "appearance": [],
-        },
-        "ai_output": {
-            "count": ", ".join(count_tags),
-            "appearance": appearance,
-            "tags": tags_list,
-            "environment": environment,
-            # 本地打标器不产生自然语言描述；空值占位，由 LLM 调优补充
-            "nl": "",
-        },
+        field: ", ".join(values) if field in ("quality", "series", "artist", "character", "count") else values
+        for field, values in buckets.items()
     }
 
 
-def _format_artist(artist_name):
-    if not artist_name:
-        return ""
-    return artist_name if artist_name.startswith("@") else f"@{artist_name}"
+def _build_structured_json(selected_tags):
+    # 空值和键顺序是 JSON 标签编辑器的完整格式契约。
+    data = {"fixed": {}, "character": {}, "from_path": {"appearance": []}, "ai_output": {}}
+    for field, value in _bucket_tags(selected_tags).items():
+        container, key = _JSON_APPEND_FIELD_MAP[field]
+        data[container][key] = value
+    data["character"]["variant"] = ""
+    data["ai_output"]["nl"] = ""
+    return data
 
 
 def _build_simplified_json(selected_tags):
-    """简化格式：所有字段扁平化，对齐 AnimaLoraStudio 简化格式"""
-    out = {}
-    characters = []
-    series_list = []
-    artist_name = ""
-    count_tags = []
-    appearance = []
-    tags_list = []
-    environment = []
-    quality_parts = []  # rating + quality 合并
-
-    for tag_name, cat, *_ in selected_tags:
-        if cat == "character":
-            characters.append(tag_name)
-        elif cat == "copyright":
-            series_list.append(tag_name)
-        elif cat == "rating":
-            quality_parts.insert(0, tag_name)
-        elif cat == "quality":
-            quality_parts.append(tag_name)
-        elif cat == "artist":
-            artist_name = tag_name if not artist_name else f"{artist_name}, {tag_name}"
-        elif cat in ("model", "style"):
-            tags_list.append(tag_name)
-        else:
-            lower = tag_name.lower()
-            if lower in _COUNT_TAGS:
-                count_tags.append(tag_name)
-            else:
-                sub = _classify_general_tag(tag_name)
-                if sub == "appearance":
-                    appearance.append(tag_name)
-                elif sub == "environment":
-                    environment.append(tag_name)
-                else:
-                    tags_list.append(tag_name)
-
-    # 简化 schema 恒定输出（9 个键），空值占位不省略
-    out["quality"] = ", ".join(quality_parts)
-    out["series"] = ", ".join(series_list)
-    out["artist"] = _format_artist(artist_name)
-    out["character"] = ", ".join(characters)
-    out["count"] = ", ".join(count_tags)
-    out["appearance"] = appearance
-    out["tags"] = tags_list
-    out["environment"] = environment
-    out["nl"] = ""
-
-    return out
+    return {**_bucket_tags(selected_tags), "nl": ""}
 
 
 def _normalize_tag_key(tag):
@@ -581,84 +427,71 @@ def _normalize_tag_key(tag):
     return tag.strip().lower().replace("_", " ")
 
 
-def _flatten_json_tags(data):
-    """把 JSON 标签的所有字段摊平成 txt 标签列表。
+def _split_tags(text):
+    """逗号分隔的标签串 → 去掉首尾空白、丢弃空项后的列表"""
+    return [t.strip() for t in text.split(",") if t.strip()]
 
-    nl 是自然语言描述不是标签，故意不收。完整/简化两种格式自动识别；
-    字段值既可能是数组也可能是逗号串（tag_manager 两种都写），统一处理。
-    """
-    tags = []
 
-    def add(value):
-        items = []
-        if isinstance(value, list):
-            items = value
-        elif isinstance(value, str):
-            items = value.split(",")
-        for t in items:
-            t = str(t).strip()
-            if t and t not in tags:
-                tags.append(t)
+def _place(items, additions, position):
+    """把 additions 放到 items 前面（prepend）或后面，items 中与之重复的项先去掉"""
+    drop = set(additions)
+    kept = [t for t in items if t not in drop]
+    return additions + kept if position == "prepend" else kept + additions
 
-    if not isinstance(data, dict):
-        return tags
-    fixed = data.get("fixed")
-    if isinstance(fixed, dict):
-        add(fixed.get("quality"))
-        add(fixed.get("series"))
-        add(fixed.get("artist"))
-    character = data.get("character")
-    if isinstance(character, dict):
-        add(character.get("name"))
-        add(character.get("variant"))
-    from_path = data.get("from_path")
-    if isinstance(from_path, dict):
-        add(from_path.get("appearance"))
-    ai = data.get("ai_output")
-    if isinstance(ai, dict):
-        add(ai.get("count"))
-        add(ai.get("appearance"))
-        add(ai.get("tags"))
-        add(ai.get("environment"))
-    # 简化格式的扁平字段作为补充来源，并统一去重。
-    for key in ("quality", "series", "artist", "character", "variant",
-                "count", "appearance", "tags", "environment"):
-        add(data.get(key))
-    return tags
+
+def _read_tag_text(path):
+    """读 txt 标签；UTF-8 和 GBK 都解不开时抛错，调用方据此放弃这个文件"""
+    text = read_text_compat(path)
+    if text is None:
+        raise ValueError("无法按 UTF-8 或 GBK 解码")
+    return text
+
+
+def _sigmoid(x):
+    return 1 / (1 + np.exp(-np.clip(x, -30, 30)))
+
+
+def _fill_json(existing, new):
+    """JSON 合并（existing_tags_action 为 append 或 prepend 时共用，两者效果相同）：
+    保留已有字段，仅补充缺失字段，并对列表字段（含下一层）合并去重。"""
+    merged = existing.copy()
+    for k, v in new.items():
+        if k not in merged:
+            merged[k] = v
+        elif isinstance(v, dict) and isinstance(merged[k], dict):
+            for kk, vv in v.items():
+                if kk not in merged[k]:
+                    merged[k][kk] = vv
+                elif isinstance(vv, list) and isinstance(merged[k][kk], list):
+                    existing_set = set(merged[k][kk])
+                    merged[k][kk] = merged[k][kk] + [t for t in vv if t not in existing_set]
+        elif isinstance(v, list) and isinstance(merged[k], list):
+            existing_set = set(merged[k])
+            merged[k] = merged[k] + [t for t in v if t not in existing_set]
+    return merged
 
 
 def run_convert_mode():
-    """--convert 一次性模式：txt ↔ JSON 标签格式互转。
+    """--convert 一次性模式：txt → JSON 标签格式转换。
 
-    默认 txt → JSON：按模型词表分类，仅加载词表（CSV/JSON），不加载
-    ONNX/onnxruntime，速度很快。LLM 调优新增的、不在词表中的标签按
-    general 处理（再走外观/环境关键词细分）。
-    --to-txt：JSON → txt 摊平，纯格式转换，连词表都不需要。
+    按模型词表分类，仅加载词表（CSV/JSON），不加载 ONNX/onnxruntime，速度很快。
+    LLM 调优新增的、不在词表中的标签按 general 处理（再走外观/环境关键词细分）。
     """
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--convert", action="store_true")
-    parser.add_argument("--to-txt", action="store_true")
     parser.add_argument("--input", required=True)
     parser.add_argument("--tags-path", default=None)
     parser.add_argument("--simplified", action="store_true")
-    parser.add_argument("--remove-txt", action="store_true")
     parser.add_argument("--recursive", action="store_true")
-    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
-    # --to-txt 是纯摊平，不查词表；只有 txt → JSON 方向需要词表做分类
+    if not args.tags_path:
+        error("txt → JSON 转换需要 --tags-path 指定模型词表")
+        return
     cat_by_name = {}
-    if not args.to_txt:
-        if not args.tags_path:
-            result({"type": "error", "message": "txt → JSON 转换需要 --tags-path 指定模型词表"})
-            return
-        if args.tags_path.endswith(".json"):
-            defs = load_tags_json(args.tags_path)
-        else:
-            defs = load_tags_csv(args.tags_path)
-        for d in defs:
-            cat_by_name[_normalize_tag_key(d["name"])] = d["category"]
+    for d in load_tags(args.tags_path):
+        cat_by_name[_normalize_tag_key(d["name"])] = d["category"]
 
     exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".gif"}
     root = Path(args.input)
@@ -666,7 +499,7 @@ def run_convert_mode():
     if root.is_file():
         images = [root] if root.suffix.lower() in exts else []
     elif not root.is_dir():
-        result({"type": "error", "message": f"输入路径不存在: {args.input}"})
+        error(f"输入路径不存在: {args.input}")
         return
     elif args.recursive:
         images = sorted(f for f in root.rglob("*") if f.is_file() and f.suffix.lower() in exts)
@@ -680,76 +513,32 @@ def run_convert_mode():
     for i, img in enumerate(images):
         txt = img.parent / f"{img.stem}.txt"
         json_path = img.parent / f"{img.stem}.json"
-        if args.to_txt:
-            if not json_path.exists():
-                skipped += 1
-            elif txt.exists() and not args.overwrite:
-                # 已有 txt 就不拿 JSON 盖掉：那份 txt 可能已被人工整理过
-                skipped += 1
-            else:
-                try:
-                    data = json.loads(json_path.read_text(encoding="utf-8"))
-                    tag_list = _flatten_json_tags(data)
-                    if not tag_list:
-                        # JSON 里没有标签（比如只有 nl）——没东西可用，
-                        # 不写空 txt 让打标阶段误以为"已有标签"而跳过模型推理
-                        skipped += 1
-                    else:
-                        _write_text_atomic(txt, ", ".join(tag_list))
-                        converted += 1
-                except Exception as e:
-                    failed += 1
-                    result({"type": "log", "message": f"转换失败 {img.name}: {e}"})
-        elif not txt.exists():
+        if not txt.exists():
             skipped += 1
-        elif json_path.exists() and not args.overwrite:
+        elif json_path.exists():
             # 已有 JSON 就不拿 txt 盖掉：那份 JSON 可能已经有正确的字段归属和 nl
             skipped += 1
         else:
             try:
-                try:
-                    raw = txt.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    # 中文 Windows 老工具产出的 ANSI/GBK 标签文件
-                    raw = txt.read_text(encoding="gbk")
-                tag_list = [t.strip() for t in raw.replace("\n", ",").split(",") if t.strip()]
+                raw = _read_tag_text(txt)
                 selected = []
-                for t in tag_list:
+                for t in _split_tags(raw.replace("\n", ",")):
                     plain = t.replace("\\(", "(").replace("\\)", ")")
                     cat = cat_by_name.get(_normalize_tag_key(plain), "general")
                     selected.append((plain, cat))
                 data = _build_simplified_json(selected) if args.simplified else _build_structured_json(selected)
                 _write_json_atomic(json_path, data)
-                if args.remove_txt:
-                    txt.unlink()
                 converted += 1
             except Exception as e:
                 failed += 1
-                result({"type": "log", "message": f"转换失败 {img.name}: {e}"})
-        result({"type": "progress", "current": i + 1, "total": total, "filename": img.name})
+                log(f"转换失败 {img.name}: {e}")
+        progress(i + 1, total, img.name)
 
-    result({
-        "type": "done",
-        "converted": converted,
-        "skipped": skipped,
-        "failed": failed,
-        "total": total,
-    })
+    done(converted=converted, skipped=skipped, failed=failed, total=total)
 
 
 def _write_json_atomic(path, obj):
-    """先写临时文件再原子替换：进程可能被取消杀在写盘中途，避免半截文件顶着原名。"""
-    tmp = Path(str(path) + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
-
-
-def _write_text_atomic(path, text):
-    tmp = Path(str(path) + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    write_text_atomic(path, json.dumps(obj, ensure_ascii=False, indent=2))
 
 
 # JSON 追加标签可选字段 → 完整格式下的 (容器键, 字段键)；简化格式字段名即顶层键
@@ -768,7 +557,7 @@ _JSON_APPEND_STRING_KEYS = {"quality", "series", "artist", "name", "count"}
 
 
 def _merge_append_tags_json(data, append_list, simplified, position, field="tags"):
-    """JSON 输出合并追加标签（触发词）。txt 分支一直有此逻辑，json 分支此前直接丢弃。
+    """JSON 输出合并追加标签（触发词）。
 
     field：用户选择的目标字段（简化/完整两种布局共用同一套逻辑字段名），
     未知字段回退 tags。nl 不可选——它是自然语言不是标签。
@@ -785,7 +574,7 @@ def _merge_append_tags_json(data, append_list, simplified, position, field="tags
     arr = container.get(key)
     if isinstance(arr, str):
         # 逗号字符串形式（tag_manager 同样支持）——拆成列表合并，不能整个丢弃
-        arr = [t.strip() for t in arr.split(",") if t.strip()]
+        arr = _split_tags(arr)
         native_str = True
     elif isinstance(arr, list):
         arr = list(arr)
@@ -793,12 +582,49 @@ def _merge_append_tags_json(data, append_list, simplified, position, field="tags
     else:
         arr = []
         native_str = key in _JSON_APPEND_STRING_KEYS
-    append_set = set(additions)
-    arr = [t for t in arr if t not in append_set]
-    arr = (additions + arr) if position == "prepend" else (arr + additions)
+    arr = _place(arr, additions, position)
     # 按字段原生类型写回：数组字段保持数组，逗号串字段拼回字符串
     container[key] = ", ".join(arr) if native_str else arr
     return data
+
+
+def _write_outputs(image_path, probs, opts, tags, category_thresholds):
+    selected_tags, selected_flat = select_tags(probs, tags, opts, category_thresholds)
+    append_list = _split_tags(opts.get("append_tags", ""))
+    append_position = opts.get("append_position", "append")
+    action = opts.get("existing_tags_action", "overwrite")
+    reply = {"image_path": image_path, "tag_count": 0, "skipped": True}
+    if opts.get("output_format", "txt") == "json":
+        simplified = opts.get("json_simplified", False)
+        path = Path(image_path).with_suffix(".json")
+        data = _build_simplified_json(selected_tags) if simplified else _build_structured_json(selected_tags)
+        merging = action in ("prepend", "append") and path.exists()
+        try:
+            if merging:
+                with open(path, "r", encoding="utf-8") as stream:
+                    data = _fill_json(json.load(stream), data)
+            if append_list:
+                data = _merge_append_tags_json(
+                    data, append_list, simplified, append_position, opts.get("json_append_field", "tags"))
+            _write_json_atomic(path, data)
+        except Exception as err:
+            if not merging:
+                raise
+            log(f"⚠ JSON 合并失败，跳过写入以保护原文件 [{path.name}]: {err}")
+            return reply
+    else:
+        path = Path(image_path).with_suffix(".txt")
+        if action in ("prepend", "append") and path.exists():
+            try:
+                existing = _split_tags(_read_tag_text(path))
+                selected_flat = _place(selected_flat, existing, "prepend" if action == "append" else "append")
+            except Exception as err:
+                log(f"⚠ 读取已有标签失败，跳过写入以保护原文件 [{path.name}]: {err}")
+                return reply
+        if append_list:
+            selected_flat = _place(selected_flat, append_list, append_position)
+        write_text_atomic(path, ", ".join(selected_flat))
+    return {"image_path": image_path, "tag_count": len(selected_flat)}
 
 
 def run_detect_mode():
@@ -817,30 +643,34 @@ def run_detect_mode():
         )
         inp = sess.get_inputs()[0]
         shape = [int(d) if isinstance(d, int) else -1 for d in inp.shape]
-        if len(shape) == 4 and shape[1] in (1, 3, 4):
-            fmt, size, channels = "NCHW", shape[2], shape[1]
-        elif len(shape) == 4:
-            fmt, size, channels = "NHWC", shape[1], shape[3]
-        else:
-            fmt, size, channels = "NHWC", 0, 3
-        if not isinstance(size, int) or size <= 0:
-            size = 448
-        if not isinstance(channels, int) or channels <= 0:
-            channels = 3
-        print(json.dumps({
+        fmt, size = _input_layout(inp.shape)
+        emit({
             "type": "model_info",
             "input_size": size,
             "input_format": fmt,
             "input_shape": shape,
-            "channels": channels,
-        }, ensure_ascii=False), flush=True)
+        })
     except Exception as e:
         sys.stderr.write(f"模型检测失败: {e}\n")
         sys.exit(1)
 
 
+def _log_gpu_fallback(provider, err):
+    """GPU 建会话失败、即将回退 CPU 时输出原因"""
+    err_msg = str(err)
+    provider_name = provider[0] if isinstance(provider, tuple) else provider
+    log(f"⚠ {provider_name} 加载失败")
+    if "cuDNN" in err_msg:
+        log("原因: 未找到 cuDNN 9.x — 请安装 cuDNN 9.x for CUDA 12.x")
+        log("下载: https://developer.nvidia.com/cudnn-downloads")
+    elif "CUDA" in err_msg:
+        log("原因: CUDA 运行时未找到 — 请确认 CUDA 12.x 已安装且在 PATH 中")
+    else:
+        log(f"原因: {err_msg[:200]}")
+    log("自动回退到 CPU 推理")
+
+
 def main():
-    # --detect：一次性模型检测模式（Rust detect_model_info 调用），输出 model_info 后退出
     if "--detect" in sys.argv:
         run_detect_mode()
         return
@@ -849,13 +679,11 @@ def main():
         run_convert_mode()
         return
 
-    # Windows: 注册 CUDA DLL 目录（必须在 import onnxruntime 之前）
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from cuda_dll_helper import register_cuda_dlls
-    register_cuda_dlls()
+    bootstrap()
 
     import onnxruntime as ort
-    from gpu_diagnostics import resolve_ort_providers, quiet_session_options
+    from gpu_diagnostics import (create_session_with_cpu_fallback, quiet_session_options,
+                                 resolve_ort_providers)
 
     session = None
     tags = []
@@ -865,12 +693,7 @@ def main():
     preprocess_mode = "auto"
     category_thresholds = {}
 
-    # Windows 上 sys.stdin 默认用 GBK 编码，但 Rust 发送的是 UTF-8
-    # 必须用 buffer 以二进制读取再手动 UTF-8 解码
-    import io
-    stdin_reader = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
-
-    for line in stdin_reader:
+    for line in utf8_stdin():
         line = line.strip()
         if not line:
             continue
@@ -889,10 +712,13 @@ def main():
                 preprocess_mode = cmd.get("preprocess_mode", "auto")
                 category_thresholds = cmd.get("category_thresholds", {})
 
+                # 先加载词表：词表损坏时立刻报错，不必等模型加载完
+                tags = load_tags(tags_path)
+
                 # === ONNX Runtime 后端 ===
                 # 统一流程：探测环境（显卡型号 / CUDA / cuDNN）+ 输出日志 + 决定 providers
                 cuda_options = None
-                if preprocess_mode == "pixai_v1":
+                if cmd.get("conservative_cuda", False):
                     # 减少 cuDNN 的启动搜索和 CUDA 内存池扩张，避免大模型推理抢占过多显存。
                     cuda_options = {
                         "cudnn_conv_algo_search": "HEURISTIC",
@@ -904,28 +730,8 @@ def main():
                     use_gpu=use_gpu,
                     cuda_options=cuda_options,
                 )
-                gpu_provider = providers[0] if providers[0] != "CPUExecutionProvider" else None
-
-                # 尝试创建 session，GPU 失败时自动回退 CPU
-                sess_options = quiet_session_options(ort)
-                try:
-                    session = ort.InferenceSession(model_path, sess_options, providers=providers)
-                except Exception as e:
-                    if gpu_provider and gpu_provider in providers:
-                        err_msg = str(e)
-                        log(f"⚠ {gpu_provider} 加载失败")
-                        if "cuDNN" in err_msg:
-                            log("原因: 未找到 cuDNN 9.x — 请安装 cuDNN 9.x for CUDA 12.x")
-                            log("下载: https://developer.nvidia.com/cudnn-downloads")
-                        elif "CUDA" in err_msg:
-                            log("原因: CUDA 运行时未找到 — 请确认 CUDA 12.x 已安装且在 PATH 中")
-                        else:
-                            log(f"原因: {err_msg[:200]}")
-                        log("自动回退到 CPU 推理")
-                        providers = ["CPUExecutionProvider"]
-                        session = ort.InferenceSession(model_path, sess_options, providers=providers)
-                    else:
-                        raise
+                session = create_session_with_cpu_fallback(
+                    model_path, providers, quiet_session_options(ort), _log_gpu_fallback)
 
                 # 检测输入格式
                 input_name = session.get_inputs()[0].name
@@ -948,8 +754,6 @@ def main():
                     if "logits" in output_names:
                         output_index = output_names.index("logits")
                     apply_sigmoid = True
-                actual_providers = session.get_providers()
-                actual_info = f"onnxruntime {ort.__version__}, providers: {actual_providers}"
 
                 # input_size
                 override_size = cmd.get("input_size", 0)
@@ -958,197 +762,9 @@ def main():
                 else:
                     input_size = detected_size if detected_size > 0 else 448
 
-                # 加载标签
-                if tags_path.endswith(".json"):
-                    tags = load_tags_json(tags_path)
-                else:
-                    tags = load_tags_csv(tags_path)
-
                 log(f"✓ 模型已就绪 ({len(tags)} 标签, {input_size}x{input_size})")
 
-                result({
-                    "type": "ready",
-                    "info": actual_info,
-                    "input_format": input_format,
-                    "input_size": input_size,
-                    "tag_count": len(tags),
-                })
-
-            elif cmd["cmd"] == "tag":
-                if session is None:
-                    error("模型未初始化，请先发送 init 命令")
-                    continue
-
-                image_path = cmd["image_path"]
-                append_tags_str = cmd.get("append_tags", "")
-                append_position = cmd.get("append_position", "append")
-                json_append_field = cmd.get("json_append_field", "tags")
-
-                # 解析追加标签列表
-                append_list = []
-                if append_tags_str.strip():
-                    for t in append_tags_str.split(","):
-                        t = t.strip()
-                        if t:
-                            append_list.append(t)
-
-                # 预处理
-                img_data = preprocess_image(image_path, input_size, input_format, preprocess_mode)
-
-                # 推理
-                outputs = session.run(None, {input_name: img_data})
-                probs = outputs[output_index][0]  # shape: [num_tags]
-
-                # logits 输出才需要 sigmoid（节点在 init 时按 output_kind 选定）
-                if apply_sigmoid:
-                    probs = 1 / (1 + np.exp(-np.clip(probs, -30, 30)))
-
-                selected_tags, selected_flat = select_tags(probs, tags, cmd, category_thresholds)
-
-                # 输出格式
-                output_format = cmd.get("output_format", "txt")
-                existing_tags_action = cmd.get("existing_tags_action", "overwrite")
-                stem = Path(image_path).stem
-                parent = Path(image_path).parent
-
-                if output_format == "json":
-                    json_simplified = cmd.get("json_simplified", False)
-                    json_path = parent / f"{stem}.json"
-
-                    # 已标识文件操作
-                    if existing_tags_action == "skip" and json_path.exists():
-                        result({
-                            "type": "result",
-                            "image_path": image_path,
-                            "tags": [],
-                            "tag_count": 0,
-                            "skipped": True,
-                        })
-                        continue
-
-                    if existing_tags_action in ("prepend", "append") and json_path.exists():
-                        # JSON 格式合并：读取已有文件，与新标签合并
-                        try:
-                            with open(json_path, "r", encoding="utf-8") as f:
-                                existing_data = json.load(f)
-                            # 保留已有字段；仅补充缺失字段，并对列表字段合并去重。
-                            if existing_tags_action == "append":
-                                # 已有数据优先，新数据补充
-                                merged = existing_data.copy()
-                                if json_simplified:
-                                    new_data = _build_simplified_json(selected_tags)
-                                else:
-                                    new_data = _build_structured_json(selected_tags)
-                                for k, v in new_data.items():
-                                    if k not in merged:
-                                        merged[k] = v
-                                    elif isinstance(v, dict) and isinstance(merged[k], dict):
-                                        for kk, vv in v.items():
-                                            if kk not in merged[k]:
-                                                merged[k][kk] = vv
-                                            elif isinstance(vv, list) and isinstance(merged[k][kk], list):
-                                                existing_set = set(merged[k][kk])
-                                                merged[k][kk] = merged[k][kk] + [t for t in vv if t not in existing_set]
-                                    elif isinstance(v, list) and isinstance(merged[k], list):
-                                        existing_set = set(merged[k])
-                                        merged[k] = merged[k] + [t for t in v if t not in existing_set]
-                            else:
-                                # prepend: 已有数据保持不变，新数据中不重复的部分补充进去
-                                merged = existing_data.copy()
-                                if json_simplified:
-                                    new_data = _build_simplified_json(selected_tags)
-                                else:
-                                    new_data = _build_structured_json(selected_tags)
-                                for k, v in new_data.items():
-                                    if k not in merged:
-                                        merged[k] = v
-                                    elif isinstance(v, dict) and isinstance(merged[k], dict):
-                                        for kk, vv in v.items():
-                                            if kk not in merged[k]:
-                                                merged[k][kk] = vv
-                                            elif isinstance(vv, list) and isinstance(merged[k][kk], list):
-                                                existing_set = set(merged[k][kk])
-                                                merged[k][kk] = merged[k][kk] + [t for t in vv if t not in existing_set]
-                                    elif isinstance(v, list) and isinstance(merged[k], list):
-                                        existing_set = set(merged[k])
-                                        merged[k] = merged[k] + [t for t in v if t not in existing_set]
-                            if append_list:
-                                merged = _merge_append_tags_json(merged, append_list, json_simplified, append_position, json_append_field)
-                            _write_json_atomic(json_path, merged)
-                        except Exception as merge_err:
-                            # 合并失败时不覆盖用户原文件：仅警告并跳过写入
-                            log(f"⚠ JSON 合并失败，跳过写入以保护原文件 [{json_path.name}]: {merge_err}")
-                    else:
-                        # overwrite 或文件不存在
-                        if json_simplified:
-                            data = _build_simplified_json(selected_tags)
-                        else:
-                            data = _build_structured_json(selected_tags)
-                        if append_list:
-                            data = _merge_append_tags_json(data, append_list, json_simplified, append_position, json_append_field)
-                        _write_json_atomic(json_path, data)
-                else:
-                    txt_path = parent / f"{stem}.txt"
-
-                    # 已标识文件操作。also_skip_json：辅助打标 txt 输出时，
-                    # 同名 .json 也算"已有标签"（调优阶段会直接读它的字段结构），
-                    # 这里不能让模型重打一份 txt 盖住用户的选择
-                    if existing_tags_action == "skip" and (
-                        txt_path.exists()
-                        or (cmd.get("also_skip_json", False) and (parent / f"{stem}.json").exists())
-                    ):
-                        result({
-                            "type": "result",
-                            "image_path": image_path,
-                            "tags": [],
-                            "tag_count": 0,
-                            "skipped": True,
-                        })
-                        continue
-
-                    if existing_tags_action in ("prepend", "append") and txt_path.exists():
-                        try:
-                            try:
-                                with open(txt_path, "r", encoding="utf-8") as f:
-                                    existing_text = f.read().strip()
-                            except UnicodeDecodeError:
-                                # 中文 Windows 老工具产出的 ANSI/GBK 标签文件
-                                with open(txt_path, "r", encoding="gbk") as f:
-                                    existing_text = f.read().strip()
-                            existing_list = [t.strip() for t in existing_text.split(",") if t.strip()]
-                            # 去重合并
-                            if existing_tags_action == "append":
-                                # 已有标签在前，新标签补充到后面（去掉模型输出中的重复）
-                                existing_set = set(existing_list)
-                                merged = existing_list + [t for t in selected_flat if t not in existing_set]
-                            else:
-                                # 新标签在前，已有标签保持原位（去掉模型输出中的重复）
-                                existing_set = set(existing_list)
-                                merged = [t for t in selected_flat if t not in existing_set] + existing_list
-                            selected_flat = merged
-                        except Exception as read_err:
-                            # 读取失败时不能静默用新标签覆盖用户原文件（与 JSON 分支的保护一致）
-                            log(f"⚠ 读取已有标签失败，跳过写入以保护原文件 [{txt_path.name}]: {read_err}")
-                            result({"type": "result", "image_path": image_path, "tags": [], "tag_count": 0, "skipped": True})
-                            continue
-
-                    # 追加标签最后处理（优先级最高，确保触发词始终在指定位置）
-                    if append_list:
-                        append_set = set(append_list)
-                        selected_flat = [n for n in selected_flat if n not in append_set]
-                        if append_position == "prepend":
-                            selected_flat = append_list + selected_flat
-                        else:
-                            selected_flat = selected_flat + append_list
-
-                    _write_text_atomic(txt_path, ", ".join(selected_flat))
-
-                result({
-                    "type": "result",
-                    "image_path": image_path,
-                    "tags": selected_flat,
-                    "tag_count": len(selected_flat),
-                })
+                emit({"type": "ready"})
 
             elif cmd["cmd"] == "tag_batch":
                 if session is None:
@@ -1170,11 +786,7 @@ def main():
                         batch_data.append(img_data)
                         valid_indices.append(idx)
                     except Exception as e:
-                        result({
-                            "type": "error",
-                            "image_path": img_path,
-                            "message": f"预处理失败: {e}",
-                        })
+                        error(f"预处理失败: {e}", image_path=img_path)
 
                 if not batch_data:
                     continue
@@ -1186,11 +798,7 @@ def main():
                     batch_tensor = np.concatenate(batch_data, axis=0)
                 except Exception as e:
                     for vi in valid_indices:
-                        result({
-                            "type": "error",
-                            "image_path": images[vi].get("image_path", ""),
-                            "message": f"批量拼接失败: {e}",
-                        })
+                        error(f"批量拼接失败: {e}", image_path=images[vi].get("image_path", ""))
                     continue
 
                 all_probs = None
@@ -1200,6 +808,9 @@ def main():
                         outputs = session.run(None, {input_name: batch_tensor})
                         all_probs = outputs[output_index]
                     except Exception as e:
+                        if len(batch_data) == 1:
+                            error(f"推理失败: {e}", image_path=images[valid_indices[0]].get("image_path", ""))
+                            continue
                         log(f"批量推理失败，降级为逐张推理重试: {type(e).__name__}")
                 if all_probs is None:
                     all_probs = []
@@ -1210,11 +821,7 @@ def main():
                             all_probs.append(out_single[output_index][0])
                         except Exception as e2:
                             all_probs.append(None)
-                            result({
-                                "type": "error",
-                                "image_path": img_path,
-                                "message": f"推理失败: {e2}",
-                            })
+                            error(f"推理失败: {e2}", image_path=img_path)
 
                 # 逐张处理结果
                 for batch_idx, orig_idx in enumerate(valid_indices):
@@ -1225,121 +832,13 @@ def main():
                         if probs is None:
                             continue  # 逐张重试已失败并报过 error
 
-                        append_tags_str = img_cmd.get("append_tags", "")
-                        append_position = img_cmd.get("append_position", "append")
-                        json_append_field = img_cmd.get("json_append_field", "tags")
-
-                        append_list = []
-                        if append_tags_str.strip():
-                            for t_str in append_tags_str.split(","):
-                                t_str = t_str.strip()
-                                if t_str:
-                                    append_list.append(t_str)
-
                         if apply_sigmoid:
-                            probs = 1 / (1 + np.exp(-np.clip(probs, -30, 30)))
-
-                        selected_tags, selected_flat = select_tags(probs, tags, img_cmd, category_thresholds)
-
-                        output_format = img_cmd.get("output_format", "txt")
-                        existing_tags_action = img_cmd.get("existing_tags_action", "overwrite")
-                        stem = Path(image_path).stem
-                        parent = Path(image_path).parent
-
-                        if output_format == "json":
-                            json_simplified = img_cmd.get("json_simplified", False)
-                            json_path = parent / f"{stem}.json"
-
-                            if existing_tags_action == "skip" and json_path.exists():
-                                result({"type": "result", "image_path": image_path, "tags": [], "tag_count": 0, "skipped": True})
-                                continue
-
-                            if existing_tags_action in ("prepend", "append") and json_path.exists():
-                                try:
-                                    with open(json_path, "r", encoding="utf-8") as f:
-                                        existing_data = json.load(f)
-                                    new_data = _build_simplified_json(selected_tags) if json_simplified else _build_structured_json(selected_tags)
-                                    merged = existing_data.copy()
-                                    for k, v in new_data.items():
-                                        if k not in merged:
-                                            merged[k] = v
-                                        elif isinstance(v, dict) and isinstance(merged[k], dict):
-                                            for kk, vv in v.items():
-                                                if kk not in merged[k]:
-                                                    merged[k][kk] = vv
-                                                elif isinstance(vv, list) and isinstance(merged[k][kk], list):
-                                                    existing_set = set(merged[k][kk])
-                                                    merged[k][kk] = merged[k][kk] + [t_val for t_val in vv if t_val not in existing_set]
-                                        elif isinstance(v, list) and isinstance(merged[k], list):
-                                            existing_set = set(merged[k])
-                                            merged[k] = merged[k] + [t_val for t_val in v if t_val not in existing_set]
-                                    if append_list:
-                                        merged = _merge_append_tags_json(merged, append_list, json_simplified, append_position, json_append_field)
-                                    _write_json_atomic(json_path, merged)
-                                except Exception as merge_err:
-                                    # 合并失败时不覆盖用户原文件：仅警告并跳过写入
-                                    log(f"⚠ JSON 合并失败，跳过写入以保护原文件 [{json_path.name}]: {merge_err}")
-                            else:
-                                data = _build_simplified_json(selected_tags) if json_simplified else _build_structured_json(selected_tags)
-                                if append_list:
-                                    data = _merge_append_tags_json(data, append_list, json_simplified, append_position, json_append_field)
-                                _write_json_atomic(json_path, data)
-                        else:
-                            txt_path = parent / f"{stem}.txt"
-
-                            if existing_tags_action == "skip" and (
-                                txt_path.exists()
-                                or (img_cmd.get("also_skip_json", False) and (parent / f"{stem}.json").exists())
-                            ):
-                                result({"type": "result", "image_path": image_path, "tags": [], "tag_count": 0, "skipped": True})
-                                continue
-
-                            if existing_tags_action in ("prepend", "append") and txt_path.exists():
-                                try:
-                                    try:
-                                        with open(txt_path, "r", encoding="utf-8") as f:
-                                            existing_text = f.read().strip()
-                                    except UnicodeDecodeError:
-                                        with open(txt_path, "r", encoding="gbk") as f:
-                                            existing_text = f.read().strip()
-                                    existing_list = [t_str.strip() for t_str in existing_text.split(",") if t_str.strip()]
-                                    if existing_tags_action == "append":
-                                        existing_set = set(existing_list)
-                                        merged = existing_list + [t_str for t_str in selected_flat if t_str not in existing_set]
-                                    else:
-                                        existing_set = set(existing_list)
-                                        merged = [t_str for t_str in selected_flat if t_str not in existing_set] + existing_list
-                                    selected_flat = merged
-                                except Exception as read_err:
-                                    log(f"⚠ 读取已有标签失败，跳过写入以保护原文件 [{txt_path.name}]: {read_err}")
-                                    result({"type": "result", "image_path": image_path, "tags": [], "tag_count": 0, "skipped": True})
-                                    continue
-
-                            if append_list:
-                                append_set = set(append_list)
-                                selected_flat = [n for n in selected_flat if n not in append_set]
-                                if append_position == "prepend":
-                                    selected_flat = append_list + selected_flat
-                                else:
-                                    selected_flat = selected_flat + append_list
-
-                            _write_text_atomic(txt_path, ", ".join(selected_flat))
-
-                        result({
-                            "type": "result",
-                            "image_path": image_path,
-                            "tags": selected_flat,
-                            "tag_count": len(selected_flat),
-                        })
+                            probs = _sigmoid(probs)
+                        result(**_write_outputs(image_path, probs, img_cmd, tags, category_thresholds))
                     except Exception as e:
-                        result({
-                            "type": "error",
-                            "image_path": image_path,
-                            "message": f"{traceback.format_exc()}",
-                        })
+                        error(traceback.format_exc(), image_path=image_path)
 
             elif cmd["cmd"] == "quit":
-                log("推理进程退出")
                 break
 
             else:
@@ -1347,11 +846,11 @@ def main():
 
         except Exception as e:
             err_payload = {"type": "error", "message": f"{traceback.format_exc()}"}
-            # 单图模式带上当前正在处理的图片路径（拿不到则省略）
+            # 无法定位到单张图片的批次错误由 Rust 终止当前批次。
             img_p = cmd.get("image_path", "") if isinstance(cmd, dict) else ""
             if img_p:
                 err_payload["image_path"] = img_p
-            result(err_payload)
+            emit(err_payload)
 
 if __name__ == "__main__":
     main()

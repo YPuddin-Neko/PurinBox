@@ -59,10 +59,8 @@ interface ThumbImageProps {
   maxEdge?: number;
   alt?: string;
   style?: CSSProperties;
-  className?: string;
   draggable?: boolean;
   onClick?: () => void;
-  onDragStart?: (e: React.DragEvent<HTMLElement>) => void;
 }
 
 /**
@@ -70,7 +68,7 @@ interface ThumbImageProps {
  * 替代 convertFileSrc(原图) 直出，避免 WebView 解码全尺寸大图导致卡顿。
  * 生成失败或缩略图不可用时回退加载原图；大图查看（Lightbox）请继续用原图。
  */
-export default function ThumbImage({ path, maxEdge = 384, alt, style, className, draggable, onClick, onDragStart }: ThumbImageProps) {
+export default function ThumbImage({ path, maxEdge = 384, alt, style, draggable, onClick }: ThumbImageProps) {
   const key = `${path}|${maxEdge}`;
   const [src, setSrc] = useState<string>(() => resolvedCache.get(key) ?? '');
 
@@ -94,19 +92,17 @@ export default function ThumbImage({ path, maxEdge = 384, alt, style, className,
 
   if (!src) {
     // 占位块保持格子布局稳定，避免加载完成时跳动
-    return <div className={className} style={{ background: 'var(--color-bg-tertiary)', ...style }} onClick={onClick} />;
+    return <div style={{ background: 'var(--color-bg-tertiary)', ...style }} onClick={onClick} />;
   }
   return (
     <img
       src={src}
       alt={alt}
       style={style}
-      className={className}
       draggable={draggable}
       loading="lazy"
       decoding="async"
       onClick={onClick}
-      onDragStart={onDragStart}
       onError={() => {
         // 缓存文件可能被外部清理：失效并回退原图
         resolvedCache.delete(key);

@@ -1,12 +1,88 @@
+use super::fingerprint::{compute_fingerprints, is_duplicate};
 use serde::{Deserialize, Serialize};
-use super::fingerprint::{compute_fingerprint, is_duplicate, ImageFingerprint};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use super::ProgressEvent;
 
 static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn same_directory_export_never_truncates_sources() {
+        let root = super::super::image_io::test_dir("export_self");
+        std::fs::write(root.join("a.png"), b"source bytes").unwrap();
+        for destination in [root.clone(), root.join(".")] {
+            let result = export_unmatched_files(
+                root.to_string_lossy().into_owned(),
+                vec!["a.png".into()],
+                destination.to_string_lossy().into_owned(),
+            )
+            .await;
+            assert!(result.unwrap_err().contains("不能与源文件夹相同"));
+            assert_eq!(std::fs::read(root.join("a.png")).unwrap(), b"source bytes");
+        }
+        let output = root.join("export");
+        let result = export_unmatched_files(
+            root.to_string_lossy().into_owned(),
+            vec!["a.png".into()],
+            output.to_string_lossy().into_owned(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.success_count, 1);
+        assert_eq!(
+            std::fs::read(output.join("a.png")).unwrap(),
+            b"source bytes"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn conflict_must_be_the_exact_destination() {
+        let root = super::super::image_io::test_dir("rename_conflict");
+        let app = tauri::test::mock_app();
+        for name in ["source.png", "target.png", "unrelated.png"] {
+            std::fs::write(root.join(name), name.as_bytes()).unwrap();
+        }
+        std::fs::write(root.join("target.caption"), b"caption").unwrap();
+        let mut action = RenameAction {
+            src_path: root.join("source.png").to_string_lossy().into_owned(),
+            target_name: "target.png".into(),
+            conflict_path: Some(root.join("unrelated.png").to_string_lossy().into_owned()),
+        };
+        let result = execute_dedup_rename(app.handle().clone(), vec![action.clone()])
+            .await
+            .unwrap();
+        assert_eq!((result.success_count, result.fail_count), (0, 1));
+        for name in ["source.png", "target.png", "unrelated.png"] {
+            assert_eq!(std::fs::read(root.join(name)).unwrap(), name.as_bytes());
+        }
+        assert!(!root.join("unrelated_rename.png").exists());
+        action.conflict_path = Some(root.join("target.png").to_string_lossy().into_owned());
+        let result = execute_dedup_rename(app.handle().clone(), vec![action])
+            .await
+            .unwrap();
+        assert_eq!((result.success_count, result.fail_count), (1, 0));
+        assert_eq!(
+            std::fs::read(root.join("target.png")).unwrap(),
+            b"source.png"
+        );
+        assert_eq!(
+            std::fs::read(root.join("target_rename.png")).unwrap(),
+            b"target.png"
+        );
+        assert_eq!(
+            std::fs::read(root.join("target_rename.caption")).unwrap(),
+            b"caption"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DedupRenameOptions {
@@ -23,8 +99,6 @@ pub struct DedupPair {
     pub name_a: String,
     pub path_b: String,
     pub name_b: String,
-    pub similarity: f64,
-    pub method: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,7 +135,7 @@ pub struct RenameAction {
     pub src_path: String,
     /// 目标文件名（不含路径，只是文件名）
     pub target_name: String,
-    /// 如果目标位置已有同名文件，是否给旧文件加 _rename 后缀
+    /// 目标名被占用时需先让位的文件：改名为 `{stem}_rename`（已占用时追加序号）后再执行重命名
     pub conflict_path: Option<String>,
 }
 
@@ -82,8 +156,14 @@ pub async fn export_unmatched_files(
     tokio::task::spawn_blocking(move || {
         let src = Path::new(&source_folder);
         let dst = Path::new(&dest_folder);
-        if !dst.exists() {
-            std::fs::create_dir_all(dst).map_err(|e| format!("创建目标文件夹失败: {}", e))?;
+        if super::path_key_ci(src) == super::path_key_ci(dst) {
+            return Err("目标文件夹不能与源文件夹相同".to_string());
+        }
+        std::fs::create_dir_all(dst).map_err(|e| format!("创建目标文件夹失败: {}", e))?;
+        if let (Ok(source), Ok(destination)) = (src.canonicalize(), dst.canonicalize()) {
+            if source == destination {
+                return Err("目标文件夹不能与源文件夹相同".to_string());
+            }
         }
         let mut success_count = 0u32;
         let mut fail_count = 0u32;
@@ -91,7 +171,7 @@ pub async fn export_unmatched_files(
         for name in &filenames {
             let src_path = src.join(name);
             let dst_path = dst.join(name);
-            match std::fs::copy(&src_path, &dst_path) {
+            match super::copy_file_safe(&src_path, &dst_path) {
                 Ok(_) => success_count += 1,
                 Err(e) => {
                     fail_count += 1;
@@ -110,8 +190,8 @@ pub async fn export_unmatched_files(
 }
 
 #[tauri::command]
-pub async fn execute_dedup_rename(
-    app: tauri::AppHandle,
+pub async fn execute_dedup_rename<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     actions: Vec<RenameAction>,
 ) -> Result<DedupRenameResult, String> {
     let total = actions.len() as u32;
@@ -132,7 +212,11 @@ pub async fn execute_dedup_rename(
 
         // 如果目标位置已有文件（冲突），先给它加 _rename 后缀
         if target_path.exists() && target_path != src {
-            if let Some(conflict) = &action.conflict_path {
+            if let Some(conflict) = action
+                .conflict_path
+                .as_ref()
+                .filter(|p| Path::new(p) == target_path)
+            {
                 let conflict_p = Path::new(conflict);
                 // 给冲突文件加 _rename 后缀，若该名已被占用则追加序号直到唯一
                 let stem = conflict_p
@@ -191,27 +275,22 @@ pub async fn execute_dedup_rename(
 
         let _ = app.emit(
             "dedup-rename-progress",
-            ProgressEvent {
-                current: i as u32 + 1,
-                total,
-                filename: action.target_name.clone(),
-                status: "processing".to_string(),
-                message: format!("[{}/{}] {}", i + 1, total, action.target_name),
-                ..Default::default()
-            },
+            ProgressEvent::new(
+                "processing",
+                format!("[{}/{}] {}", i + 1, total, action.target_name),
+            )
+            .at(i as u32 + 1, total)
+            .file(action.target_name.clone()),
         );
     }
 
     let _ = app.emit(
         "dedup-rename-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!("完成: 成功 {}, 失败 {}", success_count, fail_count),
-            ..Default::default()
-        },
+        ProgressEvent::new(
+            "done",
+            format!("完成: 成功 {}, 失败 {}", success_count, fail_count),
+        )
+        .at(total, total),
     );
 
     Ok(DedupRenameResult {
@@ -229,7 +308,7 @@ fn rename_associated_files(old_path: &Path, new_path: &Path) -> Vec<String> {
     let old_dir = old_path.parent().unwrap_or(Path::new("."));
     let new_dir = new_path.parent().unwrap_or(Path::new("."));
 
-    for ext in &["txt", "json", "caption"] {
+    for ext in super::TAG_SIDECAR_EXTS {
         let old_assoc = old_dir.join(format!("{}.{}", old_stem.to_string_lossy(), ext));
         if old_assoc.exists() {
             let new_assoc = new_dir.join(format!("{}.{}", new_stem.to_string_lossy(), ext));
@@ -249,9 +328,6 @@ fn rename_associated_files(old_path: &Path, new_path: &Path) -> Vec<String> {
     errors
 }
 
-// ── Fingerprint (reuse dedup logic) ──
-
-
 fn scan_sync(
     app: &tauri::AppHandle,
     options: &DedupRenameOptions,
@@ -261,15 +337,15 @@ fn scan_sync(
     let folder_a = Path::new(&options.folder_a);
     let folder_b = Path::new(&options.folder_b);
 
-    if !folder_a.exists() || !folder_a.is_dir() {
+    if !folder_a.is_dir() {
         return Err(format!("文件夹A不存在: {}", options.folder_a));
     }
-    if !folder_b.exists() || !folder_b.is_dir() {
+    if !folder_b.is_dir() {
         return Err(format!("文件夹B不存在: {}", options.folder_b));
     }
 
-    let files_a = super::collect_image_files(folder_a)?;
-    let files_b = super::collect_image_files(folder_b)?;
+    let files_a = super::collect_image_files_with_recursive(folder_a, false)?;
+    let files_b = super::collect_image_files_with_recursive(folder_b, false)?;
     let total_a = files_a.len() as u32;
     let total_b = files_b.len() as u32;
     let total_all = total_a + total_b;
@@ -279,24 +355,8 @@ fn scan_sync(
             pairs: vec![],
             total_a,
             total_b,
-            unmatched_a: files_a
-                .iter()
-                .map(|f| {
-                    f.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string()
-                })
-                .collect(),
-            unmatched_b: files_b
-                .iter()
-                .map(|f| {
-                    f.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string()
-                })
-                .collect(),
+            unmatched_a: files_a.iter().map(|f| super::file_name_lossy(f)).collect(),
+            unmatched_b: files_b.iter().map(|f| super::file_name_lossy(f)).collect(),
             scan_time_ms: 0,
             failed_files: vec![],
         });
@@ -305,68 +365,30 @@ fn scan_sync(
     // Phase 1: compute fingerprints
     let _ = app.emit(
         "dedup-rename-progress",
-        ProgressEvent {
-            current: 0,
-            total: total_all,
-            filename: String::new(),
-            status: "processing".into(),
-            message: "正在计算图片指纹...".into(),
-            ..Default::default()
-        },
+        ProgressEvent::new("processing", "正在计算图片指纹...").at(0, total_all),
     );
 
-    let num_threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .min(16);
-    let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-
-    let compute_batch = |files: &[PathBuf],
-                         app: &tauri::AppHandle,
-                         counter: &std::sync::Arc<std::sync::atomic::AtomicU32>,
-                         total: u32|
-     -> (Vec<ImageFingerprint>, Vec<String>) {
-        let mut fps = Vec::with_capacity(files.len());
-        let mut failed: Vec<String> = Vec::new();
-        for chunk in files.chunks(num_threads) {
-            if CANCEL_FLAG.load(Ordering::SeqCst) {
-                break;
-            }
-            let handles: Vec<_> = chunk
-                .iter()
-                .map(|file| {
-                    let path = file.clone();
-                    std::thread::spawn(move || compute_fingerprint(&path))
-                })
-                .collect();
-            for (file, handle) in chunk.iter().zip(handles) {
-                let cnt = counter.fetch_add(1, Ordering::SeqCst) + 1;
-                let _ = app.emit(
-                    "dedup-rename-progress",
-                    ProgressEvent {
-                        current: cnt,
-                        total,
-                        filename: String::new(),
-                        status: "processing".into(),
-                        message: format!("计算指纹 {}/{}", cnt, total),
-                        ..Default::default()
-                    },
-                );
-                match handle.join() {
-                    Ok(Ok(fp)) => fps.push(fp),
-                    Ok(Err(e)) => failed.push(format!("{}: {}", file.display(), e)),
-                    Err(_) => failed.push(format!("{}: 指纹计算线程异常退出", file.display())),
-                }
-            }
-        }
-        (fps, failed)
+    // A、B 两侧共用一个进度计数
+    let mut done = 0u32;
+    let mut on_each = || {
+        done += 1;
+        let _ = app.emit(
+            "dedup-rename-progress",
+            ProgressEvent::new("processing", format!("计算指纹 {}/{}", done, total_all))
+                .at(done, total_all),
+        );
     };
-
-    let (fps_a, mut failed_files) = compute_batch(&files_a, app, &counter, total_all);
+    let Some((fps_a, mut failed_files)) =
+        compute_fingerprints(&files_a, &CANCEL_FLAG, &mut on_each)
+    else {
+        return Err("已取消".into());
+    };
     if CANCEL_FLAG.load(Ordering::SeqCst) {
         return Err("已取消".into());
     }
-    let (fps_b, failed_b) = compute_batch(&files_b, app, &counter, total_all);
+    let Some((fps_b, failed_b)) = compute_fingerprints(&files_b, &CANCEL_FLAG, &mut on_each) else {
+        return Err("已取消".into());
+    };
     failed_files.extend(failed_b);
     if CANCEL_FLAG.load(Ordering::SeqCst) {
         return Err("已取消".into());
@@ -375,17 +397,11 @@ fn scan_sync(
     // Phase 2: cross-compare A vs B
     let _ = app.emit(
         "dedup-rename-progress",
-        ProgressEvent {
-            current: total_all,
-            total: total_all,
-            filename: String::new(),
-            status: "processing".into(),
-            message: "正在比对图片...".into(),
-            ..Default::default()
-        },
+        ProgressEvent::new("processing", "正在比对图片...").at(total_all, total_all),
     );
 
     let mut pairs: Vec<DedupPair> = Vec::new();
+    let mut unmatched_a: Vec<String> = Vec::new();
     let mut used_b: Vec<bool> = vec![false; fps_b.len()];
 
     for fp_a in &fps_a {
@@ -395,14 +411,13 @@ fn scan_sync(
 
         let mut best_j: Option<usize> = None;
         let mut best_sim = 0.0_f64;
-        let mut best_method = String::new();
 
         for (j, fp_b) in fps_b.iter().enumerate() {
             if used_b[j] {
                 continue;
             }
 
-            let (is_dup, sim, method) = is_duplicate(
+            let (is_dup, sim, _) = is_duplicate(
                 fp_a,
                 fp_b,
                 options.dhash_threshold,
@@ -412,75 +427,38 @@ fn scan_sync(
 
             if is_dup && sim > best_sim {
                 best_sim = sim;
-                best_method = method;
                 best_j = Some(j);
             }
         }
 
+        let name_a = super::file_name_lossy(&fp_a.path);
         if let Some(j) = best_j {
             used_b[j] = true;
-            let name_a = fp_a
-                .path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let name_b = fps_b[j]
-                .path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
+            let name_b = super::file_name_lossy(&fps_b[j].path);
             pairs.push(DedupPair {
                 path_a: fp_a.path.to_string_lossy().to_string(),
                 name_a,
                 path_b: fps_b[j].path.to_string_lossy().to_string(),
                 name_b,
-                similarity: best_sim,
-                method: best_method,
             });
+        } else {
+            unmatched_a.push(name_a);
         }
     }
 
-    // Collect unmatched
-    let matched_a_paths: std::collections::HashSet<String> =
-        pairs.iter().map(|p| p.path_a.clone()).collect();
-    let unmatched_a: Vec<String> = fps_a
-        .iter()
-        .filter(|fp| !matched_a_paths.contains(&fp.path.to_string_lossy().to_string()))
-        .map(|fp| {
-            fp.path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string()
-        })
-        .collect();
     let unmatched_b: Vec<String> = fps_b
         .iter()
         .enumerate()
         .filter(|(j, _)| !used_b[*j])
-        .map(|(_, fp)| {
-            fp.path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string()
-        })
+        .map(|(_, fp)| super::file_name_lossy(&fp.path))
         .collect();
 
     let elapsed = start.elapsed().as_millis() as u64;
 
     let _ = app.emit(
         "dedup-rename-progress",
-        ProgressEvent {
-            current: total_all,
-            total: total_all,
-            filename: String::new(),
-            status: "done".into(),
-            message: format!("完成，找到 {} 对匹配", pairs.len()),
-            ..Default::default()
-        },
+        ProgressEvent::new("done", format!("完成，找到 {} 对匹配", pairs.len()))
+            .at(total_all, total_all),
     );
 
     Ok(DedupRenameScanResult {
@@ -493,10 +471,3 @@ fn scan_sync(
         failed_files,
     })
 }
-
-
-
-
-
-
-

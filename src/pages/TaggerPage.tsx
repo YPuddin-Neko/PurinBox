@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import SegmentedTabs from '../components/ui/SegmentedTabs';
 import { Tags } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import AiTaggerTab from '../components/AiTaggerTab';
@@ -17,11 +18,7 @@ export default function TaggerPage() {
     ...(hybridTaggerEnabled ? [{ id: 'hybrid', label: t('tagger.hybridTab') }] : []),
   ];
 
-  useEffect(() => {
-    if (!hybridTaggerEnabled && activeTab === 'hybrid') {
-      setActiveTab('ai');
-    }
-  }, [activeTab, hybridTaggerEnabled]);
+  const tab = !hybridTaggerEnabled && activeTab === 'hybrid' ? 'ai' : activeTab;
 
   return (
     <div className="page">
@@ -33,31 +30,10 @@ export default function TaggerPage() {
         <p className="page-subtitle">{t('tagger.subtitle')}</p>
       </div>
 
-      {/* Tab Bar */}
-      <div style={{
-        display: 'flex', gap: 2, marginBottom: 'var(--space-4)',
-        background: 'var(--color-bg-card)', borderRadius: 'var(--radius-lg)',
-        padding: 3, border: '1px solid var(--color-border)',
-        width: 'fit-content',
-      }}>
-        {tabs.map(tab => (
-          <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
-            padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
-            cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
-            transition: 'all 0.2s', fontFamily: 'inherit',
-            background: activeTab === tab.id ? 'var(--color-accent-primary)' : 'transparent',
-            color: activeTab === tab.id ? '#fff' : 'var(--color-text-tertiary)',
-          }}>{tab.label}</button>
-        ))}
-      </div>
-
-      {activeTab === 'ai'
-        ? <AiTaggerTab />
-        : activeTab === 'llm'
-          ? <LlmTaggerTab />
-          : hybridTaggerEnabled
-            ? <HybridTaggerTab />
-            : <AiTaggerTab />}
+      <SegmentedTabs tabs={tabs} value={tab} onChange={setActiveTab} style={{ marginBottom: 'var(--space-4)' }} />
+      <div style={{ display: tab === 'ai' ? 'block' : 'none' }}><AiTaggerTab /></div>
+      <div style={{ display: tab === 'llm' ? 'block' : 'none' }}><LlmTaggerTab /></div>
+      <div style={{ display: tab === 'hybrid' ? 'block' : 'none' }}><HybridTaggerTab /></div>
     </div>
   );
 }

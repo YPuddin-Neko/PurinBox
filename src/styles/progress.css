@@ -140,6 +140,10 @@
   color: var(--color-text-tertiary);
 }
 
+.log-entry-icon.warning {
+  color: #fbbf24;
+}
+
 .log-entry-message {
   color: var(--color-text-secondary);
   word-break: break-all;
@@ -152,6 +156,10 @@
 
 .log-entry-message.success {
   color: #a3e635;
+}
+
+.log-entry-message.warning {
+  color: #fbbf24;
 }
 
 .log-entry-new {
@@ -169,4 +177,8 @@
 
 [data-theme="light"] .log-entry:hover {
   background: rgba(0, 0, 0, 0.02);
+}
+
+[data-theme="light"] .log-entry-message.warning {
+  color: #d97706;
 }

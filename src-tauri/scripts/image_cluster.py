@@ -3,49 +3,15 @@
 依赖: torch, torchvision, scikit-learn, (umap-learn for HDBSCAN)
 """
 
-import argparse, json, os, sys, shutil, traceback
+import argparse, os, sys, shutil, traceback
 import numpy as np
 
-# ── JSON 输出 ──────────────────────────────────────
-
-def emit(data):
-    line = json.dumps(data, ensure_ascii=False) + "\n"
-    sys.stdout.buffer.write(line.encode("utf-8"))
-    sys.stdout.buffer.flush()
-
-def emit_log(msg):
-    emit({"type": "log", "message": msg})
-
-def emit_i18n(key, params=None):
-    d = {"type": "log", "i18n_key": key, "message": key}
-    if params:
-        d["i18n_params"] = params
-    emit(d)
-
-def emit_error(msg):
-    emit({"type": "error", "message": msg})
-
-def emit_progress(cur, total, fname, status, msg=""):
-    emit({"type": "progress", "current": cur, "total": total,
-          "filename": fname, "status": status, "message": msg or fname})
-
-def emit_done(msg):
-    emit({"type": "done", "message": msg})
+from purin_proto import (bootstrap, done, error, is_under, log, log_i18n, progress,
+                         replace_atomically)
 
 # ── 图片收集 ──────────────────────────────────────
 
 IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.tif'}
-
-def _is_under(path, parent):
-    if not parent:
-        return False
-    try:
-        # Windows 路径大小写不敏感，必须 normcase 后比对，否则手输的大小写变体会让排除失效
-        p = os.path.normcase(os.path.abspath(path))
-        base = os.path.normcase(os.path.abspath(parent))
-        return os.path.commonpath([p, base]) == base
-    except ValueError:
-        return False
 
 def collect_images(path, recursive=False, excluded_dir=None):
     if os.path.isfile(path):
@@ -55,18 +21,18 @@ def collect_images(path, recursive=False, excluded_dir=None):
         excluded_abs = os.path.abspath(excluded_dir) if excluded_dir else ""
         for root, dirs, names in os.walk(path):
             if excluded_abs:
-                dirs[:] = [d for d in dirs if not _is_under(os.path.join(root, d), excluded_abs)]
+                dirs[:] = [d for d in dirs if not is_under(os.path.join(root, d), excluded_abs)]
             for f in names:
                 ext = os.path.splitext(f)[1].lower()
                 if ext in IMAGE_EXTS:
                     fpath = os.path.join(root, f)
-                    if not _is_under(fpath, excluded_abs):
+                    if not is_under(fpath, excluded_abs):
                         files.append(fpath)
         return sorted(files)
     for f in sorted(os.listdir(path)):
         ext = os.path.splitext(f)[1].lower()
         fpath = os.path.join(path, f)
-        if ext in IMAGE_EXTS and not _is_under(fpath, excluded_dir):
+        if ext in IMAGE_EXTS and not is_under(fpath, excluded_dir):
             files.append(fpath)
     return files
 
@@ -84,35 +50,29 @@ def detect_device():
     from gpu_diagnostics import emit_gpu_report
 
     # 1~4 步：显卡型号 / CUDA / cuDNN 探测与日志（不安装任何东西）
-    if not emit_gpu_report(emit_i18n):
+    if not emit_gpu_report(log_i18n):
         return "cpu"
 
     import torch
 
     # 环境探测通过，再确认 torch 实际能用哪个后端
     if torch.cuda.is_available():
-        emit_i18n("gpu.usingCuda", {"name": torch.cuda.get_device_name(0)})
+        log_i18n("gpu.usingCuda", {"name": torch.cuda.get_device_name(0)})
         return "cuda"
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        emit_i18n("gpu.usingMPS")
+        log_i18n("gpu.usingMPS")
         return "mps"
 
     # 环境齐备但 torch 拿不到后端（如装的是 CPU-only 构建）
-    emit_i18n("gpu.unavailable")
-    emit_i18n("gpu.fallbackCpu")
+    log_i18n("gpu.unavailable")
+    log_i18n("gpu.fallbackCpu")
     return "cpu"
 
 # ── 颜色直方图特征 ──────────────────────────────────────
 
-def extract_color_histogram(img_path, bins=64):
-    """提取 HSV 颜色直方图作为颜色特征"""
-    from PIL import Image
-    try:
-        # PIL 懒解码：截断图片的异常在 resize 时才抛出，必须一并纳入 try
-        img = Image.open(img_path).convert("RGB")
-        img = img.resize((224, 224))
-    except Exception:
-        return None
+def extract_color_histogram(img, bins=64):
+    """提取 HSV 颜色直方图作为颜色特征（img 为已解码的 RGB 图）"""
+    img = img.resize((224, 224))
 
     arr = np.array(img, dtype=np.float32) / 255.0
 
@@ -122,7 +82,6 @@ def extract_color_histogram(img_path, bins=64):
     cmin = np.min(arr, axis=2)
     diff = cmax - cmin + 1e-10
 
-    # Hue
     h = np.zeros_like(cmax)
     mask_r = (cmax == r)
     mask_g = (cmax == g) & ~mask_r
@@ -131,13 +90,10 @@ def extract_color_histogram(img_path, bins=64):
     h[mask_g] = (60 * ((b[mask_g] - r[mask_g]) / diff[mask_g]) + 120) % 360
     h[mask_b] = (60 * ((r[mask_b] - g[mask_b]) / diff[mask_b]) + 240) % 360
 
-    # Saturation
     s = np.where(cmax > 0, diff / (cmax + 1e-10), 0)
 
-    # Value
     v = cmax
 
-    # 计算直方图
     h_hist, _ = np.histogram(h.ravel(), bins=bins, range=(0, 360))
     s_hist, _ = np.histogram(s.ravel(), bins=bins // 2, range=(0, 1))
     v_hist, _ = np.histogram(v.ravel(), bins=bins // 2, range=(0, 1))
@@ -155,29 +111,21 @@ class FeatureExtractor:
 
     def __init__(self, feature_type, device, weights=None):
         """
-        feature_type: "style" | "semantic" | "color" | "fusion"
+        feature_type: "style" | "semantic" | "fusion"
         weights: dict with keys "style", "semantic", "color" (0.0~1.0) for fusion mode
         """
         self.feature_type = feature_type
         self.device = device
         self.weights = weights or {"style": 0.5, "semantic": 0.5, "color": 0.0}
 
-        # 颜色模式不需要 ResNet
-        if feature_type == "color":
-            emit_log("使用颜色直方图特征（无需 GPU）")
-            self.model = None
-            return
-
         import torch
         import torchvision.models as models
         import torchvision.transforms as T
 
-        # 加载预训练 ResNet50
-        emit_log("加载 ResNet50 预训练模型...")
+        log("加载 ResNet50 预训练模型...")
         self.model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
         self.model.eval().to(device)
 
-        # 注册 hook
         self.style_features = []
         self.semantic_feature = None
 
@@ -228,10 +176,6 @@ class FeatureExtractor:
         """提取单张图片特征，返回 numpy 向量"""
         import torch
 
-        # 纯颜色模式
-        if self.feature_type == "color":
-            return extract_color_histogram(img_path)
-
         from PIL import Image
         try:
             # transform 触发实际解码，截断图片的异常必须一并捕获（否则冲到顶层 fatal 整批报废）
@@ -277,9 +221,7 @@ class FeatureExtractor:
             parts.append(vec * w_semantic)
 
         if w_color > 0:
-            color_vec = extract_color_histogram(img_path)
-            if color_vec is not None:
-                parts.append(color_vec * w_color)
+            parts.append(extract_color_histogram(img) * w_color)
 
         if not parts:
             return None
@@ -289,52 +231,47 @@ class FeatureExtractor:
 
 def cluster_kmeans(features, n_clusters):
     from sklearn.cluster import KMeans
-    emit_log(f"K-Means 聚类 (k={n_clusters})...")
+    log(f"K-Means 聚类 (k={n_clusters})...")
     km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
     labels = km.fit_predict(features)
     return labels
 
+def _pca_reduce(features):
+    from sklearn.decomposition import PCA
+    n_components = min(50, features.shape[1], features.shape[0] - 1)
+    if n_components > 0 and features.shape[1] > n_components:
+        features = PCA(n_components=n_components, random_state=42).fit_transform(features)
+        log(f"PCA 降维到 {features.shape[1]} 维")
+    return features
+
+
 def cluster_hdbscan(features, min_cluster_size=5):
     # HDBSCAN 在高维效果差，先用 UMAP 降维
-    emit_log("UMAP 降维中...")
+    log("UMAP 降维中...")
     try:
         from umap import UMAP
     except ImportError:
-        emit_log("umap-learn 未安装，尝试直接高维聚类...")
-        from sklearn.decomposition import PCA
-        if features.shape[1] > 50:
-            pca = PCA(n_components=50, random_state=42)
-            features = pca.fit_transform(features)
-            emit_log(f"PCA 降维到 {features.shape[1]} 维")
+        log("umap-learn 未安装，改用 PCA 降维...")
+        features = _pca_reduce(features)
     else:
         n_components = min(50, features.shape[1], features.shape[0] - 1)
         n_neighbors = min(15, features.shape[0] - 1)  # 不能超过样本数-1
         if n_neighbors < 2 or features.shape[0] < 5:
             # 数据太少，UMAP 无意义，用 PCA
-            emit_log(f"样本数过少 ({features.shape[0]})，改用 PCA 降维")
-            from sklearn.decomposition import PCA
-            n_pca = min(50, features.shape[1], features.shape[0] - 1)
-            if n_pca > 0 and features.shape[1] > n_pca:
-                pca = PCA(n_components=n_pca, random_state=42)
-                features = pca.fit_transform(features)
-                emit_log(f"PCA 降维到 {features.shape[1]} 维")
+            log(f"样本数过少 ({features.shape[0]})，改用 PCA 降维")
+            features = _pca_reduce(features)
         else:
             try:
                 reducer = UMAP(n_components=n_components, n_neighbors=n_neighbors,
                                min_dist=0.1, spread=1.0, random_state=42)
                 features = reducer.fit_transform(features)
-                emit_log(f"UMAP 降维到 {features.shape[1]} 维")
+                log(f"UMAP 降维到 {features.shape[1]} 维")
             except Exception as e:
-                emit_log(f"⚠ UMAP 降维失败: {e}")
-                emit_log("改用 PCA 降维...")
-                from sklearn.decomposition import PCA
-                n_pca = min(50, features.shape[1], features.shape[0] - 1)
-                if n_pca > 0 and features.shape[1] > n_pca:
-                    pca = PCA(n_components=n_pca, random_state=42)
-                    features = pca.fit_transform(features)
-                    emit_log(f"PCA 降维到 {features.shape[1]} 维")
+                log(f"⚠ UMAP 降维失败: {e}")
+                log("改用 PCA 降维...")
+                features = _pca_reduce(features)
 
-    emit_log(f"HDBSCAN 聚类 (min_cluster_size={min_cluster_size})...")
+    log(f"HDBSCAN 聚类 (min_cluster_size={min_cluster_size})...")
     try:
         from sklearn.cluster import HDBSCAN as SkHDBSCAN
         hdb = SkHDBSCAN(min_cluster_size=min_cluster_size)
@@ -348,15 +285,12 @@ def cluster_hdbscan(features, min_cluster_size=5):
 # ── 主流程 ──────────────────────────────────────
 
 def main():
-    # Windows: 注册 CUDA DLL 目录（必须在任何 import torch 之前）
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from cuda_dll_helper import register_cuda_dlls
-    register_cuda_dlls()
+    bootstrap()
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--algorithm", default="kmeans", choices=["kmeans", "hdbscan"])
-    ap.add_argument("--feature", default="semantic", choices=["style", "semantic", "color", "fusion"])
+    ap.add_argument("--feature", default="semantic", choices=["style", "semantic", "fusion"])
     ap.add_argument("--n-clusters", type=int, default=8)
     ap.add_argument("--min-cluster-size", type=int, default=5)
     ap.add_argument("--device", default="auto", choices=["auto", "cpu"])
@@ -372,28 +306,25 @@ def main():
     if args.model_dir:
         os.makedirs(args.model_dir, exist_ok=True)
         os.environ["TORCH_HOME"] = args.model_dir
-        emit_log(f"模型缓存目录: {args.model_dir}")
+        log(f"模型缓存目录: {args.model_dir}")
 
     # 收集图片
     files = collect_images(args.input, args.recursive, args.output)
     if not files:
-        emit_error("未找到图片文件")
+        error("未找到图片文件")
         sys.exit(1)
 
     total = len(files)
-    emit_log(f"找到 {total} 张图片")
-    emit_log(f"算法: {args.algorithm} | 特征: {args.feature}")
+    log(f"找到 {total} 张图片")
+    log(f"算法: {args.algorithm} | 特征: {args.feature}")
 
     if args.feature == "fusion":
-        emit_log(f"融合权重: 风格={args.weight_style:.1f} 语义={args.weight_semantic:.1f} 颜色={args.weight_color:.1f}")
+        log(f"融合权重: 风格={args.weight_style:.1f} 语义={args.weight_semantic:.1f} 颜色={args.weight_color:.1f}")
 
     # 检测设备
-    if args.device == "cpu" or args.feature == "color":
+    if args.device == "cpu":
         device = "cpu"
-        if args.feature == "color":
-            emit_log("颜色特征不需要 GPU")
-        else:
-            emit_log("使用 CPU 推理")
+        log("使用 CPU 推理")
     else:
         device = detect_device()
 
@@ -403,34 +334,36 @@ def main():
 
     features = []
     valid_files = []
+    errors = []
     # 总步数（统一口径，从一开始固定，避免中途变化导致前端进度跳变）:
     # 提取 total 步 + 聚类 1 步 + 分布图 1 步 + 复制文件(按 total 估算) 步
     phase_total = total * 2 + 2
 
     for i, fpath in enumerate(files):
         fname = os.path.basename(fpath)
-        emit_progress(i + 1, phase_total, fname, "processing", f"[{i+1}/{total}] 提取特征: {fname}")
+        progress(i + 1, phase_total, fname, "processing", f"[{i+1}/{total}] 提取特征: {fname}")
 
         vec = extractor.extract(fpath)
         if vec is not None:
             features.append(vec)
             valid_files.append(fpath)
         else:
-            emit_progress(i + 1, phase_total, fname, "error", f"[{i+1}/{total}] ✗ 无法读取: {fname}")
+            message = f"[{i+1}/{total}] ✗ 无法读取: {fname}"
+            errors.append(message)
+            progress(i + 1, phase_total, fname, "error", message)
 
     if len(valid_files) < 2:
-        emit_error("有效图片不足 2 张，无法聚类")
+        error("有效图片不足 2 张，无法聚类")
         sys.exit(1)
 
     features = np.array(features)
-    emit_log(f"特征维度: {features.shape[1]}，有效图片: {len(valid_files)}")
+    log(f"特征维度: {features.shape[1]}，有效图片: {len(valid_files)}")
 
-    # phase_total 在开始时已按统一口径固定，这里不再变更，避免进度跳变
     step = total  # 当前步骤：提取已完成 total 步
 
     # 聚类
     step += 1
-    emit_progress(step, phase_total, "", "processing", "聚类计算中...")
+    progress(step, phase_total, "", "processing", "聚类计算中...")
     if args.algorithm == "kmeans":
         k = min(args.n_clusters, len(valid_files))
         labels = cluster_kmeans(features, k)
@@ -441,7 +374,7 @@ def main():
         n_valid_clusters = len([l for l in set(labels) if l >= 0])
         if n_valid_clusters == 0:
             fallback_k = max(2, min(8, len(valid_files) // 3))
-            emit_log(f"⚠ HDBSCAN 未找到有效分组（可能数据量太少），自动切换 K-Means (k={fallback_k})")
+            log(f"⚠ HDBSCAN 未找到有效分组（可能数据量太少），自动切换 K-Means (k={fallback_k})")
             labels = cluster_kmeans(features, fallback_k)
 
     # 统计各簇
@@ -449,30 +382,28 @@ def main():
     n_clusters = len([l for l in unique_labels if l >= 0])
     n_noise = sum(1 for l in labels if l < 0)
 
-    emit_log(f"聚类完成: {n_clusters} 个分组" + (f", {n_noise} 个噪声点" if n_noise > 0 else ""))
+    log(f"聚类完成: {n_clusters} 个分组" + (f", {n_noise} 个噪声点" if n_noise > 0 else ""))
 
     for label in unique_labels:
         count = sum(1 for l in labels if l == label)
         name = f"noise" if label < 0 else f"cluster_{label}"
-        emit_log(f"  {name}: {count} 张")
+        log(f"  {name}: {count} 张")
 
     # 生成聚类分布图
     step += 1
-    emit_progress(step, phase_total, "", "processing", "生成聚类分布图...")
+    progress(step, phase_total, "", "processing", "生成聚类分布图...")
     try:
         generate_distribution_map(features, labels, valid_files, args.output, theme=args.map_theme)
-        emit_log("✓ 聚类分布图已保存")
+        log("✓ 聚类分布图已保存")
     except Exception as e:
-        emit_log(f"⚠ 分布图生成失败: {traceback.format_exc()}")
+        log(f"⚠ 分布图生成失败: {traceback.format_exc()}")
 
     # 复制文件到输出目录
-    emit_log("复制文件到分组目录...")
+    log("复制文件到分组目录...")
     os.makedirs(args.output, exist_ok=True)
 
     success_count = 0
     fail_count = 0
-    errors = []
-
     for i, (fpath, label) in enumerate(zip(valid_files, labels)):
         fname = os.path.basename(fpath)
         folder_name = "noise" if label < 0 else f"cluster_{label}"
@@ -485,26 +416,22 @@ def main():
 
         step += 1
         try:
-            tmp_dest = dest_path + ".tmp"
-            shutil.copy2(fpath, tmp_dest)
-            os.replace(tmp_dest, dest_path)
+            replace_atomically(dest_path, lambda tmp: shutil.copy2(fpath, tmp))
             success_count += 1
-            emit_progress(step, phase_total, fname, "success",
-                          f"[{i+1}/{len(valid_files)}] ✓ {fname} → {folder_name}/")
+            progress(step, phase_total, fname, "success",
+                     f"[{i+1}/{len(valid_files)}] ✓ {fname} → {folder_name}/")
         except Exception as e:
             fail_count += 1
             err_msg = f"{fname}: {e}"
             errors.append(err_msg)
-            emit_progress(step, phase_total, fname, "error",
-                          f"[{i+1}/{len(valid_files)}] ✗ {err_msg}")
+            progress(step, phase_total, fname, "error",
+                     f"[{i+1}/{len(valid_files)}] ✗ {err_msg}")
 
-    emit_done(f"完成: {n_clusters} 个分组, 成功 {success_count}, 失败 {fail_count}, 共 {len(valid_files)}")
-
-    # 统计并入提取阶段的失败数，否则 result 行会把不可读文件从最终统计里抹掉
+    # 提取失败也计入最终结果。
     extract_failed = total - len(valid_files)
-    emit({"type": "result", "success_count": success_count,
-          "fail_count": fail_count + extract_failed,
-          "total": total, "n_clusters": n_clusters, "errors": errors})
+    done(message=f"完成: {n_clusters} 个分组, 成功 {success_count}, 失败 {fail_count + extract_failed}, 共 {total}",
+         success_count=success_count, fail_count=fail_count + extract_failed,
+         total=total, errors=errors)
 
 
 def generate_distribution_map(features, labels, file_paths, output_dir, theme="light"):
@@ -539,7 +466,7 @@ def generate_distribution_map(features, labels, file_paths, output_dir, theme="l
                 # sklearn >= 1.5 使用 max_iter（n_iter 在 1.7 已移除）
                 tsne = TSNE(max_iter=1000, **tsne_kwargs)
             except TypeError:
-                emit_log("当前 sklearn 版本不支持 max_iter，回退使用 n_iter 参数")
+                log("当前 sklearn 版本不支持 max_iter，回退使用 n_iter 参数")
                 tsne = TSNE(n_iter=1000, **tsne_kwargs)
             coords_2d = tsne.fit_transform(features)
     except Exception:
@@ -729,12 +656,12 @@ def generate_distribution_map(features, labels, file_paths, output_dir, theme="l
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, "cluster_distribution.png")
     canvas.save(out_path)  # PNG 无 quality 参数
-    emit_log(f"分布图: {out_path}")
+    log(f"分布图: {out_path}")
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        emit_error(f"致命错误: {traceback.format_exc()}")
+        error(f"致命错误: {traceback.format_exc()}")
         sys.exit(1)

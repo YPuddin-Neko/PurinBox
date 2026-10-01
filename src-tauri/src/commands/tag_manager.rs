@@ -1,17 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-const SUPPORTED_IMAGE_EXTS: [&str; 8] = ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"];
-
-fn is_supported_image(path: &Path) -> bool {
-    path.extension()
-        .map(|e| {
-            let ext = e.to_string_lossy().to_lowercase();
-            SUPPORTED_IMAGE_EXTS.contains(&ext.as_str())
-        })
-        .unwrap_or(false)
-}
-
 fn image_display_name(root: &Path, path: &Path, recursive: bool) -> String {
     if recursive {
         if let Ok(relative) = path.strip_prefix(root) {
@@ -24,27 +13,51 @@ fn image_display_name(root: &Path, path: &Path, recursive: bool) -> String {
         .to_string()
 }
 
-fn collect_dataset_images(dir: &Path, recursive: bool) -> Vec<PathBuf> {
-    let walker = if recursive {
-        walkdir::WalkDir::new(dir)
-    } else {
-        walkdir::WalkDir::new(dir).max_depth(1)
-    };
-    let mut images: Vec<PathBuf> = walker
-        .into_iter()
-        // 失败图副本不进标签编辑器列表，否则同一张图会重复出现
-        .filter_entry(|e| !crate::commands::is_prunable_artifact_dir(e))
-        .filter_map(|e| e.ok())
-        .map(|entry| entry.into_path())
-        .filter(|p| p.is_file() && is_supported_image(p))
-        .collect();
-
-    if recursive {
-        images.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
-    } else {
-        images.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+/// 校验目录后扫描数据集图片，按扫描顺序把 (图片路径, 显示名) 交给 `make` 生成条目。
+/// 失败图副本目录在收集时已剪掉，同一张图不会在编辑器列表里出现两次
+fn scan_dataset<T>(
+    folder: &str,
+    recursive: Option<bool>,
+    mut make: impl FnMut(PathBuf, String) -> T,
+) -> Result<Vec<T>, String> {
+    let dir = Path::new(folder);
+    if !dir.is_dir() {
+        return Err(format!("目录不存在: {}", folder));
     }
-    images
+    let recursive = recursive.unwrap_or(false);
+    Ok(super::collect_image_files_with_recursive(dir, recursive)?
+        .into_iter()
+        .map(|p| {
+            let filename = image_display_name(dir, &p, recursive);
+            make(p, filename)
+        })
+        .collect())
+}
+
+/// 写与图片同名、换了扩展名的旁路文件
+fn write_sidecar(image: &Path, ext: &str, content: &str) -> Result<(), String> {
+    let path = image.with_extension(ext);
+    std::fs::write(&path, content).map_err(|e| format!("写入失败 {}: {}", path.display(), e))
+}
+
+fn existing_image(image_path: &str) -> Result<&Path, String> {
+    let img = Path::new(image_path);
+    if !img.exists() {
+        return Err(format!("图片不存在: {}", image_path));
+    }
+    Ok(img)
+}
+
+/// 批量保存：单个失败只打日志、不中断，返回成功数
+fn save_each<T>(items: &[T], mut save: impl FnMut(&T) -> Result<(), String>) -> u32 {
+    let mut saved = 0u32;
+    for item in items {
+        match save(item) {
+            Ok(()) => saved += 1,
+            Err(e) => eprintln!("{}", e),
+        }
+    }
+    saved
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,7 +69,6 @@ pub struct TagImageItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TagDataset {
-    pub folder: String,
     pub images: Vec<TagImageItem>,
 }
 
@@ -69,46 +81,25 @@ pub struct SaveTagItem {
 /// 加载标签数据集：扫描文件夹中的图片，读取对应 .txt 文件的标签
 #[tauri::command]
 pub fn load_tag_dataset(folder: String, recursive: Option<bool>) -> Result<TagDataset, String> {
-    let dir = Path::new(&folder);
-    if !dir.exists() || !dir.is_dir() {
-        return Err(format!("目录不存在: {}", folder));
-    }
-
-    let recursive = recursive.unwrap_or(false);
-    let mut images: Vec<TagImageItem> = Vec::new();
-
-    for p in collect_dataset_images(dir, recursive) {
-        let filename = image_display_name(dir, &p, recursive);
-
-        // 读取对应 .txt 文件
-        let txt_path = p.with_extension("txt");
-        let tags = if txt_path.exists() {
-            match std::fs::read_to_string(&txt_path) {
-                Ok(content) => content
+    let images = scan_dataset(&folder, recursive, |p, filename| {
+        let tags = std::fs::read_to_string(p.with_extension("txt"))
+            .map(|content| {
+                content
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .collect(),
-                Err(_) => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        };
-
-        images.push(TagImageItem {
+                    .collect()
+            })
+            .unwrap_or_default();
+        TagImageItem {
             path: p.to_string_lossy().to_string(),
             filename,
             tags,
-        });
-    }
-
-    Ok(TagDataset {
-        folder: folder.clone(),
-        images,
-    })
+        }
+    })?;
+    Ok(TagDataset { images })
 }
 
-/// 自然语言描述数据集加载（读取原始文本，不按逗号分割）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptionImageItem {
     pub path: String,
@@ -118,84 +109,41 @@ pub struct CaptionImageItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptionDataset {
-    pub folder: String,
     pub images: Vec<CaptionImageItem>,
 }
 
+/// 自然语言描述数据集加载（读取原始文本，不按逗号分割）
 #[tauri::command]
 pub fn load_caption_dataset(
     folder: String,
     recursive: Option<bool>,
 ) -> Result<CaptionDataset, String> {
-    let dir = Path::new(&folder);
-    if !dir.exists() || !dir.is_dir() {
-        return Err(format!("目录不存在: {}", folder));
-    }
-
-    let recursive = recursive.unwrap_or(false);
-    let mut images: Vec<CaptionImageItem> = Vec::new();
-
-    for p in collect_dataset_images(dir, recursive) {
-        let filename = image_display_name(dir, &p, recursive);
-        let txt_path = p.with_extension("txt");
-        let caption = if txt_path.exists() {
-            std::fs::read_to_string(&txt_path).unwrap_or_default()
-        } else {
-            String::new()
-        };
-
-        images.push(CaptionImageItem {
-            path: p.to_string_lossy().to_string(),
-            filename,
-            caption,
-        });
-    }
-
-    Ok(CaptionDataset { folder, images })
+    let images = scan_dataset(&folder, recursive, |p, filename| CaptionImageItem {
+        caption: std::fs::read_to_string(p.with_extension("txt")).unwrap_or_default(),
+        path: p.to_string_lossy().to_string(),
+        filename,
+    })?;
+    Ok(CaptionDataset { images })
 }
 
 /// 保存单个图片的标签到 .txt 文件
 #[tauri::command]
 pub fn save_single_tag_file(image_path: String, tags: Vec<String>) -> Result<(), String> {
-    let img = Path::new(&image_path);
-    if !img.exists() {
-        return Err(format!("图片不存在: {}", image_path));
-    }
-    let txt_path = img.with_extension("txt");
-    let content = tags.join(", ");
-    std::fs::write(&txt_path, &content)
-        .map_err(|e| format!("写入失败 {}: {}", txt_path.display(), e))?;
-    Ok(())
+    save_caption_file(image_path, tags.join(", "))
 }
 
 /// 批量保存多个图片的标签
 #[tauri::command]
 pub fn save_all_tag_files(items: Vec<SaveTagItem>) -> Result<u32, String> {
-    let mut saved = 0u32;
-    for item in &items {
-        let img = Path::new(&item.path);
-        let txt_path = img.with_extension("txt");
-        let content = item.tags.join(", ");
-        if let Err(e) = std::fs::write(&txt_path, &content) {
-            eprintln!("保存失败 {}: {}", txt_path.display(), e);
-            continue;
-        }
-        saved += 1;
-    }
-    Ok(saved)
+    Ok(save_each(&items, |item| {
+        write_sidecar(Path::new(&item.path), "txt", &item.tags.join(", "))
+    }))
 }
 
 /// 保存单个图片的自然语言描述到 .txt 文件
 #[tauri::command]
 pub fn save_caption_file(image_path: String, content: String) -> Result<(), String> {
-    let img = Path::new(&image_path);
-    if !img.exists() {
-        return Err(format!("图片不存在: {}", image_path));
-    }
-    let txt_path = img.with_extension("txt");
-    std::fs::write(&txt_path, &content)
-        .map_err(|e| format!("写入失败 {}: {}", txt_path.display(), e))?;
-    Ok(())
+    write_sidecar(existing_image(&image_path)?, "txt", &content)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,17 +155,9 @@ pub struct SaveCaptionItem {
 /// 批量保存多个图片的自然语言描述
 #[tauri::command]
 pub fn save_all_caption_files(items: Vec<SaveCaptionItem>) -> Result<u32, String> {
-    let mut saved = 0u32;
-    for item in &items {
-        let img = Path::new(&item.path);
-        let txt_path = img.with_extension("txt");
-        if let Err(e) = std::fs::write(&txt_path, &item.content) {
-            eprintln!("保存失败 {}: {}", txt_path.display(), e);
-            continue;
-        }
-        saved += 1;
-    }
-    Ok(saved)
+    Ok(save_each(&items, |item| {
+        write_sidecar(Path::new(&item.path), "txt", &item.content)
+    }))
 }
 
 // ============================================================
@@ -225,10 +165,7 @@ pub fn save_all_caption_files(items: Vec<SaveCaptionItem>) -> Result<u32, String
 // ============================================================
 
 /// 空 Option 字段序列化为 "" 占位：完整 schema 恒定输出，没有数据也不省略键
-fn ser_opt_str_as_empty<S: serde::Serializer>(
-    v: &Option<String>,
-    s: S,
-) -> Result<S::Ok, S::Error> {
+fn ser_opt_str_as_empty<S: serde::Serializer>(v: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(v.as_deref().unwrap_or(""))
 }
 
@@ -345,7 +282,6 @@ pub struct JsonImageItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonDataset {
-    pub folder: String,
     pub images: Vec<JsonImageItem>,
     /// "full" | "simplified" | "unknown"
     pub detected_format: String,
@@ -354,119 +290,93 @@ pub struct JsonDataset {
 /// 加载 JSON 标签数据集
 #[tauri::command]
 pub fn load_json_dataset(folder: String, recursive: Option<bool>) -> Result<JsonDataset, String> {
-    let dir = Path::new(&folder);
-    if !dir.exists() || !dir.is_dir() {
-        return Err(format!("目录不存在: {}", folder));
-    }
-
-    let recursive = recursive.unwrap_or(false);
-    let mut images: Vec<JsonImageItem> = Vec::new();
-    let mut detected_format = "unknown".to_string();
-
-    for p in collect_dataset_images(dir, recursive) {
-        let filename = image_display_name(dir, &p, recursive);
-        let json_path = p.with_extension("json");
-
-        let (data, has_json, fmt, parse_failed) = if json_path.exists() {
-            match std::fs::read_to_string(&json_path) {
-                Ok(content) => {
-                    let is_full = is_full_format(&content);
-
-                    if is_full {
-                        match serde_json::from_str::<JsonTagData>(&content) {
-                            Ok(d) => (d, true, "full", false),
-                            Err(_) => (JsonTagData::default(), true, "unknown", true),
-                        }
-                    } else {
-                        match parse_simplified_format(&content) {
-                            Some(d) => (d, true, "simplified", false),
-                            None => (JsonTagData::default(), true, "unknown", true),
-                        }
-                    }
+    let mut detected_format = "unknown";
+    let images = scan_dataset(&folder, recursive, |p, filename| {
+        let (data, has_json, fmt, parse_failed) =
+            match std::fs::read_to_string(p.with_extension("json")) {
+                Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(v) if is_full_json(&v) => match serde_json::from_value::<JsonTagData>(v) {
+                        Ok(d) => (d, true, "full", false),
+                        Err(_) => (JsonTagData::default(), true, "unknown", true),
+                    },
+                    Ok(v) => match parse_simplified_format(&v) {
+                        Some(d) => (d, true, "simplified", false),
+                        None => (JsonTagData::default(), true, "unknown", true),
+                    },
+                    Err(_) => (JsonTagData::default(), true, "unknown", true),
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    (JsonTagData::default(), false, "unknown", false)
                 }
                 // 文件存在但读不了：同样按解析失败保护，避免空数据反写覆盖
                 Err(_) => (JsonTagData::default(), false, "unknown", true),
-            }
-        } else {
-            (JsonTagData::default(), false, "unknown", false)
-        };
+            };
 
         if has_json && detected_format == "unknown" {
-            detected_format = fmt.to_string();
+            detected_format = fmt;
         }
 
-        images.push(JsonImageItem {
+        JsonImageItem {
             path: p.to_string_lossy().to_string(),
             filename,
             data,
             has_json,
             parse_failed,
-        });
-    }
+        }
+    })?;
 
     Ok(JsonDataset {
-        folder,
         images,
-        detected_format,
+        detected_format: detected_format.to_string(),
     })
 }
 
-/// 判断 JSON 内容是否为完整格式（顶层含结构化字段）。
+/// 判断 JSON 是否为完整格式（顶层含结构化字段）。
 /// 完整格式的 character 是对象 {name, variant, ...}；简化格式顶层 character 是字符串，
 /// 含同名字符串键不算完整格式
-fn is_full_format(content: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(content) else {
-        return false;
-    };
-    let Some(o) = v.as_object() else {
-        return false;
-    };
-    o.contains_key("ai_output")
-        || o.contains_key("fixed")
-        || o.contains_key("from_path")
-        || matches!(o.get("character"), Some(serde_json::Value::Object(_)))
+pub(crate) fn is_full_json(v: &serde_json::Value) -> bool {
+    ["ai_output", "fixed", "from_path", "character"]
+        .iter()
+        .any(|key| v.get(key).is_some_and(serde_json::Value::is_object))
+}
+
+#[test]
+fn full_json_requires_structured_fields() {
+    for key in ["ai_output", "fixed", "from_path", "character"] {
+        assert!(!is_full_json(&serde_json::json!({key: "text"})));
+        assert!(!is_full_json(&serde_json::json!({key: null})));
+        assert!(!is_full_json(&serde_json::json!({key: []})));
+        assert!(is_full_json(&serde_json::json!({key: {}})));
+    }
 }
 
 /// 解析简化格式 JSON（扁平结构）转为完整格式
-fn parse_simplified_format(content: &str) -> Option<JsonTagData> {
-    let v: serde_json::Value = serde_json::from_str(content).ok()?;
+fn parse_simplified_format(v: &serde_json::Value) -> Option<JsonTagData> {
     let obj = v.as_object()?;
+    let text = |key: &str| obj.get(key).and_then(|v| v.as_str()).map(str::to_string);
 
-    let mut data = JsonTagData::default();
-
-    // fixed
-    data.fixed.quality = obj
-        .get("quality")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    data.fixed.series = obj
-        .get("series")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    data.fixed.artist = obj
-        .get("artist")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    // character — 简化格式中是 string
-    if let Some(ch) = obj.get("character").and_then(|v| v.as_str()) {
-        data.character.name = ch.to_string();
-    }
-
-    // ai_output 扁平字段
-    data.ai_output.count = obj
-        .get("count")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    data.ai_output.appearance = extract_string_array(obj.get("appearance"));
-    data.ai_output.tags = extract_string_array(obj.get("tags"));
-    data.ai_output.environment = extract_string_array(obj.get("environment"));
-    data.ai_output.nl = obj
-        .get("nl")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    Some(data)
+    Some(JsonTagData {
+        fixed: JsonFixed {
+            quality: text("quality"),
+            series: text("series"),
+            artist: text("artist"),
+            ..Default::default()
+        },
+        // character — 简化格式中是 string
+        character: JsonCharacter {
+            name: text("character").unwrap_or_default(),
+            ..Default::default()
+        },
+        ai_output: JsonAiOutput {
+            count: text("count"),
+            appearance: extract_string_array(obj.get("appearance")),
+            tags: extract_string_array(obj.get("tags")),
+            environment: extract_string_array(obj.get("environment")),
+            nl: text("nl"),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
 }
 
 fn extract_string_array(v: Option<&serde_json::Value>) -> Vec<String> {
@@ -493,17 +403,9 @@ pub struct SaveJsonItem {
 
 /// 将完整格式转为简化格式 JSON Value（9 个键恒定输出，空值占位不省略）
 fn to_simplified(data: &JsonTagData) -> serde_json::Value {
-    fn str_arr(items: &[String]) -> serde_json::Value {
-        serde_json::Value::Array(
-            items
-                .iter()
-                .map(|s| serde_json::Value::String(s.clone()))
-                .collect(),
-        )
+    fn s(v: &Option<String>) -> &str {
+        v.as_deref().unwrap_or("")
     }
-    let opt_str = |v: &Option<String>| {
-        serde_json::Value::String(v.clone().unwrap_or_default())
-    };
 
     // from_path.appearance 与 ai_output.appearance 合并（简化格式无 from_path 字段）
     let mut appearance: Vec<String> = data.from_path.appearance.clone();
@@ -513,20 +415,17 @@ fn to_simplified(data: &JsonTagData) -> serde_json::Value {
         }
     }
 
-    let mut out = serde_json::Map::new();
-    out.insert("quality".into(), opt_str(&data.fixed.quality));
-    out.insert("series".into(), opt_str(&data.fixed.series));
-    out.insert("artist".into(), opt_str(&data.fixed.artist));
-    out.insert(
-        "character".into(),
-        serde_json::Value::String(data.character.name.clone()),
-    );
-    out.insert("count".into(), opt_str(&data.ai_output.count));
-    out.insert("appearance".into(), str_arr(&appearance));
-    out.insert("tags".into(), str_arr(&data.ai_output.tags));
-    out.insert("environment".into(), str_arr(&data.ai_output.environment));
-    out.insert("nl".into(), opt_str(&data.ai_output.nl));
-    serde_json::Value::Object(out)
+    serde_json::json!({
+        "quality": s(&data.fixed.quality),
+        "series": s(&data.fixed.series),
+        "artist": s(&data.fixed.artist),
+        "character": data.character.name,
+        "count": s(&data.ai_output.count),
+        "appearance": appearance,
+        "tags": data.ai_output.tags,
+        "environment": data.ai_output.environment,
+        "nl": s(&data.ai_output.nl),
+    })
 }
 
 fn serialize_json(data: &JsonTagData, simplified: bool) -> Result<String, String> {
@@ -544,44 +443,23 @@ pub fn save_single_json_file(
     data: JsonTagData,
     simplified: bool,
 ) -> Result<(), String> {
-    let img = Path::new(&image_path);
-    if !img.exists() {
-        return Err(format!("图片不存在: {}", image_path));
-    }
-    let json_path = img.with_extension("json");
-    let content = serialize_json(&data, simplified)?;
-    std::fs::write(&json_path, &content)
-        .map_err(|e| format!("写入失败 {}: {}", json_path.display(), e))?;
-    Ok(())
+    let img = existing_image(&image_path)?;
+    write_sidecar(img, "json", &serialize_json(&data, simplified)?)
 }
 
 #[tauri::command]
 pub fn save_all_json_files(items: Vec<SaveJsonItem>, simplified: bool) -> Result<u32, String> {
-    let mut saved = 0u32;
-    for item in &items {
-        let img = Path::new(&item.path);
-        let json_path = img.with_extension("json");
-        let content = match serialize_json(&item.data, simplified) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("{}", e);
-                continue;
-            }
-        };
-        if let Err(e) = std::fs::write(&json_path, &content) {
-            eprintln!("保存失败 {}: {}", json_path.display(), e);
-            continue;
-        }
-        saved += 1;
-    }
-    Ok(saved)
+    Ok(save_each(&items, |item| {
+        let content = serialize_json(&item.data, simplified)?;
+        write_sidecar(Path::new(&item.path), "json", &content)
+    }))
 }
 
 #[cfg(test)]
 mod json_extra_tests {
     use super::*;
 
-    /// schema 外字段必须原样往返：整文件重写曾经会把用户自定义字段静默丢掉
+    /// schema 外字段必须原样往返：整文件重写不能把用户自定义字段丢掉
     #[test]
     fn full_json_roundtrip_preserves_unknown_fields() {
         let raw = r#"{
@@ -605,7 +483,32 @@ mod json_extra_tests {
         assert_eq!(v["ai_output"]["tags"][0], "1girl");
     }
 
-    /// 完整 schema 恒定输出：没有数据的字段以空值占位，不省略键（nl 等曾被丢弃）
+    /// 加载时先解析成 Value 再 from_value，结果必须与直接 from_str 一致
+    /// （未知字段、null 数组、逗号串数组都要原样处理）
+    #[test]
+    fn from_value_matches_from_str() {
+        let raw = r#"{
+            "fixed": {"quality": "masterpiece", "custom_note": "keep me"},
+            "character": {"name": "miku", "variant": "winter", "age": 16},
+            "from_path": {"appearance": "blue hair, twintails"},
+            "ai_output": {"appearance": null, "tags": ["1girl"], "nl": null, "rating": "safe"},
+            "my_extension": {"a": [1, 2.5, "x"]}
+        }"#;
+        let via_str: JsonTagData = serde_json::from_str(raw).unwrap();
+        let value: serde_json::Value = serde_json::from_str(raw).unwrap();
+        assert!(is_full_json(&value));
+        let via_value: JsonTagData = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            serde_json::to_string(&via_value).unwrap(),
+            serde_json::to_string(&via_str).unwrap()
+        );
+        assert_eq!(
+            via_value.from_path.appearance,
+            vec!["blue hair".to_string(), "twintails".to_string()]
+        );
+    }
+
+    /// 完整 schema 恒定输出：没有数据的字段以空值占位，不省略键
     #[test]
     fn full_json_serializes_complete_schema_with_empty_placeholders() {
         let out = serde_json::to_string(&JsonTagData::default()).unwrap();
@@ -645,6 +548,48 @@ mod json_extra_tests {
         assert_eq!(v["tags"], serde_json::json!([]));
     }
 
+    /// 简化格式的键顺序固定，from_path.appearance 并入 appearance 且去重
+    #[test]
+    fn simplified_json_keeps_key_order_and_merges_appearance() {
+        let raw = r#"{
+            "fixed": {"quality": "masterpiece", "artist": "@wlop"},
+            "character": {"name": "miku", "variant": "winter"},
+            "from_path": {"appearance": ["twintails", "blue hair"]},
+            "ai_output": {"count": "1girl", "appearance": ["blue hair", "smile"],
+                          "tags": ["standing"], "environment": ["outdoors"], "nl": "A girl."}
+        }"#;
+        let data: JsonTagData = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            serde_json::to_string(&to_simplified(&data)).unwrap(),
+            r#"{"quality":"masterpiece","series":"","artist":"@wlop","character":"miku","count":"1girl","appearance":["twintails","blue hair","smile"],"tags":["standing"],"environment":["outdoors"],"nl":"A girl."}"#
+        );
+    }
+
+    /// 简化格式读入：字符串字段原样取，数组字段兼容逗号串
+    #[test]
+    fn simplified_format_parses_flat_fields() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"quality": "best", "character": "miku", "count": "1girl",
+                "appearance": "long hair, blue eyes", "tags": ["smile"], "nl": "desc"}"#,
+        )
+        .unwrap();
+        assert!(!is_full_json(&v));
+        let data = parse_simplified_format(&v).unwrap();
+        assert_eq!(data.fixed.quality.as_deref(), Some("best"));
+        assert_eq!(data.fixed.series, None);
+        assert_eq!(data.character.name, "miku");
+        assert_eq!(data.ai_output.count.as_deref(), Some("1girl"));
+        assert_eq!(
+            data.ai_output.appearance,
+            vec!["long hair".to_string(), "blue eyes".to_string()]
+        );
+        assert_eq!(data.ai_output.tags, vec!["smile".to_string()]);
+        assert!(data.ai_output.environment.is_empty());
+        assert_eq!(data.ai_output.nl.as_deref(), Some("desc"));
+        // 顶层不是对象的不算简化格式
+        assert!(parse_simplified_format(&serde_json::json!(["a"])).is_none());
+    }
+
     /// null 数组字段视为空，不拖垮整个文件解析
     #[test]
     fn null_array_fields_parse_as_empty() {
@@ -663,12 +608,13 @@ mod json_extra_tests {
     /// character 对象按完整格式识别；同名字符串键仍是简化格式
     #[test]
     fn character_object_detected_as_full_format() {
-        assert!(is_full_format(
-            r#"{"character": {"name": "hakurei reimu", "variant": ""}}"#
-        ));
-        assert!(!is_full_format(
-            r#"{"character": "hakurei reimu", "tags": ["1girl"]}"#
-        ));
+        let full: serde_json::Value =
+            serde_json::from_str(r#"{"character": {"name": "hakurei reimu", "variant": ""}}"#)
+                .unwrap();
+        assert!(is_full_json(&full));
+        let simplified: serde_json::Value =
+            serde_json::from_str(r#"{"character": "hakurei reimu", "tags": ["1girl"]}"#).unwrap();
+        assert!(!is_full_json(&simplified));
 
         // 角色对象能按完整结构解析保留
         let data: JsonTagData = serde_json::from_str(

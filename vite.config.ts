@@ -42,7 +42,6 @@ export default defineConfig(async () => ({
             if (id.includes('@tauri-apps')) return 'vendor-tauri';
             return 'vendor';
           }
-          // 按页面拆分 locale 文件
           if (id.includes('/i18n/locales/')) return 'locales';
         },
       },

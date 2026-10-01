@@ -2,11 +2,9 @@ import packageJson from '../../package.json';
 
 export const packageAppVersion = packageJson.version || '0.0.0';
 
-export async function getAppVersion() {
-  try {
-    const { getVersion } = await import('@tauri-apps/api/app');
-    return await getVersion();
-  } catch {
-    return packageAppVersion;
-  }
+/** check_for_updates 的返回值中前端用到的字段 */
+export interface UpdateCheckResult {
+  has_update: boolean;
+  latest_version: string;
+  release_url: string;
 }

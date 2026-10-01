@@ -1,42 +1,27 @@
-import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
-import { open } from '@tauri-apps/plugin-dialog';
-import { useTaskQueue } from '../components/TaskContext';
-import { useTranslation } from 'react-i18next';
 import {
   ArrowDown,
   ArrowLeft,
   ArrowRight,
   ArrowUp,
-  Crosshair,
   Crop,
-  FolderOpen,
+  Crosshair,
+  Info,
   Maximize2,
   RatioIcon,
   Scaling,
-  Scissors,
-  Info,
+  Scissors
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { CropOptions } from '../api/commandOptions';
 import ProcessButton from '../components/ProcessButton';
-import RecursiveScanToggle from '../components/RecursiveScanToggle';
-import InputPathPickerButton from '../components/InputPathPickerButton';
-
-interface ProcessResult {
-  success_count: number;
-  fail_count: number;
-  total: number;
-  errors: string[];
-}
-
-interface ProgressPayload {
-  current: number;
-  total: number;
-  filename: string;
-  status: string;
-  message: string;
-}
+import ProgressLog from '../components/ProgressLog';
+import ChoiceCard from '../components/ui/ChoiceCard';
+import NumberInput from '../components/ui/NumberInput';
+import PageHeader from '../components/ui/PageHeader';
+import PathFields from '../components/ui/PathFields';
+import { useBatchTask, type ProcessResult } from '../hooks/useBatchTask';
 
 const PRESETS = [
   { label: '1:1', w: 1, h: 1 },
@@ -51,126 +36,48 @@ type CropAnchor = 'center' | 'top' | 'bottom' | 'left' | 'right';
 
 export default function CropPage() {
   const { t } = useTranslation();
+  const task = useBatchTask({ event: 'crop-progress', taskId: 'crop' });
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
   const [mode, setMode] = useState<'center' | 'cover' | 'aspect' | 'edges'>('center');
   const [cropAnchor, setCropAnchor] = useState<CropAnchor>('center');
-  // center crop
   const [centerW, setCenterW] = useState(1024);
   const [centerH, setCenterH] = useState(1024);
-  // aspect ratio crop
   const [ratioW, setRatioW] = useState(1);
   const [ratioH, setRatioH] = useState(1);
-  // edges crop
   const [cropTop, setCropTop] = useState(0);
   const [cropBottom, setCropBottom] = useState(0);
   const [cropLeft, setCropLeft] = useState(0);
   const [cropRight, setCropRight] = useState(0);
-  // process state
-  const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressCurrent, setProgressCurrent] = useState(0);
-  const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasError, setHasError] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    const p = listen<ProgressPayload>('crop-progress', (event) => {
-      if (!active) return;
-      const p = event.payload;
-      setProgressCurrent(p.current);
-      setProgressTotal(p.total);
-      if (p.total > 0) setProgress((p.current / p.total) * 100);
-      if (p.status === 'done') setIsDone(true);
-      if (p.status === 'error') setHasError(true);
-      if (p.status !== 'processing') {
-        setLogs((prev) => [...prev, {
-          time: getTimeStr(),
-          message: p.message,
-          status: p.status === 'done' ? 'info' : p.status as LogEntry['status'],
-        }]);
-      }
-    });
-    return () => { active = false; p.then(fn => fn()); };
-  }, []);
+  const handleProcess = () => {
 
-  const selectOutputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') });
-    if (selected) setOutputPath(selected as string);
-  };
-
-  const { addTask, updateTask } = useTaskQueue();
-
-  const handleProcess = async () => {
-    if (!inputPath || !outputPath) return;
-    // 提交前规范数字参数。
-    const num = (v: number, fallback: number, min: number) => (Number.isFinite(v) && v >= min ? v : fallback);
-    const cw = num(centerW, 1024, 1), ch = num(centerH, 1024, 1);
-    const rw = num(ratioW, 1, 1), rh = num(ratioH, 1, 1);
-    const cTop = num(cropTop, 0, 0), cBottom = num(cropBottom, 0, 0), cLeft = num(cropLeft, 0, 0), cRight = num(cropRight, 0, 0);
-    if (cw !== centerW) setCenterW(cw);
-    if (ch !== centerH) setCenterH(ch);
-    if (rw !== ratioW) setRatioW(rw);
-    if (rh !== ratioH) setRatioH(rh);
-    if (cTop !== cropTop) setCropTop(cTop);
-    if (cBottom !== cropBottom) setCropBottom(cBottom);
-    if (cLeft !== cropLeft) setCropLeft(cLeft);
-    if (cRight !== cropRight) setCropRight(cRight);
-    setProcessing(true);
-    addTask('crop', t('crop.taskName'));
-    setProgress(0);
-    setProgressCurrent(0);
-    setProgressTotal(0);
-    setIsDone(false);
-    setHasError(false);
-
-    const modeLabel = mode === 'center'
-      ? t('crop.center')
-      : mode === 'cover'
-        ? t('crop.cover')
-        : mode === 'aspect'
-          ? t('crop.aspect')
-          : t('crop.edges');
-    setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${modeLabel}${t('pages.process')}`, status: 'info' }]);
-
-    try {
-      await invoke<ProcessResult>('crop_images', {
+    return task.run({
+      taskName: t('crop.taskName'), startLog: t('pages.startMsg', { name: modeCards.find(m => m.key === mode)!.label }), exec: () => invoke<ProcessResult>('crop_images', {
         options: {
           input_path: inputPath,
           output_path: outputPath,
           mode,
-          target_width: cw,
-          target_height: ch,
+          target_width: centerW,
+          target_height: centerH,
           crop_anchor: cropAnchor,
-          aspect_ratio: rw / rh,
-          crop_top: cTop,
-          crop_bottom: cBottom,
-          crop_left: cLeft,
-          crop_right: cRight,
+          aspect_ratio: ratioW / ratioH,
+          crop_top: cropTop,
+          crop_bottom: cropBottom,
+          crop_left: cropLeft,
+          crop_right: cropRight,
           recursive,
-        },
-      });
-    } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('crop', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
-      setHasError(true);
-      setIsDone(true);
-    } finally {
-      setProcessing(false);
-    }
+        } satisfies CropOptions,
+      })
+    });
   };
 
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
-  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
-
-  const modeCards: { key: 'center' | 'cover' | 'aspect' | 'edges'; icon: React.ReactNode; label: string; desc: string; color: string; colorAlpha: string }[] = [
-    { key: 'center', icon: <Maximize2 style={{ width: 18, height: 18 }} />, label: t('crop.center'), desc: t('crop.centerDesc'), color: '#4ade80', colorAlpha: 'rgba(74, 222, 128, ' },
-    { key: 'cover', icon: <Scaling style={{ width: 18, height: 18 }} />, label: t('crop.cover'), desc: t('crop.coverDesc'), color: '#06b6d4', colorAlpha: 'rgba(6, 182, 212, ' },
-    { key: 'aspect', icon: <RatioIcon style={{ width: 18, height: 18 }} />, label: t('crop.aspect'), desc: t('crop.aspectDesc'), color: '#818cf8', colorAlpha: 'rgba(129, 140, 248, ' },
-    { key: 'edges', icon: <Scissors style={{ width: 18, height: 18 }} />, label: t('crop.edges'), desc: t('crop.edgesDesc'), color: '#f59e0b', colorAlpha: 'rgba(245, 158, 11, ' },
+  const modeCards: { key: 'center' | 'cover' | 'aspect' | 'edges'; icon: React.ReactNode; label: string; color: string; colorAlpha: string }[] = [
+    { key: 'center', icon: <Maximize2 style={{ width: 18, height: 18 }} />, label: t('crop.center'), color: '#4ade80', colorAlpha: 'rgba(74, 222, 128, ' },
+    { key: 'cover', icon: <Scaling style={{ width: 18, height: 18 }} />, label: t('crop.cover'), color: '#06b6d4', colorAlpha: 'rgba(6, 182, 212, ' },
+    { key: 'aspect', icon: <RatioIcon style={{ width: 18, height: 18 }} />, label: t('crop.aspect'), color: '#818cf8', colorAlpha: 'rgba(129, 140, 248, ' },
+    { key: 'edges', icon: <Scissors style={{ width: 18, height: 18 }} />, label: t('crop.edges'), color: '#f59e0b', colorAlpha: 'rgba(245, 158, 11, ' },
   ];
   const cropAnchors: { key: CropAnchor; icon: React.ReactNode; label: string }[] = [
     { key: 'center', icon: <Crosshair style={{ width: 14, height: 14 }} />, label: t('crop.anchorCenter') },
@@ -182,59 +89,20 @@ export default function CropPage() {
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <Crop style={{ width: 28, height: 28, color: '#34d399' }} />
-          <h1 className="page-title">{t('crop.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('crop.subtitle')}</p>
-      </div>
+      <PageHeader icon={Crop} color={'#34d399'} title={t('crop.title')} subtitle={t('crop.subtitle')} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         {/* 左侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径设置 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-              <div className="form-group">
-                <div className="form-label-row">
-                  <label className="form-label">{t('pages.inputPath')}</label>
-                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
-                </div>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectInputPath')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <InputPathPickerButton onSelect={setInputPath} />
-                </div>
-              </div>
-              <div className="form-group">
-                <label className="form-label">{t('pages.outputPath')}</label>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <PathFields allowFile input={inputPath} onInput={setInputPath} output={outputPath} onOutput={setOutputPath} recursive={recursive} onRecursive={setRecursive} />
 
           {/* 裁切模式 */}
           <div className="tool-panel">
             <div className="tool-panel-header"><span className="tool-panel-title">{t('crop.cropMode')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               {modeCards.map((mc) => (
-                <div key={mc.key} onClick={() => setMode(mc.key)} style={{
-                  padding: 'var(--space-4)', borderRadius: 'var(--radius-md)',
-                  border: `1px solid ${mode === mc.key ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                  background: mode === mc.key ? 'rgba(124, 92, 252, 0.06)' : 'var(--color-bg-input)',
-                  cursor: 'pointer', transition: 'all 0.2s',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
-                    <div style={{ width: 20, height: 20, borderRadius: '50%', border: `2px solid ${mode === mc.key ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {mode === mc.key && <div style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-accent-primary)' }} />}
-                    </div>
-                    <span style={{ color: mode === mc.key ? mc.color : 'var(--color-text-tertiary)' }}>{mc.icon}</span>
-                    <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{mc.label}</span>
-                  </div>
+                <ChoiceCard key={mc.key} selected={mode === mc.key} onSelect={() => setMode(mc.key)} indicator="radio" body={<>
 
                   {/* Mode-specific options */}
                   {(mc.key === 'center' || mc.key === 'cover') && mode === mc.key && (
@@ -242,11 +110,11 @@ export default function CropPage() {
                       <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
                         <div className="form-group" style={{ flex: 1 }}>
                           <label className="form-label">{t('crop.targetWidth')}</label>
-                          <input className="form-input" type="number" value={centerW} onChange={e => setCenterW(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCenterW(1); }} onClick={(e) => e.stopPropagation()} min={1} />
+                          <NumberInput className="form-input" value={centerW} min={1} onChange={setCenterW} fallback={1024} integer />
                         </div>
                         <div className="form-group" style={{ flex: 1 }}>
                           <label className="form-label">{t('crop.targetHeight')}</label>
-                          <input className="form-input" type="number" value={centerH} onChange={e => setCenterH(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCenterH(1); }} onClick={(e) => e.stopPropagation()} min={1} />
+                          <NumberInput className="form-input" value={centerH} min={1} onChange={setCenterH} fallback={1024} integer />
                         </div>
                       </div>
                       {mc.key === 'cover' && (
@@ -293,12 +161,12 @@ export default function CropPage() {
                       <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', alignItems: 'flex-end' }}>
                         <div className="form-group" style={{ flex: 1 }}>
                           <label className="form-label">{t('crop.widthRatio')}</label>
-                          <input className="form-input" type="number" value={ratioW} onChange={e => setRatioW(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setRatioW(1); }} onClick={(e) => e.stopPropagation()} min={1} />
+                          <NumberInput className="form-input" value={ratioW} min={1} onChange={setRatioW} fallback={1} integer />
                         </div>
                         <span style={{ paddingBottom: 10, fontWeight: 700, color: 'var(--color-text-tertiary)', fontSize: 18 }}>:</span>
                         <div className="form-group" style={{ flex: 1 }}>
                           <label className="form-label">{t('crop.heightRatio')}</label>
-                          <input className="form-input" type="number" value={ratioH} onChange={e => setRatioH(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setRatioH(1); }} onClick={(e) => e.stopPropagation()} min={1} />
+                          <NumberInput className="form-input" value={ratioH} min={1} onChange={setRatioH} fallback={1} integer />
                         </div>
                       </div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -322,29 +190,33 @@ export default function CropPage() {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
                         <div className="form-group">
                           <label className="form-label">{t('crop.cropTop')}</label>
-                          <input className="form-input" type="number" value={cropTop} onChange={e => setCropTop(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCropTop(0); }} onClick={(e) => e.stopPropagation()} min={0} />
+                          <NumberInput className="form-input" value={cropTop} min={0} onChange={setCropTop} fallback={0} integer />
                         </div>
                         <div className="form-group">
                           <label className="form-label">{t('crop.cropBottom')}</label>
-                          <input className="form-input" type="number" value={cropBottom} onChange={e => setCropBottom(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCropBottom(0); }} onClick={(e) => e.stopPropagation()} min={0} />
+                          <NumberInput className="form-input" value={cropBottom} min={0} onChange={setCropBottom} fallback={0} integer />
                         </div>
                         <div className="form-group">
                           <label className="form-label">{t('crop.cropLeft')}</label>
-                          <input className="form-input" type="number" value={cropLeft} onChange={e => setCropLeft(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCropLeft(0); }} onClick={(e) => e.stopPropagation()} min={0} />
+                          <NumberInput className="form-input" value={cropLeft} min={0} onChange={setCropLeft} fallback={0} integer />
                         </div>
                         <div className="form-group">
                           <label className="form-label">{t('crop.cropRight')}</label>
-                          <input className="form-input" type="number" value={cropRight} onChange={e => setCropRight(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setCropRight(0); }} onClick={(e) => e.stopPropagation()} min={0} />
+                          <NumberInput className="form-input" value={cropRight} min={0} onChange={setCropRight} fallback={0} integer />
                         </div>
                       </div>
                     </div>
                   )}
 
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: mc.colorAlpha + '0.06)', border: '1px solid ' + mc.colorAlpha + '0.1)' }}>
+                  {mc.key === 'cover' && (<div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: mc.colorAlpha + '0.06)', border: '1px solid ' + mc.colorAlpha + '0.1)' }}>
                     <Info style={{ width: 14, height: 14, color: mc.color, marginTop: 2, minWidth: 14 }} />
-                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{mc.desc}</span>
-                  </div>
-                </div>
+                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('crop.coverDesc')}</span>
+                  </div>)}
+                </>}>
+
+                  <span style={{ color: mode === mc.key ? mc.color : 'var(--color-text-tertiary)' }}>{mc.icon}</span>
+                  <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{mc.label}</span>
+                </ChoiceCard>
               ))}
             </div>
           </div>
@@ -352,20 +224,11 @@ export default function CropPage() {
 
         {/* 右侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <ProcessButton processing={processing} onStart={handleProcess}
+          <ProcessButton {...task.buttonProps} onStart={handleProcess}
             disabled={!inputPath || !outputPath}
-            cancelCommand="cancel_crop" startText={t('crop.startCrop')} processingText={t('pages.processing')}
-            onCancelLog={addCancelLog} />
+            cancelCommand="cancel_crop" startText={t('crop.startCrop')} />
 
-          <ProgressLog
-            progress={progress}
-            current={progressCurrent}
-            total={progressTotal}
-            logs={logs}
-            isDone={isDone}
-            hasError={hasError}
-            onClearLogs={clearLogs}
-          />
+          <ProgressLog {...task.progressLogProps} />
         </div>
       </div>
     </div>

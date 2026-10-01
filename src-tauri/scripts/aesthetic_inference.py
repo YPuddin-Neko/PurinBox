@@ -5,21 +5,23 @@
 
 通信协议: JSON lines (stdin/stdout)
 - 输入: {"cmd": "init", "model_path": "...", "use_gpu": false}
-- 输入: {"cmd": "score", "image_path": "...", "move_files": true}
+- 输入: {"cmd": "score_batch", "images": [{"image_path": "...", "copy_files": false, "output_path": "...", "relative_dir": "..."}]}
 - 输入: {"cmd": "quit"}
-- 输出: {"type": "ready", "labels": [...]}
-- 输出: {"type": "result", "image_path": "...", "label": "masterpiece", "score": 5.8, "probs": {...}}
-- 输出: {"type": "error", "message": "..."}
-- 输出: {"type": "log", "message": "..."}
+  评分后图片移到（copy_files 时复制到）<output_path 或原目录>/<标签>/<relative_dir>/
+- 输出: {"type": "ready"}
+- 输出: {"type": "result", "image_path": "...", "label": "masterpiece", "score": 5.8, "confidence": 0.93}
+- 输出: {"type": "error", "message": "...", "image_path": "..."}（image_path 仅单图失败时有）
+- 输出: {"type": "log", "message": "..."}（可带 i18n_key / i18n_params）
 """
 
-import sys
 import os
 import json
 import shutil
 import traceback
 import numpy as np
 from pathlib import Path
+
+from purin_proto import bootstrap, emit, error, log, log_i18n, replace_atomically, result, utf8_stdin
 
 
 def _finite(x, default=0.0):
@@ -42,36 +44,13 @@ def _safe_move(src_p, dest_p, keep_src=False):
             return
         except OSError:
             pass  # 跨设备等情形回退到拷贝路径
-    tmp = str(dest_p) + ".tmp"
-    shutil.copy2(str(src_p), tmp)
-    os.replace(tmp, str(dest_p))
+    replace_atomically(str(dest_p), lambda tmp: shutil.copy2(str(src_p), tmp))
     if not keep_src:
         try:
             os.unlink(str(src_p))
         except OSError:
             pass
 
-
-def _emit(data):
-    """输出 JSON line 到 stdout (Windows GBK 安全)"""
-    line = json.dumps(data, ensure_ascii=False) + "\n"
-    sys.stdout.buffer.write(line.encode("utf-8"))
-    sys.stdout.buffer.flush()
-
-def log(msg):
-    _emit({"type": "log", "message": msg})
-
-def log_i18n(key, params=None):
-    d = {"type": "log", "i18n_key": key, "message": key}
-    if params:
-        d["i18n_params"] = params
-    _emit(d)
-
-def error(msg):
-    _emit({"type": "error", "message": msg})
-
-def result(data):
-    _emit(data)
 
 # 标签对应的加权分数 (用于计算综合分)
 LABEL_SCORES = {
@@ -105,7 +84,6 @@ def preprocess_image(image_path, target_size, input_format="NCHW"):
     # 官方实现: 直接拉伸 resize 到目标尺寸
     image = image.resize((target_size, target_size), Image.BILINEAR)
 
-    # 转 numpy: float32, 归一化到 [-1, 1]
     img_array = np.array(image, dtype=np.float32) / 255.0
     img_array = (img_array - 0.5) / 0.5
 
@@ -122,11 +100,51 @@ def softmax(x):
     e_x = np.exp(x - np.max(x))
     return e_x / e_x.sum()
 
+
+def cpu_session(model_path):
+    import onnxruntime as ort
+    from gpu_diagnostics import quiet_session_options
+    options = quiet_session_options(ort)
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    session = ort.InferenceSession(model_path, options, providers=["CPUExecutionProvider"])
+    return session, session.get_inputs()[0].name
+
+
+def classify(logits, labels):
+    probs = softmax(logits)
+    top_idx = int(np.argmax(probs))
+    label = labels[top_idx] if top_idx < len(labels) else "unknown"
+    score = sum(float(probs[i]) * LABEL_SCORES.get(labels[i], 0)
+                for i in range(min(len(probs), len(labels))))
+    return label, score, _finite(probs[top_idx])
+
+
+def move_scored_image(image_path, label, output_path, relative_dir, copy_files):
+    src = Path(image_path)
+    dest_dir = (Path(output_path) if output_path else src.parent) / label
+    if relative_dir:
+        dest_dir /= relative_dir
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / src.name
+    counter = 1
+    while dest_path.exists():
+        dest_path = dest_dir / f"{src.stem}_{counter}{src.suffix}"
+        counter += 1
+    _safe_move(src, dest_path, keep_src=copy_files)
+
+    # 标签沿用图片最终 stem，冲突时保留已有标签。
+    for tag_ext in [".txt", ".json", ".caption"]:
+        tag_src = src.parent / (src.stem + tag_ext)
+        if tag_src.exists():
+            tag_dest = dest_dir / f"{dest_path.stem}{tag_ext}"
+            counter = 1
+            while tag_dest.exists():
+                tag_dest = dest_dir / f"{dest_path.stem}_{counter}{tag_ext}"
+                counter += 1
+            _safe_move(tag_src, tag_dest, keep_src=copy_files)
+
 def main():
-    # Windows: 注册 CUDA DLL 目录（必须在 import onnxruntime 之前）
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from cuda_dll_helper import register_cuda_dlls
-    register_cuda_dlls()
+    bootstrap()
 
     session = None
     labels = []
@@ -135,11 +153,8 @@ def main():
     input_format = "NCHW"
     _model_path_saved = ""
 
-    for raw_line in sys.stdin.buffer:
-        try:
-            line = raw_line.decode("utf-8").strip()
-        except UnicodeDecodeError:
-            line = raw_line.decode("utf-8", errors="replace").strip()
+    for line in utf8_stdin():
+        line = line.strip()
         if not line:
             continue
 
@@ -163,21 +178,10 @@ def main():
                 use_gpu = cmd.get("use_gpu", False)
                 _model_path_saved = model_path
 
-                # 读取 meta.json
-                model_dir = Path(model_path).parent
-                meta_path = model_dir / "meta.json"
-                if meta_path.exists():
-                    with open(meta_path, "r", encoding="utf-8") as f:
-                        meta = json.load(f)
-                    labels = meta.get("labels", ["masterpiece", "best", "great", "good", "normal", "low", "worst"])
-                    input_size = meta.get("img_size", 448)
-                else:
-                    labels = ["masterpiece", "best", "great", "good", "normal", "low", "worst"]
-                    input_size = 448
-
-                log(f"加载模型: {model_path}")
-                log(f"标签: {labels}")
-                log(f"输入尺寸: {input_size}x{input_size}")
+                with open(Path(model_path).parent / "meta.json", "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                labels = meta.get("labels", ["masterpiece", "best", "great", "good", "normal", "low", "worst"])
+                input_size = meta.get("img_size", 448)
 
                 # 选择 provider — 统一流程：探测环境 + 输出日志 + 决定 providers
                 providers = resolve_ort_providers(log_i18n, use_gpu=use_gpu)
@@ -189,148 +193,14 @@ def main():
                 input_info = session.get_inputs()[0]
                 input_name = input_info.name
                 input_shape = input_info.shape
-                
-                # 自动检测输入格式 NCHW vs NHWC
-                # shape: [batch, channels, H, W] -> NCHW
-                # shape: [batch, H, W, channels] -> NHWC
-                if len(input_shape) == 4:
-                    # 如果 dim[1] == 3 且 dim[2] > 3 -> NCHW
-                    # 如果 dim[3] == 3 且 dim[1] > 3 -> NHWC
-                    d1 = input_shape[1] if isinstance(input_shape[1], int) else -1
-                    d3 = input_shape[3] if isinstance(input_shape[3], int) else -1
-                    if d1 == 3:
-                        input_format = "NCHW"
-                    elif d3 == 3:
-                        input_format = "NHWC"
-                    else:
-                        # 默认 NCHW
-                        input_format = "NCHW"
-                
-                log(f"输入格式: {input_format} | 形状: {input_shape}")
+                # 4 维输入时 shape[1] 为 3 按 NCHW，否则 shape[3] 为 3 按 NHWC；其余情况按 NCHW
+                input_format = ("NHWC" if len(input_shape) == 4 and input_shape[1] != 3
+                                and input_shape[3] == 3 else "NCHW")
 
-                _emit({
-                    "type": "ready",
-                    "labels": labels,
-                    "input_size": input_size,
-                    "input_format": input_format,
-                })
+                emit({"type": "ready"})
 
             except Exception as e:
                 error(f"初始化失败: {traceback.format_exc()}")
-
-        elif command == "score":
-            if session is None:
-                error("模型未初始化")
-                continue
-
-            image_path = cmd.get("image_path", "")
-            move_files = cmd.get("move_files", True)
-            copy_files = cmd.get("copy_files", False)
-            output_path = cmd.get("output_path", "")
-            relative_dir = cmd.get("relative_dir", "")
-
-            try:
-                # 预处理
-                img_data = preprocess_image(image_path, input_size, input_format)
-
-                # 推理 (GPU 失败时自动回退 CPU)
-                try:
-                    outputs = session.run(None, {input_name: img_data})
-                except Exception as gpu_err:
-                    # CoreML / CUDA 推理失败，自动回退到 CPU
-                    import onnxruntime as ort
-                    from gpu_diagnostics import quiet_session_options
-                    log(f"GPU 推理失败，自动回退到 CPU: {type(gpu_err).__name__}")
-                    sess_options = quiet_session_options(ort)
-                    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-                    session = ort.InferenceSession(
-                        _model_path_saved, sess_options,
-                        providers=["CPUExecutionProvider"]
-                    )
-                    input_info = session.get_inputs()[0]
-                    input_name = input_info.name
-                    log("已切换到 CPU 模式，继续推理")
-                    outputs = session.run(None, {input_name: img_data})
-                logits = outputs[0][0]
-
-                # Softmax 获取概率
-                probs = softmax(logits)
-
-                # 最高分标签
-                top_idx = int(np.argmax(probs))
-                top_label = labels[top_idx] if top_idx < len(labels) else "unknown"
-                top_prob = _finite(probs[top_idx])
-
-                # 加权分数 (0-6)
-                weighted_score = sum(
-                    float(probs[i]) * LABEL_SCORES.get(labels[i], 0)
-                    for i in range(min(len(probs), len(labels)))
-                )
-
-                # 概率字典
-                probs_dict = {}
-                for i, label in enumerate(labels):
-                    if i < len(probs):
-                        probs_dict[label] = round(_finite(probs[i]), 4)
-
-                # 移动文件到对应文件夹
-                moved_to = ""
-                if move_files:
-                    src = Path(image_path)
-                    # 如果指定了输出路径，使用输出路径作为基目录
-                    if output_path:
-                        base_dir = Path(output_path)
-                    else:
-                        base_dir = src.parent
-                    dest_dir = base_dir / top_label
-                    if relative_dir:
-                        dest_dir = dest_dir / relative_dir
-                    dest_dir.mkdir(parents=True, exist_ok=True)
-                    dest_path = dest_dir / src.name
-
-                    # 处理文件名冲突
-                    if dest_path.exists():
-                        stem = src.stem
-                        ext = src.suffix
-                        counter = 1
-                        while dest_path.exists():
-                            dest_path = dest_dir / f"{stem}_{counter}{ext}"
-                            counter += 1
-
-                    _safe_move(src, dest_path, keep_src=copy_files)
-                    moved_to = str(dest_path)
-
-                    # 同时移动关联的标签文件 (.txt, .json, .caption)
-                    # 使用实际目标文件名的 stem，确保与图片名一致
-                    actual_stem = dest_path.stem
-                    for tag_ext in [".txt", ".json", ".caption"]:
-                        tag_src = src.parent / (src.stem + tag_ext)
-                        if tag_src.exists():
-                            tag_dest = dest_dir / f"{actual_stem}{tag_ext}"
-                            # 极端情况：标签文件也冲突
-                            if tag_dest.exists():
-                                tc = 1
-                                while tag_dest.exists():
-                                    tag_dest = dest_dir / f"{actual_stem}_{tc}{tag_ext}"
-                                    tc += 1
-                            _safe_move(tag_src, tag_dest, keep_src=copy_files)
-
-                result({
-                    "type": "result",
-                    "image_path": image_path,
-                    "label": top_label,
-                    "score": round(_finite(weighted_score), 2),
-                    "confidence": round(top_prob, 4),
-                    "probs": probs_dict,
-                    "moved_to": moved_to,
-                })
-
-            except Exception as e:
-                _emit({
-                    "type": "error",
-                    "image_path": image_path,
-                    "message": f"评分失败 [{Path(image_path).name}]: {traceback.format_exc()}",
-                })
 
         elif command == "score_batch":
             if session is None:
@@ -352,11 +222,7 @@ def main():
                     batch_data.append(img_data)
                     valid_indices.append(idx)
                 except Exception as e:
-                    result({
-                        "type": "error",
-                        "image_path": img_path,
-                        "message": f"预处理失败: {e}",
-                    })
+                    error(f"预处理失败: {e}", image_path=img_path)
 
             if not batch_data:
                 continue
@@ -371,17 +237,8 @@ def main():
             except Exception as e:
                 # GPU 推理失败，回退 CPU 重试
                 try:
-                    import onnxruntime as ort
-                    from gpu_diagnostics import quiet_session_options
                     log(f"GPU 批量推理失败，自动回退到 CPU: {type(e).__name__}")
-                    sess_options = quiet_session_options(ort)
-                    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-                    session = ort.InferenceSession(
-                        _model_path_saved, sess_options,
-                        providers=["CPUExecutionProvider"]
-                    )
-                    input_info = session.get_inputs()[0]
-                    input_name = input_info.name
+                    session, input_name = cpu_session(_model_path_saved)
                     log("已切换到 CPU 模式，重试批量推理")
                     outputs = session.run(None, {input_name: batch_tensor})
                     all_logits = outputs[0]
@@ -398,17 +255,12 @@ def main():
                         all_logits.append(out_single[0][0])
                     except Exception as e3:
                         all_logits.append(None)
-                        result({
-                            "type": "error",
-                            "image_path": img_path,
-                            "message": f"推理失败: {e3}",
-                        })
+                        error(f"推理失败: {e3}", image_path=img_path)
 
             # 逐张处理结果
             for batch_idx, orig_idx in enumerate(valid_indices):
                 img_cmd = images[orig_idx]
                 image_path = img_cmd.get("image_path", "")
-                move_files = img_cmd.get("move_files", True)
                 copy_files = img_cmd.get("copy_files", False)
                 output_path = img_cmd.get("output_path", "")
                 relative_dir = img_cmd.get("relative_dir", "")
@@ -417,73 +269,17 @@ def main():
                     logits = all_logits[batch_idx]
                     if logits is None:
                         continue  # 逐张重试已失败并报过 error
-                    probs = softmax(logits)
+                    top_label, weighted_score, top_prob = classify(logits, labels)
+                    move_scored_image(image_path, top_label, output_path, relative_dir, copy_files)
 
-                    top_idx = int(np.argmax(probs))
-                    top_label = labels[top_idx] if top_idx < len(labels) else "unknown"
-                    top_prob = _finite(probs[top_idx])
-
-                    weighted_score = sum(
-                        float(probs[i]) * LABEL_SCORES.get(labels[i], 0)
-                        for i in range(min(len(probs), len(labels)))
+                    result(
+                        image_path=image_path,
+                        label=top_label,
+                        score=round(_finite(weighted_score), 2),
+                        confidence=round(top_prob, 4),
                     )
-
-                    probs_dict = {}
-                    for i, label in enumerate(labels):
-                        if i < len(probs):
-                            probs_dict[label] = round(_finite(probs[i]), 4)
-
-                    moved_to = ""
-                    if move_files:
-                        src = Path(image_path)
-                        if output_path:
-                            base_dir = Path(output_path)
-                        else:
-                            base_dir = src.parent
-                        dest_dir = base_dir / top_label
-                        if relative_dir:
-                            dest_dir = dest_dir / relative_dir
-                        dest_dir.mkdir(parents=True, exist_ok=True)
-                        dest_path = dest_dir / src.name
-
-                        if dest_path.exists():
-                            stem = src.stem
-                            ext = src.suffix
-                            counter = 1
-                            while dest_path.exists():
-                                dest_path = dest_dir / f"{stem}_{counter}{ext}"
-                                counter += 1
-
-                        _safe_move(src, dest_path, keep_src=copy_files)
-                        moved_to = str(dest_path)
-
-                        actual_stem = dest_path.stem
-                        for tag_ext in [".txt", ".json", ".caption"]:
-                            tag_src = src.parent / (src.stem + tag_ext)
-                            if tag_src.exists():
-                                tag_dest = dest_dir / f"{actual_stem}{tag_ext}"
-                                if tag_dest.exists():
-                                    tc = 1
-                                    while tag_dest.exists():
-                                        tag_dest = dest_dir / f"{actual_stem}_{tc}{tag_ext}"
-                                        tc += 1
-                                _safe_move(tag_src, tag_dest, keep_src=copy_files)
-
-                    result({
-                        "type": "result",
-                        "image_path": image_path,
-                        "label": top_label,
-                        "score": round(_finite(weighted_score), 2),
-                        "confidence": round(top_prob, 4),
-                        "probs": probs_dict,
-                        "moved_to": moved_to,
-                    })
                 except Exception as e:
-                    _emit({
-                        "type": "error",
-                        "image_path": image_path,
-                        "message": f"评分失败 [{Path(image_path).name}]: {traceback.format_exc()}",
-                    })
+                    error(f"评分失败 [{Path(image_path).name}]: {traceback.format_exc()}", image_path=image_path)
 
         else:
             error(f"未知命令: {command}")

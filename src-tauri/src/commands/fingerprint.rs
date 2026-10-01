@@ -3,6 +3,7 @@
 //! 图片去重（image_dedup）与去重重命名（dedup_rename）共用的指纹计算与比较逻辑。
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct ImageFingerprint {
     pub path: PathBuf,
@@ -11,7 +12,42 @@ pub struct ImageFingerprint {
     pub color_hist: [f64; 48], // 16 bins × 3 channels, normalized
 }
 
-pub fn compute_fingerprint(path: &Path) -> Result<ImageFingerprint, String> {
+/// 按 CPU 核数分块并行计算指纹，结果按输入顺序收集，失败项记为 "路径: 原因"。
+/// 每取一张结果前调用一次 `on_each`；每块开始前检查 `cancel`，已取消时返回 None。
+pub fn compute_fingerprints(
+    files: &[PathBuf],
+    cancel: &AtomicBool,
+    mut on_each: impl FnMut(),
+) -> Option<(Vec<ImageFingerprint>, Vec<String>)> {
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(16);
+    let mut fingerprints = Vec::with_capacity(files.len());
+    let mut failed = Vec::new();
+    for chunk in files.chunks(num_threads) {
+        if cancel.load(Ordering::SeqCst) {
+            return None;
+        }
+        std::thread::scope(|s| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|file| s.spawn(move || compute_fingerprint(file)))
+                .collect();
+            for (file, handle) in chunk.iter().zip(handles) {
+                on_each();
+                match handle.join() {
+                    Ok(Ok(fp)) => fingerprints.push(fp),
+                    Ok(Err(e)) => failed.push(format!("{}: {}", file.display(), e)),
+                    Err(_) => failed.push(format!("{}: 指纹计算线程异常退出", file.display())),
+                }
+            }
+        });
+    }
+    Some((fingerprints, failed))
+}
+
+fn compute_fingerprint(path: &Path) -> Result<ImageFingerprint, String> {
     let img = image::ImageReader::open(path)
         .map_err(|e| e.to_string())?
         .with_guessed_format()

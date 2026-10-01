@@ -1,7 +1,10 @@
 import json
+import io
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +12,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import tagger_inference as tagger
+import gpu_diagnostics
 
 
 PIXAI_THRESHOLDS = {
@@ -122,8 +126,149 @@ class PixaiTests(unittest.TestCase):
         self.assertEqual(simple["tags"], ["blue hair"])
         self.assertEqual(simple["artist"], "")
         self.assertEqual(simple["appearance"], [])
-        for data in (full, simple):
-            self.assertIn("blue hair", tagger._flatten_json_tags(data))
+
+    def test_every_artist_has_a_prefix_and_schema_order_is_stable(self):
+        selected = [("first", "artist"), ("@second", "artist")]
+        full = tagger._build_structured_json(selected)
+        simple = tagger._build_simplified_json(selected)
+        self.assertEqual(full["fixed"]["artist"], "@first, @second")
+        self.assertEqual(simple["artist"], "@first, @second")
+        self.assertEqual(list(full), ["fixed", "character", "from_path", "ai_output"])
+        self.assertEqual(list(full["character"]), ["name", "variant"])
+        self.assertEqual(list(simple), ["quality", "series", "artist", "character", "count",
+                                       "appearance", "tags", "environment", "nl"])
+
+    def test_input_layout_handles_four_channels_and_dynamic_shapes_consistently(self):
+        for shape, expected in [([1, 4, 32, 32], ("NCHW", 32)),
+                                ([1, 32, 32, 4], ("NHWC", 32)),
+                                (["N", 3, "H", 64], ("NCHW", 64)),
+                                ([1, "H", "W", 3], ("NHWC", 448)),
+                                ([1, 2], ("NHWC", 448))]:
+            session = SimpleNamespace(get_inputs=lambda: [SimpleNamespace(shape=shape)])
+            with self.subTest(shape=shape):
+                self.assertEqual(tagger._input_layout(shape), expected)
+                self.assertEqual(tagger.detect_model_format(session), expected)
+
+    def test_provider_fallback_logs_only_the_provider_name(self):
+        with patch.object(tagger, "log") as log:
+            tagger._log_gpu_fallback(("CUDAExecutionProvider", {"private_option": "value"}), RuntimeError("failed"))
+        self.assertEqual(log.call_args_list[0].args[0], "⚠ CUDAExecutionProvider 加载失败")
+
+    def test_write_outputs_preserves_unreadable_existing_files(self):
+        image = self.root / "image.png"
+        tags = [{"name": "solo", "category": "general"}]
+        for extension, original in [("json", b"{broken"), ("txt", b"\xff")]:
+            path = image.with_suffix("." + extension)
+            path.write_bytes(original)
+            with patch.object(tagger, "log"):
+                result = tagger._write_outputs(str(image), [.9], {
+                    "output_format": extension, "existing_tags_action": "append",
+                }, tags, {})
+            self.assertTrue(result["skipped"])
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_write_outputs_txt_merge_and_trigger_order(self):
+        image = self.root / "image.png"
+        path = image.with_suffix(".txt")
+        path.write_text("existing, solo", encoding="utf-8")
+        tags = [{"name": name, "category": "general"} for name in ["solo", "new"]]
+        tagger._write_outputs(str(image), [.9, .8], {
+            "existing_tags_action": "append", "append_tags": "trigger, solo",
+            "append_position": "prepend",
+        }, tags, {})
+        self.assertEqual(path.read_text(), "trigger, solo, existing, new")
+
+
+class ProtocolTests(unittest.TestCase):
+    def run_protocol(self, commands, session, module=tagger, tags=None, provider_calls=None):
+        messages = []
+        tags = tags or [{"name": "solo", "category": "general"}]
+
+        def providers(*args, **kwargs):
+            if provider_calls is not None:
+                provider_calls.append(kwargs)
+            return ["CPUExecutionProvider"]
+
+        with patch.dict(sys.modules, {"onnxruntime": SimpleNamespace()}), \
+             patch.object(sys, "argv", ["tagger_inference.py"]), \
+             patch.multiple(module, bootstrap=lambda: None,
+                            utf8_stdin=lambda: io.StringIO("\n".join(map(json.dumps, commands))),
+                            load_tags=lambda _: tags,
+                            emit=messages.append,
+                            result=lambda **fields: messages.append({"type": "result", **fields}),
+                            error=lambda message, **fields: messages.append({"type": "error", "message": message, **fields}),
+                            log=lambda message: messages.append({"type": "log", "message": message})), \
+             patch.multiple(gpu_diagnostics,
+                            quiet_session_options=lambda _: None,
+                            resolve_ort_providers=providers,
+                            create_session_with_cpu_fallback=lambda *a: session):
+            module.main()
+        return messages
+
+    def test_cuda_policy_comes_from_init_flag_not_preprocessing_name(self):
+        session = SimpleNamespace(
+            get_inputs=lambda: [SimpleNamespace(name="input", shape=[1, 3, 32, 32])],
+            get_outputs=lambda: [SimpleNamespace(name="output")],
+        )
+        calls = []
+        self.run_protocol([
+            {"cmd": "init", "model_path": "mock", "tags_path": "mock",
+             "preprocess_mode": "auto", "conservative_cuda": True},
+            {"cmd": "init", "model_path": "mock", "tags_path": "mock",
+             "preprocess_mode": "pixai_v1", "conservative_cuda": False},
+        ], session, provider_calls=calls)
+        self.assertEqual(calls[0]["cuda_options"], {
+            "cudnn_conv_algo_search": "HEURISTIC", "arena_extend_strategy": "kSameAsRequested",
+            "do_copy_in_default_stream": "1",
+        })
+        self.assertIsNone(calls[1]["cuda_options"])
+
+    def test_single_image_inference_failure_is_not_retried(self):
+        calls = []
+
+        def fail(*args):
+            calls.append(args)
+            raise RuntimeError("inference failed")
+
+        session = SimpleNamespace(
+            get_inputs=lambda: [SimpleNamespace(name="input", shape=[1, 2, 2, 3])],
+            get_outputs=lambda: [SimpleNamespace(name="output")], run=fail,
+        )
+        with patch.object(tagger, "preprocess_image", return_value=np.zeros((1, 2, 2, 3))):
+            messages = self.run_protocol([
+                {"cmd": "init", "model_path": "mock", "tags_path": "mock"},
+                {"cmd": "tag_batch", "images": [{"image_path": "mock.png"}]},
+            ], session)
+        self.assertEqual(len(calls), 1)
+        errors = [m for m in messages if m["type"] == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["image_path"], "mock.png")
+
+    def test_batch_failure_falls_back_to_each_image(self):
+        calls = []
+
+        def infer(_, inputs):
+            count = len(inputs["input"])
+            calls.append(count)
+            if count > 1:
+                raise RuntimeError("batch unsupported")
+            return [np.array([[.9]], dtype=np.float32)]
+
+        session = SimpleNamespace(
+            get_inputs=lambda: [SimpleNamespace(name="input", shape=["N", 2, 2, 3])],
+            get_outputs=lambda: [SimpleNamespace(name="output")], run=infer,
+        )
+        with tempfile.TemporaryDirectory() as root, \
+             patch.object(tagger, "preprocess_image", return_value=np.zeros((1, 2, 2, 3))):
+            paths = [str(Path(root) / f"{i}.png") for i in range(2)]
+            messages = self.run_protocol([
+                {"cmd": "init", "model_path": "mock", "tags_path": "mock"},
+                {"cmd": "tag_batch", "images": [{"image_path": p} for p in paths]},
+            ], session)
+            self.assertEqual(calls, [2, 1, 1])
+            self.assertEqual([m["image_path"] for m in messages if m["type"] == "result"], paths)
+            for path in paths:
+                self.assertEqual(Path(path).with_suffix(".txt").read_text(), "solo")
 
 
 if __name__ == "__main__":

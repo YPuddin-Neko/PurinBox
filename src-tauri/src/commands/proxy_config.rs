@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+
+use super::config_paths::{
+    b64_decode, b64_encode, load_json_config, load_json_config_or_default, save_json_config,
+};
+
+const USER_AGENT: &str = concat!("PurinBox/", env!("CARGO_PKG_VERSION"));
 
 /// 代理配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,28 +42,6 @@ impl Default for ProxyConfig {
 
 const CONFIG_FILE: &str = "proxy_config.json";
 
-/// 配置文件读取路径（含旧 exe 同目录 config/ 的自动迁移）
-fn config_path() -> PathBuf {
-    super::config_paths::resolve_config_file(CONFIG_FILE)
-}
-
-fn encode(s: &str) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
-}
-
-fn decode(s: &str) -> String {
-    use base64::Engine;
-    if s.is_empty() {
-        return String::new();
-    }
-    base64::engine::general_purpose::STANDARD
-        .decode(s)
-        .ok()
-        .and_then(|b| String::from_utf8(b).ok())
-        .unwrap_or_default()
-}
-
 /// 保存代理配置
 #[tauri::command]
 pub fn save_proxy_config(
@@ -70,8 +53,6 @@ pub fn save_proxy_config(
     username: String,
     password: String,
 ) -> Result<(), String> {
-    let dir = super::config_paths::user_config_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
     let config = ProxyConfig {
         enabled,
         llm_proxy,
@@ -79,34 +60,16 @@ pub fn save_proxy_config(
         host,
         port,
         username,
-        password_encoded: encode(&password),
+        password_encoded: b64_encode(&password),
     };
-    let json = serde_json::to_string_pretty(&config).map_err(|e| format!("序列化失败: {}", e))?;
-    super::config_paths::write_file_atomic(&dir.join(CONFIG_FILE), json.as_bytes())
-        .map_err(|e| format!("写入代理配置失败: {}", e))?;
-    Ok(())
+    save_json_config(CONFIG_FILE, &config, "代理配置")
 }
 
 /// 加载代理配置
 #[tauri::command]
 #[allow(clippy::type_complexity)]
 pub fn load_proxy_config() -> Result<(bool, bool, String, String, u16, String, String), String> {
-    let path = config_path();
-    if !path.exists() {
-        let d = ProxyConfig::default();
-        return Ok((
-            d.enabled,
-            d.llm_proxy,
-            d.proxy_type,
-            d.host,
-            d.port,
-            d.username,
-            String::new(),
-        ));
-    }
-    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取代理配置失败: {}", e))?;
-    let config: ProxyConfig =
-        serde_json::from_str(&content).map_err(|e| format!("解析代理配置失败: {}", e))?;
+    let config: ProxyConfig = load_json_config(CONFIG_FILE, "代理配置")?;
     Ok((
         config.enabled,
         config.llm_proxy,
@@ -114,51 +77,48 @@ pub fn load_proxy_config() -> Result<(bool, bool, String, String, u16, String, S
         config.host,
         config.port,
         config.username,
-        decode(&config.password_encoded),
+        b64_decode(&config.password_encoded),
     ))
 }
 
-/// 加载代理配置（内部使用，不是 tauri 命令）
+/// 读取代理配置；文件缺失、读取或解析失败时返回默认配置（不启用代理）
 pub fn load_proxy_config_internal() -> ProxyConfig {
-    let path = config_path();
-    if !path.exists() {
-        return ProxyConfig::default();
+    load_json_config_or_default(CONFIG_FILE)
+}
+
+fn usable(cfg: &ProxyConfig) -> bool {
+    cfg.enabled && !cfg.host.is_empty() && cfg.port != 0
+}
+
+fn proxy_url(cfg: &ProxyConfig, scheme: &str, credentials: bool) -> String {
+    if !credentials || cfg.username.is_empty() {
+        format!("{}://{}:{}", scheme, cfg.host, cfg.port)
+    } else {
+        format!(
+            "{}://{}:{}@{}:{}",
+            scheme,
+            urlencoding::encode(&cfg.username),
+            urlencoding::encode(&b64_decode(&cfg.password_encoded)),
+            cfg.host,
+            cfg.port
+        )
     }
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
 }
 
 /// 为 ClientBuilder 应用代理配置
 fn apply_proxy(builder: reqwest::ClientBuilder, cfg: &ProxyConfig) -> reqwest::ClientBuilder {
-    if !cfg.enabled || cfg.host.is_empty() || cfg.port == 0 {
+    if !usable(cfg) {
         return builder;
     }
 
     let is_socks = cfg.proxy_type == "socks5";
-    let url = if is_socks {
-        // 使用 socks5h 让代理解析域名，避免本地 DNS 解析失败。
-        if cfg.username.is_empty() {
-            format!("socks5h://{}:{}", cfg.host, cfg.port)
-        } else {
-            let password = decode(&cfg.password_encoded);
-            format!(
-                "socks5h://{}:{}@{}:{}",
-                urlencoding::encode(&cfg.username),
-                urlencoding::encode(&password),
-                cfg.host,
-                cfg.port
-            )
-        }
-    } else {
-        format!("http://{}:{}", cfg.host, cfg.port)
-    };
+    // socks5h 由代理解析域名；HTTP 凭据单独通过 basic_auth 传递。
+    let url = proxy_url(cfg, if is_socks { "socks5h" } else { "http" }, is_socks);
 
     match reqwest::Proxy::all(&url) {
         Ok(mut proxy) => {
             if !is_socks && !cfg.username.is_empty() {
-                let password = decode(&cfg.password_encoded);
+                let password = b64_decode(&cfg.password_encoded);
                 proxy = proxy.basic_auth(&cfg.username, &password);
             }
             builder.proxy(proxy)
@@ -180,21 +140,10 @@ fn apply_proxy(builder: reqwest::ClientBuilder, cfg: &ProxyConfig) -> reqwest::C
 /// SOCKS5 不注入：pip 需要 pysocks 才认 socks 代理，注入反而让它报缺依赖错误。
 pub fn apply_proxy_env(cmd: &mut std::process::Command) {
     let cfg = load_proxy_config_internal();
-    if !cfg.enabled || cfg.host.is_empty() || cfg.port == 0 || cfg.proxy_type == "socks5" {
+    if !usable(&cfg) || cfg.proxy_type == "socks5" {
         return;
     }
-    let url = if cfg.username.is_empty() {
-        format!("http://{}:{}", cfg.host, cfg.port)
-    } else {
-        let password = decode(&cfg.password_encoded);
-        format!(
-            "http://{}:{}@{}:{}",
-            urlencoding::encode(&cfg.username),
-            urlencoding::encode(&password),
-            cfg.host,
-            cfg.port
-        )
-    };
+    let url = proxy_url(&cfg, "http", true);
     cmd.env("HTTP_PROXY", &url)
         .env("HTTPS_PROXY", &url)
         .env("http_proxy", &url)
@@ -204,7 +153,7 @@ pub fn apply_proxy_env(cmd: &mut std::process::Command) {
 /// 构建带代理的 reqwest Client（通用：翻译、模型下载等）
 pub fn build_http_client() -> reqwest::ClientBuilder {
     let cfg = load_proxy_config_internal();
-    apply_proxy(reqwest::Client::builder().user_agent("PurinBox"), &cfg)
+    apply_proxy(reqwest::Client::builder().user_agent(USER_AGENT), &cfg)
 }
 
 /// 构建带代理的 reqwest Client（LLM 专用：仅当 llm_proxy 开启时使用代理）
@@ -215,7 +164,7 @@ pub fn build_http_client() -> reqwest::ClientBuilder {
 pub fn build_http_client_for_llm() -> reqwest::ClientBuilder {
     let cfg = load_proxy_config_internal();
     let builder = reqwest::Client::builder()
-        .user_agent("PurinBox")
+        .user_agent(USER_AGENT)
         .connect_timeout(std::time::Duration::from_secs(20))
         .read_timeout(std::time::Duration::from_secs(300));
     if cfg.llm_proxy {
@@ -226,13 +175,66 @@ pub fn build_http_client_for_llm() -> reqwest::ClientBuilder {
 }
 
 #[cfg(test)]
+mod proxy_helper_tests {
+    use super::*;
+
+    #[test]
+    fn proxy_url_preserves_auth_encoding_and_scheme() {
+        let mut config = ProxyConfig {
+            enabled: true,
+            username: "user@example".into(),
+            password_encoded: b64_encode("p:a ss"),
+            ..Default::default()
+        };
+        assert!(usable(&config));
+        assert_eq!(
+            proxy_url(&config, "socks5h", true),
+            "socks5h://user%40example:p%3Aa%20ss@127.0.0.1:7890"
+        );
+        assert_eq!(proxy_url(&config, "http", false), "http://127.0.0.1:7890");
+        config.username.clear();
+        assert_eq!(proxy_url(&config, "http", true), "http://127.0.0.1:7890");
+        config.port = 0;
+        assert!(!usable(&config));
+        config.port = 7890;
+        config.enabled = false;
+        assert!(!usable(&config));
+    }
+}
+
+#[cfg(test)]
 mod proxy_e2e_tests {
     use super::*;
 
+    /// 测试期间写入真实配置文件，结束时（含断言失败）恢复原内容
+    struct RestoreConfig(Option<Vec<u8>>);
+
+    fn config_path() -> std::path::PathBuf {
+        crate::commands::config_paths::resolve_config_file(CONFIG_FILE)
+    }
+
+    impl Drop for RestoreConfig {
+        fn drop(&mut self) {
+            let path = config_path();
+            match &self.0 {
+                Some(original) => {
+                    let _ = std::fs::write(&path, original);
+                }
+                None => {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
+
     /// 端到端：保存 socks5 配置(落盘到真实配置文件) → 用与下载相同的客户端构建
     /// 路径走代理拉取 HF 文件。同时验证"保存真的写盘了"和"reqwest 能走通 socks5"。
+    /// 依赖局域网 socks5 代理和外网，且会临时改写真实配置，只在显式指定时运行：
+    /// cargo test -- --ignored save_then_download_via_socks5
     #[tokio::test]
+    #[ignore = "依赖局域网 socks5 代理和外网，且会临时改写真实代理配置"]
     async fn save_then_download_via_socks5() {
+        let _restore = RestoreConfig(std::fs::read(config_path()).ok());
         save_proxy_config(
             true,
             false,

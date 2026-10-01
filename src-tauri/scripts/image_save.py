@@ -4,10 +4,11 @@ JPEG 的量化不比源图粗、质量不低于 JPEG_MIN_QUALITY，且不做色�
 PNG/BMP/TIFF/GIF 本身无损。源图的 ICC 配置文件在色彩空间一致时一并写回。
 """
 import io
-import os
 from functools import lru_cache
 
 from PIL import Image
+
+from purin_proto import replace_atomically
 
 # 低质量源图若按原质量再压一次，损失会叠加一代
 JPEG_MIN_QUALITY = 95
@@ -74,20 +75,6 @@ def _flatten_for_jpeg(img):
     return img
 
 
-def _replace_atomically(out_path, write):
-    """先写临时名再原子替换，被取消杀死时不留半截图片顶着正名"""
-    tmp = f'{out_path}.tmp'
-    try:
-        write(tmp)
-        os.replace(tmp, out_path)
-    except BaseException:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
-
-
 def save_like_source(img, out_path, source):
     """把 PIL 图按源图格式写到 out_path"""
     fmt = source.format
@@ -100,7 +87,7 @@ def save_like_source(img, out_path, source):
     icc = source.icc_profile
     if icc and fmt in ('JPEG', 'PNG', 'WEBP', 'TIFF') and _icc_matches(icc, img.mode):
         kwargs['icc_profile'] = icc
-    _replace_atomically(str(out_path), lambda tmp: img.save(tmp, format=fmt, **kwargs))
+    replace_atomically(str(out_path), lambda tmp: img.save(tmp, format=fmt, **kwargs))
 
 
 def save_array_like_source(arr, out_path, source):
@@ -114,7 +101,7 @@ def save_array_like_source(arr, out_path, source):
         ok, buf = cv2.imencode(ext, arr)
         if not ok:
             raise ValueError('编码图片失败')
-        _replace_atomically(str(out_path), buf.tofile)
+        replace_atomically(str(out_path), buf.tofile)
         return
     if arr.ndim == 3:
         arr = arr[:, :, [2, 1, 0, 3]] if arr.shape[2] == 4 else arr[:, :, ::-1].copy()

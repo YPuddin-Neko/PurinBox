@@ -126,6 +126,9 @@
   stroke: var(--color-border-active);
   stroke-width: 2;
 }
+.wf-canvas-area .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--color-accent-primary);
+}
 .wf-canvas-area .react-flow__connection-line {
   stroke: var(--color-accent-primary);
   stroke-width: 2;
@@ -299,12 +302,6 @@
   flex: 1;
 }
 .wf-node-body { padding: 6px 10px; }
-/* 阻止 ReactFlow 在表单控件上拖拽节点 */
-.wf-node-body input,
-.wf-node-body select,
-.wf-node-body button {
-  pointer-events: all;
-}
 
 /* ── 内联参数编辑 ── */
 .wf-node-field {
@@ -333,9 +330,6 @@
 }
 .wf-inline-input:focus {
   border-color: var(--color-accent-primary);
-}
-.wf-inline-number {
-  width: 100%;
 }
 .wf-inline-select {
   width: 100%;
@@ -497,7 +491,6 @@
   border-color: #fb923c !important;
 }
 
-/* 条件分支输出口（ComfyUI 风格） */
 /* Slot 行：标题下方，输入(左) + 输出(右) */
 .wf-node-slot-row {
   display: flex;
@@ -573,4 +566,3 @@
   border-radius: 50%;
   animation: wf-spin 0.8s linear infinite;
 }
-@keyframes wf-spin { to { transform: rotate(360deg); } }

@@ -1,14 +1,49 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Emitter;
 
 use super::{
-    collect_image_files_with_recursive_excluding, output_path_for_input, ProcessResult,
-    ProgressEvent,
+    collect_image_files_with_recursive_excluding, same_name_output, ProcessResult, ProgressEvent,
 };
 
-static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+use super::batch::{BatchJob, FileBatch, FileOutcome};
+
+static JOB: BatchJob = BatchJob::new("分辨率筛选");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mismatched_extension_filters_normally_and_validates_once() {
+        let root = super::super::image_io::test_dir("filter_content");
+        image::RgbImage::new(17, 23)
+            .save_with_format(root.join("webp.png"), image::ImageFormat::WebP)
+            .unwrap();
+        let output = root.join("out");
+        let mut options = FilterOptions {
+            input_path: root.to_string_lossy().into_owned(),
+            output_path: output.to_string_lossy().into_owned(),
+            action: "copy".into(),
+            condition: "min_width".into(),
+            width: 20,
+            height: 20,
+            recursive: false,
+        };
+        let app = tauri::test::mock_app();
+        let result = filter_sync(app.handle(), &options).unwrap();
+        assert_eq!((result.success_count, result.fail_count), (1, 0));
+        assert_eq!(
+            std::fs::read(root.join("webp.png")).unwrap(),
+            std::fs::read(output.join("webp.png")).unwrap()
+        );
+        options.action = "invalid".into();
+        assert_eq!(
+            filter_sync(app.handle(), &options).unwrap_err(),
+            "无效的操作"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilterOptions {
@@ -29,33 +64,35 @@ pub async fn filter_by_resolution<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: FilterOptions,
 ) -> Result<ProcessResult, String> {
-    // 互斥：页面与工作流节点共用全局取消标志，并发会互吞取消
-    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let _busy = crate::commands::BusyGuard::acquire(&RUNNING, "分辨率筛选")?;
-
-    CANCEL_FLAG.store(false, Ordering::SeqCst);
-    tokio::task::spawn_blocking(move || filter_sync(&app, &options))
-        .await
-        .map_err(|e| format!("任务执行失败: {}", e))?
+    JOB.run(move || filter_sync(&app, &options)).await
 }
 
 #[tauri::command]
 pub fn cancel_filter() {
-    CANCEL_FLAG.store(true, Ordering::SeqCst);
+    JOB.cancel();
 }
 
-fn filter_sync<R: tauri::Runtime>(app: &tauri::AppHandle<R>, options: &FilterOptions) -> Result<ProcessResult, String> {
+fn filter_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    options: &FilterOptions,
+) -> Result<ProcessResult, String> {
+    if !matches!(
+        options.condition.as_str(),
+        "min_width" | "min_height" | "below_resolution" | "above_resolution"
+    ) {
+        return Err("无效的筛选条件".to_string());
+    }
+    if !matches!(options.action.as_str(), "copy" | "delete") {
+        return Err("无效的操作".to_string());
+    }
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
-
-    if !input.exists() || !input.is_dir() {
+    if !input.is_dir() {
         return Err(format!("输入目录不存在: {}", options.input_path));
     }
-
-    if options.action == "copy" && !output_dir.exists() {
+    if options.action == "copy" {
         std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
     }
-
     let files = collect_image_files_with_recursive_excluding(
         input,
         options.recursive,
@@ -66,147 +103,50 @@ fn filter_sync<R: tauri::Runtime>(app: &tauri::AppHandle<R>, options: &FilterOpt
         },
     )?;
     let total = files.len() as u32;
-    let mut success_count = 0u32;
-    let mut fail_count = 0u32;
-    let mut errors = Vec::new();
-
     let condition_label = match options.condition.as_str() {
         "min_width" => format!("宽度 < {}px", options.width),
         "min_height" => format!("高度 < {}px", options.height),
         "below_resolution" => format!("低于 {}x{}", options.width, options.height),
         "above_resolution" => format!("高于 {}x{}", options.width, options.height),
-        _ => "未知条件".to_string(),
+        _ => unreachable!("validated condition"),
     };
-
     let action_label = if options.action == "copy" {
         "输出"
     } else {
         "删除"
     };
-
-    let _ = app.emit(
-        "filter-progress",
-        ProgressEvent {
-            current: 0,
-            total,
-            filename: String::new(),
-            status: "processing".to_string(),
-            message: format!(
-                "开始筛选: 条件={}, 操作={}, 共 {} 张图片",
-                condition_label, action_label, total
-            ),
-            ..Default::default()
-        },
-    );
-
-    for (i, file_path) in files.iter().enumerate() {
-        if CANCEL_FLAG.load(Ordering::SeqCst) {
-            let _ = app.emit(
-                "filter-progress",
-                ProgressEvent {
-                    current: i as u32,
-                    total,
-                    filename: String::new(),
-                    status: "done".to_string(),
-                    message: format!("已取消: 已处理 {}, 共 {}", i, total),
-                    ..Default::default()
-                },
-            );
-            break;
-        }
-        let filename = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        let _ = app.emit(
-            "filter-progress",
-            ProgressEvent {
-                current: i as u32 + 1,
-                total,
-                filename: filename.clone(),
-                status: "processing".to_string(),
-                message: format!("正在检查: {}", filename),
-                ..Default::default()
-            },
-        );
-
-        match process_filter(file_path, input, output_dir, options) {
-            Ok((matched, w, h)) => {
-                if matched {
-                    success_count += 1;
-                    let _ = app.emit(
-                        "filter-progress",
-                        ProgressEvent {
-                            current: i as u32 + 1,
-                            total,
-                            filename: filename.clone(),
-                            status: "success".to_string(),
-                            message: format!(
-                                "[匹配] {} ({}x{}) → {}",
-                                filename, w, h, action_label
-                            ),
-                            ..Default::default()
-                        },
-                    );
+    ProgressEvent::new(
+        "processing",
+        format!(
+            "开始筛选: 条件={}, 操作={}, 共 {} 张图片",
+            condition_label, action_label, total
+        ),
+    )
+    .at(0, total)
+    .emit(app, "filter-progress");
+    Ok(FileBatch::new(app, "filter-progress", JOB.cancel_flag())
+        .processing("正在检查")
+        .error_prefix("[错误] ")
+        .run(
+            &files,
+            |item| {
+                let (matched, w, h) = process_filter(item.path, input, output_dir, options)?;
+                Ok(if matched {
+                    FileOutcome::done(format!(
+                        "[匹配] {} ({}x{}) → {}",
+                        item.name, w, h, action_label
+                    ))
                 } else {
-                    let _ = app.emit(
-                        "filter-progress",
-                        ProgressEvent {
-                            current: i as u32 + 1,
-                            total,
-                            filename: filename.clone(),
-                            status: "success".to_string(),
-                            message: format!("[跳过] {} ({}x{}, 不匹配条件)", filename, w, h),
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
-            Err(e) => {
-                fail_count += 1;
-                let err_msg = format!("{}: {}", filename, e);
-                errors.push(err_msg.clone());
-                let _ = app.emit(
-                    "filter-progress",
-                    ProgressEvent {
-                        current: i as u32 + 1,
-                        total,
-                        filename: filename.clone(),
-                        status: "error".to_string(),
-                        message: format!("[错误] {}", err_msg),
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-    }
-
-    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
-    if !CANCEL_FLAG.load(Ordering::SeqCst) {
-        let _ = app.emit(
-            "filter-progress",
-            ProgressEvent {
-                current: total,
-                total,
-                filename: String::new(),
-                status: "done".to_string(),
-                message: format!(
-                    "筛选完成: 匹配并{} {} 张, 失败 {} 张, 共扫描 {} 张",
-                    action_label, success_count, fail_count, total
-                ),
-                ..Default::default()
+                    FileOutcome::skipped(format!("[跳过] {} ({}x{}, 不匹配条件)", item.name, w, h))
+                })
             },
-        );
-    }
-
-    Ok(ProcessResult {
-        success_count,
-        fail_count,
-        total,
-        errors,
-    })
+            |c| {
+                format!(
+                    "筛选完成: 匹配并{} {} 张, 失败 {} 张, 共扫描 {} 张",
+                    action_label, c.success, c.failed, c.total
+                )
+            },
+        ))
 }
 
 fn process_filter(
@@ -215,37 +155,27 @@ fn process_filter(
     output_dir: &Path,
     options: &FilterOptions,
 ) -> Result<(bool, u32, u32), String> {
-    let (w, h) =
-        image::image_dimensions(file_path).map_err(|e| format!("无法读取图片尺寸: {}", e))?;
+    let (w, h) = super::image_io::read_dimensions(file_path)
+        .map_err(|e| format!("无法读取图片尺寸: {}", e))?;
 
     let matches = match options.condition.as_str() {
         "min_width" => w < options.width,
         "min_height" => h < options.height,
         "below_resolution" => w < options.width && h < options.height,
         "above_resolution" => w > options.width && h > options.height,
-        _ => return Err("无效的筛选条件".to_string()),
+        _ => unreachable!("validated condition"),
     };
 
     if matches {
         match options.action.as_str() {
             "copy" => {
-                let file_name = file_path
-                    .file_name()
-                    .ok_or("无效的文件名")?
-                    .to_string_lossy();
-                let dest = output_path_for_input(
-                    input_root,
-                    file_path,
-                    output_dir,
-                    file_name.as_ref(),
-                    options.recursive,
-                )?;
+                let dest = same_name_output(input_root, file_path, output_dir, options.recursive)?;
                 crate::commands::copy_file_safe(file_path, &dest)?;
             }
             "delete" => {
                 std::fs::remove_file(file_path).map_err(|e| format!("删除失败: {}", e))?;
             }
-            _ => return Err("无效的操作".to_string()),
+            _ => unreachable!("validated action"),
         }
     }
 

@@ -29,9 +29,7 @@ pub(crate) fn thumb_cache_dir() -> PathBuf {
 
 /// 缓存键：规范路径 + mtime + 文件大小 + 目标边长 的 MD5（仅作缓存键，无安全用途）
 fn cache_key(path: &Path, meta: &fs::Metadata, max_edge: u32) -> String {
-    let canonical = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let mtime = meta
         .modified()
         .ok()
@@ -65,12 +63,7 @@ fn get_image_thumbnail_sync(path: &str, max_edge: u32) -> Result<String, String>
     let meta = fs::metadata(&src).map_err(|e| format!("读取文件信息失败 {}: {}", path, e))?;
 
     // 无需完整解码即可拿到尺寸；小图直接用原图
-    let reader = image::ImageReader::open(&src)
-        .map_err(|e| format!("打开图片失败 {}: {}", path, e))?
-        .with_guessed_format()
-        .map_err(|e| format!("识别图片格式失败 {}: {}", path, e))?;
-    let (w, h) = reader
-        .into_dimensions()
+    let (w, h) = super::image_io::read_dimensions(&src)
         .map_err(|e| format!("读取图片尺寸失败 {}: {}", path, e))?;
     if w.max(h) <= max_edge {
         return Ok(path.to_string());
@@ -152,7 +145,8 @@ fn prune_cache_if_needed(dir: &Path) {
     {
         return;
     }
-    let result = std::panic::catch_unwind(|| {
+    // catch_unwind 保证修剪中途 panic 时 PRUNING 标志仍会被复位
+    let _ = std::panic::catch_unwind(|| {
         let Ok(entries) = fs::read_dir(dir) else {
             return;
         };
@@ -177,7 +171,4 @@ fn prune_cache_if_needed(dir: &Path) {
         }
     });
     PRUNING.store(false, Ordering::SeqCst);
-    if result.is_err() {
-        // catch_unwind 仅为保证 PRUNING 标志一定被复位
-    }
 }

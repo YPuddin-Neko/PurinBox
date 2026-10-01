@@ -7,16 +7,15 @@ interface TagSuggestion {
   name: string;
   category: number;
   post_count: number;
-  aliases: string;
   translated: string | null;
 }
 
 const CATEGORY_COLORS: Record<number, string> = {
-  0: '#60a5fa', // general - blue
-  1: '#f87171', // artist - red
-  3: '#a78bfa', // copyright - purple
-  4: '#34d399', // character - green
-  5: '#fbbf24', // meta - yellow
+  0: '#60a5fa',
+  1: '#f87171',
+  3: '#a78bfa',
+  4: '#34d399',
+  5: '#fbbf24',
 };
 
 const CATEGORY_LABELS: Record<number, string> = {
@@ -36,33 +35,28 @@ const formatCount = (n: number) => {
 interface TagAutocompleteProps {
   placeholder?: string;
   onSelect: (tag: string) => void;
-  /** If true, clear the input after selection */
-  clearOnSelect?: boolean;
-  /** Style overrides for the input */
   inputStyle?: React.CSSProperties;
-  /** Class for the input */
-  inputClassName?: string;
   /** If true, stay open after select (for multi-add) */
   keepOpen?: boolean;
-  /** Auto focus */
   autoFocus?: boolean;
-  /** Initial input value */
   initialValue?: string;
-  /** onBlur handler */
+  multi?: boolean;
+  value?: string;
+  onChange?: (value: string) => void;
   onBlur?: () => void;
-  /** onKeyDown passthrough */
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
 }
 
 export default function TagAutocomplete({
   placeholder,
   onSelect,
-  clearOnSelect = true,
   inputStyle,
-  inputClassName = 'form-input',
   keepOpen = false,
   autoFocus = false,
   initialValue = '',
+  multi = false,
+  value,
+  onChange,
   onBlur,
   onKeyDown,
 }: TagAutocompleteProps) {
@@ -78,6 +72,7 @@ export default function TagAutocomplete({
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // 请求序号：只采纳最新一次搜索的结果，防止乱序返回覆盖新结果
   const searchSeqRef = useRef(0);
+  const caretRef = useRef(0);
 
   // 计算下拉位置（基于 input 的 getBoundingClientRect）
   const updateDropdownPosition = useCallback(() => {
@@ -87,7 +82,7 @@ export default function TagAutocomplete({
     const spaceBelow = window.innerHeight - rect.bottom - 8;
     const flipUp = spaceBelow < dropdownMaxH && rect.top > spaceBelow;
     const minDropdownW = 360;
-    const dropdownW = Math.max(rect.width, minDropdownW);
+    const dropdownW = Math.min(Math.max(rect.width, minDropdownW), window.innerWidth - 16);
     // 确保不超出视口右边
     let left = rect.left;
     if (left + dropdownW > window.innerWidth - 8) {
@@ -124,12 +119,15 @@ export default function TagAutocomplete({
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      searchSeqRef.current++;
     };
   }, []);
 
   useEffect(() => {
     setQuery(initialValue);
   }, [initialValue]);
+
+  useEffect(() => { if (value !== undefined) setQuery(value); }, [value]);
 
   useEffect(() => {
     if (autoFocus && inputRef.current) {
@@ -138,20 +136,55 @@ export default function TagAutocomplete({
     }
   }, [autoFocus]);
 
+  const scheduleSearch = (val: string, caret: number) => {
+    caretRef.current = caret;
+    searchSeqRef.current++;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    setSuggestions([]);
+    setShowDropdown(false);
+    setActiveIndex(-1);
+    const prefix = val.slice(0, caret);
+    const token = multi ? prefix.split(/[,，]/).slice(-1)[0] ?? '' : val;
+    debounceRef.current = setTimeout(() => search(token.trim()), 120);
+  };
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setQuery(val);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => search(val.trim()), 120);
+    onChange?.(val);
+    scheduleSearch(val, e.target.selectionStart ?? val.length);
+  };
+
+  const handleCursorChange = (e: React.SyntheticEvent<HTMLInputElement>) => {
+    const input = e.currentTarget;
+    const caret = input.selectionStart ?? input.value.length;
+    if (multi && caret !== caretRef.current) scheduleSearch(input.value, caret);
   };
 
   const handleSelect = (tag: TagSuggestion) => {
-    onSelect(tag.name);
-    if (clearOnSelect) setQuery('');
-    if (!keepOpen) {
-      setShowDropdown(false);
-      setSuggestions([]);
+    searchSeqRef.current++;
+    clearTimeout(debounceRef.current);
+    if (multi) {
+      const caret = inputRef.current?.selectionStart ?? caretRef.current;
+      const prefix = query.slice(0, caret);
+      const start = Math.max(prefix.lastIndexOf(','), prefix.lastIndexOf('，')) + 1;
+      const after = query.slice(caret).search(/[,，]/);
+      const end = after < 0 ? query.length : caret + after;
+      const next = query.slice(0, start) + (start ? ' ' : '') + tag.name + (end === query.length ? ', ' : '') + query.slice(end);
+      setQuery(next); onChange?.(next);
+      const nextCaret = start + tag.name.length + (start ? 1 : 0) + (end === query.length ? 2 : 0);
+      caretRef.current = nextCaret;
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.setSelectionRange(nextCaret, nextCaret);
+      });
+    } else {
+      onSelect(tag.name);
+      setQuery('');
     }
+    setShowDropdown(false);
+    setSuggestions([]);
+    if (keepOpen) inputRef.current?.focus();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -180,8 +213,10 @@ export default function TagAutocomplete({
     // Enter without selection: use raw input
     if (e.key === 'Enter' && query.trim()) {
       e.preventDefault();
-      onSelect(query.trim().replace(/\s+/g, '_'));
-      if (clearOnSelect) setQuery('');
+      onSelect(query.trim());
+      if (!multi) setQuery('');
+      searchSeqRef.current++;
+      clearTimeout(debounceRef.current);
       setShowDropdown(false);
       return;
     }
@@ -204,7 +239,6 @@ export default function TagAutocomplete({
     };
   }, [showDropdown, suggestions, updateDropdownPosition]);
 
-  // Scroll active item into view
   useEffect(() => {
     if (activeIndex >= 0 && dropdownRef.current) {
       const item = dropdownRef.current.children[activeIndex] as HTMLElement;
@@ -212,7 +246,6 @@ export default function TagAutocomplete({
     }
   }, [activeIndex]);
 
-  // Close dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node) &&
@@ -234,7 +267,7 @@ export default function TagAutocomplete({
         bottom: dropdownPos.flipUp ? window.innerHeight - dropdownPos.top : undefined,
         left: dropdownPos.left,
         width: dropdownPos.width,
-        minWidth: 360,
+        maxWidth: 'calc(100vw - 16px)',
         zIndex: 99999,
         background: 'var(--color-bg-secondary)',
         border: '1px solid var(--color-border)',
@@ -251,6 +284,7 @@ export default function TagAutocomplete({
         return (
           <div
             key={tag.name}
+            onMouseDown={e => e.preventDefault()}
             onClick={() => handleSelect(tag)}
             onMouseEnter={() => setActiveIndex(i)}
             style={{
@@ -264,12 +298,10 @@ export default function TagAutocomplete({
               transition: 'background 0.1s',
             }}
           >
-            {/* Category dot */}
             <div style={{
               width: 6, height: 6, borderRadius: '50%',
               background: color, flexShrink: 0,
             }} />
-            {/* Tag name */}
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 11, fontWeight: 500, color: 'var(--color-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {tag.name.replace(/_/g, ' ')}
@@ -280,7 +312,6 @@ export default function TagAutocomplete({
                 </div>
               )}
             </div>
-            {/* Category label */}
             <span style={{
               fontSize: 8, padding: '1px 5px', borderRadius: 4,
               background: `${color}15`, color, fontWeight: 600,
@@ -288,7 +319,6 @@ export default function TagAutocomplete({
             }}>
               {CATEGORY_LABELS[tag.category] || 'other'}
             </span>
-            {/* Post count */}
             <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', flexShrink: 0, minWidth: 30, textAlign: 'right' }}>
               {formatCount(tag.post_count)}
             </span>
@@ -303,9 +333,10 @@ export default function TagAutocomplete({
     <div style={{ position: 'relative', width: '100%' }}>
       <input
         ref={inputRef}
-        className={inputClassName}
+        className="form-input"
         value={query}
         onChange={handleChange}
+        onSelect={handleCursorChange}
         onKeyDown={handleKeyDown}
         onFocus={() => { if (suggestions.length > 0) setShowDropdown(true); }}
         onBlur={() => {

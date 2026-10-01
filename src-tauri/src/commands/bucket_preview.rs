@@ -1,16 +1,87 @@
+use super::ProgressEvent;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 /// 分析与推荐各自独立的取消标志（两者可分别取消，互不影响）
-static ANALYZE_CANCEL: AtomicBool = AtomicBool::new(false);
+static ANALYZE_JOB: super::batch::BatchJob = super::batch::BatchJob::new("分桶分析");
 static RECOMMEND_CANCEL: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    #[test]
+    fn all_bucket_modes_keep_repeats_order_errors_and_progress() {
+        let root = super::super::image_io::test_dir("buckets");
+        let nested = root.join("3_subject");
+        std::fs::create_dir_all(&nested).unwrap();
+        image::RgbImage::new(64, 32)
+            .save(root.join("a.png"))
+            .unwrap();
+        image::RgbImage::new(32, 64)
+            .save(nested.join("b.png"))
+            .unwrap();
+        std::fs::write(root.join("bad.png"), b"bad image").unwrap();
+        for mode in ["legacy", "nearest_only", "diffusion_pipe"] {
+            for recursive in [false, true] {
+                let options: BucketOptions = serde_json::from_value(serde_json::json!({
+                    "input_path": root.to_string_lossy(), "res_width": 64, "res_height": 64,
+                    "steps": 16, "no_upscale": true, "min_bucket_reso": 16,
+                    "bucket_mode": mode, "recursive": recursive, "batch_size": 2, "drop_last": true
+                }))
+                .unwrap();
+                let app = tauri::test::mock_app();
+                let events = super::super::batch::capture_events(app.handle(), "bucket-progress");
+                let analysis = analyze_buckets_sync(app.handle().clone(), options).unwrap();
+                assert_eq!(analysis.total_images, if recursive { 2 } else { 1 });
+                assert_eq!(analysis.total_count, if recursive { 4 } else { 1 });
+                assert_eq!(analysis.skipped.len(), 1);
+                assert_eq!(analysis.skipped[0].0, "bad.png");
+                assert_eq!(
+                    analysis.ar_error_metric,
+                    if mode == "diffusion_pipe" {
+                        "log"
+                    } else {
+                        "linear"
+                    }
+                );
+                let events = events.lock().unwrap();
+                assert_eq!(events.len(), 3);
+                assert_eq!(events[0]["status"], "info");
+                assert_eq!(events[1]["current"], if recursive { 3 } else { 2 });
+                assert_eq!(events[2]["status"], "done");
+                for bucket in &analysis.buckets {
+                    assert!(bucket.bucket_width.is_multiple_of(16));
+                    assert!(bucket.bucket_height.is_multiple_of(16));
+                    for image in &bucket.images {
+                        assert_eq!(image.repeats, if image.name == "b.png" { 3 } else { 1 });
+                    }
+                }
+            }
+        }
+        let files = collect_supported_image_files(&root, true).unwrap();
+        let mut sorted = files.clone();
+        sorted.sort();
+        assert_eq!(files, sorted);
+        assert!(scan_bucket_images(&files, &AtomicBool::new(true), |_, _| {}).is_err());
+        let recommendation = recommend_bucket_params_sync(BucketRecommendOptions {
+            input_path: root.to_string_lossy().into_owned(),
+            recursive: Some(true),
+        })
+        .unwrap();
+        let json = serde_json::to_value(recommendation).unwrap();
+        assert_eq!(json.as_object().unwrap().len(), 5);
+        assert!(!json["candidates"].as_array().unwrap().is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
 
 /// 取消正在进行的分桶分析
 #[tauri::command]
 pub fn cancel_bucket_analysis() {
-    ANALYZE_CANCEL.store(true, Ordering::SeqCst);
+    ANALYZE_JOB.cancel();
 }
 
 /// 取消正在进行的分桶参数推荐
@@ -66,40 +137,12 @@ pub struct BucketRecommendOptions {
 pub struct BucketParamRecommendation {
     /// 成功读取的图片数量
     pub total_images: u32,
-    /// 读取失败的图片数量
-    pub skipped_count: u32,
     /// 不同尺寸数量
     pub unique_sizes: u32,
-    /// 不同 AR 数量
-    pub unique_aspect_ratios: u32,
-    /// 推荐训练分辨率宽
-    pub res_width: u32,
-    /// 推荐训练分辨率高
-    pub res_height: u32,
-    /// 推荐桶划分单位
-    pub steps: u32,
-    /// 推荐 DP 最小 AR
-    pub dp_min_ar: f64,
-    /// 推荐 DP 最大 AR
-    pub dp_max_ar: f64,
-    /// 推荐 DP AR 桶数量
-    pub dp_num_ar_buckets: u32,
     /// 推荐 SD-Scripts 最小桶尺寸
     pub min_bucket_reso: u32,
     /// 推荐 SD-Scripts 最大桶尺寸
     pub max_bucket_reso: u32,
-    /// 推荐 batch size（按 drop_last=true 的可用率评估）
-    pub batch_size: u32,
-    /// 活跃尺寸桶数量
-    pub active_bucket_count: u32,
-    /// 总 count
-    pub total_count: u32,
-    /// 有效 count
-    pub effective_count: u32,
-    /// 被丢弃的 count
-    pub dropped_count: u32,
-    /// count 可用率
-    pub usable_rate: f64,
     /// 候选推荐列表
     pub candidates: Vec<BucketParamCandidate>,
 }
@@ -115,8 +158,6 @@ pub struct BucketParamCandidate {
     pub dp_num_ar_buckets: u32,
     pub batch_size: u32,
     pub active_bucket_count: u32,
-    pub total_count: u32,
-    pub effective_count: u32,
     pub dropped_count: u32,
     pub usable_rate: f64,
     pub mean_ar_error: f64,
@@ -125,13 +166,9 @@ pub struct BucketParamCandidate {
 /// 单张图片的分桶信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BucketImageInfo {
-    /// 文件路径
     pub path: String,
-    /// 文件名
     pub name: String,
-    /// 原始宽
     pub orig_width: u32,
-    /// 原始高
     pub orig_height: u32,
     /// 重复次数（从父文件夹名前缀检测）
     pub repeats: u32,
@@ -140,13 +177,9 @@ pub struct BucketImageInfo {
 /// 单个桶
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BucketGroup {
-    /// 桶索引
     pub index: u32,
-    /// 桶宽
     pub bucket_width: u32,
-    /// 桶高
     pub bucket_height: u32,
-    /// 物理图片数
     pub image_count: u32,
     /// count = 物理图片数 × repeats
     pub total_count: u32,
@@ -158,40 +191,27 @@ pub struct BucketGroup {
     pub batch_count: u32,
     /// 当前桶会产生的短 batch 数
     pub short_batch_count: u32,
-    /// 宽高比
     pub aspect_ratio: f64,
     /// 当前桶内图片的平均 AR 误差
     pub mean_ar_error: f64,
-    /// 包含的图片
     pub images: Vec<BucketImageInfo>,
 }
 
 /// 分桶分析结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BucketAnalysis {
-    /// 总图片数
     pub total_images: u32,
-    /// 总 count
     pub total_count: u32,
-    /// 有效 count
     pub effective_count: u32,
-    /// 被丢弃 count
     pub dropped_count: u32,
-    /// batch 数
     pub batch_count: u32,
-    /// 短 batch 数
     pub short_batch_count: u32,
-    /// count 可用率
     pub usable_rate: f64,
-    /// 估算使用的 batch size
-    pub batch_size: u32,
     /// 是否丢弃不足 batch size 的桶尾样本
     pub drop_last: bool,
-    /// 桶数量
     pub bucket_count: u32,
     /// 读取失败的文件
     pub skipped: Vec<(String, String)>,
-    /// 各桶详情
     pub buckets: Vec<BucketGroup>,
     /// 平均 AR 误差 (without repeats)
     pub mean_ar_error: f64,
@@ -199,26 +219,10 @@ pub struct BucketAnalysis {
     pub ar_error_metric: String,
 }
 
-/// 进度事件
-#[derive(Debug, Clone, Serialize)]
-struct ScanProgress {
-    current: u32,
-    total: u32,
-    status: String,
-    message: String,
-}
-
 #[derive(Debug, Clone, Copy)]
 enum ArErrorMetric {
     Linear,
     Log,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct RecommendSample {
-    width: u32,
-    height: u32,
-    repeats: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -229,22 +233,11 @@ struct BucketBatchStats {
     short_batch_count: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CandidateEval {
-    active_bucket_count: u32,
-    total_count: u32,
-    effective_count: u32,
-    dropped_count: u32,
-    usable_rate: f64,
-    mean_ar_error: f64,
-}
-
 fn compute_bucket_batch_stats(
     total_count: u32,
     batch_size: u32,
     drop_last: bool,
 ) -> BucketBatchStats {
-    let batch_size = batch_size.max(1);
     if total_count == 0 {
         return BucketBatchStats {
             effective_count: 0,
@@ -291,46 +284,10 @@ fn extract_repeats(folder_name: &str) -> u32 {
     1
 }
 
-/// 读取图片尺寸时按文件头猜测格式，避免 WebP 内容使用 .png 后缀时被当作 PNG 解析失败。
-fn read_image_dimensions(path: &Path) -> image::ImageResult<(u32, u32)> {
-    image::ImageReader::open(path)?
-        .with_guessed_format()?
-        .into_dimensions()
-}
-
-fn collect_supported_image_files(input_path: &Path, recursive: bool) -> Vec<PathBuf> {
-    let supported_exts = ["png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif", "gif"];
-    let walk_depth = if recursive { usize::MAX } else { 1 };
-    let mut image_files = Vec::new();
-
-    for entry in walkdir::WalkDir::new(input_path)
-        .max_depth(walk_depth)
-        .into_iter()
-        // 失败图副本会让分桶/分辨率统计凭空翻倍
-        .filter_entry(|e| !crate::commands::is_prunable_artifact_dir(e))
-        .filter_map(|e| e.ok())
-    {
-        let p = entry.path();
-        if p.is_file() {
-            if let Some(ext) = p.extension() {
-                let ext_lower = ext.to_string_lossy().to_lowercase();
-                if supported_exts.contains(&ext_lower.as_str()) {
-                    image_files.push(p.to_path_buf());
-                }
-            }
-        }
-    }
-
-    image_files.sort();
-    image_files
-}
-
-fn round_up_to_multiple(value: u32, multiple: u32) -> u32 {
-    if value == 0 {
-        multiple
-    } else {
-        value.div_ceil(multiple) * multiple
-    }
+fn collect_supported_image_files(input: &Path, recursive: bool) -> Result<Vec<PathBuf>, String> {
+    let mut files = super::collect_image_files_with_recursive(input, recursive)?;
+    files.sort();
+    Ok(files)
 }
 
 /// 生成候选桶分辨率列表（对应 SD-Scripts model_util.make_bucket_resolutions）
@@ -541,14 +498,9 @@ pub async fn analyze_buckets<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: BucketOptions,
 ) -> Result<BucketAnalysis, String> {
-    // 互斥：页面与工作流节点共用全局取消标志，并发会互吞取消
-    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let _busy = crate::commands::BusyGuard::acquire(&RUNNING, "分桶分析")?;
-
-    ANALYZE_CANCEL.store(false, Ordering::SeqCst);
-    tokio::task::spawn_blocking(move || analyze_buckets_sync(app, options))
+    ANALYZE_JOB
+        .run(move || analyze_buckets_sync(app, options))
         .await
-        .map_err(|e| format!("分桶分析任务执行失败: {}", e))?
 }
 
 fn analyze_buckets_sync<R: tauri::Runtime>(
@@ -556,7 +508,7 @@ fn analyze_buckets_sync<R: tauri::Runtime>(
     options: BucketOptions,
 ) -> Result<BucketAnalysis, String> {
     let input_path = std::path::PathBuf::from(&options.input_path);
-    if !input_path.exists() || !input_path.is_dir() {
+    if !input_path.is_dir() {
         return Err(format!("目录不存在: {}", options.input_path));
     }
 
@@ -567,175 +519,44 @@ fn analyze_buckets_sync<R: tauri::Runtime>(
     let batch_size = options.batch_size.unwrap_or(1).max(1);
     let drop_last = options.drop_last.unwrap_or(bucket_mode == "diffusion_pipe");
 
-    // min/max bucket reso（仅 no_upscale=false 且 legacy 模式时有效）
+    // min_size 用于 legacy（no_upscale=false）和 nearest_only，max_size 只用于 legacy（no_upscale=false）
     let min_size = options.min_bucket_reso.unwrap_or(256).max(steps);
     let max_size = options
         .max_bucket_reso
         .unwrap_or(std::cmp::max(options.res_width, options.res_height))
         .max(std::cmp::max(options.res_width, options.res_height));
 
-    let image_files = collect_supported_image_files(&input_path, recursive);
+    let image_files = collect_supported_image_files(&input_path, recursive)?;
     let file_count = image_files.len() as u32;
 
     let _ = app.emit(
         "bucket-progress",
-        ScanProgress {
-            current: 0,
-            total: file_count,
-            status: "info".to_string(),
-            message: format!("正在扫描 {} 张图片...", file_count),
-        },
+        ProgressEvent::new("info", format!("正在扫描 {} 张图片...", file_count)).at(0, file_count),
     );
 
-    // diffusion-pipe 模式：按几何间隔 AR 桶 + log AR 最近距离分配，尺寸按目标面积和 32 对齐。
-    if bucket_mode == "diffusion_pipe" {
-        let min_ar = options.dp_min_ar.unwrap_or(0.5);
-        let max_ar = options.dp_max_ar.unwrap_or(2.0);
-        let num_ar_buckets = options.dp_num_ar_buckets.unwrap_or(7);
-        let ar_buckets = make_diffusion_pipe_ar_buckets(min_ar, max_ar, num_ar_buckets)?;
-
-        let mut bucket_map: std::collections::BTreeMap<(u32, u32), Vec<BucketImageInfo>> =
-            std::collections::BTreeMap::new();
-        let mut skipped: Vec<(String, String)> = Vec::new();
-        let mut processed = 0u32;
-
-        for file_path in &image_files {
-            if ANALYZE_CANCEL.load(Ordering::SeqCst) {
-                return Err("已取消".to_string());
-            }
-            let name = file_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let img_repeats = file_path
-                .parent()
-                .and_then(|p| p.file_name())
-                .map(|n| extract_repeats(&n.to_string_lossy()))
-                .unwrap_or(1);
-            match read_image_dimensions(file_path) {
-                Ok((w, h)) => {
-                    let ar_bucket = select_diffusion_pipe_ar_bucket(w, h, &ar_buckets);
-                    let (bw, bh) = make_diffusion_pipe_size_bucket(ar_bucket, max_area, steps);
-                    bucket_map
-                        .entry((bw, bh))
-                        .or_default()
-                        .push(BucketImageInfo {
-                            path: file_path.to_string_lossy().to_string(),
-                            name,
-                            orig_width: w,
-                            orig_height: h,
-                            repeats: img_repeats,
-                        });
-                }
-                Err(e) => {
-                    skipped.push((name, e.to_string()));
-                }
-            }
-            processed += 1;
-            if processed.is_multiple_of(50) || processed == file_count {
-                let _ = app.emit(
-                    "bucket-progress",
-                    ScanProgress {
-                        current: processed,
-                        total: file_count,
-                        status: "processing".to_string(),
-                        message: format!("已分析 {}/{}", processed, file_count),
-                    },
-                );
-            }
-        }
-
-        return build_analysis_result(
-            &app,
-            bucket_map,
-            skipped,
-            file_count,
-            ArErrorMetric::Log,
-            batch_size,
-            drop_last,
-        );
-    }
-
-    // nearest_only 需要先读取所有图片尺寸
-    if bucket_mode == "nearest_only" {
-        let mut image_sizes: Vec<(u32, u32)> = Vec::new();
-        let mut image_data: Vec<(std::path::PathBuf, String, u32, u32, u32)> = Vec::new();
-        let mut skipped: Vec<(String, String)> = Vec::new();
-        let mut processed = 0u32;
-
-        for file_path in &image_files {
-            if ANALYZE_CANCEL.load(Ordering::SeqCst) {
-                return Err("已取消".to_string());
-            }
-            let name = file_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let img_repeats = file_path
-                .parent()
-                .and_then(|p| p.file_name())
-                .map(|n| extract_repeats(&n.to_string_lossy()))
-                .unwrap_or(1);
-            match read_image_dimensions(file_path) {
-                Ok((w, h)) => {
-                    image_sizes.push((w, h));
-                    image_data.push((file_path.clone(), name, w, h, img_repeats));
-                }
-                Err(e) => {
-                    skipped.push((name, e.to_string()));
-                }
-            }
-            processed += 1;
-            if processed.is_multiple_of(50) || processed == file_count {
-                let _ = app.emit(
-                    "bucket-progress",
-                    ScanProgress {
-                        current: processed,
-                        total: file_count,
-                        status: "processing".to_string(),
-                        message: format!("已分析 {}/{}", processed, file_count),
-                    },
-                );
-            }
-        }
-
-        // 根据实际图片尺寸生成桶列表
-        let predefined_resos = make_buckets_by_nearest(&image_sizes, max_area, steps, min_size);
-
-        // 分配图片到桶
-        let mut bucket_map: std::collections::BTreeMap<(u32, u32), Vec<BucketImageInfo>> =
-            std::collections::BTreeMap::new();
-        for (file_path, name, w, h, img_repeats) in &image_data {
-            let (bw, bh) = select_bucket_predefined(*w, *h, &predefined_resos);
-            bucket_map
-                .entry((bw, bh))
-                .or_default()
-                .push(BucketImageInfo {
-                    path: file_path.to_string_lossy().to_string(),
-                    name: name.clone(),
-                    orig_width: *w,
-                    orig_height: *h,
-                    repeats: *img_repeats,
-                });
-        }
-
-        return build_analysis_result(
-            &app,
-            bucket_map,
-            skipped,
-            file_count,
-            ArErrorMetric::Linear,
-            batch_size,
-            drop_last,
-        );
-    }
-
-    // legacy 模式
-    // 决定是否使用预定义桶
-    let use_predefined = !options.no_upscale;
-    let predefined_resos = if use_predefined {
+    // 参数错误必须先于图片读取报告。
+    let ar_buckets = if bucket_mode == "diffusion_pipe" {
+        make_diffusion_pipe_ar_buckets(
+            options.dp_min_ar.unwrap_or(0.5),
+            options.dp_max_ar.unwrap_or(2.0),
+            options.dp_num_ar_buckets.unwrap_or(7),
+        )?
+    } else {
+        Vec::new()
+    };
+    let scan = scan_bucket_images(&image_files, ANALYZE_JOB.cancel_flag(), |current, total| {
+        super::ProgressEvent::new("processing", format!("已分析 {}/{}", current, total))
+            .at(current, total)
+            .emit(&app, "bucket-progress");
+    })?;
+    let predefined_resos = if bucket_mode == "nearest_only" {
+        let sizes: Vec<_> = scan
+            .images
+            .iter()
+            .map(|image| (image.orig_width, image.orig_height))
+            .collect();
+        make_buckets_by_nearest(&sizes, max_area, steps, min_size)
+    } else if bucket_mode != "diffusion_pipe" && !options.no_upscale {
         make_bucket_resolutions(
             (options.res_width, options.res_height),
             min_size,
@@ -743,129 +564,111 @@ fn analyze_buckets_sync<R: tauri::Runtime>(
             steps,
         )
     } else {
-        vec![] // no_upscale legacy 不需要
+        Vec::new()
     };
-
-    // 分桶
-    let mut bucket_map: std::collections::BTreeMap<(u32, u32), Vec<BucketImageInfo>> =
+    let mut bucket_map: std::collections::BTreeMap<_, Vec<BucketImageInfo>> =
         std::collections::BTreeMap::new();
-    let mut skipped: Vec<(String, String)> = Vec::new();
-    let mut processed = 0u32;
-
-    for file_path in &image_files {
-        if ANALYZE_CANCEL.load(Ordering::SeqCst) {
-            return Err("已取消".to_string());
-        }
-        let name = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let img_repeats = file_path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| extract_repeats(&n.to_string_lossy()))
-            .unwrap_or(1);
-        match read_image_dimensions(file_path) {
-            Ok((w, h)) => {
-                let (bw, bh) = if use_predefined {
-                    select_bucket_predefined(w, h, &predefined_resos)
-                } else {
-                    select_bucket_no_upscale(w, h, max_area, steps)
-                };
-                bucket_map
-                    .entry((bw, bh))
-                    .or_default()
-                    .push(BucketImageInfo {
-                        path: file_path.to_string_lossy().to_string(),
-                        name,
-                        orig_width: w,
-                        orig_height: h,
-                        repeats: img_repeats,
-                    });
-            }
-            Err(e) => {
-                skipped.push((name, e.to_string()));
-            }
-        }
-        processed += 1;
-        if processed.is_multiple_of(50) || processed == file_count {
-            let _ = app.emit(
-                "bucket-progress",
-                ScanProgress {
-                    current: processed,
-                    total: file_count,
-                    status: "processing".to_string(),
-                    message: format!("已分析 {}/{}", processed, file_count),
-                },
-            );
-        }
+    for image in scan.images {
+        let (w, h) = (image.orig_width, image.orig_height);
+        let size = if bucket_mode == "diffusion_pipe" {
+            let ar = select_diffusion_pipe_ar_bucket(w, h, &ar_buckets);
+            make_diffusion_pipe_size_bucket(ar, max_area, steps)
+        } else if bucket_mode == "nearest_only" || !options.no_upscale {
+            select_bucket_predefined(w, h, &predefined_resos)
+        } else {
+            select_bucket_no_upscale(w, h, max_area, steps)
+        };
+        bucket_map.entry(size).or_default().push(image);
     }
-
     build_analysis_result(
         &app,
         bucket_map,
-        skipped,
+        scan.skipped,
         file_count,
-        ArErrorMetric::Linear,
+        if bucket_mode == "diffusion_pipe" {
+            ArErrorMetric::Log
+        } else {
+            ArErrorMetric::Linear
+        },
         batch_size,
         drop_last,
     )
 }
 
-fn evaluate_diffusion_pipe_candidate(
-    samples: &[RecommendSample],
+struct BucketScan {
+    images: Vec<BucketImageInfo>,
+    skipped: Vec<(String, String)>,
+}
+
+fn scan_bucket_images(
+    files: &[PathBuf],
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(u32, u32),
+) -> Result<BucketScan, String> {
+    let mut scan = BucketScan {
+        images: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let total = files.len() as u32;
+    for (index, path) in files.iter().enumerate() {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("已取消".to_string());
+        }
+        let name = super::file_name_lossy(path);
+        match super::image_io::read_dimensions(path) {
+            Ok((orig_width, orig_height)) => scan.images.push(BucketImageInfo {
+                path: path.to_string_lossy().into_owned(),
+                name,
+                orig_width,
+                orig_height,
+                repeats: path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .map(|n| extract_repeats(&n.to_string_lossy()))
+                    .unwrap_or(1),
+            }),
+            Err(e) => scan.skipped.push((name, e.to_string())),
+        }
+        let current = index as u32 + 1;
+        if current.is_multiple_of(50) || current == total {
+            on_progress(current, total);
+        }
+    }
+    Ok(scan)
+}
+
+/// 一组 diffusion-pipe 参数下各尺寸桶的 count（含 repeats）与平均 log AR 误差，与 batch size 无关
+fn assign_diffusion_pipe_buckets(
+    samples: &[BucketImageInfo],
     max_area: f64,
     ar_buckets: &[f64],
     steps: u32,
-    batch_size: u32,
-    drop_last: bool,
-) -> CandidateEval {
+) -> (Vec<u32>, f64) {
     let mut bucket_counts: std::collections::BTreeMap<(u32, u32), u32> =
         std::collections::BTreeMap::new();
     let mut error_sum = 0.0f64;
-    let mut total_count = 0u32;
 
     for sample in samples {
-        let image_ar = sample.width as f64 / sample.height as f64;
-        let ar_bucket = select_diffusion_pipe_ar_bucket(sample.width, sample.height, ar_buckets);
+        let image_ar = sample.orig_width as f64 / sample.orig_height as f64;
+        let ar_bucket =
+            select_diffusion_pipe_ar_bucket(sample.orig_width, sample.orig_height, ar_buckets);
         let (bw, bh) = make_diffusion_pipe_size_bucket(ar_bucket, max_area, steps);
         let bucket_ar = bw as f64 / bh as f64;
         error_sum += (image_ar.ln() - bucket_ar.ln()).abs();
-        total_count += sample.repeats;
         *bucket_counts.entry((bw, bh)).or_insert(0) += sample.repeats;
     }
 
-    let mut effective_count = 0u32;
-    let mut dropped_count = 0u32;
-    for count in bucket_counts.values() {
-        let stats = compute_bucket_batch_stats(*count, batch_size, drop_last);
-        effective_count += stats.effective_count;
-        dropped_count += stats.dropped_count;
-    }
-
-    CandidateEval {
-        active_bucket_count: bucket_counts.len() as u32,
-        total_count,
-        effective_count,
-        dropped_count,
-        usable_rate: if total_count > 0 {
-            effective_count as f64 / total_count as f64
-        } else {
-            0.0
-        },
-        mean_ar_error: if samples.is_empty() {
-            0.0
-        } else {
-            error_sum / samples.len() as f64
-        },
-    }
+    let mean_ar_error = if samples.is_empty() {
+        0.0
+    } else {
+        error_sum / samples.len() as f64
+    };
+    (bucket_counts.into_values().collect(), mean_ar_error)
 }
 
 /// 根据数据集尺寸分布推荐分桶参数
 ///
-/// 网格搜索是纯 CPU 密集操作（最坏约 2.5 万次全数据集评估），
-/// 必须放入 spawn_blocking，否则会长时间占死 tokio worker。
+/// 网格搜索是纯 CPU 密集操作，必须放入 spawn_blocking，否则会长时间占死 tokio worker。
 #[tauri::command]
 pub async fn recommend_bucket_params(
     options: BucketRecommendOptions,
@@ -880,49 +683,25 @@ fn recommend_bucket_params_sync(
     options: BucketRecommendOptions,
 ) -> Result<BucketParamRecommendation, String> {
     let input_path = PathBuf::from(&options.input_path);
-    if !input_path.exists() || !input_path.is_dir() {
+    if !input_path.is_dir() {
         return Err(format!("目录不存在: {}", options.input_path));
     }
 
     let recursive = options.recursive.unwrap_or(false);
-    let image_files = collect_supported_image_files(&input_path, recursive);
+    let image_files = collect_supported_image_files(&input_path, recursive)?;
 
-    let mut samples: Vec<RecommendSample> = Vec::new();
-    let mut skipped_count = 0u32;
-
-    for file_path in &image_files {
-        if RECOMMEND_CANCEL.load(Ordering::SeqCst) {
-            return Err("已取消".to_string());
-        }
-        let img_repeats = file_path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|n| extract_repeats(&n.to_string_lossy()))
-            .unwrap_or(1);
-        match read_image_dimensions(file_path) {
-            Ok((w, h)) if w > 0 && h > 0 => samples.push(RecommendSample {
-                width: w,
-                height: h,
-                repeats: img_repeats,
-            }),
-            Ok(_) => skipped_count += 1,
-            Err(_) => skipped_count += 1,
-        }
-    }
+    let mut samples = scan_bucket_images(&image_files, &RECOMMEND_CANCEL, |_, _| {})?.images;
+    samples.retain(|image| image.orig_width > 0 && image.orig_height > 0);
 
     if samples.is_empty() {
         return Err("没有可读取的图片，无法推荐参数".to_string());
     }
 
-    let dimensions: Vec<(u32, u32)> = samples
-        .iter()
-        .map(|sample| (sample.width, sample.height))
-        .collect();
     let total_repeated_count: u32 = samples.iter().map(|sample| sample.repeats).sum();
 
     let mut areas: Vec<u64> = samples
         .iter()
-        .map(|sample| sample.width as u64 * sample.height as u64)
+        .map(|sample| sample.orig_width as u64 * sample.orig_height as u64)
         .collect();
     areas.sort_unstable();
     let median_area_index = (areas.len() - 1) / 2;
@@ -931,7 +710,7 @@ fn recommend_bucket_params_sync(
 
     let mut ars: Vec<f64> = samples
         .iter()
-        .map(|sample| sample.width as f64 / sample.height as f64)
+        .map(|sample| sample.orig_width as f64 / sample.orig_height as f64)
         .collect();
     ars.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -946,14 +725,9 @@ fn recommend_bucket_params_sync(
         }
     }
 
-    let unique_sizes = dimensions
+    let unique_sizes = samples
         .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>()
-        .len() as u32;
-    let unique_aspect_ratios = ars
-        .iter()
-        .map(|ar| (round_ar_to_3(*ar) * 1000.0).round() as u32)
+        .map(|sample| (sample.orig_width, sample.orig_height))
         .collect::<std::collections::BTreeSet<_>>()
         .len() as u32;
     let mut side_candidates = std::collections::BTreeSet::new();
@@ -993,52 +767,63 @@ fn recommend_bucket_params_sync(
         }
     }
 
+    // AR 桶列表只取决于范围和桶数，与 side、steps 无关
+    let mut ar_bucket_sets = Vec::new();
+    for &(min_ar, max_ar) in &range_candidates {
+        for count in 2u32..=40u32 {
+            let ar_buckets = make_diffusion_pipe_ar_buckets(min_ar, max_ar, count)?;
+            ar_bucket_sets.push((min_ar, max_ar, count, ar_buckets));
+        }
+    }
+
     let max_batch_candidate = total_repeated_count.clamp(1, 16);
     let mut scored_candidates: Vec<(f64, BucketParamCandidate)> = Vec::new();
-    for side in &side_candidates {
+    for &side in &side_candidates {
+        let max_area = (side as f64) * (side as f64);
+        let side_delta_penalty = side.abs_diff(median_side) as f64 / median_side.max(1) as f64;
         for steps in [32u32, 64u32] {
-            for (min_ar, max_ar) in &range_candidates {
-                for count in 2u32..=40u32 {
-                    if RECOMMEND_CANCEL.load(Ordering::SeqCst) {
-                        return Err("已取消".to_string());
+            for (min_ar, max_ar, count, ar_buckets) in &ar_bucket_sets {
+                if RECOMMEND_CANCEL.load(Ordering::SeqCst) {
+                    return Err("已取消".to_string());
+                }
+                // 分桶结果与 batch size 无关，每组参数只分一次桶
+                let (bucket_counts, mean_ar_error) =
+                    assign_diffusion_pipe_buckets(&samples, max_area, ar_buckets, steps);
+                let active_bucket_count = bucket_counts.len() as u32;
+                for batch_size in 1u32..=max_batch_candidate {
+                    let mut effective_count = 0u32;
+                    let mut dropped_count = 0u32;
+                    for &bucket_count in &bucket_counts {
+                        let stats = compute_bucket_batch_stats(bucket_count, batch_size, true);
+                        effective_count += stats.effective_count;
+                        dropped_count += stats.dropped_count;
                     }
-                    let ar_buckets = make_diffusion_pipe_ar_buckets(*min_ar, *max_ar, count)?;
-                    let max_area = (*side as f64) * (*side as f64);
-                    for batch_size in 1u32..=max_batch_candidate {
-                        let eval = evaluate_diffusion_pipe_candidate(
-                            &samples,
-                            max_area,
-                            &ar_buckets,
+                    let usable_rate = if total_repeated_count > 0 {
+                        effective_count as f64 / total_repeated_count as f64
+                    } else {
+                        0.0
+                    };
+                    let score = usable_rate * 100.0 + (batch_size as f64).ln() * 4.0
+                        - mean_ar_error * 35.0
+                        - side_delta_penalty * 2.0
+                        - active_bucket_count as f64 * 0.025
+                        - *count as f64 * 0.006;
+                    scored_candidates.push((
+                        score,
+                        BucketParamCandidate {
+                            res_width: side,
+                            res_height: side,
                             steps,
+                            dp_min_ar: *min_ar,
+                            dp_max_ar: *max_ar,
+                            dp_num_ar_buckets: *count,
                             batch_size,
-                            true,
-                        );
-                        let side_delta_penalty =
-                            side.abs_diff(median_side) as f64 / median_side.max(1) as f64;
-                        let score = eval.usable_rate * 100.0 + (batch_size as f64).ln() * 4.0
-                            - eval.mean_ar_error * 35.0
-                            - side_delta_penalty * 2.0
-                            - eval.active_bucket_count as f64 * 0.025
-                            - count as f64 * 0.006;
-                        scored_candidates.push((
-                            score,
-                            BucketParamCandidate {
-                                res_width: *side,
-                                res_height: *side,
-                                steps,
-                                dp_min_ar: *min_ar,
-                                dp_max_ar: *max_ar,
-                                dp_num_ar_buckets: count,
-                                batch_size,
-                                active_bucket_count: eval.active_bucket_count,
-                                total_count: eval.total_count,
-                                effective_count: eval.effective_count,
-                                dropped_count: eval.dropped_count,
-                                usable_rate: eval.usable_rate,
-                                mean_ar_error: eval.mean_ar_error,
-                            },
-                        ));
-                    }
+                            active_bucket_count,
+                            dropped_count,
+                            usable_rate,
+                            mean_ar_error,
+                        },
+                    ));
                 }
             }
         }
@@ -1079,32 +864,18 @@ fn recommend_bucket_params_sync(
     }
     let best = candidates[0].clone();
 
-    let max_side = dimensions
+    let max_side = samples
         .iter()
-        .map(|(w, h)| std::cmp::max(*w, *h))
+        .map(|sample| std::cmp::max(sample.orig_width, sample.orig_height))
         .max()
         .unwrap_or(best.res_width)
         .max(best.res_width);
 
     Ok(BucketParamRecommendation {
-        total_images: dimensions.len() as u32,
-        skipped_count,
+        total_images: samples.len() as u32,
         unique_sizes,
-        unique_aspect_ratios,
-        res_width: best.res_width,
-        res_height: best.res_height,
-        steps: best.steps,
-        dp_min_ar: best.dp_min_ar,
-        dp_max_ar: best.dp_max_ar,
-        dp_num_ar_buckets: best.dp_num_ar_buckets,
         min_bucket_reso: 256,
-        max_bucket_reso: round_up_to_multiple(max_side, 64),
-        batch_size: best.batch_size,
-        active_bucket_count: best.active_bucket_count,
-        total_count: best.total_count,
-        effective_count: best.effective_count,
-        dropped_count: best.dropped_count,
-        usable_rate: best.usable_rate,
+        max_bucket_reso: max_side.div_ceil(64) * 64,
         candidates,
     })
 }
@@ -1119,7 +890,6 @@ fn build_analysis_result<R: tauri::Runtime>(
     batch_size: u32,
     drop_last: bool,
 ) -> Result<BucketAnalysis, String> {
-    let batch_size = batch_size.max(1);
     let mut buckets: Vec<BucketGroup> = Vec::new();
     let mut total_images = 0u32;
     let mut total_count = 0u32;
@@ -1129,14 +899,14 @@ fn build_analysis_result<R: tauri::Runtime>(
     let mut short_batch_count = 0u32;
     let mut ar_error_sum = 0.0f64;
 
-    for (idx, ((bw, bh), images)) in bucket_map.iter().enumerate() {
+    for (idx, ((bw, bh), images)) in bucket_map.into_iter().enumerate() {
         let count = images.len() as u32;
         total_images += count;
-        let bucket_ar = *bw as f64 / *bh as f64;
+        let bucket_ar = bw as f64 / bh as f64;
         let mut bucket_total_count = 0u32;
         let mut bucket_ar_error_sum = 0.0f64;
         // 计算每张图片的 AR 误差 和 count
-        for img in images {
+        for img in &images {
             let image_ar = img.orig_width as f64 / img.orig_height as f64;
             let ar_error = match ar_error_metric {
                 ArErrorMetric::Linear => (image_ar - bucket_ar).abs(),
@@ -1147,11 +917,7 @@ fn build_analysis_result<R: tauri::Runtime>(
             bucket_total_count += img.repeats;
         }
         total_count += bucket_total_count;
-        let bucket_mean_ar_error = if count > 0 {
-            bucket_ar_error_sum / count as f64
-        } else {
-            0.0
-        };
+        let bucket_mean_ar_error = bucket_ar_error_sum / count as f64;
         let bucket_batch_stats =
             compute_bucket_batch_stats(bucket_total_count, batch_size, drop_last);
         effective_count += bucket_batch_stats.effective_count;
@@ -1160,8 +926,8 @@ fn build_analysis_result<R: tauri::Runtime>(
         short_batch_count += bucket_batch_stats.short_batch_count;
         buckets.push(BucketGroup {
             index: idx as u32,
-            bucket_width: *bw,
-            bucket_height: *bh,
+            bucket_width: bw,
+            bucket_height: bh,
             image_count: count,
             total_count: bucket_total_count,
             effective_count: bucket_batch_stats.effective_count,
@@ -1170,7 +936,7 @@ fn build_analysis_result<R: tauri::Runtime>(
             short_batch_count: bucket_batch_stats.short_batch_count,
             aspect_ratio: (bucket_ar * 100.0).round() / 100.0,
             mean_ar_error: bucket_mean_ar_error,
-            images: images.clone(),
+            images,
         });
     }
 
@@ -1187,11 +953,9 @@ fn build_analysis_result<R: tauri::Runtime>(
 
     let _ = app.emit(
         "bucket-progress",
-        ScanProgress {
-            current: file_count,
-            total: file_count,
-            status: "done".to_string(),
-            message: format!(
+        ProgressEvent::new(
+            "done",
+            format!(
                 "分析完成: {} 张图片 → {} 个桶, 总 count {}, 有效 count {}, AR误差 {:.10}",
                 total_images,
                 buckets.len(),
@@ -1199,7 +963,8 @@ fn build_analysis_result<R: tauri::Runtime>(
                 effective_count,
                 mean_ar_error
             ),
-        },
+        )
+        .at(file_count, file_count),
     );
 
     Ok(BucketAnalysis {
@@ -1210,7 +975,6 @@ fn build_analysis_result<R: tauri::Runtime>(
         batch_count,
         short_batch_count,
         usable_rate,
-        batch_size,
         drop_last,
         bucket_count: buckets.len() as u32,
         skipped,
@@ -1224,27 +988,7 @@ fn build_analysis_result<R: tauri::Runtime>(
     })
 }
 
-/// 生成不与已有文件冲突的复制目标路径（同名时追加 _1/_2 …）。
-/// 分辨率聚合导出（resolution_analyze）复用此逻辑。
-pub(crate) fn unique_copy_destination(dir: &Path, filename: &str) -> PathBuf {
-    let mut dst = dir.join(filename);
-    let mut counter = 1;
-    while dst.exists() {
-        let stem = Path::new(filename)
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let ext = Path::new(filename)
-            .extension()
-            .map(|e| format!(".{}", e.to_string_lossy()))
-            .unwrap_or_default();
-        dst = dir.join(format!("{}_{}{}", stem, counter, ext));
-        counter += 1;
-    }
-    dst
-}
-
-fn dropped_images_for_bucket(bucket: &BucketGroup) -> Vec<(&BucketImageInfo, u32)> {
+fn dropped_images_for_bucket(bucket: &BucketGroup) -> Vec<&BucketImageInfo> {
     let mut remaining = bucket.dropped_count;
     let mut items = Vec::new();
 
@@ -1254,7 +998,7 @@ fn dropped_images_for_bucket(bucket: &BucketGroup) -> Vec<(&BucketImageInfo, u32
         }
         let dropped_repeats = img.repeats.min(remaining);
         if dropped_repeats > 0 {
-            items.push((img, dropped_repeats));
+            items.push(img);
             remaining -= dropped_repeats;
         }
     }
@@ -1283,20 +1027,38 @@ fn export_buckets_sync(
     output_path: String,
 ) -> Result<String, String> {
     let out_dir = Path::new(&output_path);
-    if !out_dir.exists() {
-        std::fs::create_dir_all(out_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
-    }
+    std::fs::create_dir_all(out_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
-    let total_files: u32 = analysis.buckets.iter().map(|b| b.image_count).sum();
-    let total_dropped_files: u32 = analysis
+    let dropped_per_bucket: Vec<Vec<&BucketImageInfo>> = analysis
         .buckets
         .iter()
-        .map(|bucket| dropped_images_for_bucket(bucket).len() as u32)
+        .map(dropped_images_for_bucket)
+        .collect();
+    let total_files: u32 = analysis.buckets.iter().map(|b| b.image_count).sum();
+    let total_dropped_files: u32 = dropped_per_bucket
+        .iter()
+        .map(|items| items.len() as u32)
         .sum();
     let total_copy_ops = total_files + total_dropped_files;
     let mut copied = 0u32;
     let mut dropped_copied = 0u32;
     let mut completed_ops = 0u32;
+    let emit_progress = |done: u32| {
+        if done.is_multiple_of(20) || done == total_copy_ops {
+            let _ = app.emit(
+                "bucket-export-progress",
+                ProgressEvent::new(
+                    if done == total_copy_ops {
+                        "done"
+                    } else {
+                        "processing"
+                    },
+                    format!("已导出 {}/{}", done, total_copy_ops),
+                )
+                .at(done, total_copy_ops),
+            );
+        }
+    };
 
     for bucket in &analysis.buckets {
         let folder_name = format!(
@@ -1308,28 +1070,13 @@ fn export_buckets_sync(
 
         for img in &bucket.images {
             let src = Path::new(&img.path);
-            let dst = unique_copy_destination(&bucket_dir, &img.name);
+            let dst = super::unique_copy_destination(&bucket_dir, &img.name);
 
             std::fs::copy(src, &dst).map_err(|e| format!("复制文件失败 {}: {}", img.name, e))?;
 
             copied += 1;
             completed_ops += 1;
-            if completed_ops.is_multiple_of(20) || completed_ops == total_copy_ops {
-                let _ = app.emit(
-                    "bucket-export-progress",
-                    ScanProgress {
-                        current: completed_ops,
-                        total: total_copy_ops,
-                        status: if completed_ops == total_copy_ops {
-                            "done"
-                        } else {
-                            "processing"
-                        }
-                        .to_string(),
-                        message: format!("已导出 {}/{}", completed_ops, total_copy_ops),
-                    },
-                );
-            }
+            emit_progress(completed_ops);
         }
     }
 
@@ -1338,8 +1085,7 @@ fn export_buckets_sync(
         std::fs::create_dir_all(&dropped_root)
             .map_err(|e| format!("创建丢弃素材目录失败: {}", e))?;
 
-        for bucket in &analysis.buckets {
-            let dropped_items = dropped_images_for_bucket(bucket);
+        for (bucket, dropped_items) in analysis.buckets.iter().zip(&dropped_per_bucket) {
             if dropped_items.is_empty() {
                 continue;
             }
@@ -1352,30 +1098,15 @@ fn export_buckets_sync(
             std::fs::create_dir_all(&dropped_bucket_dir)
                 .map_err(|e| format!("创建丢弃素材桶目录失败: {}", e))?;
 
-            for (img, _dropped_repeats) in dropped_items {
+            for img in dropped_items {
                 let src = Path::new(&img.path);
-                let dst = unique_copy_destination(&dropped_bucket_dir, &img.name);
+                let dst = super::unique_copy_destination(&dropped_bucket_dir, &img.name);
                 std::fs::copy(src, &dst)
                     .map_err(|e| format!("复制丢弃素材失败 {}: {}", img.name, e))?;
 
                 dropped_copied += 1;
                 completed_ops += 1;
-                if completed_ops.is_multiple_of(20) || completed_ops == total_copy_ops {
-                    let _ = app.emit(
-                        "bucket-export-progress",
-                        ScanProgress {
-                            current: completed_ops,
-                            total: total_copy_ops,
-                            status: if completed_ops == total_copy_ops {
-                                "done"
-                            } else {
-                                "processing"
-                            }
-                            .to_string(),
-                            message: format!("已导出 {}/{}", completed_ops, total_copy_ops),
-                        },
-                    );
-                }
+                emit_progress(completed_ops);
             }
         }
     }

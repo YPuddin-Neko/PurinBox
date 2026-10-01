@@ -31,22 +31,22 @@ import {
  * ═══════════════ 应用页面/任务注册表（单一事实来源） ═══════════════
  *
  * 新增功能页面只需在 PAGES 里加一条记录（并在 App.tsx 的 PAGE_COMPONENTS
- * 补上组件映射，缺失会在启动时报错）。以下内容全部由本表派生，不再各自维护：
+ * 补上组件映射，缺失会在启动时报错）。以下内容全部由本表派生：
  *   - App.tsx 的持久化页面表 / 路由表
  *   - Sidebar 的导航分组
  *   - Header 的面包屑翻译 key（routeI18nMap）与任务跳转（TASK_ROUTE_MAP）
  *   - TaskContext 的进度事件 → 任务 ID 映射（EVENT_TASK_MAP）
  */
 
-export type SectionKey = 'preprocess' | 'dataset' | 'advanced' | 'automation';
+type SectionKey = 'preprocess' | 'dataset' | 'advanced' | 'automation';
 
 /** 页面拥有的全局任务：id 为 addTask 的任务 ID，events 为后端进度事件名 */
-export interface PageTaskDef {
+interface PageTaskDef {
   id: string;
   events: string[];
 }
 
-export interface PageDef {
+interface PageDef {
   /** 路由路径（唯一键） */
   path: string;
   /** sidebar.* 翻译 key（侧边栏与面包屑共用） */
@@ -62,7 +62,7 @@ export interface PageDef {
   experimental?: boolean;
 }
 
-export const SECTION_ORDER: { key: SectionKey; titleKey: string }[] = [
+const SECTION_ORDER: { key: SectionKey; titleKey: string }[] = [
   { key: 'preprocess', titleKey: 'sidebar.sectionPreprocess' },
   { key: 'dataset', titleKey: 'sidebar.sectionDataset' },
   { key: 'advanced', titleKey: 'sidebar.sectionAdvanced' },
@@ -106,9 +106,9 @@ export const PAGES: PageDef[] = [
   // ─── 数据集处理 ───
   { path: '/tagger', i18nKey: 'sidebar.tagger', icon: Tags, section: 'dataset', persistent: true,
     tasks: [
-      // python-env-progress: Python 环境部署进度并入打标任务显示（沿用既有行为）
-      { id: 'tagger', events: ['tagger-progress', 'python-env-progress'] },
+      { id: 'tagger', events: ['tagger-progress'] },
       { id: 'llm-tagger', events: ['llm-tagger-progress'] },
+      { id: 'hybrid-tagger', events: [] },
     ] },
   { path: '/tag-manager', i18nKey: 'sidebar.tagManager', icon: List, section: 'dataset', persistent: true },
 
@@ -142,17 +142,17 @@ export const persistentPages = PAGES.filter(p => p.persistent);
 /** 普通路由页面 */
 export const routePages = PAGES.filter(p => !p.persistent);
 
-/** 路由路径 → 面包屑翻译 key（原 Header routeI18nMap） */
+/** 路由路径 → 面包屑翻译 key */
 export const routeI18nMap: Record<string, string> = Object.fromEntries(
   PAGES.map(p => [p.path, p.i18nKey]),
 );
 
-/** 进度事件名 → 任务 ID（原 TaskContext EVENT_TASK_MAP） */
+/** 进度事件名 → 任务 ID */
 export const EVENT_TASK_MAP: Record<string, string> = Object.fromEntries(
   PAGES.flatMap(p => (p.tasks ?? []).flatMap(task => task.events.map(event => [event, task.id]))),
 );
 
-/** 任务 ID → 路由路径（原 Header TASK_ROUTE_MAP，任务面板点击跳转用） */
+/** 任务 ID → 路由路径（任务面板点击跳转用） */
 export const TASK_ROUTE_MAP: Record<string, string> = Object.fromEntries(
   PAGES.flatMap(p => (p.tasks ?? []).map(task => [task.id, p.path])),
 );
@@ -161,7 +161,7 @@ export const TASK_ROUTE_MAP: Record<string, string> = Object.fromEntries(
 export const navSections = SECTION_ORDER.map(section => ({
   titleKey: section.titleKey,
   items: PAGES.filter(p => p.section === section.key),
-})).filter(section => section.items.length > 0);
+}));
 
 export const homePage = PAGES.find(p => p.path === '/')!;
 export const settingsPage = PAGES.find(p => p.path === '/settings')!;

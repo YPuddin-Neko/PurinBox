@@ -29,7 +29,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_id: ${{ steps.create.outputs.id }}
-      upload_url: ${{ steps.create.outputs.upload_url }}
     steps:
       # 安全校验：手动触发时 checkout_ref 必须与 release_tag 一致，
       # 防止 Release 产物与 tag 对应的源码不一致（供应链一致性）。

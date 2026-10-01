@@ -8,46 +8,29 @@ import sys
 import json
 import os
 import traceback
+from functools import lru_cache, partial
 import numpy as np
 from pathlib import Path
 
-def _resolve_providers(use_gpu):
-    """检测 GPU 环境并返回 providers 列表，同时输出诊断日志（只调用一次）"""
-    def _log_i18n(key, params=None):
-        d = {"type": "log", "i18n_key": key, "message": key}
-        if params:
-            d["i18n_params"] = params
-        line = json.dumps(d) + "\n"
-        sys.stdout.buffer.write(line.encode("utf-8"))
-        sys.stdout.buffer.flush()
+from purin_proto import bootstrap, emit, log_i18n, read_text_compat, utf8_stdin, write_text_atomic
 
-    from gpu_diagnostics import resolve_ort_providers
-    return resolve_ort_providers(_log_i18n, use_gpu=use_gpu)
+def _diag(msg):
+    """诊断信息只写 stderr：stdout 上每张图只回一行结果"""
+    sys.stderr.write(f"[person_crop] {msg}\n")
+    sys.stderr.flush()
 
 def load_model(model_path, providers):
-    """加载 ONNX 模型（使用预先解析好的 providers）"""
+    """加载 ONNX 模型（使用预先解析好的 providers），GPU 建会话失败时回退 CPU"""
     import onnxruntime as ort
-    from gpu_diagnostics import quiet_session_options
+    from gpu_diagnostics import create_session_with_cpu_fallback, quiet_session_options
 
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"模型文件不存在: {model_path}")
+    return create_session_with_cpu_fallback(
+        model_path, providers, quiet_session_options(ort),
+        lambda provider, e: _diag(f"⚠ GPU 加载失败 ({e})，回退到 CPU"))
 
-    sess_options = quiet_session_options(ort)
-    try:
-        sess = ort.InferenceSession(model_path, sess_options, providers=providers)
-    except Exception as e:
-        if providers[0] != 'CPUExecutionProvider':
-            sys.stderr.write(f"[person_crop] ⚠ GPU 加载失败 ({e})，回退到 CPU\n")
-            sys.stderr.flush()
-            sess = ort.InferenceSession(model_path, sess_options, providers=['CPUExecutionProvider'])
-        else:
-            raise
-    return sess
-
-def preprocess_image(image_path, input_size=640):
-    """预处理图片: 读取 -> 等比缩放 -> letterbox padding -> 归一化"""
+def preprocess_image(img, input_size=640):
+    """预处理 RGB 图: 等比缩放 -> letterbox padding -> 归一化"""
     from PIL import Image
-    img = Image.open(image_path).convert('RGB')
     orig_w, orig_h = img.size
     
     scale = min(input_size / orig_w, input_size / orig_h)
@@ -84,16 +67,28 @@ def postprocess_yolo(output, orig_w, orig_h, scale, pad_x, pad_y, conf_thresh=0.
     
     boxes = []
     num_cols = pred.shape[1]
-    
-    # deepghs 模型只有 1 个类别
-    # YOLOv5: [cx, cy, w, h, obj_conf, cls0] → 6 cols (奇数+1=偶数... 但只有1类是6)
-    # YOLOv8: [cx, cy, w, h, cls0]           → 5 cols
-    # 通用判断: 如果有 obj_conf 列 (v5), num_cols = 4 + 1 + nc; 否则 (v8), num_cols = 4 + nc
-    
+
+    def add_box(det, score):
+        """letterbox 坐标的 (cx, cy, w, h) 换算回原图并裁到图内，过小的框丢弃"""
+        cx, cy, w, h = det[0], det[1], det[2], det[3]
+        x1, y1 = cx - w / 2, cy - h / 2
+        x2, y2 = cx + w / 2, cy + h / 2
+        x1 = (x1 - pad_x) / scale
+        y1 = (y1 - pad_y) / scale
+        x2 = (x2 - pad_x) / scale
+        y2 = (y2 - pad_y) / scale
+        x1 = max(0, min(x1, orig_w))
+        y1 = max(0, min(y1, orig_h))
+        x2 = max(0, min(x2, orig_w))
+        y2 = max(0, min(y2, orig_h))
+        if x2 - x1 > 5 and y2 - y1 > 5:
+            boxes.append((x1, y1, x2, y2, score))
+
+    # 每行列数：YOLOv8 为 4 + nc，YOLOv5 多一列 obj_conf 为 5 + nc。
+    # deepghs 模型只有 1 个类别（v8 为 5 列、v5 为 6 列）；超过 6 列时奇数列按 v5
     is_v5_format = (num_cols % 2 == 1) if num_cols > 6 else (num_cols >= 6)
-    
-    if is_v5_format and num_cols >= 6:
-        # YOLOv5 格式
+
+    if is_v5_format:
         for det in pred:
             obj_conf = det[4]
             if obj_conf < conf_thresh:
@@ -103,39 +98,13 @@ def postprocess_yolo(output, orig_w, orig_h, scale, pad_x, pad_y, conf_thresh=0.
             score = obj_conf * cls_scores[cls_id]
             if score < conf_thresh:
                 continue
-            cx, cy, w, h = det[0], det[1], det[2], det[3]
-            x1, y1 = cx - w / 2, cy - h / 2
-            x2, y2 = cx + w / 2, cy + h / 2
-            x1 = (x1 - pad_x) / scale
-            y1 = (y1 - pad_y) / scale
-            x2 = (x2 - pad_x) / scale
-            y2 = (y2 - pad_y) / scale
-            x1 = max(0, min(x1, orig_w))
-            y1 = max(0, min(y1, orig_h))
-            x2 = max(0, min(x2, orig_w))
-            y2 = max(0, min(y2, orig_h))
-            if x2 - x1 > 5 and y2 - y1 > 5:
-                boxes.append((x1, y1, x2, y2, float(score)))
+            add_box(det, float(score))
     else:
-        # YOLOv8 格式
         for det in pred:
-            cls_scores = det[4:]
-            score = float(np.max(cls_scores))
+            score = float(np.max(det[4:]))
             if score < conf_thresh:
                 continue
-            cx, cy, w, h = det[0], det[1], det[2], det[3]
-            x1, y1 = cx - w / 2, cy - h / 2
-            x2, y2 = cx + w / 2, cy + h / 2
-            x1 = (x1 - pad_x) / scale
-            y1 = (y1 - pad_y) / scale
-            x2 = (x2 - pad_x) / scale
-            y2 = (y2 - pad_y) / scale
-            x1 = max(0, min(x1, orig_w))
-            y1 = max(0, min(y1, orig_h))
-            x2 = max(0, min(x2, orig_w))
-            y2 = max(0, min(y2, orig_h))
-            if x2 - x1 > 5 and y2 - y1 > 5:
-                boxes.append((x1, y1, x2, y2, score))
+            add_box(det, score)
     
     # NMS
     if len(boxes) > 1:
@@ -165,16 +134,16 @@ def compute_iou(a, b):
     union = area_a + area_b - inter
     return inter / max(union, 1e-6)
 
-def detect_with_model(sess, image_path, conf_thresh=0.3):
-    """使用模型检测图片，返回检测框列表"""
+def detect_with_model(sess, letterbox, conf_thresh=0.3):
+    """使用模型检测图片，返回检测框列表。letterbox(input_size) 给出该尺寸的预处理结果"""
     input_info = sess.get_inputs()[0]
     input_name = input_info.name
     input_shape = input_info.shape
     input_size = input_shape[2] if len(input_shape) >= 3 else 640
     if isinstance(input_size, str) or input_size <= 0:
         input_size = 640
-    
-    arr, orig_w, orig_h, scale, pad_x, pad_y = preprocess_image(image_path, input_size)
+
+    arr, orig_w, orig_h, scale, pad_x, pad_y = letterbox(input_size)
     outputs = sess.run(None, {input_name: arr})
     return postprocess_yolo(outputs, orig_w, orig_h, scale, pad_x, pad_y, conf_thresh)
 
@@ -196,31 +165,47 @@ def crop_box(img, x1, y1, x2, y2, padding_ratio=0.05):
     size = max(bw, bh)
     return crop_square(img, cx, cy, size, padding_ratio)
 
+def scale_box(x1, y1, x2, y2, factor):
+    """以框中心为基准把检测框放大 factor 倍"""
+    bw, bh = x2 - x1, y2 - y1
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    nw, nh = bw * factor, bh * factor
+    return cx - nw / 2, cy - nh / 2, cx + nw / 2, cy + nh / 2
+
+# 裁切类型：(模型键, 输出名后缀, 结果名, 置信度参数, 标签参数, 放大倍数参数, 边距比例)
+CROP_SPECS = (
+    ('person', 'full', '全身', 'person_conf', None, None, 0.08),
+    ('halfbody', 'halfbody', '半身', 'upper_conf', 'upper_tag', None, 0.06),
+    ('head', 'head', '头部', 'head_conf', 'head_tag', 'head_scale', 0.02),
+    ('eyes', 'eyes', '眼部', 'eyes_conf', 'eyes_tag', 'eyes_scale', 0.02),
+)
+
 def process_image(models, image_path, options, output_dir):
-    """处理单张图片 — 每种裁切类型用独立模型检测"""
+    """处理单张图片 — 每种裁切类型用独立模型检测（models 只含启用的类型）"""
     from PIL import Image
     from image_save import SourceInfo, save_like_source
 
-    # 按原图模式裁切（保留透明通道与位深），检测模型另行读图
+    # 按原图模式裁切（保留透明通道与位深），检测共用一份 RGB 图，同一输入尺寸只预处理一次
     img = Image.open(image_path)
     img.load()
+    letterbox = lru_cache(maxsize=None)(partial(preprocess_image, img.convert('RGB')))
     source = SourceInfo(image_path)
     stem = Path(image_path).stem
     ext = Path(image_path).suffix or '.png'
     results = []
-    
-    # 读取原始 tag 文件
-    keep_tags = options.get('keep_original_tags', False)
+
     tag_file = Path(image_path).with_suffix('.txt')
     orig_tags = ''
-    if tag_file.exists():
+    if options['keep_original_tags'] and tag_file.exists():
         try:
-            orig_tags = tag_file.read_text(encoding='utf-8').strip()
-        except UnicodeDecodeError:
-            # 中文 Windows 老工具产出的 ANSI/GBK 标签
-            orig_tags = tag_file.read_text(encoding='gbk', errors='replace').strip()
-        except Exception:
-            orig_tags = ''  # 标签读取失败只降级，不阻断裁切本身
+            text = read_text_compat(tag_file)
+        except OSError:
+            text = None
+        if text is None:
+            # 标签读不出来只是不带原标签，不阻断裁切本身；解不开的字节不能硬解成乱码写进新标签
+            _diag(f"⚠ 原标签读取失败，未复制: {tag_file.name}")
+        else:
+            orig_tags = text.strip()
     
     def save_crop(cropped_img, out_name):
         """同名冲突加计数器（链式使用时 x_0_full 会撞名互相覆盖）；按源图格式写出。"""
@@ -235,137 +220,72 @@ def process_image(models, image_path, options, output_dir):
         return out_path
 
     def save_tag_for(img_out_path, extra_tag=''):
-        tags = orig_tags if keep_tags else ''
+        tags = orig_tags
         if extra_tag:
             tags = f'{extra_tag}, {tags}' if tags else extra_tag
         if tags:
-            tag_out = Path(img_out_path).with_suffix('.txt')
-            tmp = tag_out.with_name(tag_out.name + '.tmp')
-            tmp.write_text(tags, encoding='utf-8')
-            os.replace(tmp, tag_out)
-    
-    # 全身检测
-    if options.get('person_enabled', True) and 'person' in models:
-        conf = options.get('person_conf', 0.3)
-        boxes = detect_with_model(models['person'], image_path, conf)
+            write_text_atomic(Path(img_out_path).with_suffix('.txt'), tags)
+
+    for kind, name_suffix, label, conf_key, tag_key, scale_key, padding in CROP_SPECS:
+        if kind not in models:
+            continue
+        boxes = detect_with_model(models[kind], letterbox, options[conf_key])
+        tag = options[tag_key] if tag_key else ''
         for idx, (x1, y1, x2, y2, c) in enumerate(boxes):
             suffix = f'_{idx}' if len(boxes) > 1 else ''
-            cropped = crop_box(img, x1, y1, x2, y2, 0.08)
-            final_path = save_crop(cropped, f'{stem}{suffix}_full{ext}')
-            if keep_tags and orig_tags:
-                save_tag_for(final_path)
-            results.append(f'全身({c:.2f})')
-    
-    # 半身检测
-    if options.get('upper_enabled', True) and 'halfbody' in models:
-        conf = options.get('upper_conf', 0.5)
-        boxes = detect_with_model(models['halfbody'], image_path, conf)
-        upper_tag = options.get('upper_tag', 'upper body')
-        for idx, (x1, y1, x2, y2, c) in enumerate(boxes):
-            suffix = f'_{idx}' if len(boxes) > 1 else ''
-            cropped = crop_box(img, x1, y1, x2, y2, 0.06)
-            final_path = save_crop(cropped, f'{stem}{suffix}_halfbody{ext}')
-            save_tag_for(final_path, upper_tag)
-            results.append(f'半身({c:.2f})')
-    
-    # 头部检测
-    if options.get('head_enabled', True) and 'head' in models:
-        conf = options.get('head_conf', 0.4)
-        head_scale = options.get('head_scale', 1.5)
-        boxes = detect_with_model(models['head'], image_path, conf)
-        head_tag = options.get('head_tag', 'head view')
-        for idx, (x1, y1, x2, y2, c) in enumerate(boxes):
-            suffix = f'_{idx}' if len(boxes) > 1 else ''
-            # 按 head_scale 放大检测框
-            bw, bh = x2 - x1, y2 - y1
-            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-            nw, nh = bw * head_scale, bh * head_scale
-            sx1, sy1 = cx - nw / 2, cy - nh / 2
-            sx2, sy2 = cx + nw / 2, cy + nh / 2
-            cropped = crop_box(img, sx1, sy1, sx2, sy2, 0.02)
-            final_path = save_crop(cropped, f'{stem}{suffix}_head{ext}')
-            save_tag_for(final_path, head_tag)
-            results.append(f'头部({c:.2f})')
-    
-    # 眼部检测
-    if options.get('eyes_enabled', True) and 'eyes' in models:
-        conf = options.get('eyes_conf', 0.3)
-        eyes_scale = options.get('eyes_scale', 2.4)
-        boxes = detect_with_model(models['eyes'], image_path, conf)
-        eyes_tag = options.get('eyes_tag', 'eyes view')
-        for idx, (x1, y1, x2, y2, c) in enumerate(boxes):
-            suffix = f'_{idx}' if len(boxes) > 1 else ''
-            # 按 eyes_scale 放大检测框
-            bw, bh = x2 - x1, y2 - y1
-            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-            nw, nh = bw * eyes_scale, bh * eyes_scale
-            sx1, sy1 = cx - nw / 2, cy - nh / 2
-            sx2, sy2 = cx + nw / 2, cy + nh / 2
-            cropped = crop_box(img, sx1, sy1, sx2, sy2, 0.02)
-            final_path = save_crop(cropped, f'{stem}{suffix}_eyes{ext}')
-            save_tag_for(final_path, eyes_tag)
-            results.append(f'眼部({c:.2f})')
-    
+            if scale_key:
+                x1, y1, x2, y2 = scale_box(x1, y1, x2, y2, options[scale_key])
+            cropped = crop_box(img, x1, y1, x2, y2, padding)
+            final_path = save_crop(cropped, f'{stem}{suffix}_{name_suffix}{ext}')
+            save_tag_for(final_path, tag)
+            results.append(f'{label}({c:.2f})')
+
     if not results:
         return {'status': 'skip', 'message': '未检测到目标'}
     
     return {'status': 'success', 'message': f'裁切: {", ".join(results)}'}
 
-def _emit(data):
-    """输出 JSON line 到 stdout (Windows GBK 安全)"""
-    line = json.dumps(data) + "\n"
-    sys.stdout.buffer.write(line.encode("utf-8"))
-    sys.stdout.buffer.flush()
-
 def main():
     """主循环: stdin 读取 JSON, stdout 输出结果"""
-    # Windows: 注册 CUDA DLL 目录（必须在 import onnxruntime 之前）
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from cuda_dll_helper import register_cuda_dlls
-    register_cuda_dlls()
-
-    import io
-    stdin_reader = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace")
+    bootstrap()
+    stdin_reader = utf8_stdin()
 
     # 读取初始化配置
     init_line = stdin_reader.readline().strip()
     if not init_line:
-        _emit({"error": "未收到初始化配置"})
+        emit({"type": "error", "message": "未收到初始化配置"})
         return
     
     try:
         config = json.loads(init_line)
     except json.JSONDecodeError as e:
-        _emit({"error": f"JSON 解析失败: {e}"})
+        emit({"type": "error", "message": f"JSON 解析失败: {e}"})
         return
     
     # 加载多个模型
     model_paths = config.get('model_paths', {})
     use_gpu = config.get('use_gpu', False)
+    options = config.get('options', {})
     
     if not model_paths:
-        _emit({"error": "未指定模型路径"})
+        emit({"type": "error", "message": "未指定模型路径"})
         return
     
     models = {}
     try:
-        providers = _resolve_providers(use_gpu)
+        from gpu_diagnostics import resolve_ort_providers
+        providers = resolve_ort_providers(log_i18n, use_gpu=use_gpu)
         for crop_type, path in model_paths.items():
-            sys.stderr.write(f"[person_crop] 加载 {crop_type} 模型: {os.path.basename(path)}\n")
-            sys.stderr.flush()
+            _diag(f"加载 {crop_type} 模型: {os.path.basename(path)}")
             models[crop_type] = load_model(path, providers)
     except Exception as e:
-        _emit({"error": f"模型加载失败: {e}"})
+        emit({"type": "error", "message": f"模型加载失败: {e}"})
         return
     
     loaded_types = list(models.keys())
-    sys.stderr.write(f"[person_crop] 已加载 {len(models)} 个模型: {', '.join(loaded_types)}\n")
-    sys.stderr.flush()
+    _diag(f"已加载 {len(models)} 个模型: {', '.join(loaded_types)}")
     
-    _emit({
-        "status": "ready",
-        "models_loaded": loaded_types
-    })
+    emit({"type": "ready"})
     
     # 处理循环
     for line in stdin_reader:
@@ -376,28 +296,23 @@ def main():
         try:
             cmd = json.loads(line)
         except json.JSONDecodeError:
-            _emit({"status": "error", "message": "JSON 解析失败"})
+            emit({"type": "error", "message": "JSON 解析失败"})
             continue
         
         action = cmd.get('action')
         if action != 'process':
-            _emit({"status": "error", "message": f"未知操作: {action}"})
+            emit({"type": "error", "message": f"未知操作: {action}"})
             continue
         
         image_path = cmd.get('image_path', '')
         output_dir = cmd.get('output_dir', '')
-        options = cmd.get('options', {})
 
         try:
-            # 保存裁切结果前确保输出目录存在
-            if output_dir:
-                os.makedirs(output_dir, exist_ok=True)
             result = process_image(models, image_path, options, output_dir)
-            _emit(result)
+            emit({"type": "result", "image_path": image_path, **result})
         except Exception as e:
-            sys.stderr.write(f"[person_crop] 处理失败 {image_path}: {traceback.format_exc()}\n")
-            sys.stderr.flush()
-            _emit({"status": "error", "message": str(e)})
+            _diag(f"处理失败 {image_path}: {traceback.format_exc()}")
+            emit({"type": "error", "image_path": image_path, "message": str(e)})
 
 if __name__ == '__main__':
     main()

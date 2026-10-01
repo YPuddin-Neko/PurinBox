@@ -28,11 +28,8 @@ import SdMetadataPage from './pages/SdMetadataPage';
 import AestheticPage from './pages/AestheticPage';
 import WorkflowPage from './pages/WorkflowPage';
 import SettingsPage from './pages/SettingsPage';
-import './assets/fonts/inter.css'; // 本地 Inter，替代 Google Fonts 远程引用（大陆网络会挂起触发看门狗）
+import './assets/fonts/inter.css';
 import './styles/global.css';
-import './styles/sidebar.css';
-import './styles/layout.css';
-import './styles/progress.css';
 import { TaskProvider } from './components/TaskContext';
 import { PAGES, persistentPages, routePages } from './appRegistry';
 
@@ -77,7 +74,8 @@ function AppContent() {
   const currentPath = location.pathname;
   // 懒加载：仅在首次访问时挂载页面，之后保持 mounted（display 切换，切页不丢状态）
   const visitedRef = useRef<Set<string>>(new Set());
-  if (persistentPages.some(p => p.path === currentPath)) {
+  const isPersistentRoute = persistentPages.some(p => p.path === currentPath);
+  if (isPersistentRoute) {
     visitedRef.current.add(currentPath);
   }
 
@@ -97,7 +95,7 @@ function AppContent() {
         })}
 
         {/* 非持久化页面 - 正常路由 */}
-        {!persistentPages.some(p => p.path === currentPath) && (
+        {!isPersistentRoute && (
           <Routes>
             {routePages.map(({ path }) => {
               const Component = PAGE_COMPONENTS[path];

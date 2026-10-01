@@ -34,7 +34,6 @@ export default function Checkbox({
         ...style,
       }}
     >
-      {/* 隐藏原生 checkbox */}
       <input
         id={id}
         type="checkbox"
@@ -43,7 +42,6 @@ export default function Checkbox({
         onChange={(e) => onChange(e.target.checked)}
         style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }}
       />
-      {/* 自定义外观 */}
       <span
         style={{
           display: 'inline-flex',
@@ -59,7 +57,6 @@ export default function Checkbox({
           boxShadow: checked ? `0 0 0 2px ${color}25` : 'none',
         }}
       >
-        {/* 勾选动画 SVG */}
         <svg
           viewBox="0 0 12 12"
           width={size * 0.6}

@@ -2,16 +2,60 @@ use image::imageops::FilterType;
 use image::GenericImageView;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Emitter;
 
-use super::image_io::{load_image, save_like_source};
+use super::image_io::{load_image, read_dimensions, save_like_source};
 use super::{
-    collect_image_files_with_recursive_excluding, output_path_for_input, ProcessResult,
-    ProgressEvent,
+    collect_image_files_with_recursive_excluding, file_name_lossy, same_name_output, ProcessResult,
 };
 
-static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+use super::batch::{BatchJob, FileBatch, FileOutcome};
+
+static JOB: BatchJob = BatchJob::new("缩放");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skipped_modes_copy_without_pixel_decode_and_keep_messages() {
+        let root = super::super::image_io::test_dir("scale_header");
+        let path = root.join("broken.png");
+        super::super::image_io::write_broken_pixels(&path);
+        let output = root.join("out");
+        std::fs::create_dir_all(&output).unwrap();
+        let mut options = ScaleOptions {
+            input_path: root.to_string_lossy().into_owned(),
+            output_path: output.to_string_lossy().into_owned(),
+            mode: "both".into(),
+            target_width: 32,
+            target_height: 32,
+            down_target_width: 32,
+            down_target_height: 32,
+            recursive: false,
+        };
+        for (mode, message) in [
+            ("upscale", "无需上采样"),
+            ("downscale", "无需下采样"),
+            ("both", "已在目标范围内"),
+        ] {
+            options.mode = mode.into();
+            assert_eq!(
+                process_scale(&path, &root, &output, &options).unwrap(),
+                format!("[跳过] broken.png (32x32, {})", message)
+            );
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                std::fs::read(output.join("broken.png")).unwrap()
+            );
+        }
+        options.mode = "invalid".into();
+        assert_eq!(
+            scale_images_sync(tauri::test::mock_app().handle(), &options).unwrap_err(),
+            "无效的缩放模式"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScaleOptions {
@@ -35,130 +79,33 @@ pub async fn scale_images<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: ScaleOptions,
 ) -> Result<ProcessResult, String> {
-    // 互斥：页面与工作流节点共用全局取消标志，并发会互吞取消
-    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let _busy = crate::commands::BusyGuard::acquire(&RUNNING, "缩放")?;
-
-    CANCEL_FLAG.store(false, Ordering::SeqCst);
-    tokio::task::spawn_blocking(move || scale_images_sync(&app, &options))
-        .await
-        .map_err(|e| format!("任务执行失败: {}", e))?
+    JOB.run(move || scale_images_sync(&app, &options)).await
 }
 
 #[tauri::command]
 pub fn cancel_scale() {
-    CANCEL_FLAG.store(true, Ordering::SeqCst);
+    JOB.cancel();
 }
 
 fn scale_images_sync<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     options: &ScaleOptions,
 ) -> Result<ProcessResult, String> {
+    if !matches!(options.mode.as_str(), "upscale" | "downscale" | "both") {
+        return Err("无效的缩放模式".to_string());
+    }
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
-
-    if !output_dir.exists() {
-        std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
-    }
-
+    std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
     let files =
         collect_image_files_with_recursive_excluding(input, options.recursive, Some(output_dir))?;
-    let total = files.len() as u32;
-    let mut success_count = 0u32;
-    let mut fail_count = 0u32;
-    let mut errors = Vec::new();
-
-    for (i, file_path) in files.iter().enumerate() {
-        if CANCEL_FLAG.load(Ordering::SeqCst) {
-            let _ = app.emit(
-                "scale-progress",
-                ProgressEvent {
-                    current: i as u32,
-                    total,
-                    filename: String::new(),
-                    status: "done".to_string(),
-                    message: format!("已取消: 已处理 {}, 共 {}", i, total),
-                    ..Default::default()
-                },
-            );
-            break;
-        }
-        let filename = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        let _ = app.emit(
-            "scale-progress",
-            ProgressEvent {
-                current: i as u32 + 1,
-                total,
-                filename: filename.clone(),
-                status: "processing".to_string(),
-                message: format!("正在处理: {}", filename),
-                ..Default::default()
-            },
-        );
-
-        match process_scale(file_path, input, output_dir, options) {
-            Ok(msg) => {
-                success_count += 1;
-                let _ = app.emit(
-                    "scale-progress",
-                    ProgressEvent {
-                        current: i as u32 + 1,
-                        total,
-                        filename: filename.clone(),
-                        status: "success".to_string(),
-                        message: msg,
-                        ..Default::default()
-                    },
-                );
-            }
-            Err(e) => {
-                fail_count += 1;
-                let err_msg = format!("{}: {}", filename, e);
-                errors.push(err_msg.clone());
-                let _ = app.emit(
-                    "scale-progress",
-                    ProgressEvent {
-                        current: i as u32 + 1,
-                        total,
-                        filename: filename.clone(),
-                        status: "error".to_string(),
-                        message: err_msg,
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-    }
-
-    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
-    if !CANCEL_FLAG.load(Ordering::SeqCst) {
-        let _ = app.emit(
-            "scale-progress",
-            ProgressEvent {
-                current: total,
-                total,
-                filename: String::new(),
-                status: "done".to_string(),
-                message: format!(
-                    "处理完成: 成功 {}, 失败 {}, 共 {}",
-                    success_count, fail_count, total
-                ),
-                ..Default::default()
-            },
-        );
-    }
-
-    Ok(ProcessResult {
-        success_count,
-        fail_count,
-        total,
-        errors,
-    })
+    Ok(
+        FileBatch::new(app, "scale-progress", JOB.cancel_flag()).run(
+            &files,
+            |item| process_scale(item.path, input, output_dir, options).map(FileOutcome::done),
+            |c| c.summary("处理完成"),
+        ),
+    )
 }
 
 /// Area-based proportional scaling (preserves aspect ratio, rounds to nearest multiple of 64)
@@ -180,113 +127,71 @@ fn process_scale(
     output_dir: &Path,
     options: &ScaleOptions,
 ) -> Result<String, String> {
-    let (img, source) = load_image(file_path)?;
-
-    let (orig_w, orig_h) = img.dimensions();
-    let filename = file_path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    let output_path = output_path_for_input(
-        input_root,
-        file_path,
-        output_dir,
-        &filename,
-        options.recursive,
-    )?;
-
-    match options.mode.as_str() {
-        "upscale" => {
-            let target_w = options.target_width;
-            let target_h = options.target_height;
-            if orig_w < target_w || orig_h < target_h {
-                let resized = area_scale(&img, target_w, target_h);
-                let (nw, nh) = resized.dimensions();
-                save_like_source(resized, &output_path, &source)?;
-                Ok(format!(
-                    "[上采样] {} ({}x{} → {}x{})",
-                    filename, orig_w, orig_h, nw, nh
-                ))
-            } else {
-                crate::commands::copy_file_safe(file_path, &output_path)?;
-                Ok(format!(
-                    "[跳过] {} ({}x{}, 无需上采样)",
-                    filename, orig_w, orig_h
-                ))
-            }
-        }
-        "downscale" => {
-            let target_w = options.target_width;
-            let target_h = options.target_height;
-            if orig_w > target_w || orig_h > target_h {
-                let resized = area_scale(&img, target_w, target_h);
-                let (nw, nh) = resized.dimensions();
-                save_like_source(resized, &output_path, &source)?;
-                Ok(format!(
-                    "[下采样] {} ({}x{} → {}x{})",
-                    filename, orig_w, orig_h, nw, nh
-                ))
-            } else {
-                crate::commands::copy_file_safe(file_path, &output_path)?;
-                Ok(format!(
-                    "[跳过] {} ({}x{}, 无需下采样)",
-                    filename, orig_w, orig_h
-                ))
-            }
-        }
-        "both" => {
-            // 先上采样，再下采样
-            let up_w = options.target_width;
-            let up_h = options.target_height;
-            let down_w = if options.down_target_width > 0 {
+    let (orig_w, orig_h) =
+        read_dimensions(file_path).map_err(|e| format!("无法读取图片尺寸: {}", e))?;
+    let filename = file_name_lossy(file_path);
+    let output_path = same_name_output(input_root, file_path, output_dir, options.recursive)?;
+    let up = (options.mode != "downscale").then_some((options.target_width, options.target_height));
+    let down = match options.mode.as_str() {
+        "downscale" => Some((options.target_width, options.target_height)),
+        "both" => Some((
+            if options.down_target_width > 0 {
                 options.down_target_width
             } else {
-                up_w
-            };
-            let down_h = if options.down_target_height > 0 {
+                options.target_width
+            },
+            if options.down_target_height > 0 {
                 options.down_target_height
             } else {
-                up_h
-            };
-
-            let mut current = img;
-            let mut steps = Vec::new();
-
-            // Step 1: 上采样（小于上采样目标的图）
-            let (cw, ch) = current.dimensions();
-            if cw < up_w || ch < up_h {
-                current = area_scale(&current, up_w, up_h);
-                let (nw, nh) = current.dimensions();
-                steps.push(format!("上采样 {}x{} → {}x{}", cw, ch, nw, nh));
-            }
-
-            // Step 2: 下采样（大于下采样目标的图）
-            let (cw, ch) = current.dimensions();
-            if cw > down_w || ch > down_h {
-                current = area_scale(&current, down_w, down_h);
-                let (nw, nh) = current.dimensions();
-                steps.push(format!("下采样 {}x{} → {}x{}", cw, ch, nw, nh));
-            }
-
-            if steps.is_empty() {
-                crate::commands::copy_file_safe(file_path, &output_path)?;
-                Ok(format!(
-                    "[跳过] {} ({}x{}, 已在目标范围内)",
-                    filename, orig_w, orig_h
-                ))
-            } else {
-                let (final_w, final_h) = current.dimensions();
-                save_like_source(current, &output_path, &source)?;
-                Ok(format!(
-                    "[缩放] {} ({}) → {}x{}",
-                    filename,
-                    steps.join(" → "),
-                    final_w,
-                    final_h
-                ))
-            }
-        }
-        _ => Err("无效的缩放模式".to_string()),
+                options.target_height
+            },
+        )),
+        _ => None,
+    };
+    let needs_up = up.is_some_and(|(w, h)| orig_w < w || orig_h < h);
+    let needs_down = down.is_some_and(|(w, h)| orig_w > w || orig_h > h);
+    if !needs_up && !needs_down {
+        crate::commands::copy_file_safe(file_path, &output_path)?;
+        let reason = match options.mode.as_str() {
+            "upscale" => "无需上采样",
+            "downscale" => "无需下采样",
+            _ => "已在目标范围内",
+        };
+        return Ok(format!(
+            "[跳过] {} ({}x{}, {})",
+            filename, orig_w, orig_h, reason
+        ));
     }
+    let (mut current, source) = load_image(file_path)?;
+    let mut steps = Vec::new();
+    for (target, upscale, label) in [(up, true, "上采样"), (down, false, "下采样")] {
+        let Some((w, h)) = target else { continue };
+        let (cw, ch) = current.dimensions();
+        if (upscale && (cw < w || ch < h)) || (!upscale && (cw > w || ch > h)) {
+            current = area_scale(&current, w, h);
+            let (nw, nh) = current.dimensions();
+            steps.push(format!("{} {}x{} → {}x{}", label, cw, ch, nw, nh));
+        }
+    }
+    let (final_w, final_h) = current.dimensions();
+    save_like_source(current, &output_path, &source)?;
+    Ok(if options.mode == "both" {
+        format!(
+            "[缩放] {} ({}) → {}x{}",
+            filename,
+            steps.join(" → "),
+            final_w,
+            final_h
+        )
+    } else {
+        let label = if options.mode == "upscale" {
+            "上采样"
+        } else {
+            "下采样"
+        };
+        format!(
+            "[{}] {} ({}x{} → {}x{})",
+            label, filename, orig_w, orig_h, final_w, final_h
+        )
+    })
 }

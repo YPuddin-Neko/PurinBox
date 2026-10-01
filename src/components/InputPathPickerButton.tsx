@@ -7,7 +7,7 @@ interface Props {
   onSelect: (path: string) => void;
 }
 
-const imageExtensions = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'tiff', 'tif', 'gif'];
+const imageExtensions = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'tiff', 'tif', 'gif', 'psd'];
 
 export default function InputPathPickerButton({ onSelect }: Props) {
   const { t } = useTranslation();

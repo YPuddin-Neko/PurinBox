@@ -1,12 +1,15 @@
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::Emitter;
 
-use super::{wait_for_global_llm_slot, ProcessResult, ProgressEvent};
+use super::llm_batch::{self, ItemOutcome};
+use super::llm_client::{
+    self, fmt_elapsed, pick_tag_line, reject_refusal, summarize_tags, ChatError, ChatMessage,
+    ChatParams, RequestThrottle,
+};
+use super::{ProcessResult, ProgressEvent};
 use crate::commands::{collect_image_files_with_recursive_excluding, output_path_for_input};
 
 static TAG_REFINE_CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -20,7 +23,6 @@ pub struct TagRefineOptions {
     pub model_name: String,
     pub prompt: String,
     pub temperature: f32,
-    pub max_tokens: i32,
     #[serde(default = "default_image_size")]
     pub image_size: u32,
     #[serde(default)]
@@ -31,7 +33,8 @@ pub struct TagRefineOptions {
     pub concurrency: u32,
     #[serde(default)]
     pub recursive: bool,
-    /// 标签文件格式: "txt"（默认）| "json"（完整/简化格式自动识别，差量写回保留原分类）
+    /// 标签文件格式: "txt"（默认）| "json"（完整/简化格式自动识别；按 preserve_tags 与回复格式
+    /// 分三种写回：保集合归类、按字段归属重排、差量写回）
     #[serde(default = "default_file_format")]
     pub file_format: String,
     /// OpenAI Vision 的 image_url.detail：low / high / original / auto。
@@ -68,44 +71,6 @@ fn default_concurrency() -> u32 {
     1
 }
 
-#[derive(Serialize)]
-struct ChatMessage {
-    role: String,
-    content: serde_json::Value,
-}
-
-#[derive(Serialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    temperature: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    top_p: Option<f64>,
-}
-
-#[derive(Deserialize)]
-struct ChatResponse {
-    choices: Vec<ChatChoice>,
-}
-
-#[derive(Deserialize)]
-struct ChatChoice {
-    message: ChatChoiceMessage,
-    #[serde(default)]
-    finish_reason: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ChatChoiceMessage {
-    #[serde(default)]
-    content: Option<String>,
-    #[serde(default)]
-    reasoning_content: Option<String>,
-}
-
-/// 处理单个文件的结果
 #[derive(Debug)]
 enum FileResult {
     Success {
@@ -170,227 +135,52 @@ pub async fn start_tag_refining(
 
     std::fs::create_dir_all(&output_dir_path).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
-    let client = super::proxy_config::build_http_client_for_llm()
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    let client = llm_client::llm_http_client()?;
 
     let concurrency = std::cmp::max(1, options.concurrency) as usize;
 
-    let _ = app.emit(
+    ProgressEvent::new(
+        "info",
+        format!("找到 {} 张图片，{} 线程开始标签细化...", total, concurrency),
+    )
+    .at(0, total)
+    .emit(&app, "tag-refine-progress");
+
+    let recursive = options.recursive;
+    let throttle = Arc::new(RequestThrottle::new(options.request_interval_ms));
+    let input_root = input_dir_path.clone();
+    let output_dir = output_dir_path.clone();
+    let outcome = llm_batch::run_file_batch(
+        &app,
         "tag-refine-progress",
-        ProgressEvent {
-            current: 0,
-            total,
-            filename: String::new(),
-            status: "info".to_string(),
-            message: format!("找到 {} 张图片，{} 线程开始标签细化...", total, concurrency),
-            ..Default::default()
+        &files,
+        concurrency,
+        &TAG_REFINE_CANCELLED,
+        move |file_path| {
+            let (client, options, input_root, output_dir, throttle) = (
+                client.clone(),
+                options.clone(),
+                input_root.clone(),
+                output_dir.clone(),
+                throttle.clone(),
+            );
+            async move {
+                process_single_file(
+                    &client,
+                    &file_path,
+                    &input_root,
+                    &output_dir,
+                    &options,
+                    &throttle,
+                )
+                .await
+                .into_outcome()
+            }
         },
-    );
+    )
+    .await;
 
-    let success_count = Arc::new(AtomicU32::new(0));
-    let fail_count = Arc::new(AtomicU32::new(0));
-    let processed = Arc::new(AtomicU32::new(0));
-    let errors: Arc<tokio::sync::Mutex<Vec<String>>> =
-        Arc::new(tokio::sync::Mutex::new(Vec::new()));
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let error_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> =
-        Arc::new(tokio::sync::Mutex::new(Vec::new()));
-    let warning_files: Arc<tokio::sync::Mutex<Vec<PathBuf>>> =
-        Arc::new(tokio::sync::Mutex::new(Vec::new()));
-
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
-    let last_req_time = Arc::new(tokio::sync::Mutex::new(None));
-    let mut handles = Vec::new();
-
-    for file_path in files.iter() {
-        if TAG_REFINE_CANCELLED.load(Ordering::SeqCst) {
-            cancelled.store(true, Ordering::SeqCst);
-            break;
-        }
-
-        let sem = semaphore.clone();
-        let client = client.clone();
-        let options = options.clone();
-        let app = app.clone();
-        let output_dir = output_dir_path.clone();
-        let input_root = input_dir_path.clone();
-        let file_path = file_path.clone();
-        let success_count = success_count.clone();
-        let fail_count = fail_count.clone();
-        let processed = processed.clone();
-        let errors = errors.clone();
-        let cancelled = cancelled.clone();
-        let error_files = error_files.clone();
-        let warning_files = warning_files.clone();
-        let last_req_time = last_req_time.clone();
-
-        let handle = tokio::spawn(async move {
-            if TAG_REFINE_CANCELLED.load(Ordering::SeqCst) {
-                cancelled.store(true, Ordering::SeqCst);
-                return;
-            }
-
-            let _permit = match sem.acquire().await {
-                Ok(p) => p,
-                Err(_) => return,
-            };
-
-            if TAG_REFINE_CANCELLED.load(Ordering::SeqCst) {
-                cancelled.store(true, Ordering::SeqCst);
-                return;
-            }
-
-            let result = tokio::select! {
-                r = process_single_file(&client, &file_path, &input_root, &output_dir, &options, &last_req_time) => r,
-                _ = async {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                        if TAG_REFINE_CANCELLED.load(Ordering::SeqCst) { break; }
-                    }
-                } => {
-                    cancelled.store(true, Ordering::SeqCst);
-                    return;
-                }
-            };
-
-            if TAG_REFINE_CANCELLED.load(Ordering::SeqCst) {
-                cancelled.store(true, Ordering::SeqCst);
-                return;
-            }
-
-            let cur = processed.fetch_add(1, Ordering::SeqCst) + 1;
-
-            match result {
-                FileResult::Success {
-                    filename,
-                    original_count,
-                    refined_count,
-                    changed,
-                    warnings,
-                    elapsed_ms,
-                } => {
-                    success_count.fetch_add(1, Ordering::SeqCst);
-                    let has_warn = !warnings.is_empty();
-                    if has_warn {
-                        warning_files.lock().await.push(file_path.clone());
-                    }
-                    let elapsed_str = if elapsed_ms >= 1000 {
-                        format!("{:.1}s", elapsed_ms as f64 / 1000.0)
-                    } else {
-                        format!("{}ms", elapsed_ms)
-                    };
-                    let warn_str = if has_warn {
-                        format!(" ⚠ {}", warnings.join("; "))
-                    } else {
-                        String::new()
-                    };
-                    let _ = app.emit(
-                        "tag-refine-progress",
-                        ProgressEvent {
-                            current: cur,
-                            total,
-                            filename: filename.clone(),
-                            status: "success".to_string(),
-                            message: format!(
-                                "[完成] {} | 原TAG {} → 细化后 {} | {}{}{}",
-                                filename,
-                                original_count,
-                                refined_count,
-                                elapsed_str,
-                                warn_str,
-                                if !changed && !has_warn {
-                                    " (未变化)"
-                                } else {
-                                    ""
-                                }
-                            ),
-                            ..Default::default()
-                        },
-                    );
-                }
-                FileResult::Captioned {
-                    filename,
-                    original_count,
-                    word_count,
-                    elapsed_ms,
-                } => {
-                    success_count.fetch_add(1, Ordering::SeqCst);
-                    let elapsed_str = if elapsed_ms >= 1000 {
-                        format!("{:.1}s", elapsed_ms as f64 / 1000.0)
-                    } else {
-                        format!("{}ms", elapsed_ms)
-                    };
-                    let _ = app.emit(
-                        "tag-refine-progress",
-                        ProgressEvent {
-                            current: cur,
-                            total,
-                            filename: filename.clone(),
-                            status: "success".to_string(),
-                            message: format!(
-                                "[完成] {} | 参考 {} 个标签 → 描述 {} 词 | {}",
-                                filename, original_count, word_count, elapsed_str
-                            ),
-                            ..Default::default()
-                        },
-                    );
-                }
-                FileResult::Skipped { filename, reason } => {
-                    success_count.fetch_add(1, Ordering::SeqCst);
-                    let _ = app.emit(
-                        "tag-refine-progress",
-                        ProgressEvent {
-                            current: cur,
-                            total,
-                            filename: filename.clone(),
-                            status: "success".to_string(),
-                            message: format!("[跳过] {} ({})", filename, reason),
-                            ..Default::default()
-                        },
-                    );
-                }
-                FileResult::Error { filename, message } => {
-                    fail_count.fetch_add(1, Ordering::SeqCst);
-                    error_files.lock().await.push(file_path.clone());
-                    errors
-                        .lock()
-                        .await
-                        .push(format!("{}: {}", filename, message));
-                    let _ = app.emit(
-                        "tag-refine-progress",
-                        ProgressEvent {
-                            current: cur,
-                            total,
-                            filename: filename.clone(),
-                            status: "error".to_string(),
-                            message: format!("[错误] {}: {}", filename, message),
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
-        });
-
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        let _ = handle.await;
-    }
-
-    let sc = success_count.load(Ordering::SeqCst);
-    let fc = fail_count.load(Ordering::SeqCst);
-    let errs = errors.lock().await.clone();
-    let was_cancelled =
-        cancelled.load(Ordering::SeqCst) || TAG_REFINE_CANCELLED.load(Ordering::SeqCst);
-
-    let err_files = error_files.lock().await.clone();
-    let warn_files_list = warning_files.lock().await.clone();
-    let mut copy_msg = String::new();
-
-    // 单图输入时 input_dir_path 是文件，得跟它所在目录比，否则"就地更新"会被误判成
-    // 输入输出不同目录，把整份警告图复制一遍
+    // 单图输入需比较图片所在目录；就地精修不复制警告图片，失败图片仍归集。
     let input_cmp_dir = crate::commands::dir_of(&input_dir_path);
     let same_io_dir = match (
         std::fs::canonicalize(&output_dir_path),
@@ -402,94 +192,87 @@ pub async fn start_tag_refining(
                 == crate::commands::path_key_ci(&input_cmp_dir)
         }
     };
-
-    // 出错图片一律复制出来备查——辅助打标固定就地更新（输出==输入），
-    // 这里若跟着跳过，失败的是哪几张就再也找不回来了。
-    // 副本落在产物目录内，收集侧已剪枝，下一轮不会被当成新图。
-    if !err_files.is_empty() {
-        match crate::commands::copy_files_into_artifact_dir(
-            &input_dir_path,
-            &output_dir_path,
-            &err_files,
-            crate::commands::FAIL_DIR_NAME,
-            options.recursive,
-        ) {
-            Ok(copied) => copy_msg.push_str(&format!(
-                "，{} 个错误文件已复制到 {}/",
-                copied,
-                crate::commands::FAIL_DIR_NAME
-            )),
-            Err(e) => copy_msg.push_str(&format!("，{}", e)),
-        }
-    }
-
-    // 警告=LLM 增删了标签，正是调优该干的事，就地模式下几乎每张图都命中：
-    // 真去复制等于把整个数据集又存了一遍，所以这一项保留就地跳过
-    if !warn_files_list.is_empty() {
-        if same_io_dir {
-            copy_msg.push_str(&format!(
-                "，输出与输入目录相同，已跳过 {}/ 复制",
-                crate::commands::WARN_DIR_NAME
-            ));
-        } else {
-            match crate::commands::copy_files_into_artifact_dir(
-                &input_dir_path,
-                &output_dir_path,
-                &warn_files_list,
-                crate::commands::WARN_DIR_NAME,
-                options.recursive,
-            ) {
-                Ok(copied) => copy_msg.push_str(&format!(
-                    "，{} 个警告文件已复制到 {}/",
-                    copied,
-                    crate::commands::WARN_DIR_NAME
-                )),
-                Err(e) => copy_msg.push_str(&format!("，{}", e)),
-            }
-        }
-    }
-
-    let _ = app.emit(
-        "tag-refine-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: if was_cancelled {
-                format!(
-                    "已取消: 成功 {}, 失败 {}, 共处理 {}/{}{}",
-                    sc,
-                    fc,
-                    sc + fc,
-                    total,
-                    copy_msg
-                )
-            } else {
-                format!(
-                    "标签细化完成: 成功 {}, 失败 {}, 共 {}{}",
-                    sc, fc, total, copy_msg
-                )
-            },
-            ..Default::default()
-        },
+    let extra = llm_batch::archive_problem_files(
+        &input_dir_path,
+        &output_dir_path,
+        recursive,
+        &outcome,
+        same_io_dir,
     );
-
-    Ok(ProcessResult {
-        success_count: sc,
-        fail_count: fc,
+    Ok(llm_batch::finish_batch(
+        &app,
+        "tag-refine-progress",
+        "标签细化完成",
         total,
-        errors: errs,
-    })
+        outcome,
+        &extra,
+    ))
 }
 
+impl FileResult {
+    fn into_outcome(self) -> ItemOutcome {
+        match self {
+            Self::Success {
+                filename,
+                original_count,
+                refined_count,
+                changed,
+                warnings,
+                elapsed_ms,
+            } => {
+                let warning = !warnings.is_empty();
+                let warning_text = if warning {
+                    format!(" ⚠ {}", warnings.join("; "))
+                } else {
+                    String::new()
+                };
+                ItemOutcome::Done {
+                    message: format!(
+                        "[完成] {} | 原TAG {} → 细化后 {} | {}{}{}",
+                        filename,
+                        original_count,
+                        refined_count,
+                        fmt_elapsed(elapsed_ms),
+                        warning_text,
+                        if !changed && !warning {
+                            " (未变化)"
+                        } else {
+                            ""
+                        },
+                    ),
+                    warning,
+                }
+            }
+            Self::Captioned {
+                filename,
+                original_count,
+                word_count,
+                elapsed_ms,
+            } => ItemOutcome::Done {
+                message: format!(
+                    "[完成] {} | 参考 {} 个标签 → 描述 {} 词 | {}",
+                    filename,
+                    original_count,
+                    word_count,
+                    fmt_elapsed(elapsed_ms)
+                ),
+                warning: false,
+            },
+            Self::Skipped { filename, reason } => ItemOutcome::Done {
+                message: format!("[跳过] {} ({})", filename, reason),
+                warning: false,
+            },
+            Self::Error { filename, message } => ItemOutcome::Failed { filename, message },
+        }
+    }
+}
 
 /// JSON 标签字段布局（完整格式 vs 简化格式）
-/// string 字段是逗号分隔的标签串，array 字段是标签数组；新增标签落入 added_to；
+/// string_fields 指定重排时的字符串字段，其余写数组；新增标签落入 added_to；
 /// nl_path 是自然语言描述字段（LLM 返回 NL: 段时写入）
 struct JsonTagLayout {
+    labeled: &'static [(&'static str, &'static [&'static str])],
     string_fields: &'static [&'static [&'static str]],
-    array_fields: &'static [&'static [&'static str]],
     added_to: &'static [&'static str],
     nl_path: &'static [&'static str],
     /// LLM 可重排的四个字段路径，顺序对齐 `TagBuckets` 与 Anima caption 的字段顺序：
@@ -502,6 +285,7 @@ struct JsonTagLayout {
 }
 
 const FULL_LAYOUT: JsonTagLayout = JsonTagLayout {
+    labeled: FULL_LABELED_FIELDS,
     string_fields: &[
         &["fixed", "quality"],
         &["fixed", "series"],
@@ -509,12 +293,6 @@ const FULL_LAYOUT: JsonTagLayout = JsonTagLayout {
         &["character", "name"],
         &["character", "variant"],
         &["ai_output", "count"],
-    ],
-    array_fields: &[
-        &["ai_output", "appearance"],
-        &["ai_output", "tags"],
-        &["ai_output", "environment"],
-        &["from_path", "appearance"],
     ],
     added_to: &["ai_output", "tags"],
     nl_path: &["ai_output", "nl"],
@@ -528,23 +306,22 @@ const FULL_LAYOUT: JsonTagLayout = JsonTagLayout {
 };
 
 const SIMPLIFIED_LAYOUT: JsonTagLayout = JsonTagLayout {
-    string_fields: &[&["quality"], &["series"], &["artist"], &["character"], &["count"]],
-    array_fields: &[&["appearance"], &["tags"], &["environment"]],
+    labeled: SIMPLIFIED_LABELED_FIELDS,
+    string_fields: &[
+        &["quality"],
+        &["series"],
+        &["artist"],
+        &["character"],
+        &["count"],
+    ],
     added_to: &["tags"],
     nl_path: &["nl"],
     artist_path: &["artist"],
     bucket_paths: [&["count"], &["appearance"], &["tags"], &["environment"]],
 };
 
-fn is_full_json_layout(data: &serde_json::Value) -> bool {
-    ["ai_output", "fixed", "from_path"]
-        .iter()
-        .any(|k| data.get(k).map(|v| v.is_object()).unwrap_or(false))
-        || data.get("character").map(|v| v.is_object()).unwrap_or(false)
-}
-
 fn json_layout(data: &serde_json::Value) -> &'static JsonTagLayout {
-    if is_full_json_layout(data) {
+    if super::tag_manager::is_full_json(data) {
         &FULL_LAYOUT
     } else {
         &SIMPLIFIED_LAYOUT
@@ -597,30 +374,56 @@ fn path_is_string_field(layout: &JsonTagLayout, path: &[&str]) -> bool {
     layout.string_fields.contains(&path)
 }
 
-fn path_is_bucket(layout: &JsonTagLayout, path: &[&str]) -> bool {
-    layout.bucket_paths.contains(&path)
+fn field_tags(value: Option<&serde_json::Value>) -> Vec<String> {
+    match value {
+        Some(serde_json::Value::String(text)) => split_tag_line(text),
+        Some(serde_json::Value::Array(values)) => values
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
-/// 从 JSON 标签文件展开扁平标签列表（供 LLM 提示词使用）
+fn tags_value(as_string: bool, tags: Vec<String>) -> serde_json::Value {
+    if as_string {
+        serde_json::Value::String(tags.join(", "))
+    } else {
+        serde_json::Value::Array(tags.into_iter().map(serde_json::Value::String).collect())
+    }
+}
+
+fn append_tags(data: &mut serde_json::Value, path: &[&str], extra: Vec<String>) {
+    if extra.is_empty() {
+        return;
+    }
+    let existing = json_get_path(data, path);
+    let as_string = existing.is_some_and(serde_json::Value::is_string);
+    let mut tags = field_tags(existing);
+    tags.extend(extra);
+    json_set_path(data, path, tags_value(as_string, tags));
+}
+
+/// 与提示词渲染共用字段表，兼容逗号串和数组。
 fn flatten_json_tags(data: &serde_json::Value) -> Vec<String> {
     let layout = json_layout(data);
-    let mut tags = Vec::new();
-    for path in layout.string_fields {
-        if let Some(v) = json_get_path(data, path).and_then(|v| v.as_str()) {
-            tags.extend(v.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()));
-        }
-    }
-    for path in layout.array_fields {
-        if let Some(arr) = json_get_path(data, path).and_then(|v| v.as_array()) {
-            tags.extend(
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|t| t.trim().to_string())
-                    .filter(|t| !t.is_empty()),
-            );
-        }
-    }
-    tags
+    // 保留原来的展开顺序：字符串字段在前，再按字段表展开其余字段。
+    layout
+        .string_fields
+        .iter()
+        .copied()
+        .chain(
+            layout
+                .labeled
+                .iter()
+                .map(|(_, path)| *path)
+                .filter(|path| !path_is_string_field(layout, path)),
+        )
+        .flat_map(|path| field_tags(json_get_path(data, path)))
+        .collect()
 }
 
 /// (语义字段名, 路径)，顺序对齐 Anima caption 的字段顺序；完整/简化格式各一份
@@ -628,11 +431,13 @@ const FULL_LABELED_FIELDS: &[(&str, &[&str])] = &[
     ("quality", &["fixed", "quality"]),
     ("count", &["ai_output", "count"]),
     ("character", &["character", "name"]),
+    ("character.variant", &["character", "variant"]),
     ("series", &["fixed", "series"]),
     ("artist", &["fixed", "artist"]),
     ("appearance", &["ai_output", "appearance"]),
     ("tags", &["ai_output", "tags"]),
     ("environment", &["ai_output", "environment"]),
+    ("from_path.appearance", &["from_path", "appearance"]),
 ];
 const SIMPLIFIED_LABELED_FIELDS: &[(&str, &[&str])] = &[
     ("quality", &["quality"]),
@@ -645,36 +450,18 @@ const SIMPLIFIED_LABELED_FIELDS: &[(&str, &[&str])] = &[
     ("environment", &["environment"]),
 ];
 
-fn json_labeled_fields(data: &serde_json::Value) -> &'static [(&'static str, &'static [&'static str])] {
-    if is_full_json_layout(data) {
-        FULL_LABELED_FIELDS
-    } else {
-        SIMPLIFIED_LABELED_FIELDS
-    }
-}
-
 /// 把 JSON 标签按字段标签渲染成多行文本——txt 模式下没有 .txt 只有 .json 时，
 /// 不摊平转换、直接读 JSON：字段结构带着语义喂给 VLM，
 /// 比一串扁平标签更容易核对画面内容（字段含义随文本一并给出）
 fn render_json_tags_labeled(data: &serde_json::Value) -> String {
     let mut out = String::from(
         "(字段含义 Field meanings: quality=质量标签, count=人数, character=角色名, \
-         series=作品名, artist=画师(@ 前缀), appearance=外观(发型/发色/瞳色/服装/配饰), \
+         character.variant=角色版本, series=作品名, artist=画师(@ 前缀), \
+         from_path.appearance=路径中的外观标签, appearance=外观(发型/发色/瞳色/服装/配饰), \
          tags=动作/表情/姿势/构图/物品, environment=背景/场景/光影/氛围)",
     );
-    for (label, path) in json_labeled_fields(data) {
-        let tags: Vec<&str> = match json_get_path(data, path) {
-            Some(serde_json::Value::String(s)) => {
-                s.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).collect()
-            }
-            Some(serde_json::Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(|t| t.trim())
-                .filter(|t| !t.is_empty())
-                .collect(),
-            _ => continue,
-        };
+    for (label, path) in json_layout(data).labeled {
+        let tags = field_tags(json_get_path(data, path));
         if !tags.is_empty() {
             out.push_str(&format!("\n{}: {}", label, tags.join(", ")));
         }
@@ -690,65 +477,25 @@ fn apply_refined_tags_to_json(data: &mut serde_json::Value, refined: &[String]) 
     let refined_set: HashSet<&str> = refined.iter().map(|s| s.as_str()).collect();
     let mut seen: HashSet<String> = HashSet::new();
 
-    for path in layout.string_fields {
+    for (_, path) in layout.labeled {
         if let Some(slot) = json_get_path_mut(data, path) {
-            if let Some(v) = slot.as_str() {
-                let kept: Vec<String> = v
-                    .split(',')
-                    .map(|t| t.trim().to_string())
-                    .filter(|t| !t.is_empty() && refined_set.contains(t.as_str()))
-                    .collect();
-                for t in &kept {
-                    seen.insert(t.clone());
-                }
-                *slot = serde_json::Value::String(kept.join(", "));
+            if !slot.is_string() && !slot.is_array() {
+                continue;
             }
+            let kept: Vec<String> = field_tags(Some(slot))
+                .into_iter()
+                .filter(|tag| refined_set.contains(tag.as_str()))
+                .collect();
+            seen.extend(kept.iter().cloned());
+            *slot = tags_value(slot.is_string(), kept);
         }
     }
-    for path in layout.array_fields {
-        if let Some(slot) = json_get_path_mut(data, path) {
-            if let Some(arr) = slot.as_array() {
-                let kept: Vec<serde_json::Value> = arr
-                    .iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|t| t.trim().to_string())
-                    .filter(|t| !t.is_empty() && refined_set.contains(t.as_str()))
-                    .inspect(|t| {
-                        seen.insert(t.clone());
-                    })
-                    .map(serde_json::Value::String)
-                    .collect();
-                *slot = serde_json::Value::Array(kept);
-            }
-        }
-    }
-
-    // 新增标签（按 LLM 返回顺序）追加到通用 tags 数组，路径缺失时逐级补建
-    let added: Vec<&String> = refined.iter().filter(|t| !seen.contains(t.as_str())).collect();
-    if added.is_empty() {
-        return;
-    }
-    let mut cur = data;
-    for (i, key) in layout.added_to.iter().enumerate() {
-        if !cur.get(*key).map(|v| if i == layout.added_to.len() - 1 { v.is_array() } else { v.is_object() }).unwrap_or(false) {
-            let empty = if i == layout.added_to.len() - 1 {
-                serde_json::Value::Array(Vec::new())
-            } else {
-                serde_json::Value::Object(serde_json::Map::new())
-            };
-            if let Some(obj) = cur.as_object_mut() {
-                obj.insert((*key).to_string(), empty);
-            } else {
-                return;
-            }
-        }
-        cur = cur.get_mut(*key).unwrap();
-    }
-    if let Some(arr) = cur.as_array_mut() {
-        for t in added {
-            arr.push(serde_json::Value::String(t.clone()));
-        }
-    }
+    let added = refined
+        .iter()
+        .filter(|tag| !seen.contains(tag.as_str()))
+        .cloned()
+        .collect();
+    append_tags(data, layout.added_to, added);
 }
 
 /// 一次 LLM 调用的产出。两条路径互斥：
@@ -762,8 +509,8 @@ enum RefineOutput {
     Caption(String),
 }
 
-/// LLM 按字段归类返回的结果，顺序对齐 `JsonTagLayout::bucket_paths`。
-/// `None` = 响应里没有这一段，该字段维持本地打标器给的归属（只做删除清理）。
+/// LLM 按字段归类返回的结果。
+/// `None` = 响应里没有这一段，该字段原样保留，已有标签维持本地打标器给的归属。
 #[derive(Debug, Default, Clone, PartialEq)]
 struct TagBuckets {
     count: Option<Vec<String>>,
@@ -773,13 +520,9 @@ struct TagBuckets {
 }
 
 impl TagBuckets {
+    /// 四个字段按 `JsonTagLayout::bucket_paths` 的顺序排列：count / appearance / tags / environment
     fn slots(&self) -> [&Option<Vec<String>>; 4] {
-        [
-            &self.count,
-            &self.appearance,
-            &self.tags,
-            &self.environment,
-        ]
+        [&self.count, &self.appearance, &self.tags, &self.environment]
     }
 
     /// 是否真的给出了字段归属。只有 `TAGS:` 一段不算——那是旧协议，
@@ -806,104 +549,35 @@ impl TagBuckets {
     }
 }
 
-/// LLM 给出字段归属时的写回：非重排字段（quality/series/artist/character/from_path）
-/// 仍按差量清理，count/appearance/environment/tags 四个字段则按 LLM 的归属重排。
-/// 重排内容会剔除已留在其它字段里的标签，同一个标签不会出现两处。
-fn apply_buckets_to_json(data: &mut serde_json::Value, buckets: &TagBuckets, refined: &[String]) {
+/// 非重排字段和回复中缺失的字段原样保留；显式给出的字段可增删、重排。
+/// 原样保留的字段优先占用标签，防止回复把它们复制到其他字段。
+fn apply_buckets_to_json(data: &mut serde_json::Value, buckets: &TagBuckets) {
     let layout = json_layout(data);
-    let refined_set: HashSet<&str> = refined.iter().map(|s| s.as_str()).collect();
-    let mut used: HashSet<String> = HashSet::new();
-
-    // 1. 非重排字段（quality/series/artist/character/from_path）原样保留：
-    //    它们来自 tagger 的模型 category 或路径，提示词也没要求 LLM 管这几类，
-    //    按 refined 差量清理会把角色名、画师这些事实信息整片删掉。
-    //    只登记内容，供第 2 步给重排字段去重
-    for path in layout.string_fields.iter().chain(layout.array_fields) {
-        if path_is_bucket(layout, path) {
-            continue;
-        }
-        match json_get_path(data, path) {
-            Some(serde_json::Value::String(s)) => {
-                for t in s.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()) {
-                    used.insert(t.to_string());
-                }
-            }
-            Some(serde_json::Value::Array(arr)) => {
-                for t in arr.iter().filter_map(|v| v.as_str()) {
-                    let t = t.trim();
-                    if !t.is_empty() {
-                        used.insert(t.to_string());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // 2. 四个重排字段：给了归属就覆盖，没给的段按差量清理后原样保留
     let slots = buckets.slots();
-    for (i, path) in layout.bucket_paths.iter().enumerate() {
-        let assigned: Vec<String> = match slots[i] {
-            Some(list) => list
-                .iter()
-                .filter(|t| !t.is_empty() && used.insert((*t).clone()))
-                .cloned()
-                .collect(),
-            None => {
-                // 该段未出现：沿用原值，仅移除已被 LLM 删掉的标签
-                let existing = json_get_path(data, path);
-                let kept: Vec<String> = match existing {
-                    Some(serde_json::Value::String(s)) => s
-                        .split(',')
-                        .map(|t| t.trim().to_string())
-                        .filter(|t| !t.is_empty() && refined_set.contains(t.as_str()))
-                        .collect(),
-                    Some(serde_json::Value::Array(arr)) => arr
-                        .iter()
-                        .filter_map(|v| v.as_str())
-                        .map(|t| t.trim().to_string())
-                        .filter(|t| !t.is_empty() && refined_set.contains(t.as_str()))
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                kept.into_iter().filter(|t| used.insert(t.clone())).collect()
-            }
-        };
-
-        let value = if path_is_string_field(layout, path) {
-            serde_json::Value::String(assigned.join(", "))
-        } else {
-            serde_json::Value::Array(assigned.into_iter().map(serde_json::Value::String).collect())
-        };
-        json_set_path(data, path, value);
+    let mut used: HashSet<String> = HashSet::new();
+    for (_, path) in layout.labeled {
+        let assigned = layout
+            .bucket_paths
+            .iter()
+            .position(|bucket| bucket == path)
+            .is_some_and(|index| slots[index].is_some());
+        if !assigned {
+            used.extend(field_tags(json_get_path(data, path)));
+        }
     }
-
-    // 3. LLM 新增但没落进任何段的标签，兜底追加到通用 tags
-    let leftover: Vec<String> = refined
-        .iter()
-        .filter(|t| !used.contains(t.as_str()))
-        .cloned()
-        .collect();
-    if leftover.is_empty() {
-        return;
+    for (index, path) in layout.bucket_paths.iter().enumerate() {
+        let Some(tags) = slots[index] else { continue };
+        let assigned = tags
+            .iter()
+            .filter(|tag| !tag.is_empty() && used.insert((*tag).clone()))
+            .cloned()
+            .collect();
+        json_set_path(
+            data,
+            path,
+            tags_value(path_is_string_field(layout, path), assigned),
+        );
     }
-    // added_to 就是通用 tags 路径，用它而不是 bucket_paths 的下标，顺序调整不会打偏
-    let tags_path = layout.added_to;
-    let mut merged: Vec<String> = json_get_path(data, tags_path)
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| s.to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-    merged.extend(leftover);
-    json_set_path(
-        data,
-        tags_path,
-        serde_json::Value::Array(merged.into_iter().map(serde_json::Value::String).collect()),
-    );
 }
 
 /// 只按 LLM 的归属重排字段，标签集合保持不变（"归类字段 + 补描述"预设）。
@@ -930,31 +604,14 @@ fn apply_buckets_preserving(data: &mut serde_json::Value, buckets: &TagBuckets) 
     let current: Vec<Vec<String>> = layout
         .bucket_paths
         .iter()
-        .map(|path| match json_get_path(data, path) {
-            Some(serde_json::Value::String(s)) => s
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect(),
-            Some(serde_json::Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect(),
-            _ => Vec::new(),
-        })
+        .map(|path| field_tags(json_get_path(data, path)))
         .collect();
 
     // 按归属重新分配；LLM 没提到的标签留在原字段
     let mut next: Vec<Vec<String>> = vec![Vec::new(); layout.bucket_paths.len()];
     for (origin, tags) in current.iter().enumerate() {
         for t in tags {
-            let target = assign
-                .get(&t.to_lowercase())
-                .copied()
-                .filter(|i| *i < next.len())
-                .unwrap_or(origin);
+            let target = assign.get(&t.to_lowercase()).copied().unwrap_or(origin);
             if !next[target].iter().any(|x| x.eq_ignore_ascii_case(t)) {
                 next[target].push(t.clone());
             }
@@ -962,16 +619,10 @@ fn apply_buckets_preserving(data: &mut serde_json::Value, buckets: &TagBuckets) 
     }
 
     for (i, path) in layout.bucket_paths.iter().enumerate() {
-        let value = if path_is_string_field(layout, path) {
-            serde_json::Value::String(next[i].join(", "))
-        } else {
-            serde_json::Value::Array(
-                next[i]
-                    .iter()
-                    .map(|t| serde_json::Value::String(t.clone()))
-                    .collect(),
-            )
-        };
+        let value = tags_value(
+            path_is_string_field(layout, path),
+            std::mem::take(&mut next[i]),
+        );
         json_set_path(data, path, value);
     }
 }
@@ -1011,15 +662,7 @@ fn set_json_trigger(data: &mut serde_json::Value, trigger: &str) {
         return;
     }
     let path = json_layout(data).artist_path;
-    let existing: Vec<String> = json_get_path(data, path)
-        .and_then(|v| v.as_str())
-        .map(|s| {
-            s.split(',')
-                .map(|x| x.trim().to_string())
-                .filter(|x| !x.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
+    let existing = field_tags(json_get_path(data, path));
     if existing.iter().any(|p| p.eq_ignore_ascii_case(t)) {
         return;
     }
@@ -1048,7 +691,7 @@ fn strip_ci_prefix<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
 /// `split_marker_response` 的解析结果
 #[derive(Debug, Default)]
 struct MarkerResponse<'a> {
-    /// 各字段段的原始行内容，顺序对齐 `TagBuckets`：count / appearance / environment / tags
+    /// 各字段段拆出的标签；响应里没有的段为 None
     buckets: TagBuckets,
     nl: Option<String>,
     /// 未归入任何标记段的其余行
@@ -1133,7 +776,7 @@ async fn process_single_file(
     input_root: &Path,
     output_dir: &Path,
     options: &TagRefineOptions,
-    last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
+    throttle: &RequestThrottle,
 ) -> FileResult {
     let start = std::time::Instant::now();
     let filename = img_path
@@ -1224,126 +867,88 @@ async fn process_single_file(
     }
 
     // 调用 LLM 细化（tags_display：JSON 回退时带字段标签的展示文本）
-    match refine_tags_with_llm(client, img_path, &original_tags, tags_display.as_deref(), options, last_req_time).await {
+    let output = match refine_tags_with_llm(
+        client,
+        img_path,
+        &original_tags,
+        tags_display.as_deref(),
+        options,
+        throttle,
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            return FileResult::Error {
+                filename,
+                message: e,
+            }
+        }
+    };
+    let elapsed_ms = start.elapsed().as_millis();
+    let original_count = original_tags.len();
+    let output_name = format!("{}.{}", stem, tag_ext);
+    let output_path = match output_path_for_input(
+        input_root,
+        img_path,
+        output_dir,
+        &output_name,
+        options.recursive,
+    ) {
+        Ok(path) => path,
+        Err(e) => {
+            return FileResult::Error {
+                filename,
+                message: e,
+            }
+        }
+    };
+
+    let (output_content, done) = match output {
         // 自然语言打标：整段描述直接落盘，标签只是刚才喂给 LLM 的参考
-        Ok(RefineOutput::Caption(caption)) => {
-            let elapsed_ms = start.elapsed().as_millis();
-            let output_name = format!("{}.{}", stem, tag_ext);
-            let output_path = match output_path_for_input(
-                input_root,
-                img_path,
-                output_dir,
-                &output_name,
-                options.recursive,
-            ) {
-                Ok(path) => path,
-                Err(e) => {
-                    return FileResult::Error {
-                        filename,
-                        message: e,
-                    }
-                }
-            };
+        RefineOutput::Caption(caption) => {
             // 触发词由后端保证在最前，不依赖 LLM 遵守提示词
             let caption = ensure_trigger_prefix(&caption, &options.trigger_word);
             let word_count = caption.split_whitespace().count();
-            match std::fs::write(&output_path, &caption) {
-                Ok(_) => FileResult::Captioned {
-                    filename,
-                    original_count: original_tags.len(),
-                    word_count,
-                    elapsed_ms,
-                },
-                Err(e) => FileResult::Error {
-                    filename,
-                    message: format!("写入失败: {}", e),
-                },
-            }
+            let done = FileResult::Captioned {
+                filename: filename.clone(),
+                original_count,
+                word_count,
+                elapsed_ms,
+            };
+            (caption, done)
         }
-        Ok(RefineOutput::Tags {
+        RefineOutput::Tags {
             tags: refined_tags,
             nl,
             buckets,
-        }) => {
-            let elapsed_ms = start.elapsed().as_millis();
-            let original_count = original_tags.len();
-            // 保集合模式下写盘的标签就是原有那批，LLM 回复里的增删不会生效
+        } => {
             let preserving = is_json && options.preserve_tags;
-            let refined_count = if preserving {
-                original_count
-            } else {
-                refined_tags.len()
-            };
-            let nl_written = is_json && nl.is_some();
-            // 字段归属可能变了而标签集合没变（例如 simple background 从 tags 挪到 environment），
-            // 这种情况也算改动，否则日志会误报"未变化"
-            let rebucketed = is_json && buckets.has_field_assignment();
-            let changed = (!preserving && refined_tags != original_tags) || nl_written || rebucketed;
-            let mut warnings: Vec<String> = Vec::new();
-
-            // 增删对比。保集合模式跳过：标签实际没动，
-            // 报"移除/新增"会误导，还会把整批图复制进 Warn/
-            if !preserving {
-                let orig_set: HashSet<&str> = original_tags.iter().map(|s| s.as_str()).collect();
-                let refine_set: HashSet<&str> = refined_tags.iter().map(|s| s.as_str()).collect();
-
-                let removed: Vec<&str> = orig_set.difference(&refine_set).copied().collect();
-                let added: Vec<&str> = refine_set.difference(&orig_set).copied().collect();
-
-                if !removed.is_empty() {
-                    let display: Vec<&str> = removed.iter().take(5).copied().collect();
-                    let suffix = if removed.len() > 5 {
-                        format!("等{}个", removed.len())
-                    } else {
-                        String::new()
-                    };
-                    warnings.push(format!("移除: {}{}", display.join(", "), suffix));
-                }
-                if !added.is_empty() {
-                    let display: Vec<&str> = added.iter().take(5).copied().collect();
-                    let suffix = if added.len() > 5 {
-                        format!("等{}个", added.len())
-                    } else {
-                        String::new()
-                    };
-                    warnings.push(format!("新增: {}{}", display.join(", "), suffix));
-                }
-            }
-
-            let output_name = format!("{}.{}", stem, tag_ext);
-            let output_path = match output_path_for_input(
-                input_root,
-                img_path,
-                output_dir,
-                &output_name,
-                options.recursive,
-            ) {
-                Ok(path) => path,
-                Err(e) => {
-                    return FileResult::Error {
-                        filename,
-                        message: e,
-                    }
-                }
-            };
-            let output_content = if let Some(mut data) = json_data {
+            let mut written_tags = refined_tags.clone();
+            let mut json_changed = false;
+            let content = if let Some(mut data) = json_data {
+                let original_data = data.clone();
                 if options.preserve_tags {
                     // 只归类不增删：标签集合恒定，LLM 的回复只当作归属映射
-                    apply_buckets_preserving(&mut data, &buckets);
+                    if buckets.has_field_assignment() {
+                        apply_buckets_preserving(&mut data, &buckets);
+                    }
                 } else if buckets.has_field_assignment() {
                     // LLM 给了字段归属：重排 count/appearance/environment/tags
                     // （本地打标器靠关键词表分类，"simple background" 之类常落错格）
-                    apply_buckets_to_json(&mut data, &buckets, &refined_tags);
+                    apply_buckets_to_json(&mut data, &buckets);
                 } else {
                     // 旧协议：差量写回，保留原字段归属，仅应用增删
                     apply_refined_tags_to_json(&mut data, &refined_tags);
                 }
+                written_tags = flatten_json_tags(&data);
                 // LLM 返回了 NL: 描述段时写入 nl 字段（本地打标器不产生 nl，由 LLM 补充）
                 if let Some(nl_text) = nl.as_deref() {
                     set_json_nl(&mut data, nl_text);
                 }
                 // 触发词进 artist 字段（JSON 的触发词位置），txt 那边则是置于开头
                 set_json_trigger(&mut data, &options.trigger_word);
+                json_changed = data != original_data;
                 match serde_json::to_string_pretty(&data) {
                     Ok(s) => s,
                     Err(e) => {
@@ -1357,70 +962,55 @@ async fn process_single_file(
                 // 纯标签的 txt 同样要以触发词开头
                 ensure_trigger_prefix(&refined_tags.join(", "), &options.trigger_word)
             };
-            match std::fs::write(&output_path, &output_content) {
-                Ok(_) => FileResult::Success {
-                    filename,
-                    original_count,
-                    refined_count,
-                    changed,
-                    warnings,
-                    elapsed_ms,
-                },
-                Err(e) => FileResult::Error {
-                    filename,
-                    message: format!("写入失败: {}", e),
-                },
+            let refined_count = written_tags.len();
+            let changed = if is_json {
+                json_changed
+            } else {
+                written_tags != original_tags
+            };
+            let mut warnings = Vec::new();
+            // 比较实际写回的集合，缺段保留、非重排字段不会被误报为移除。
+            if !preserving {
+                let original: HashSet<&str> = original_tags.iter().map(String::as_str).collect();
+                let written: HashSet<&str> = written_tags.iter().map(String::as_str).collect();
+                let removed: Vec<&str> = original.difference(&written).copied().collect();
+                let added: Vec<&str> = written.difference(&original).copied().collect();
+                warnings.extend(summarize_tags("移除", &removed));
+                warnings.extend(summarize_tags("新增", &added));
             }
+            let done = FileResult::Success {
+                filename: filename.clone(),
+                original_count,
+                refined_count,
+                changed,
+                warnings,
+                elapsed_ms,
+            };
+            (content, done)
         }
+    };
+
+    match std::fs::write(&output_path, &output_content) {
+        Ok(_) => done,
         Err(e) => FileResult::Error {
             filename,
-            message: e,
+            message: format!("写入失败: {}", e),
         },
     }
 }
 
 /// 调用多模态 LLM 进行标签细化（发送图片 + 已有标签）。
-/// 返回 (细化后标签, NL 描述)：响应含 `NL:` 标记段时第二项为 Some，用于 JSON 模式补充 nl 字段。
+/// 自然语言打标模式返回整段描述；否则返回解析出的标签、`NL:` 段描述（JSON 模式用来补 nl 字段）
+/// 和字段归属。
 async fn refine_tags_with_llm(
     client: &reqwest::Client,
     img_path: &Path,
     tags: &[String],
     tags_display: Option<&str>,
     options: &TagRefineOptions,
-    last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
+    throttle: &RequestThrottle,
 ) -> Result<RefineOutput, String> {
-    // 读取并缩放图片。解码、缩放、编码是 CPU 密集操作且带文件 I/O，
-    // 批量精修时不能直接占用异步执行器线程，移入阻塞线程池
-    let max_side = if options.image_size > 0 {
-        options.image_size
-    } else {
-        1024
-    };
-    let img_path_buf = img_path.to_path_buf();
-    let data_url = tokio::task::spawn_blocking(move || -> Result<String, String> {
-        let img = image::ImageReader::open(&img_path_buf)
-            .map_err(|e| format!("读取图片失败: {}", e))?
-            .with_guessed_format()
-            .map_err(|e| format!("无法识别图片格式: {}", e))?
-            .decode()
-            .map_err(|e| format!("无法解码图片: {}", e))?;
-
-        let img = if img.width() > max_side || img.height() > max_side {
-            img.resize(max_side, max_side, image::imageops::FilterType::Lanczos3)
-        } else {
-            img
-        };
-
-        // 编码为 JPEG base64（JPEG 编码器不接受 RGBA，透明图需先按白底拍平）
-        let img = super::flatten_to_rgb_white(img);
-        let mut buf = std::io::Cursor::new(Vec::new());
-        img.write_to(&mut buf, image::ImageFormat::Jpeg)
-            .map_err(|e| format!("编码图片失败: {}", e))?;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(buf.get_ref());
-        Ok(format!("data:image/jpeg;base64,{}", b64))
-    })
-    .await
-    .map_err(|e| format!("图片处理任务失败: {}", e))??;
+    let data_url = llm_client::load_image_data_url(img_path, options.image_size).await?;
 
     // JSON 回退时展示文本带字段标签和含义（count: 1girl / appearance: ...），
     // 否则就是扁平的逗号分隔列表
@@ -1428,7 +1018,6 @@ async fn refine_tags_with_llm(
         .map(|s| s.to_string())
         .unwrap_or_else(|| tags.join(", "));
 
-    // 构造 prompt
     let user_text = if options.prompt.contains("{tags}") {
         options.prompt.replace("{tags}", &tag_list)
     } else {
@@ -1438,128 +1027,39 @@ async fn refine_tags_with_llm(
         )
     };
 
-    // 构造多模态请求（图片 + 文字）
-    let mut image_url = serde_json::json!({ "url": data_url });
-    let detail = options.image_detail.trim();
-    if !detail.is_empty() {
-        image_url["detail"] = serde_json::Value::String(detail.to_string());
-    }
-    let messages = vec![ChatMessage {
-        role: "user".to_string(),
-        content: serde_json::json!([
-            { "type": "text", "text": user_text },
-            { "type": "image_url", "image_url": image_url }
-        ]),
-    }];
-
-    let request_body = ChatRequest {
-        model: options.model_name.clone(),
-        messages,
-        max_tokens: if options.max_tokens > 0 {
-            Some(options.max_tokens as u32)
-        } else {
-            None
-        },
+    let params = ChatParams {
+        endpoint: &options.api_endpoint,
+        api_key: &options.api_key,
+        model: &options.model_name,
         temperature: options.temperature,
-        top_p: if options.top_p > 0.0 && options.top_p <= 1.0 {
-            Some(options.top_p)
-        } else {
-            None
-        },
+        max_tokens: -1,
+        top_p: options.top_p,
     };
-
-    let endpoint = if options.api_endpoint.ends_with('/') {
-        format!("{}chat/completions", options.api_endpoint)
-    } else {
-        format!("{}/chat/completions", options.api_endpoint)
-    };
-
-    let mut req = client
-        .post(&endpoint)
-        .header("Content-Type", "application/json")
-        .json(&request_body);
-
-    if !options.api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", options.api_key));
-    }
-
-    if !wait_for_global_llm_slot(
-        last_req_time,
-        options.request_interval_ms,
+    let reply = llm_client::chat_completion(
+        client,
+        &params,
+        &[ChatMessage::user(llm_client::vision_user_content(
+            &user_text,
+            &data_url,
+            &options.image_detail,
+        ))],
+        throttle,
         &TAG_REFINE_CANCELLED,
     )
     .await
-    {
-        return Err("已取消".to_string());
+    .map_err(|error| match error {
+        ChatError::ContentFilter => "LLM 内容安全审核拒绝了该图片，标签未改动".to_string(),
+        error => String::from(error),
+    })?;
+    if reply.is_truncated() {
+        return Err("回复超出了服务商的输出长度上限，已丢弃".to_string());
     }
-
-    let response = req
-        .send()
-        .await
-        .map_err(|e| format!("API 请求失败: {}", e))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("API 错误 ({}): {}", status, body));
-    }
-
-    let chat_resp: ChatResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("解析响应失败: {}", e))?;
-
-    let choice = chat_resp
-        .choices
-        .first()
-        .ok_or_else(|| "API 未返回任何结果".to_string())?;
-
-    // 截断的响应是残缺的标签列表，写盘会把未包含的原标签全部删掉
-    if choice.finish_reason.as_deref() == Some("length") {
-        return Err("响应因 max_tokens 被截断，已丢弃（请调大 max_tokens）".to_string());
-    }
-    // 内容安全审核拒绝时不写入标签。
-    if matches!(
-        choice.finish_reason.as_deref(),
-        Some("content_filter") | Some("safety")
-    ) {
-        return Err("LLM 内容安全审核拒绝了该图片，标签未改动".to_string());
-    }
-
-    let content = choice
-        .message
-        .content
-        .as_deref()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let reasoning = choice
-        .message
-        .reasoning_content
-        .as_deref()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    let final_content = if !content.is_empty() {
-        content
-    } else if !reasoning.is_empty() {
-        reasoning
-    } else {
-        return Err("API 返回空内容".to_string());
-    };
+    let final_content = reply.text;
 
     // 自然语言打标：回复整段就是标签文件内容，不进标签解析
     if options.caption_mode {
-        let caption = final_content.trim();
-        if caption.is_empty() {
-            return Err("AI 返回空描述".to_string());
-        }
-        if crate::commands::looks_like_refusal(caption) {
-            let excerpt: String = caption.chars().take(80).collect();
-            return Err(format!("LLM 拒绝处理该图片（疑似内容安全审核）: {}", excerpt));
-        }
-        return Ok(RefineOutput::Caption(caption.to_string()));
+        reject_refusal(&final_content, "该图片")?;
+        return Ok(RefineOutput::Caption(final_content));
     }
 
     let (tags, nl, buckets) = parse_refine_response(&final_content, tags)?;
@@ -1577,49 +1077,28 @@ fn parse_refine_response(
     let marker = split_marker_response(content);
 
     // 拒绝语必须判失败，避免被标签列表启发式写入标签文件。
-    let has_markers =
-        marker.buckets.slots().iter().any(|s| s.is_some()) || marker.nl.is_some();
-    if !has_markers && crate::commands::looks_like_refusal(content) {
-        let excerpt: String = content.trim().chars().take(80).collect();
-        return Err(format!("LLM 拒绝处理该图片（疑似内容安全审核）: {}", excerpt));
+    let has_markers = marker.buckets.slots().iter().any(|s| s.is_some()) || marker.nl.is_some();
+    if !has_markers {
+        reject_refusal(content, "该图片")?;
     }
     // 模型拒绝时也常常遵守输出格式（NL: I'm sorry, I cannot...）——
     // 上面那道闸被 has_markers 跳过，拒绝文本会被直接写进 nl 字段，
     // NL 段内容必须单独再过一遍（"仅补 nl 描述"预设必走这条路）
     if let Some(nl_text) = marker.nl.as_deref() {
-        if crate::commands::looks_like_refusal(nl_text) {
-            let excerpt: String = nl_text.trim().chars().take(80).collect();
-            return Err(format!("LLM 拒绝处理该图片（疑似内容安全审核）: {}", excerpt));
-        }
+        reject_refusal(nl_text, "该图片")?;
     }
     // TAGS:/字段段同理：TAGS: I'm sorry, I can't... 会被拆成"标签"写盘
-    for seg in marker.buckets.slots().iter().filter_map(|s| s.as_ref()) {
-        let joined = seg.join(", ");
-        if crate::commands::looks_like_refusal(&joined) {
-            let excerpt: String = joined.chars().take(80).collect();
-            return Err(format!("LLM 拒绝处理该图片（疑似内容安全审核）: {}", excerpt));
-        }
+    for seg in marker.buckets.slots().into_iter().flatten() {
+        reject_refusal(&seg.join(", "), "该图片")?;
     }
 
     // 仅有 count 段不足以判定为标记格式，继续使用普通标签解析。
-    let refined_tags: Vec<String> = if marker.buckets.tags.is_some()
-        || marker.buckets.has_field_assignment()
-    {
-        marker.buckets.all_tags()
-    } else {
-        let joined = marker.rest.join("\n");
-        let cleaned = if joined.contains('\n') {
-            joined
-                .lines()
-                .filter(|l| l.contains(','))
-                .max_by_key(|l| l.len())
-                .unwrap_or(&joined)
-                .to_string()
+    let refined_tags: Vec<String> =
+        if marker.buckets.tags.is_some() || marker.buckets.has_field_assignment() {
+            marker.buckets.all_tags()
         } else {
-            joined
+            split_tag_line(pick_tag_line(&marker.rest.join("\n")))
         };
-        split_tag_line(&cleaned)
-    };
 
     // 只回了 NL: 一段（"仅补 nl 描述"这类提示词）：标签原样保留，不是失败
     if refined_tags.is_empty() && marker.nl.is_some() {
@@ -1636,6 +1115,109 @@ fn parse_refine_response(
 #[cfg(test)]
 mod marker_tests {
     use super::*;
+
+    #[test]
+    fn successful_warnings_and_caption_keep_completion_text() {
+        let result = FileResult::Success {
+            filename: "a b.png".into(),
+            original_count: 2,
+            refined_count: 3,
+            changed: true,
+            warnings: vec!["新增: smile".into()],
+            elapsed_ms: 1500,
+        }
+        .into_outcome();
+        match result {
+            ItemOutcome::Done { message, warning } => {
+                assert!(warning);
+                assert_eq!(
+                    message,
+                    "[完成] a b.png | 原TAG 2 → 细化后 3 | 1.5s ⚠ 新增: smile"
+                );
+            }
+            _ => panic!("successful warning expected"),
+        }
+        let result = FileResult::Captioned {
+            filename: "a b.png".into(),
+            original_count: 2,
+            word_count: 4,
+            elapsed_ms: 500,
+        }
+        .into_outcome();
+        match result {
+            ItemOutcome::Done { message, warning } => {
+                assert!(!warning);
+                assert_eq!(
+                    message,
+                    "[完成] a b.png | 参考 2 个标签 → 描述 4 词 | 500ms"
+                );
+            }
+            _ => panic!("caption expected"),
+        }
+    }
+
+    #[test]
+    fn omitted_count_is_preserved_exactly_in_both_json_layouts() {
+        for mut data in [
+            serde_json::json!({"count": " 1girl, solo ", "tags": ["smile"], "environment": []}),
+            serde_json::json!({"ai_output": {"count": ["1girl", "solo"], "tags": ["smile"], "environment": []}}),
+        ] {
+            let count_path = json_layout(&data).bucket_paths[0];
+            let original_count = json_get_path(&data, count_path).cloned();
+            let (_, _, buckets) = parse_refine_response(
+                "APPEARANCE: long hair\nTAGS: smile\nENVIRONMENT: outdoors",
+                &[],
+            )
+            .unwrap();
+            assert!(buckets.count.is_none());
+            apply_buckets_to_json(&mut data, &buckets);
+            assert_eq!(json_get_path(&data, count_path).cloned(), original_count);
+        }
+    }
+
+    #[test]
+    fn omitted_fields_keep_ownership_even_when_other_segments_repeat_their_tags() {
+        let mut data = serde_json::json!({"appearance": ["long hair"], "tags": ["smile"]});
+        let (_, _, buckets) =
+            parse_refine_response("ENVIRONMENT: long hair, outdoors", &[]).unwrap();
+        apply_buckets_to_json(&mut data, &buckets);
+        assert_eq!(data["appearance"], serde_json::json!(["long hair"]));
+        assert_eq!(data["tags"], serde_json::json!(["smile"]));
+        assert_eq!(data["environment"], serde_json::json!(["outdoors"]));
+        assert!(data.get("count").is_none());
+    }
+
+    #[test]
+    fn mixed_field_types_share_reading_and_keep_storage_type_on_delta_write() {
+        let mut data = serde_json::json!({
+            "fixed": {"quality": ["best quality"], "artist": ["@artist"]},
+            "character": {"name": ["miku"], "variant": "winter outfit"},
+            "from_path": {"appearance": "scarf, boots"},
+            "ai_output": {"count": ["1girl"], "appearance": "long hair, blue eyes", "tags": "smile"},
+            "extra": {"untouched": true}
+        });
+        let flat = flatten_json_tags(&data);
+        let rendered = render_json_tags_labeled(&data);
+        for tag in &flat {
+            assert!(rendered.contains(tag), "{tag}");
+        }
+        assert!(flat.contains(&"boots".to_string()));
+        assert!(flat.contains(&"winter outfit".to_string()));
+        let mut refined = flat;
+        refined.retain(|tag| tag != "blue eyes");
+        refined.push("standing".into());
+        apply_refined_tags_to_json(&mut data, &refined);
+        assert_eq!(data["ai_output"]["appearance"], "long hair");
+        assert_eq!(data["ai_output"]["tags"], "smile, standing");
+        assert_eq!(
+            data["fixed"]["quality"],
+            serde_json::json!(["best quality"])
+        );
+        assert_eq!(data["from_path"]["appearance"], "scarf, boots");
+        assert_eq!(data["extra"], serde_json::json!({"untouched": true}));
+        set_json_trigger(&mut data, "trigger");
+        assert_eq!(data["fixed"]["artist"], "trigger, @artist");
+    }
 
     #[test]
     fn parses_tags_and_nl_markers() {
@@ -1691,7 +1273,7 @@ mod marker_tests {
         assert!(m.rest.is_empty());
     }
 
-    /// 四段字段归属格式：解析出各字段并按 count→appearance→environment→tags 展开
+    /// 四段字段归属格式：解析出各字段并按 count→appearance→tags→environment 展开
     #[test]
     fn parses_field_assignment_markers() {
         let m = split_marker_response(
@@ -1886,8 +1468,8 @@ mod marker_tests {
         let (parsed, _, _) = parse_refine_response(tags, &[]).unwrap();
         assert!(parsed.contains(&"1girl".to_string()));
         // 按标记格式返回的短回复也不该被误判
-        let marked = parse_refine_response("TAGS: sorry\nNL: A girl with a sorry expression.", &[])
-            .unwrap();
+        let marked =
+            parse_refine_response("TAGS: sorry\nNL: A girl with a sorry expression.", &[]).unwrap();
         assert_eq!(marked.0, vec!["sorry".to_string()]);
     }
 
@@ -1943,7 +1525,8 @@ mod marker_tests {
         assert!(rendered.starts_with("(字段含义"));
 
         // 简化格式同样渲染（逗号串 + 数组混合）
-        let simp = serde_json::json!({"count": "2girls", "tags": "sitting, looking at viewer", "nl": "x"});
+        let simp =
+            serde_json::json!({"count": "2girls", "tags": "sitting, looking at viewer", "nl": "x"});
         let r2 = render_json_tags_labeled(&simp);
         assert!(r2.contains("count: 2girls"));
         assert!(r2.contains("tags: sitting, looking at viewer"));
@@ -1989,7 +1572,10 @@ mod marker_tests {
 
         assert_eq!(data["character"]["name"], "hatsune miku");
         assert_eq!(data["ai_output"]["count"], "1girl");
-        assert_eq!(data["ai_output"]["appearance"], serde_json::json!(["long hair"]));
+        assert_eq!(
+            data["ai_output"]["appearance"],
+            serde_json::json!(["long hair"])
+        );
         assert_eq!(data["ai_output"]["tags"], serde_json::json!(["standing"]));
         assert_eq!(data["ai_output"]["nl"], "Miku stands with long hair.");
         // 空字符串字段保持为空，不产生 "@"/垃圾内容
@@ -2019,8 +1605,7 @@ mod marker_tests {
             tags: Some(vec!["smile".into()]),
             environment: Some(vec!["simple background".into(), "outdoors".into()]),
         };
-        let refined = buckets.all_tags();
-        apply_buckets_to_json(&mut data, &buckets, &refined);
+        apply_buckets_to_json(&mut data, &buckets);
 
         assert_eq!(
             data["ai_output"]["environment"],
@@ -2056,13 +1641,15 @@ mod marker_tests {
         // LLM 把已经在 character/quality 里的标签也塞进了 appearance 段
         let buckets = TagBuckets {
             count: Some(vec!["1girl".into()]),
-            appearance: Some(vec!["hatsune miku".into(), "masterpiece".into(), "smile".into()]),
+            appearance: Some(vec![
+                "hatsune miku".into(),
+                "masterpiece".into(),
+                "smile".into(),
+            ]),
             environment: Some(vec![]),
             tags: Some(vec![]),
         };
-        let mut refined = buckets.all_tags();
-        refined.push("hatsune miku".into());
-        apply_buckets_to_json(&mut data, &buckets, &refined);
+        apply_buckets_to_json(&mut data, &buckets);
 
         assert_eq!(data["character"], "hatsune miku");
         assert_eq!(data["quality"], "masterpiece");
@@ -2071,7 +1658,7 @@ mod marker_tests {
         assert_eq!(data["tags"], serde_json::json!([]));
     }
 
-    /// 只返回部分字段时保留其他字段；未归类的新标签进入 tags。
+    /// 生产解析路径只返回部分字段时，其他字段原样保留。
     #[test]
     fn rebucket_partial_segments_keep_rest() {
         let mut data = serde_json::json!({
@@ -2082,94 +1669,29 @@ mod marker_tests {
             "environment": [],
             "nl": ""
         });
-        // 只给了 ENVIRONMENT 段；refined 里没有 red eyes（= 被删），多了 blush（未归段）
-        let buckets = TagBuckets {
-            count: None,
-            appearance: None,
-            environment: Some(vec!["simple background".into()]),
-            tags: None,
-        };
-        let refined: Vec<String> = ["1girl", "long hair", "smile", "simple background", "blush"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        apply_buckets_to_json(&mut data, &buckets, &refined);
+        let (_, _, buckets) = parse_refine_response("ENVIRONMENT: simple background", &[]).unwrap();
+        apply_buckets_to_json(&mut data, &buckets);
 
         assert_eq!(data["count"], "1girl");
-        // red eyes 被删，long hair 留在原字段
-        assert_eq!(data["appearance"], serde_json::json!(["long hair"]));
-        assert_eq!(data["environment"], serde_json::json!(["simple background"]));
-        // 未归类的新增标签追加到 tags。
-        assert_eq!(data["tags"], serde_json::json!(["smile", "blush"]));
+        assert_eq!(
+            data["appearance"],
+            serde_json::json!(["long hair", "red eyes"])
+        );
+        assert_eq!(
+            data["environment"],
+            serde_json::json!(["simple background"])
+        );
+        assert_eq!(data["tags"], serde_json::json!(["smile"]));
     }
 }
 
-/// 端到端测试：本地 mock OpenAI 兼容服务器 + 真实图片/标签文件，
-/// 跑 process_single_file 全链路（读标签 → 请求 → 解析 → 写盘）
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::sync::mpsc;
-
-    fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-        haystack.windows(needle.len()).position(|w| w == needle)
-    }
-
-    /// 起一个最小 mock：接受一个请求，body 发回 channel，返回固定 content 的 OpenAI 响应
-    fn mock_openai_server(content: &str) -> (String, mpsc::Receiver<String>) {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (tx, rx) = mpsc::channel();
-        let body = serde_json::json!({
-            "choices": [{
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop"
-            }]
-        })
-        .to_string();
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = Vec::new();
-                let mut tmp = [0u8; 8192];
-                let mut header_end = None;
-                let mut content_len = 0usize;
-                loop {
-                    let n = stream.read(&mut tmp).unwrap_or(0);
-                    if n == 0 {
-                        break;
-                    }
-                    buf.extend_from_slice(&tmp[..n]);
-                    if header_end.is_none() {
-                        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
-                            header_end = Some(pos + 4);
-                            for line in String::from_utf8_lossy(&buf[..pos]).lines() {
-                                let l = line.to_lowercase();
-                                if let Some(v) = l.strip_prefix("content-length:") {
-                                    content_len = v.trim().parse().unwrap_or(0);
-                                }
-                            }
-                        }
-                    }
-                    if let Some(he) = header_end {
-                        if buf.len() >= he + content_len {
-                            break;
-                        }
-                    }
-                }
-                if let Some(he) = header_end {
-                    let _ = tx.send(String::from_utf8_lossy(&buf[he..]).to_string());
-                }
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = stream.write_all(resp.as_bytes());
-            }
-        });
-        (format!("http://127.0.0.1:{}/v1/chat/completions", port), rx)
-    }
+    use crate::commands::llm_client::test_support::{
+        client, serve_chat_reply, serve_json, TempDir,
+    };
+    use std::path::PathBuf;
 
     fn make_options(endpoint: String) -> TagRefineOptions {
         TagRefineOptions {
@@ -2180,7 +1702,6 @@ mod e2e_tests {
             model_name: "mock-vlm".into(),
             prompt: "当前标签:\n{tags}\n请调优".into(),
             temperature: 0.3,
-            max_tokens: -1,
             image_size: 512,
             top_p: 0.0,
             request_interval_ms: -1,
@@ -2194,10 +1715,8 @@ mod e2e_tests {
         }
     }
 
-    fn setup_dir(tag: &str) -> (PathBuf, PathBuf) {
-        let root = std::env::temp_dir().join(format!("purinbox_refine_e2e_{}_{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+    fn setup_dir(tag: &str) -> (TempDir, PathBuf) {
+        let root = TempDir::new(tag);
         let img = root.join("a.png");
         image::RgbImage::from_pixel(64, 64, image::Rgb([120, 80, 160]))
             .save(&img)
@@ -2207,56 +1726,230 @@ mod e2e_tests {
 
     const FIXTURE_JSON: &str = r#"{
         "fixed": {"quality": "newest, safe", "series": "", "artist": ""},
-        "character": {"name": "hatsune miku", "variant": ""},
-        "ai_output": {"count": "1girl", "appearance": ["long hair", "blue eyes"],
+        "character": {"name": "hatsune miku", "variant": "winter outfit"},
+        "from_path": {"appearance": "scarf, boots"},
+        "ai_output": {"count": "1girl", "appearance": "long hair, blue eyes",
                       "tags": ["smile"], "environment": [], "nl": "keep me"}
     }"#;
 
-    /// txt 模式 + 只有 .json：回退读取、带字段语义发给 LLM、结果写 .txt、JSON 不动
     #[tokio::test]
     async fn txt_mode_json_fallback_end_to_end() {
-        let (endpoint, rx) =
-            mock_openai_server("TAGS: 1girl, long hair, smile, outdoors\nNL: txt 模式忽略");
-        let (root, img) = setup_dir("fallback");
+        let source: serde_json::Value = serde_json::from_str(FIXTURE_JSON).unwrap();
+        let expected = flatten_json_tags(&source).join(", ");
+        let server = serve_chat_reply(
+            Some(&format!("TAGS: {}\nNL: txt 模式忽略", expected)),
+            "stop",
+        );
+        let (root, img) = setup_dir("refine_fallback");
         std::fs::write(root.join("a.json"), FIXTURE_JSON).unwrap();
-
-        let options = make_options(endpoint);
-        // 绕开代理环境变量，直连本地 mock
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let last_req = std::sync::Arc::new(tokio::sync::Mutex::new(None));
-        let result = process_single_file(&client, &img, &root, &root, &options, &last_req).await;
-
-        assert!(matches!(result, FileResult::Success { .. }), "应成功: {result:?}");
-        let txt = std::fs::read_to_string(root.join("a.txt")).unwrap();
-        assert_eq!(txt, "1girl, long hair, smile, outdoors");
-        // JSON 原文件不动，nl 保留
-        let json_raw: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(root.join("a.json")).unwrap()).unwrap();
-        assert_eq!(json_raw["ai_output"]["nl"], "keep me");
-        // 发给 LLM 的标签带字段标签（字段含义 + count: / appearance: 行）
-        let sent = rx
+        let options = make_options(server.url.clone());
+        let result = process_single_file(
+            &client(),
+            &img,
+            &root,
+            &root,
+            &options,
+            &RequestThrottle::new(-1),
+        )
+        .await;
+        match result {
+            FileResult::Success {
+                warnings,
+                original_count,
+                refined_count,
+                ..
+            } => {
+                assert!(warnings.is_empty(), "{warnings:?}");
+                assert_eq!(original_count, refined_count);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            expected
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.json")).unwrap(),
+            FIXTURE_JSON
+        );
+        let request = server
+            .requests
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("mock 服务器应收到请求");
-        assert!(sent.contains("appearance: long hair, blue eyes"), "请求应有字段标签: {}", &sent[..sent.len().min(400)]);
-        assert!(sent.contains("count: 1girl"));
-        let _ = std::fs::remove_dir_all(&root);
+            .unwrap();
+        let body = request.json();
+        let text = body["messages"][0]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("appearance: long hair, blue eyes"));
+        assert!(text.contains("count: 1girl"));
+        assert!(text.contains("character.variant: winter outfit"));
+        assert!(text.contains("from_path.appearance: scarf, boots"));
+        assert!(body.get("max_tokens").is_none());
+        assert!(body["messages"][0]["content"][1]["image_url"]
+            .get("detail")
+            .is_none());
+        assert_eq!(request.path, "/v1/chat/completions");
     }
 
-    /// 拒绝语带 NL: 前缀 → 判失败且不写任何文件
     #[tokio::test]
-    async fn marked_refusal_fails_without_writing() {
-        let (endpoint, _rx) =
-            mock_openai_server("NL: I'm sorry, I cannot describe this image.");
-        let (root, img) = setup_dir("refusal");
+    async fn partial_json_response_preserves_count_and_does_not_warn_about_retained_tags() {
+        let server = serve_chat_reply(
+            Some("APPEARANCE: long hair, blue eyes\nTAGS: smile\nENVIRONMENT:\nNL: A girl."),
+            "stop",
+        );
+        let (root, img) = setup_dir("refine_missing_count");
         std::fs::write(root.join("a.json"), FIXTURE_JSON).unwrap();
+        let mut options = make_options(server.url.clone());
+        options.file_format = "json".into();
+        let result = process_single_file(
+            &client(),
+            &img,
+            &root,
+            &root,
+            &options,
+            &RequestThrottle::new(-1),
+        )
+        .await;
+        match result {
+            FileResult::Success {
+                warnings,
+                original_count,
+                refined_count,
+                changed,
+                ..
+            } => {
+                assert!(warnings.is_empty(), "{warnings:?}");
+                assert_eq!(original_count, refined_count);
+                assert!(changed);
+            }
+            other => panic!("{other:?}"),
+        }
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("a.json")).unwrap()).unwrap();
+        assert_eq!(written["ai_output"]["count"], "1girl");
+        assert_eq!(written["character"]["variant"], "winter outfit");
+        assert_eq!(written["from_path"]["appearance"], "scarf, boots");
+        assert_eq!(written["ai_output"]["nl"], "A girl.");
+    }
 
-        let options = make_options(endpoint);
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let last_req = std::sync::Arc::new(tokio::sync::Mutex::new(None));
-        let result = process_single_file(&client, &img, &root, &root, &options, &last_req).await;
+    #[tokio::test]
+    async fn preserve_mode_tags_only_does_not_reassign_fields() {
+        let server = serve_chat_reply(Some("TAGS: 1girl, long hair, smile, new tag"), "stop");
+        let (root, img) = setup_dir("refine_preserve_legacy");
+        std::fs::write(root.join("a.json"), FIXTURE_JSON).unwrap();
+        let mut options = make_options(server.url.clone());
+        options.file_format = "json".into();
+        options.preserve_tags = true;
+        let result = process_single_file(
+            &client(),
+            &img,
+            &root,
+            &root,
+            &options,
+            &RequestThrottle::new(-1),
+        )
+        .await;
+        match result {
+            FileResult::Success {
+                warnings, changed, ..
+            } => {
+                assert!(!changed);
+                assert!(warnings.is_empty());
+            }
+            other => panic!("{other:?}"),
+        }
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("a.json")).unwrap()).unwrap();
+        assert_eq!(
+            written,
+            serde_json::from_str::<serde_json::Value>(FIXTURE_JSON).unwrap()
+        );
+    }
 
-        assert!(matches!(result, FileResult::Error { .. }), "拒绝应判失败: {result:?}");
-        assert!(!root.join("a.txt").exists(), "拒绝时不应写出 txt");
-        let _ = std::fs::remove_dir_all(&root);
+    #[tokio::test]
+    async fn rejected_truncated_and_empty_replies_never_overwrite_tags() {
+        for (name, content, reason, expected) in [
+            (
+                "refusal",
+                Some("NL: I'm sorry, I cannot describe this image."),
+                "stop",
+                "拒绝",
+            ),
+            ("truncated", Some("TAGS: smile"), "length", "输出长度上限"),
+            ("safety", None, "content_filter", "内容安全审核"),
+            ("empty", None, "stop", "空内容"),
+        ] {
+            let server = serve_chat_reply(content, reason);
+            let (root, img) = setup_dir(name);
+            std::fs::write(root.join("a.txt"), "1girl, smile").unwrap();
+            let options = make_options(server.url.clone());
+            let result = process_single_file(
+                &client(),
+                &img,
+                &root,
+                &root,
+                &options,
+                &RequestThrottle::new(-1),
+            )
+            .await;
+            match result {
+                FileResult::Error { message, .. } => {
+                    assert!(message.contains(expected), "{message}");
+                    assert!(!message.contains("max_tokens"));
+                }
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(
+                std::fs::read_to_string(root.join("a.txt")).unwrap(),
+                "1girl, smile"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn caption_reasoning_fallback_keeps_trigger_and_vision_options() {
+        let server = serve_json(serde_json::json!({"choices": [{
+            "message": {"content": "", "reasoning_content": "A girl smiles."},
+            "finish_reason": "stop"
+        }]}));
+        let (root, img) = setup_dir("refine_caption");
+        std::fs::write(root.join("a.txt"), "1girl, smile").unwrap();
+        let mut options = make_options(server.url.clone());
+        options.caption_mode = true;
+        options.trigger_word = "trigger".into();
+        options.image_detail = " high ".into();
+        options.top_p = 0.8;
+        let result = process_single_file(
+            &client(),
+            &img,
+            &root,
+            &root,
+            &options,
+            &RequestThrottle::new(-1),
+        )
+        .await;
+        assert!(matches!(result, FileResult::Captioned { .. }));
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "trigger, A girl smiles."
+        );
+        let request = server
+            .requests
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(request.json()["top_p"], 0.8);
+        assert_eq!(
+            request.json()["messages"][0]["content"][1]["image_url"]["detail"],
+            "high"
+        );
+    }
+
+    #[test]
+    fn old_max_tokens_is_ignored_and_not_serialized() {
+        let mut old = serde_json::to_value(make_options("local".into())).unwrap();
+        old["max_tokens"] = serde_json::json!(-1);
+        let parsed: TagRefineOptions = serde_json::from_value(old).unwrap();
+        assert!(serde_json::to_value(parsed)
+            .unwrap()
+            .get("max_tokens")
+            .is_none());
     }
 }

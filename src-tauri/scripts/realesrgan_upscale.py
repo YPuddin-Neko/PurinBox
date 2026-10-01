@@ -8,45 +8,7 @@ import argparse, json, math, os, sys
 import cv2
 import numpy as np
 
-# ── JSON 输出 ──────────────────────────────────────
-
-def emit(data):
-    # Windows 中文系统 stdout 默认 GBK，无法编码 ✓✗ 等 Unicode
-    # 直接写 bytes 到 stdout.buffer 避免编码错误
-    line = json.dumps(data, ensure_ascii=False) + "\n"
-    sys.stdout.buffer.write(line.encode("utf-8"))
-    sys.stdout.buffer.flush()
-
-def emit_log(msg):
-    emit({"type": "log", "message": msg})
-
-def emit_i18n(key, params=None):
-    d = {"type": "log", "i18n_key": key, "message": key}
-    if params:
-        d["i18n_params"] = params
-    emit(d)
-
-def emit_error(msg):
-    emit({"type": "error", "message": msg})
-
-def emit_progress(cur, total, fname, status, msg=""):
-    emit({"type": "progress", "current": cur, "total": total,
-          "filename": fname, "status": status, "message": msg or f"[{cur}/{total}] {fname}"})
-
-# ── 模型配置 ───────────────────────────────────────
-
-MODEL_CONFIGS = {
-    "realesrgan-x4plus": {
-        "scale": 4,
-        "onnx_file": "RealESRGAN_x4plus.onnx",
-    },
-    "realesrgan-x4plus-anime": {
-        "scale": 4,
-        "onnx_file": "RealESRGAN_x4plus_anime_6B.onnx",
-    },
-}
-
-SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"}
+from purin_proto import bootstrap, done, error, log, log_i18n, progress
 
 # ── Tile 推理 ──────────────────────────────────────
 
@@ -96,14 +58,15 @@ def tile_process(img_np, session, input_name, output_name, scale, tile_size=0, t
 def create_session(onnx_path, device):
     """创建 onnxruntime InferenceSession，自动选择最佳 EP"""
     import onnxruntime as ort
-    from gpu_diagnostics import resolve_ort_providers, quiet_session_options
+    from gpu_diagnostics import (create_session_with_cpu_fallback, quiet_session_options,
+                                 resolve_ort_providers)
 
     onnx_path = os.path.abspath(onnx_path)
 
     # 统一流程：探测环境 + 输出日志 + 决定 providers
     # CoreML 启用 ANE+GPU+CPU 全部计算单元
     providers = resolve_ort_providers(
-        emit_i18n,
+        log_i18n,
         use_gpu=(device != "cpu"),
         coreml_options={"MLComputeUnits": "ALL"},
     )
@@ -111,13 +74,9 @@ def create_session(onnx_path, device):
     sess_opts = quiet_session_options(ort)
     sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-    try:
-        session = ort.InferenceSession(onnx_path, sess_options=sess_opts, providers=providers)
-    except Exception as e:
-        # GPU EP 加载失败（如 CoreML 不支持某些算子）— 回退 CPU
-        emit_log(f"GPU 加载失败 ({e})，回退到 CPU")
-        session = ort.InferenceSession(onnx_path, sess_options=sess_opts,
-                                       providers=["CPUExecutionProvider"])
+    session = create_session_with_cpu_fallback(
+        onnx_path, providers, sess_opts,
+        lambda provider, e: log(f"GPU 加载失败 ({e})，回退到 CPU"))
 
     active_ep = session.get_providers()[0] if session.get_providers() else "CPUExecutionProvider"
     if "CUDA" in active_ep:
@@ -129,108 +88,71 @@ def create_session(onnx_path, device):
 
     return session, actual_device
 
-# ── 工具函数 ───────────────────────────────────────
-
-def is_under(path, parent):
-    if not parent:
-        return False
-    try:
-        # Windows 路径大小写不敏感，必须 normcase 后比对，否则手输的大小写变体会让排除失效
-        p = os.path.normcase(os.path.abspath(path))
-        base = os.path.normcase(os.path.abspath(parent))
-        return os.path.commonpath([p, base]) == base
-    except ValueError:
-        return False
-
-def collect_images(path, recursive=False, excluded_dir=None):
-    if os.path.isfile(path):
-        return [path]
-    if not recursive:
-        return sorted(os.path.join(path, f) for f in os.listdir(path)
-                      if os.path.splitext(f)[1].lower() in SUPPORTED_EXTS
-                      and not is_under(os.path.join(path, f), excluded_dir))
-    files = []
-    for root, _, names in os.walk(path):
-        for name in names:
-            if os.path.splitext(name)[1].lower() in SUPPORTED_EXTS:
-                fpath = os.path.join(root, name)
-                if not is_under(fpath, excluded_dir):
-                    files.append(fpath)
-    return sorted(files)
-
-def output_subdir(input_path, output_path, file_path, recursive=False):
-    if recursive and os.path.isdir(input_path):
-        rel_dir = os.path.dirname(os.path.relpath(file_path, input_path))
-        if rel_dir and rel_dir != ".":
-            return os.path.join(output_path, rel_dir)
-    return output_path
-
 # ── 主函数 ─────────────────────────────────────────
 
 def main():
-    # Windows: 注册 CUDA DLL 目录（必须在 import onnxruntime 之前）
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from cuda_dll_helper import register_cuda_dlls
-    register_cuda_dlls()
+    bootstrap()
     from image_save import SourceInfo, save_array_like_source
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True)
-    ap.add_argument("--output", required=True)
-    ap.add_argument("--model", default="realesrgan-x4plus")
+    ap.add_argument("--files", required=True)
+    ap.add_argument("--model-path", required=True)
     ap.add_argument("--scale", type=int, default=4)
     ap.add_argument("--tile", type=int, default=0)
     ap.add_argument("--tta", action="store_true")
     ap.add_argument("--device", default="auto")
-    ap.add_argument("--weights-dir", default=None, help="Override weights directory")
-    ap.add_argument("--recursive", action="store_true")
     args = ap.parse_args()
 
-    cfg = MODEL_CONFIGS.get(args.model)
-    if not cfg:
-        emit_error(f"未知模型: {args.model}")
-        sys.exit(1)
-
-    files = collect_images(args.input, args.recursive, args.output)
+    with open(args.files, "r", encoding="utf-8") as f:
+        files = json.load(f)
     if not files:
-        emit_error("未找到任何图片")
+        error("未找到任何图片")
         sys.exit(1)
 
     total = len(files)
-    emit_log(f"找到 {total} 张图片")
-    os.makedirs(args.output, exist_ok=True)
-
-    # 加载 ONNX 模型
-    wdir = args.weights_dir if args.weights_dir else os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "models", "realesrgan_weights")
-    onnx_path = os.path.join(wdir, cfg["onnx_file"])
+    log(f"找到 {total} 张图片")
+    onnx_path = args.model_path
 
     if not os.path.exists(onnx_path):
-        emit_error(f"模型文件不存在: {onnx_path}")
+        error(f"模型文件不存在: {onnx_path}")
         sys.exit(1)
 
-    emit_log("正在加载模型...")
+    log("正在加载模型...")
     session, device = create_session(onnx_path, args.device)
 
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
-    native_scale = cfg["scale"]
+    native_scale = 4
     out_scale = args.scale
-    tile_size = args.tile if args.tile > 0 else 0
 
     device_name = {"coreml": "CoreML", "cuda": "CUDA", "cpu": "CPU"}.get(device, device)
-    emit_log(f"模型: {args.model}, 设备: {device_name}, 倍率: {out_scale}x")
+    log(f"模型: {os.path.basename(onnx_path)}, 设备: {device_name}, 倍率: {out_scale}x")
+
+    def infer(tensor):
+        if not args.tta:
+            return tile_process(tensor, session, input_name, output_name, native_scale, args.tile)
+        outputs = []
+        for flip_h in [False, True]:
+            for rot in [0, 1, 2, 3]:
+                t = tensor
+                if flip_h:
+                    t = t[:, :, :, ::-1].copy()
+                if rot > 0:
+                    t = np.rot90(t, rot, axes=(2, 3)).copy()
+                out = tile_process(t, session, input_name, output_name, native_scale, args.tile)
+                if rot > 0:
+                    out = np.rot90(out, -rot, axes=(2, 3)).copy()
+                if flip_h:
+                    out = out[:, :, :, ::-1].copy()
+                outputs.append(out)
+        return np.mean(outputs, axis=0)
 
     success, fail = 0, 0
-    for i, fpath in enumerate(files):
+    errors = []
+    for i, (fpath, out_path) in enumerate(files):
         fname = os.path.basename(fpath)
-        emit_progress(i + 1, total, fname, "processing")
+        progress(i + 1, total, fname, "processing", f"[{i + 1}/{total}] {fname}")
         try:
-            # 输出沿用原文件名与格式；输出目录就是输入目录时跳过，避免原图被就地覆盖
-            out_dir = output_subdir(args.input, args.output, fpath, args.recursive)
-            out_path = os.path.join(out_dir, fname)
-            if os.path.normcase(os.path.abspath(out_path)) == os.path.normcase(os.path.abspath(fpath)):
-                raise ValueError("输出与输入为同一文件，已跳过（请更换输出目录）")
             source = SourceInfo(fpath)
 
             # cv2.imread 在 Windows 上不支持 Unicode 路径，用 numpy 中转
@@ -238,7 +160,6 @@ def main():
             if img is None:
                 raise ValueError("无法读取图片")
 
-            # 预处理
             is_gray = img.ndim == 2
             if is_gray:
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
@@ -249,47 +170,23 @@ def main():
             else:
                 has_alpha = False
 
-            # BGR → RGB
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             # 按位深归一化: 16-bit PNG (uint16) 除以 65535，8-bit 除以 255；输出保持源图位深
             is16 = img.dtype == np.uint16
             max_val = 65535.0 if is16 else 255.0
             img_f = img.astype(np.float32) / max_val
-            # HWC → NCHW
             tensor = np.transpose(img_f, (2, 0, 1))[np.newaxis, ...]
 
-            # 推理
-            def _do_inference(ts, t_session, t_input, t_output, t_scale, t_tile):
-                if args.tta:
-                    outputs = []
-                    for flip_h in [False, True]:
-                        for rot in [0, 1, 2, 3]:
-                            t = ts.copy()
-                            if flip_h:
-                                t = t[:, :, :, ::-1].copy()
-                            if rot > 0:
-                                t = np.rot90(t, rot, axes=(2, 3)).copy()
-                            out = tile_process(t, t_session, t_input, t_output, t_scale, t_tile)
-                            if rot > 0:
-                                out = np.rot90(out, -rot, axes=(2, 3)).copy()
-                            if flip_h:
-                                out = out[:, :, :, ::-1].copy()
-                            outputs.append(out)
-                    return np.mean(outputs, axis=0)
-                else:
-                    return tile_process(ts, t_session, t_input, t_output, t_scale, t_tile)
-
             try:
-                output = _do_inference(tensor, session, input_name, output_name, native_scale, tile_size)
+                output = infer(tensor)
             except Exception as inf_err:
                 # 仅在明确的显存不足/分配失败时给显存提示，其余原样透传真实错误
                 err_lower = str(inf_err).lower()
                 oom_keywords = ("out of memory", "alloc", "memory", "oom")
                 if any(k in err_lower for k in oom_keywords):
-                    raise RuntimeError(f"GPU 显存不足，请在设置中开启分块处理或降低图片分辨率") from inf_err
+                    raise RuntimeError("GPU 显存不足，请调小“分块大小”或降低图片分辨率") from inf_err
                 raise
 
-            # 后处理: NCHW → HWC, RGB → BGR
             output = output.squeeze(0).clip(0, 1)
             output = (np.transpose(output, (1, 2, 0)) * max_val).round().astype(img.dtype)
             output = cv2.cvtColor(output, cv2.COLOR_RGB2BGR)
@@ -300,7 +197,6 @@ def main():
                 new_h, new_w = int(h * out_scale), int(w * out_scale)
                 output = cv2.resize(output, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
 
-            # alpha 通道处理
             if has_alpha:
                 alpha_up = cv2.resize(alpha, (output.shape[1], output.shape[0]),
                                       interpolation=cv2.INTER_LANCZOS4)
@@ -310,15 +206,17 @@ def main():
 
             if is_gray and not has_alpha:
                 output = cv2.cvtColor(output, cv2.COLOR_BGR2GRAY)
-            os.makedirs(out_dir, exist_ok=True)
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
             save_array_like_source(output, out_path, source)
             success += 1
-            emit_progress(i + 1, total, fname, "success", f"[{i+1}/{total}] ✓ {fname}")
+            progress(i + 1, total, fname, "success", f"[{i+1}/{total}] ✓ {fname}")
         except Exception as e:
             fail += 1
-            emit_progress(i + 1, total, fname, "error", f"[{i+1}/{total}] ✗ {fname}: {e}")
+            message = f"[{i+1}/{total}] ✗ {fname}: {e}"
+            errors.append(message)
+            progress(i + 1, total, fname, "error", message)
 
-    emit({"type": "done", "success": success, "fail": fail, "total": total})
+    done(success_count=success, fail_count=fail, total=total, errors=errors)
 
 if __name__ == "__main__":
     try:
@@ -327,5 +225,5 @@ if __name__ == "__main__":
         raise
     except Exception as e:
         import traceback
-        emit_error(f"脚本异常: {e}\n{traceback.format_exc()}")
+        error(f"脚本异常: {e}\n{traceback.format_exc()}")
         sys.exit(1)

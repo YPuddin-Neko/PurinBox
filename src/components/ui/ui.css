@@ -1,0 +1,338 @@
+/* ============================================
+   共享表单组件（src/components/ui）
+   ============================================ */
+
+/* ---- PageHeader ---- */
+.ui-page-header-split {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.ui-page-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.ui-page-icon {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+/* ---- PathFields ---- */
+.ui-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.ui-path-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.ui-path-row > .form-input {
+  flex: 1;
+}
+
+/* ---- ChoiceCard ---- */
+.ui-choice {
+  --choice-color: var(--color-accent-primary);
+  --choice-border: var(--color-border-active);
+  --choice-bg: rgba(124, 92, 252, 0.06);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-input);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ui-choice.is-compact {
+  padding: var(--space-3) var(--space-4);
+}
+
+.ui-choice.is-danger {
+  --choice-color: #f87171;
+  --choice-border: rgba(248, 113, 113, 0.5);
+  --choice-bg: rgba(248, 113, 113, 0.06);
+}
+
+.ui-choice.is-selected {
+  border-color: var(--choice-border);
+  background: var(--choice-bg);
+}
+
+.ui-choice:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--choice-border);
+}
+
+.ui-choice-inline,
+.ui-choice-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.ui-choice-row {
+  margin-bottom: var(--space-3);
+}
+
+.ui-choice-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 2px solid var(--color-text-tertiary);
+  transition: all 0.15s;
+}
+
+.ui-choice-radio {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+}
+
+.ui-choice-radio::after {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--choice-color);
+  transform: scale(0);
+  transition: transform 0.15s;
+}
+
+.ui-choice-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+}
+
+.ui-choice-check::after {
+  content: '✓';
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0;
+}
+
+.ui-choice.is-compact .ui-choice-radio {
+  width: 18px;
+  height: 18px;
+}
+
+.ui-choice.is-compact .ui-choice-radio::after {
+  width: 8px;
+  height: 8px;
+}
+
+.ui-choice.is-compact .ui-choice-check::after {
+  font-size: 11px;
+}
+
+.ui-choice.is-selected .ui-choice-indicator {
+  border-color: var(--choice-color);
+}
+
+.ui-choice.is-selected .ui-choice-radio::after {
+  transform: scale(1);
+}
+
+.ui-choice.is-selected .ui-choice-check {
+  background: var(--choice-color);
+}
+
+.ui-choice.is-selected .ui-choice-check::after {
+  opacity: 1;
+}
+
+/* ---- DeviceToggle ---- */
+.ui-device {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ui-device-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--color-border);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  transition: all 0.15s;
+}
+
+.ui-device-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.ui-device-btn:focus-visible {
+  box-shadow: 0 0 0 2px rgba(124, 92, 252, 0.35);
+}
+
+.ui-device-icon {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---- Switch ---- */
+.ui-switch {
+  position: relative;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-border);
+  transition: background 0.2s;
+}
+
+.ui-switch.is-on {
+  background: var(--color-accent-primary);
+}
+
+.ui-switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ui-switch:focus-visible {
+  box-shadow: 0 0 0 2px rgba(124, 92, 252, 0.45);
+}
+
+.ui-switch-md {
+  width: 36px;
+  height: 20px;
+}
+
+.ui-switch-sm {
+  width: 30px;
+  height: 16px;
+}
+
+.ui-switch-knob {
+  position: absolute;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
+}
+
+.ui-switch-md .ui-switch-knob {
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+}
+
+.ui-switch-sm .ui-switch-knob {
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+}
+
+.ui-switch-md.is-on .ui-switch-knob {
+  transform: translateX(16px);
+}
+
+.ui-switch-sm.is-on .ui-switch-knob {
+  transform: translateX(14px);
+}
+
+/* ---- SegmentedTabs ---- */
+.ui-seg {
+  display: flex;
+  gap: 2px;
+  width: fit-content;
+  padding: 3px;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.ui-seg-tab {
+  padding: 8px 20px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  transition: all 0.2s;
+}
+
+.ui-seg-tab.is-active {
+  background: var(--color-accent-primary);
+  color: #fff;
+}
+
+.ui-seg-tab:focus-visible {
+  box-shadow: 0 0 0 2px rgba(124, 92, 252, 0.45);
+}
+
+.ui-seg-compact .ui-seg-tab {
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+/* ---- Pager ---- */
+.ui-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ui-pager.is-footer {
+  justify-content: center;
+  padding: 8px 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.ui-pager .ui-pager-btn {
+  height: 28px;
+  padding: 4px 8px;
+}
+
+.ui-pager .ui-pager-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ui-pager-label {
+  min-width: 60px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-pager.is-sm {
+  gap: 6px;
+}
+
+.ui-pager.is-sm .ui-pager-btn {
+  width: 26px;
+  height: 24px;
+  padding: 0;
+}
+
+.ui-pager.is-sm .ui-pager-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.ui-pager.is-sm .ui-pager-label {
+  min-width: 42px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-text-tertiary);
+}

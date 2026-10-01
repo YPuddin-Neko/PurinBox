@@ -4,11 +4,10 @@ use std::path::Path;
 #[tauri::command]
 pub async fn save_workflow(path: String, data: String) -> Result<(), String> {
     let file_path = Path::new(&path);
+    let data = without_workflow_secrets(&data)?;
 
-    // 自动创建父目录
     if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建目录失败: {}", e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
     }
 
     super::config_paths::write_file_atomic(file_path, data.as_bytes())
@@ -26,24 +25,38 @@ pub async fn load_workflow(path: String) -> Result<String, String> {
         return Err(format!("工作流文件不存在: {}", path));
     }
 
-    std::fs::read_to_string(file_path)
-        .map_err(|e| format!("读取工作流失败: {}", e))
+    let data = std::fs::read_to_string(file_path).map_err(|e| format!("读取工作流失败: {}", e))?;
+    without_workflow_secrets(&data)
 }
 
-/// 清理工作流临时目录（{dir}/.workflow_temp），返回释放的字节数。
+fn without_workflow_secrets(data: &str) -> Result<String, String> {
+    let mut document: serde_json::Value =
+        serde_json::from_str(data).map_err(|e| format!("解析工作流失败: {}", e))?;
+    if let Some(nodes) = document.get_mut("nodes").and_then(|v| v.as_array_mut()) {
+        for node in nodes {
+            if let Some(params) = node
+                .pointer_mut("/data/params")
+                .and_then(|v| v.as_object_mut())
+            {
+                params.remove("api_key");
+            }
+        }
+    }
+    serde_json::to_string(&document).map_err(|e| format!("序列化工作流失败: {}", e))
+}
+
+/// 清理工作流临时目录（{dir}/.workflow_temp）。
 ///
 /// 取消工作流时刚强杀完当前节点的子进程（Python/NCNN），Windows 上其打开的
 /// 文件句柄可能尚未释放，首次删除会报拒绝访问——失败后短暂等待并重试。
 #[tauri::command]
-pub async fn cleanup_workflow_temp(dir: String) -> Result<u64, String> {
+pub async fn cleanup_workflow_temp(dir: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
         let temp_dir = Path::new(&dir).join(".workflow_temp");
 
         if !temp_dir.exists() {
-            return Ok(0);
+            return Ok(());
         }
-
-        let bytes_freed = dir_size(&temp_dir);
 
         let mut last_err = String::new();
         for attempt in 0..3 {
@@ -51,11 +64,11 @@ pub async fn cleanup_workflow_temp(dir: String) -> Result<u64, String> {
                 std::thread::sleep(std::time::Duration::from_millis(400));
             }
             match std::fs::remove_dir_all(&temp_dir) {
-                Ok(_) => return Ok(bytes_freed),
+                Ok(_) => return Ok(()),
                 Err(e) => last_err = e.to_string(),
             }
             if !temp_dir.exists() {
-                return Ok(bytes_freed);
+                return Ok(());
             }
         }
         Err(format!("清理临时目录失败: {}", last_err))
@@ -64,32 +77,60 @@ pub async fn cleanup_workflow_temp(dir: String) -> Result<u64, String> {
     .map_err(|e| format!("清理任务执行失败: {}", e))?
 }
 
-/// 递归计算目录大小（字节）
-fn dir_size(path: &Path) -> u64 {
-    if path.is_file() {
-        return path.metadata().map(|m| m.len()).unwrap_or(0);
-    }
-
-    let mut total = 0u64;
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            total += dir_size(&entry.path());
-        }
-    }
-    total
-}
-
 /// 把输入目录里与输出目录图片同名（stem）的标签文件（.txt/.json/.caption）带到输出目录。
 /// 图像处理节点只搬图片；打标节点在上游时，标签会被留在临时目录里随清理丢失。
-/// 幂等：目标已存在则跳过；失败不阻断工作流（调用方 catch）。
+/// 默认保留已有标签；copy_images 用于输出节点，复制实际产物并更新对应标签。
 #[tauri::command]
-pub fn carry_tag_sidecars(
+pub async fn carry_tag_sidecars(
     input_path: String,
     output_path: String,
     recursive: bool,
+    copy_images: Option<bool>,
+) -> Result<u32, String> {
+    tokio::task::spawn_blocking(move || {
+        carry_tag_sidecars_sync(
+            &input_path,
+            &output_path,
+            recursive,
+            copy_images.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|e| format!("复制工作流产物失败: {}", e))?
+}
+
+fn carry_tag_sidecars_sync(
+    input_path: &str,
+    output_path: &str,
+    recursive: bool,
+    copy_images: bool,
 ) -> Result<u32, String> {
     let input = Path::new(&input_path);
     let output = Path::new(&output_path);
+    if copy_images {
+        let files =
+            super::collect_image_files_with_recursive_excluding(input, recursive, Some(output))?;
+        std::fs::create_dir_all(output).map_err(|e| format!("创建输出目录失败: {}", e))?;
+        if std::fs::canonicalize(input).ok() == std::fs::canonicalize(output).ok() {
+            return Ok(0);
+        }
+        let input_root = super::dir_of(input);
+        let mut copied = 0;
+        for file in files {
+            let dest = super::same_name_output(&input_root, &file, output, recursive)?;
+            std::fs::copy(&file, &dest)
+                .map_err(|e| format!("复制图片失败 ({}): {}", file.display(), e))?;
+            copied += 1;
+            for ext in super::TAG_SIDECAR_EXTS {
+                let sidecar = file.with_extension(ext);
+                if sidecar.is_file() {
+                    std::fs::copy(&sidecar, dest.with_extension(ext))
+                        .map_err(|e| format!("复制标签失败 ({}): {}", sidecar.display(), e))?;
+                }
+            }
+        }
+        return Ok(copied);
+    }
     if !input.is_dir() || !output.is_dir() {
         return Ok(0);
     }
@@ -103,10 +144,9 @@ pub fn carry_tag_sidecars(
     for entry in walker.into_iter().filter_map(|e| e.ok()) {
         let p = entry.path();
         if p.is_file()
-            && matches!(
-                p.extension().and_then(|e| e.to_str()),
-                Some("txt") | Some("json") | Some("caption")
-            )
+            && p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| super::TAG_SIDECAR_EXTS.contains(&ext))
         {
             if let Ok(rel) = p.strip_prefix(input) {
                 avail.insert(rel.to_path_buf());
@@ -122,7 +162,7 @@ pub fn carry_tag_sidecars(
     for img in images {
         // 输出图片相对输出根的位置，映射回输入根找同名标签
         let rel = img.strip_prefix(output).unwrap_or(&img);
-        for ext in ["txt", "json", "caption"] {
+        for ext in super::TAG_SIDECAR_EXTS {
             let rel_sc = rel.with_extension(ext);
             if !avail.contains(&rel_sc) {
                 continue;

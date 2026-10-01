@@ -1,54 +1,29 @@
-import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
-import { useTaskQueue } from '../components/TaskContext';
-import { useTranslation } from 'react-i18next';
 import { FileCheck2, FolderOpen, Shield } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import ProcessButton from '../components/ProcessButton';
-
-interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
+import ProgressLog from '../components/ProgressLog';
+import ChoiceCard from '../components/ui/ChoiceCard';
+import PageHeader from '../components/ui/PageHeader';
+import { useBatchTask, type ProcessResult } from '../hooks/useBatchTask';
 
 const allExtensions = [
-  { ext: 'jpg', label: 'JPG', color: '#ffa647' },
-  { ext: 'jpeg', label: 'JPEG', color: '#ffa647' },
-  { ext: 'png', label: 'PNG', color: '#4ade80' },
-  { ext: 'webp', label: 'WebP', color: '#60a5fa' },
-  { ext: 'bmp', label: 'BMP', color: '#f87171' },
-  { ext: 'npz', label: 'NPZ', color: '#c084fc' },
-  { ext: 'txt', label: 'TXT', color: '#fbbf24' },
+  { ext: 'jpg', color: '#ffa647' },
+  { ext: 'jpeg', color: '#ffa647' },
+  { ext: 'png', color: '#4ade80' },
+  { ext: 'webp', color: '#60a5fa' },
+  { ext: 'bmp', color: '#f87171' },
+  { ext: 'npz', color: '#c084fc' },
+  { ext: 'txt', color: '#fbbf24' },
 ];
 
 export default function FileKeeperPage() {
   const { t } = useTranslation();
+  const task = useBatchTask({ event: 'keeper-progress', taskId: 'keeper' });
   const [folderPath, setFolderPath] = useState('');
   const [keepExts, setKeepExts] = useState<Set<string>>(new Set(['jpg', 'jpeg', 'png', 'webp', 'txt']));
-  const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressCurrent, setProgressCurrent] = useState(0);
-  const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasError, setHasError] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    const p = listen<ProgressPayload>('keeper-progress', (event) => {
-      if (!active) return;
-      const d = event.payload;
-      setProgressCurrent(d.current);
-      setProgressTotal(d.total);
-      if (d.total > 0) setProgress((d.current / d.total) * 100);
-      if (d.status === 'done') setIsDone(true);
-      if (d.status === 'error') setHasError(true);
-      if (d.status !== 'processing') {
-        setLogs((prev) => [...prev, { time: getTimeStr(), message: d.message, status: d.status === 'done' ? 'info' : d.status as LogEntry['status'] }]);
-      }
-    });
-    return () => { active = false; p.then(fn => fn()); };
-  }, []);
 
   const toggleExt = (ext: string) => {
     setKeepExts((prev) => {
@@ -66,40 +41,18 @@ export default function FileKeeperPage() {
     if (selected) setFolderPath(selected as string);
   };
 
-  const { addTask, updateTask } = useTaskQueue();
+  const handleProcess = () => {
 
-  const handleProcess = async () => {
-    if (!folderPath || keepExts.size === 0) return;
-    setProcessing(true);
-    addTask('keeper', t('fileKeeper.taskName'));
-    setProgress(0); setProgressCurrent(0); setProgressTotal(0);
-    setIsDone(false); setHasError(false);
-    setLogs([{ time: getTimeStr(), message: t('fileKeeper.startMsg', { exts: Array.from(keepExts).join(', ') }), status: 'info' }]);
-    try {
-      await invoke<ProcessResult>('keep_specified_files', {
+    return task.run({
+      taskName: t('fileKeeper.taskName'), startLog: t('fileKeeper.startMsg', { exts: Array.from(keepExts).join(', ') }), exec: () => invoke<ProcessResult>('keep_specified_files', {
         options: { folder_path: folderPath, keep_extensions: Array.from(keepExts) },
-      });
-    } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('keeper', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
-      setHasError(true); setIsDone(true);
-    } finally {
-      setProcessing(false);
-    }
+      })
+    });
   };
-
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
-  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <FileCheck2 style={{ width: 28, height: 28, color: '#fbbf24' }} />
-          <h1 className="page-title">{t('fileKeeper.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('fileKeeper.subtitle')}</p>
-      </div>
+      <PageHeader icon={FileCheck2} color={'#fbbf24'} title={t('fileKeeper.title')} subtitle={t('fileKeeper.subtitle')} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
@@ -128,30 +81,15 @@ export default function FileKeeperPage() {
               {allExtensions.map((item) => {
                 const checked = keepExts.has(item.ext);
                 return (
-                  <div key={item.ext} onClick={() => toggleExt(item.ext)} style={{
-                    display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
-                    padding: 'var(--space-3) var(--space-4)',
-                    borderRadius: 'var(--radius-md)',
-                    border: `1px solid ${checked ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                    background: checked ? 'rgba(124, 92, 252, 0.06)' : 'var(--color-bg-input)',
-                    cursor: 'pointer', transition: 'all 0.2s',
-                  }}>
-                    <div style={{
-                      width: 18, height: 18, borderRadius: 4, minWidth: 18,
-                      border: `2px solid ${checked ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`,
-                      background: checked ? 'var(--color-accent-primary)' : 'transparent',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      transition: 'all 0.15s',
-                    }}>
-                      {checked && <span style={{ color: 'white', fontSize: 11, fontWeight: 700 }}>✓</span>}
-                    </div>
+                  <ChoiceCard key={item.ext} selected={checked} onSelect={() => toggleExt(item.ext)} indicator="check">
+
                     <span style={{
                       fontSize: 'var(--font-size-md)', fontWeight: 700,
                       color: checked ? item.color : 'var(--color-text-tertiary)',
                     }}>
                       .{item.ext}
                     </span>
-                  </div>
+                  </ChoiceCard>
                 );
               })}
             </div>
@@ -167,14 +105,11 @@ export default function FileKeeperPage() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-
-          <ProcessButton processing={processing} onStart={handleProcess}
+          <ProcessButton {...task.buttonProps} onStart={handleProcess}
             disabled={!folderPath || keepExts.size === 0}
-            cancelCommand="cancel_keeper" startText={t('fileKeeper.startDelete')} processingText={t('pages.processing')}
-            onCancelLog={addCancelLog} />
+            cancelCommand="cancel_keeper" startText={t('fileKeeper.startDelete')} />
 
-          
-            <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
+          <ProgressLog {...task.progressLogProps} />
         </div>
       </div>
     </div>

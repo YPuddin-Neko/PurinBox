@@ -1,6 +1,6 @@
 import { Dispatch, SetStateAction, useCallback, useMemo, useRef } from 'react';
 import i18n from '../i18n';
-import { LogEntry, getTimeStr } from '../components/ProgressLog';
+import { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
 
 export interface UnifiedProgressPayload {
   current: number;
@@ -31,55 +31,62 @@ export function resolveProgressMessage(payload: UnifiedProgressPayload): string 
   return translated !== payload.i18n_key ? translated : payload.message;
 }
 
-export function normalizeLogStatus(status: string): LogStatus {
-  if (status === 'done' || status === 'processing') return 'info';
+function normalizeLogStatus(status: string): LogStatus {
   if (status === 'success' || status === 'error' || status === 'download' || status === 'warning' || status === 'info') {
     return status;
   }
   return 'info';
 }
 
-export function isDuplicateBackendError(errorText: string, lastBackendError: string): boolean {
+function isDuplicateBackendError(errorText: string, lastBackendError: string): boolean {
   return !!lastBackendError
     && (errorText.includes(lastBackendError) || lastBackendError.includes(errorText));
 }
 
 interface ProgressLogOptions {
+  /** 覆盖显示文本（默认按 i18n_key 翻译，失败时用 message） */
   message?: string;
+  /** 覆盖日志状态（默认由事件 status 归一化） */
   status?: LogStatus;
 }
 
 interface DownloadLogOptions {
   appendDone?: boolean;
-  doneStatus?: LogStatus | ((payload: UnifiedDownloadPayload) => LogStatus);
   errorPrefix?: string;
 }
 
+interface InitialLogOptions {
+  /** true 时保留已有日志，开始日志追加在后面 */
+  keep?: boolean;
+}
+
 export function useUnifiedTaskLogs(setLogs: SetLogs) {
-  const lastBackendErrorRef = useRef('');
-
-  const markBackendError = useCallback((message: string) => {
-    lastBackendErrorRef.current = message;
-  }, []);
-
-  const clearBackendError = useCallback(() => {
-    lastBackendErrorRef.current = '';
-  }, []);
+  // invoke 可能返回原文，而事件已按当前语言翻译；两者都用于同一次错误去重。
+  const lastBackendErrorRef = useRef<string[]>([]);
 
   const appendLog = useCallback((message: string, status: LogStatus, extra?: Partial<LogEntry>) => {
     setLogs(prev => [...prev, { time: getTimeStr(), message, status, ...extra }]);
   }, [setLogs]);
 
-  const setInitialLog = useCallback((message: string, status: LogStatus = 'info') => {
-    clearBackendError();
-    setLogs([{ time: getTimeStr(), message, status }]);
-  }, [clearBackendError, setLogs]);
+  /**
+   * 一轮任务开始：清掉上一轮的错误去重记录，并按 keep 清空或保留已有日志；
+   * 不传 message 时只做前两步。
+   */
+  const setInitialLog = useCallback((message?: string, status: LogStatus = 'info', options: InitialLogOptions = {}) => {
+    lastBackendErrorRef.current = [];
+    const entries: LogEntry[] = message === undefined ? [] : [{ time: getTimeStr(), message, status }];
+    if (options.keep) {
+      if (entries.length > 0) setLogs(prev => [...prev, ...entries]);
+    } else {
+      setLogs(entries);
+    }
+  }, [setLogs]);
 
   const appendProgressLog = useCallback((payload: UnifiedProgressPayload, options: ProgressLogOptions = {}) => {
     const message = options.message ?? resolveProgressMessage(payload);
-    if (payload.status === 'error') markBackendError(message);
+    if (payload.status === 'error') lastBackendErrorRef.current = [payload.message, message];
     appendLog(message, options.status ?? normalizeLogStatus(payload.status));
-  }, [appendLog, markBackendError]);
+  }, [appendLog]);
 
   const appendDownloadLog = useCallback((payload: UnifiedDownloadPayload, options: DownloadLogOptions = {}) => {
     const appendDone = options.appendDone ?? true;
@@ -87,16 +94,13 @@ export function useUnifiedTaskLogs(setLogs: SetLogs) {
       setLogs(prev => {
         const next = prev.filter(log => log.status !== 'download');
         if (!appendDone) return next;
-        const doneStatus = typeof options.doneStatus === 'function'
-          ? options.doneStatus(payload)
-          : options.doneStatus ?? (payload.status === 'done' ? 'success' : 'info');
-        return [...next, { time: getTimeStr(), message: payload.message, status: doneStatus }];
+        return [...next, { time: getTimeStr(), message: payload.message, status: payload.status === 'done' ? 'success' : 'info' }];
       });
       return;
     }
 
     if (payload.status === 'error') {
-      markBackendError(payload.message);
+      lastBackendErrorRef.current = [payload.message];
       const message = options.errorPrefix ? `${options.errorPrefix}: ${payload.message}` : payload.message;
       setLogs(prev => [...prev.filter(log => log.status !== 'download'), {
         time: getTimeStr(),
@@ -123,11 +127,11 @@ export function useUnifiedTaskLogs(setLogs: SetLogs) {
       }
       return [...prev, entry];
     });
-  }, [markBackendError, setLogs]);
+  }, [setLogs]);
 
   const appendCatchError = useCallback((error: unknown, prefix: string) => {
     const errorText = String(error);
-    if (!isDuplicateBackendError(errorText, lastBackendErrorRef.current)) {
+    if (!lastBackendErrorRef.current.some(message => isDuplicateBackendError(errorText, message))) {
       appendLog(`${prefix}: ${errorText}`, 'error');
     }
     return errorText;
@@ -138,18 +142,29 @@ export function useUnifiedTaskLogs(setLogs: SetLogs) {
     appendDownloadLog,
     appendLog,
     appendProgressLog,
-    clearBackendError,
-    markBackendError,
     setInitialLog,
   }), [
     appendCatchError,
     appendDownloadLog,
     appendLog,
     appendProgressLog,
-    clearBackendError,
-    markBackendError,
     setInitialLog,
   ]);
 }
 
 export type UnifiedTaskLogger = ReturnType<typeof useUnifiedTaskLogs>;
+
+export type TaskLog = UnifiedTaskLogger & {
+  logs: LogEntry[];
+  setLogs: SetLogs;
+};
+
+/**
+ * 日志 state（useLogState，带 500 条上限）与追加语义（useUnifiedTaskLogs）的组合。
+ * 返回对象随 logs 变化；要放进 effect 依赖时取其中的方法（各方法引用稳定）。
+ */
+export function useTaskLog(): TaskLog {
+  const [logs, setLogs] = useLogState();
+  const logger = useUnifiedTaskLogs(setLogs);
+  return useMemo(() => ({ ...logger, logs, setLogs }), [logger, logs, setLogs]);
+}

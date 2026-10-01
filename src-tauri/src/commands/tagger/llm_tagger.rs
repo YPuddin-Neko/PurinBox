@@ -1,13 +1,12 @@
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tauri::Emitter;
 
 use super::{ProcessResult, ProgressEvent};
-use crate::commands::{
-    collect_image_files, collect_image_files_recursive, wait_for_global_llm_slot,
-};
+use crate::commands::{collect_image_files_with_recursive, report_failed_copies};
+
+use crate::commands::llm_client::{self, ChatError, ChatMessage, ChatParams, RequestThrottle};
 
 static LLM_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -63,43 +62,6 @@ fn default_concurrency() -> u32 {
     1
 }
 
-#[derive(Serialize)]
-struct ChatMessage {
-    role: String,
-    content: serde_json::Value,
-}
-
-#[derive(Serialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_tokens: Option<u32>,
-    temperature: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    top_p: Option<f64>,
-}
-
-#[derive(Deserialize)]
-struct ChatResponse {
-    choices: Vec<ChatChoice>,
-}
-
-#[derive(Deserialize)]
-struct ChatChoice {
-    message: ChatChoiceMessage,
-    #[serde(default)]
-    finish_reason: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ChatChoiceMessage {
-    #[serde(default)]
-    content: Option<String>,
-    #[serde(default)]
-    reasoning_content: Option<String>,
-}
-
 #[tauri::command]
 pub fn cancel_llm_tagging() {
     LLM_CANCELLED.store(true, Ordering::SeqCst);
@@ -117,11 +79,7 @@ pub async fn start_llm_tagging(
     LLM_CANCELLED.store(false, Ordering::SeqCst);
     let input_path_owned = options.input_path.clone();
     let input_dir = Path::new(&input_path_owned);
-    let files = if options.recursive {
-        collect_image_files_recursive(input_dir)?
-    } else {
-        collect_image_files(input_dir)?
-    };
+    let files = collect_image_files_with_recursive(input_dir, options.recursive)?;
     let total = files.len() as u32;
     let mut success_count = 0u32;
     let mut processed_count = 0u32;
@@ -129,20 +87,11 @@ pub async fn start_llm_tagging(
     let errors: Vec<String> = Vec::new();
     let failed_files: Vec<std::path::PathBuf> = Vec::new();
 
-    let client = crate::commands::proxy_config::build_http_client_for_llm()
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    let client = llm_client::llm_http_client()?;
 
     let _ = app.emit(
         "llm-tagger-progress",
-        ProgressEvent {
-            current: 0,
-            total,
-            filename: String::new(),
-            status: "info".to_string(),
-            message: format!("读取到 {} 张图片", total),
-            ..Default::default()
-        },
+        ProgressEvent::new("info", format!("读取到 {} 张图片", total)).at(0, total),
     );
 
     let concurrency = options.concurrency.max(1) as usize;
@@ -174,14 +123,9 @@ pub async fn start_llm_tagging(
                         .to_string();
                     let _ = app.emit(
                         "llm-tagger-progress",
-                        ProgressEvent {
-                            current: processed_count,
-                            total,
-                            filename: filename.clone(),
-                            status: "success".to_string(),
-                            message: format!("[跳过] {} (已有描述)", filename),
-                            ..Default::default()
-                        },
+                        ProgressEvent::new("success", format!("[跳过] {} (已有描述)", filename))
+                            .at(processed_count, total)
+                            .file(filename.clone()),
                     );
                     continue;
                 }
@@ -201,7 +145,7 @@ pub async fn start_llm_tagging(
     let errors_arc = std::sync::Arc::new(tokio::sync::Mutex::new(errors));
     let failed_arc = std::sync::Arc::new(tokio::sync::Mutex::new(failed_files));
 
-    let last_req_time = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    let throttle = std::sync::Arc::new(RequestThrottle::new(interval_ms));
 
     let mut handles = Vec::new();
 
@@ -219,7 +163,7 @@ pub async fn start_llm_tagging(
         let p_cnt = processed_cnt.clone();
         let errs = errors_arc.clone();
         let fails = failed_arc.clone();
-        let last_req = last_req_time.clone();
+        let throttle = throttle.clone();
 
         let handle = tokio::spawn(async move {
             let _permit = permit;
@@ -234,20 +178,18 @@ pub async fn start_llm_tagging(
                 .to_string();
             let _ = app_c.emit(
                 "llm-tagger-progress",
-                ProgressEvent {
-                    current: i as u32 + 1,
-                    total,
-                    filename: filename.clone(),
-                    status: "processing".to_string(),
-                    message: format!("正在处理: {} ({}/{})", filename, i + 1, total),
-                    ..Default::default()
-                },
+                ProgressEvent::new(
+                    "processing",
+                    format!("正在处理: {} ({}/{})", filename, i + 1, total),
+                )
+                .at(i as u32 + 1, total)
+                .file(filename.clone()),
             );
 
             let file_start = std::time::Instant::now();
 
             let tag_result = tokio::select! {
-                result = tag_with_llm(&cli, &file_path, &opts, &last_req, interval_ms) => result,
+                result = tag_with_llm(&cli, &file_path, &opts, &throttle) => result,
                 _ = async {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -259,96 +201,41 @@ pub async fn start_llm_tagging(
             };
 
             let elapsed_ms = file_start.elapsed().as_millis();
-            let elapsed_str = if elapsed_ms >= 1000 {
-                format!("{:.1}s", elapsed_ms as f64 / 1000.0)
-            } else {
-                format!("{}ms", elapsed_ms)
-            };
+            let elapsed_str = llm_client::fmt_elapsed(elapsed_ms);
 
             if LLM_CANCELLED.load(Ordering::SeqCst) {
                 return;
             }
 
             let current = p_cnt.fetch_add(1, Ordering::SeqCst) + 1;
-            match tag_result {
-                Ok(tag_text) => {
-                    let stem = file_path
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let parent = file_path.parent().unwrap_or(Path::new("."));
-                    let out_path = if opts.output_format == "json" {
-                        parent.join(format!("{}.json", stem))
-                    } else {
-                        parent.join(format!("{}.txt", stem))
-                    };
-                    let content = if opts.output_format == "json" {
-                        let cleaned = tag_text.trim();
-                        let cleaned = if cleaned.starts_with("```json") {
-                            cleaned
-                                .strip_prefix("```json")
-                                .unwrap_or(cleaned)
-                                .strip_suffix("```")
-                                .unwrap_or(cleaned)
-                                .trim()
-                        } else if cleaned.starts_with("```") {
-                            cleaned
-                                .strip_prefix("```")
-                                .unwrap_or(cleaned)
-                                .strip_suffix("```")
-                                .unwrap_or(cleaned)
-                                .trim()
-                        } else {
-                            cleaned
-                        };
-                        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(cleaned) {
-                            serde_json::to_string_pretty(&json_val).unwrap_or_default()
-                        } else if opts.json_simplified {
-                            serde_json::to_string_pretty(&serde_json::json!({ "nl": tag_text }))
-                                .unwrap_or_default()
-                        } else {
-                            serde_json::to_string_pretty(
-                                &serde_json::json!({ "ai_output": { "nl": tag_text } }),
-                            )
-                            .unwrap_or_default()
-                        }
-                    } else {
-                        tag_text
-                    };
-                    match std::fs::write(&out_path, &content) {
-                        Ok(_) => {
-                            s_cnt.fetch_add(1, Ordering::SeqCst);
-                            let _ = app_c.emit(
-                                "llm-tagger-progress",
-                                ProgressEvent {
-                                    current,
-                                    total,
-                                    filename: filename.clone(),
-                                    status: "success".to_string(),
-                                    message: format!("[完成] {} ({})", filename, elapsed_str),
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                        Err(e) => {
-                            f_cnt.fetch_add(1, Ordering::SeqCst);
-                            let err_msg = format!("{}: 写入失败 {}", filename, e);
-                            errs.lock().await.push(err_msg.clone());
-                            fails.lock().await.push(file_path.clone());
-                            let _ = app_c.emit(
-                                "llm-tagger-progress",
-                                ProgressEvent {
-                                    current,
-                                    total,
-                                    filename: filename.clone(),
-                                    status: "error".to_string(),
-                                    message: format!("[错误] {} ({})", err_msg, elapsed_str),
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                    }
+            let outcome = tag_result.and_then(|tag_text| {
+                let stem = file_path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let parent = file_path.parent().unwrap_or(Path::new("."));
+                let out_path = if opts.output_format == "json" {
+                    parent.join(format!("{}.json", stem))
+                } else {
+                    parent.join(format!("{}.txt", stem))
+                };
+                let content = format_output(&tag_text, &opts)?;
+                crate::commands::config_paths::write_file_atomic(&out_path, content.as_bytes())
+                    .map_err(|e| format!("写入失败 {}", e))
+            });
+            match outcome {
+                Ok(()) => {
+                    s_cnt.fetch_add(1, Ordering::SeqCst);
+                    let _ = app_c.emit(
+                        "llm-tagger-progress",
+                        ProgressEvent::new(
+                            "success",
+                            format!("[完成] {} ({})", filename, elapsed_str),
+                        )
+                        .at(current, total)
+                        .file(filename.clone()),
+                    );
                 }
                 Err(e) => {
                     f_cnt.fetch_add(1, Ordering::SeqCst);
@@ -357,14 +244,12 @@ pub async fn start_llm_tagging(
                     fails.lock().await.push(file_path.clone());
                     let _ = app_c.emit(
                         "llm-tagger-progress",
-                        ProgressEvent {
-                            current,
-                            total,
-                            filename: filename.clone(),
-                            status: "error".to_string(),
-                            message: format!("[错误] {} ({})", err_msg, elapsed_str),
-                            ..Default::default()
-                        },
+                        ProgressEvent::new(
+                            "error",
+                            format!("[错误] {} ({})", err_msg, elapsed_str),
+                        )
+                        .at(current, total)
+                        .file(filename.clone()),
                     );
                 }
             }
@@ -382,52 +267,43 @@ pub async fn start_llm_tagging(
     let errors = errors_arc.lock().await.clone();
     let failed_files = failed_arc.lock().await.clone();
 
-    // 失败图片集中到数据集根目录下的一个 Fail 文件夹（递归时保留子目录结构）。
-    // 早先是在每张图自己的父目录各建一个 Fail，递归数据集会散落一堆，无从统一查看
-    if !failed_files.is_empty() {
-        let (status, message) = match crate::commands::copy_files_into_artifact_dir(
-            input_dir,
-            input_dir,
-            &failed_files,
-            crate::commands::FAIL_DIR_NAME,
-            options_arc.recursive,
-        ) {
-            Ok(copied) => (
-                "info",
-                format!("已将 {} 张失败图片复制到 Fail/ 文件夹", copied),
-            ),
-            Err(e) => ("error", e),
-        };
-        let _ = app_arc.emit(
-            "llm-tagger-progress",
-            ProgressEvent {
-                current: total,
-                total,
-                filename: String::new(),
-                status: status.to_string(),
-                message,
-                ..Default::default()
-            },
-        );
-    }
+    report_failed_copies(
+        &app_arc,
+        "llm-tagger-progress",
+        input_dir,
+        &failed_files,
+        options_arc.recursive,
+        total,
+    );
 
     let was_cancelled = LLM_CANCELLED.load(Ordering::SeqCst);
     let _ = app_arc.emit(
         "llm-tagger-progress",
-        ProgressEvent {
-            current: total,
-            total,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
-                "LLM 打标{}: 成功 {}, 失败 {}, 共 {}",
-                if was_cancelled { "已取消" } else { "完成" },
-                success_count,
-                fail_count,
+        ProgressEvent::new(
+            "done",
+            if was_cancelled {
+                format!(
+                    "已取消: 已完成 {}/{}, 成功 {}, 失败 {}",
+                    success_count + fail_count,
+                    total,
+                    success_count,
+                    fail_count
+                )
+            } else {
+                format!(
+                    "LLM 打标完成: 成功 {}, 失败 {}, 共 {}",
+                    success_count, fail_count, total
+                )
+            },
+        )
+        .at(
+            if was_cancelled {
+                success_count + fail_count
+            } else {
                 total
-            ),
-            ..Default::default()
-        },
+            },
+            total,
+        ),
     );
 
     Ok(ProcessResult {
@@ -438,158 +314,69 @@ pub async fn start_llm_tagging(
     })
 }
 
+fn format_output(text: &str, options: &LlmTaggerOptions) -> Result<String, String> {
+    if options.output_format != "json" {
+        return Ok(text.to_string());
+    }
+    let trimmed = text.trim();
+    let cleaned = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .map(|s| s.trim_end().trim_end_matches("```"))
+        .unwrap_or(trimmed)
+        .trim();
+    let value = serde_json::from_str::<serde_json::Value>(cleaned).unwrap_or_else(|_| {
+        if options.json_simplified {
+            serde_json::json!({
+                "quality": "", "series": "", "artist": "", "character": "", "count": "",
+                "appearance": [], "tags": [], "environment": [], "nl": text,
+            })
+        } else {
+            serde_json::json!({
+                "fixed": {"quality": "", "series": "", "artist": ""},
+                "character": {"name": "", "variant": ""},
+                "from_path": {"appearance": []},
+                "ai_output": {"count": "", "appearance": [], "tags": [], "environment": [], "nl": text},
+            })
+        }
+    });
+    serde_json::to_string_pretty(&value).map_err(|e| format!("序列化标签失败: {}", e))
+}
+
 async fn tag_with_llm(
     client: &reqwest::Client,
     img_path: &Path,
     options: &LlmTaggerOptions,
-    last_req_time: &tokio::sync::Mutex<Option<std::time::Instant>>,
-    request_interval_ms: i64,
+    throttle: &RequestThrottle,
 ) -> Result<String, String> {
-    // 读取并缩放图片
-    let max_side = if options.image_size > 0 {
-        options.image_size
-    } else {
-        1024
-    };
-    let img = image::open(img_path).map_err(|e| format!("读取图片失败: {}", e))?;
-
-    let img = if img.width() > max_side || img.height() > max_side {
-        img.resize(max_side, max_side, image::imageops::FilterType::Lanczos3)
-    } else {
-        img
-    };
-
-    // 编码为 JPEG base64（压缩更小、传输更快；JPEG 不接受 RGBA，透明图先按白底拍平）
-    let img = crate::commands::flatten_to_rgb_white(img);
-    let mut buf = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut buf, image::ImageFormat::Jpeg)
-        .map_err(|e| format!("编码图片失败: {}", e))?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(buf.get_ref());
-    let data_url = format!("data:image/jpeg;base64,{}", b64);
-
-    // Build OpenAI-compatible request
-    let mut image_url = serde_json::json!({ "url": data_url });
-    let detail = options.image_detail.trim();
-    if !detail.is_empty() {
-        image_url["detail"] = serde_json::Value::String(detail.to_string());
-    }
-    let messages = vec![
-        ChatMessage {
-            role: "system".to_string(),
-            content: serde_json::Value::String(options.system_prompt.clone()),
-        },
-        ChatMessage {
-            role: "user".to_string(),
-            content: serde_json::json!([
-                { "type": "text", "text": options.user_prompt },
-                { "type": "image_url", "image_url": image_url }
-            ]),
-        },
-    ];
-
-    let request_body = ChatRequest {
-        model: options.model_name.clone(),
-        messages,
-        max_tokens: if options.max_tokens > 0 {
-            Some(options.max_tokens as u32)
-        } else {
-            None
-        },
+    let data_url = llm_client::load_image_data_url(img_path, options.image_size).await?;
+    let params = ChatParams {
+        endpoint: &options.api_endpoint,
+        api_key: &options.api_key,
+        model: &options.model_name,
         temperature: options.temperature,
-        top_p: if options.top_p > 0.0 && options.top_p <= 1.0 {
-            Some(options.top_p)
-        } else {
-            None
-        },
+        max_tokens: options.max_tokens,
+        top_p: options.top_p,
     };
-
-    let endpoint = if options.api_endpoint.ends_with('/') {
-        format!("{}chat/completions", options.api_endpoint)
-    } else {
-        format!("{}/chat/completions", options.api_endpoint)
-    };
-
-    let mut req = client
-        .post(&endpoint)
-        .header("Content-Type", "application/json")
-        .json(&request_body);
-
-    if !options.api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", options.api_key));
-    }
-
-    if !wait_for_global_llm_slot(last_req_time, request_interval_ms, &LLM_CANCELLED).await {
-        return Err("已取消".to_string());
-    }
-
-    let response = req
-        .send()
+    let messages = [
+        ChatMessage::system(&options.system_prompt),
+        ChatMessage::user(llm_client::vision_user_content(
+            &options.user_prompt,
+            &data_url,
+            &options.image_detail,
+        )),
+    ];
+    let reply = llm_client::chat_completion(client, &params, &messages, throttle, &LLM_CANCELLED)
         .await
-        .map_err(|e| format!("API 请求失败: {}", e))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("API 错误 ({}): {}", status, body));
+        .map_err(|e| match e {
+            ChatError::ContentFilter => "LLM 内容安全审核拒绝了该图片".to_string(),
+            other => other.into(),
+        })?;
+    if reply.is_truncated() {
+        return Err("响应因 max_tokens 被截断，已丢弃（请调大 max_tokens）".into());
     }
-
-    let chat_resp: ChatResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("解析响应失败: {}", e))?;
-
-    let choice = chat_resp
-        .choices
-        .first()
-        .ok_or_else(|| "API 未返回任何结果".to_string())?;
-
-    // 优先使用 content，为空时 fallback 到 reasoning_content（支持 Qwen3 等思维模型）
-    let content = choice
-        .message
-        .content
-        .as_deref()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let reasoning = choice
-        .message
-        .reasoning_content
-        .as_deref()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    let final_content = if !content.is_empty() {
-        content
-    } else if !reasoning.is_empty() {
-        reasoning
-    } else {
-        return Err("API 返回空内容".to_string());
-    };
-
-    // 审核拒绝或模型返回拒绝语时，不写入标签文件。
-    if matches!(
-        choice.finish_reason.as_deref(),
-        Some("content_filter") | Some("safety")
-    ) {
-        return Err("LLM 内容安全审核拒绝了该图片".to_string());
-    }
-    if crate::commands::looks_like_refusal(&final_content) {
-        let excerpt: String = final_content.trim().chars().take(80).collect();
-        return Err(format!("LLM 拒绝处理该图片（疑似内容安全审核）: {}", excerpt));
-    }
-
-    Ok(final_content)
-}
-
-#[derive(Deserialize)]
-struct ModelsResponse {
-    data: Vec<ModelInfo>,
-}
-
-#[derive(Deserialize, Serialize, Clone)]
-struct ModelInfo {
-    id: String,
+    llm_client::reject_refusal(&reply.text, "该图片")?;
+    Ok(reply.text)
 }
 
 #[tauri::command]
@@ -597,42 +384,89 @@ pub async fn fetch_llm_models(
     api_endpoint: String,
     api_key: String,
 ) -> Result<Vec<String>, String> {
-    let client = crate::commands::proxy_config::build_http_client_for_llm()
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    llm_client::list_models(&llm_client::llm_http_client()?, &api_endpoint, &api_key).await
+}
 
-    let endpoint = if api_endpoint.ends_with('/') {
-        format!("{}models", api_endpoint)
-    } else {
-        format!("{}/models", api_endpoint)
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::llm_client::test_support::{client, serve_chat_reply, TempDir};
+    use serde_json::json;
 
-    let mut req = client
-        .get(&endpoint)
-        .header("Content-Type", "application/json");
-
-    if !api_key.is_empty() {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
+    fn options() -> LlmTaggerOptions {
+        serde_json::from_value(json!({
+            "input_path": "", "api_endpoint": "", "api_key": "", "model_name": "mock",
+            "system_prompt": "describe", "user_prompt": "image", "temperature": 0.5,
+            "max_tokens": 20, "output_format": "json",
+        }))
+        .unwrap()
     }
 
-    let response = req
-        .send()
-        .await
-        .map_err(|e| format!("请求模型列表失败: {:?}", e))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("API 错误 ({}): {}", status, body));
+    #[test]
+    fn non_json_responses_keep_the_full_schema() {
+        let mut opts = options();
+        let full: serde_json::Value =
+            serde_json::from_str(&format_output("description", &opts).unwrap()).unwrap();
+        assert_eq!(
+            full,
+            json!({
+                "fixed": {"quality": "", "series": "", "artist": ""},
+                "character": {"name": "", "variant": ""},
+                "from_path": {"appearance": []},
+                "ai_output": {"count": "", "appearance": [], "tags": [], "environment": [], "nl": "description"},
+            })
+        );
+        opts.json_simplified = true;
+        let simple: serde_json::Value =
+            serde_json::from_str(&format_output("description", &opts).unwrap()).unwrap();
+        assert_eq!(simple.as_object().unwrap().len(), 9);
+        assert_eq!(simple["nl"], "description");
+        assert_eq!(simple["tags"], json!([]));
+        assert_eq!(simple["artist"], "");
     }
 
-    let models_resp: ModelsResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("解析模型列表失败: {}", e))?;
+    #[test]
+    fn opening_only_fences_do_not_discard_json() {
+        for text in [
+            "```json\n{\"tags\": [\"solo\"]}\n```",
+            "```json\n{\"tags\": [\"solo\"]}",
+            "```\n{\"tags\": [\"solo\"]}",
+        ] {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&format_output(text, &options()).unwrap()).unwrap();
+            assert_eq!(parsed, json!({"tags": ["solo"]}));
+        }
+    }
 
-    let mut model_ids: Vec<String> = models_resp.data.iter().map(|m| m.id.clone()).collect();
-    model_ids.sort();
-
-    Ok(model_ids)
+    #[tokio::test]
+    async fn rejects_truncated_filtered_and_refused_responses() {
+        let temp = TempDir::new("llm_tagger_responses");
+        let path = temp.join("image.wrong_extension");
+        image::RgbImage::new(2, 2)
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        for (text, finish, expected) in [
+            ("partial response", "length", "截断"),
+            ("", "content_filter", "内容安全审核"),
+            ("I cannot assist with this request", "stop", "拒绝"),
+        ] {
+            let server = serve_chat_reply(Some(text), finish);
+            let mut opts = options();
+            opts.api_endpoint = server.url.clone();
+            let error = tag_with_llm(&client(), &path, &opts, &RequestThrottle::new(-1))
+                .await
+                .unwrap_err();
+            assert!(error.contains(expected), "{error}");
+            assert!(!path.with_extension("json").exists());
+        }
+        let server = serve_chat_reply(Some("a complete description"), "stop");
+        let mut opts = options();
+        opts.api_endpoint = server.url.clone();
+        assert_eq!(
+            tag_with_llm(&client(), &path, &opts, &RequestThrottle::new(-1))
+                .await
+                .unwrap(),
+            "a complete description"
+        );
+    }
 }

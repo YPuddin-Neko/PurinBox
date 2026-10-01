@@ -1,25 +1,28 @@
 import { useState, useEffect, useRef } from 'react';
+import { Image as ImageIcon } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
-import {
-  Key, Bot, RefreshCw, Loader2, Eye, EyeOff, Save, Thermometer, Image as ImageIcon,
-  Check, Cpu, Gpu, Trash2, Focus, Hash,
-} from 'lucide-react';
+import { Save, Thermometer, Trash2, Focus, Hash } from 'lucide-react';
 import { Modal } from './Modal';
-import ProgressLog, { getTimeStr, useLogState } from './ProgressLog';
+import ProgressLog from './ProgressLog';
 import ProcessButton from './ProcessButton';
 import InputPathPickerButton from './InputPathPickerButton';
 import CustomSelect from './CustomSelect';
 import TaggerModelSelect from './TaggerModelSelect';
 import Checkbox from './Checkbox';
-import { useTaskQueue } from './TaskContext';
-import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
+import RecursiveScanToggle from './RecursiveScanToggle';
+import { isCancelMessage, useTaskQueue } from './TaskContext';
+import { useTaskLog, resolveProgressMessage, type UnifiedProgressPayload, type UnifiedDownloadPayload } from '../hooks/useUnifiedTaskLogs';
 import { useTranslation } from 'react-i18next';
 import { IMAGE_DETAIL_OPTIONS } from '../utils/imageDetail';
-
-interface ModelInfo { id: string; name: string; description: string; input_size: number; is_builtin: boolean; is_downloaded: boolean; repo_id: string; input_format: string; supported_categories: string[]; general_threshold?: number | null; character_threshold?: number | null; }
-interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
+import { useTaggerModels } from '../hooks/useTaggerModels';
+import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
+import { useLlmApiConfig } from '../hooks/useLlmApiConfig';
+import LlmApiPanel from './LlmApiPanel';
+import { TaggerCategoryGrid, ThresholdSliders } from './TaggerControls';
+import DeviceToggle from './ui/DeviceToggle';
+import { toIntervalMs, toThreads, toImageSize, splitOutputFormat, isTaggerCategory } from '../utils/taggerOptions';
+import { IMAGE_DETAILS, isOneOf, type ImageDetail, type TaggerOptions, type ConvertTagsOptions, type TagRefineOptions } from '../api/commandOptions';
 
 type Phase = '' | 'converting' | 'tagging' | 'refining';
 
@@ -189,7 +192,6 @@ Output the caption text now, beginning with "{trigger}," and ending with a singl
 const defaultPromptFor = (fmt: 'txt' | 'json' | 'json_simplified') =>
   fmt === 'txt' ? defaultPromptTxt : defaultPromptJson;
 
-/** captionMode: 该预设产出的是整段自然语言描述（直接落盘为 txt 内容），不是标签 */
 interface PromptPreset {
   id: string;
   name: string;
@@ -250,18 +252,6 @@ const loadSettings = (): HybridSettings => {
 
 export default function HybridTaggerTab() {
   const { t } = useTranslation();
-  const cats = [
-    { key: 'general', label: t('aiTagger.catGeneral'), default: true },
-    { key: 'character', label: t('aiTagger.catCharacter'), default: true },
-    { key: 'rating', label: t('aiTagger.catRating'), default: false },
-    { key: 'artist', label: t('aiTagger.catArtist'), default: false },
-    { key: 'style', label: t('aiTagger.catStyle'), default: false },
-    { key: 'copyright', label: t('aiTagger.catCopyright'), default: false },
-    { key: 'meta', label: t('aiTagger.catMeta'), default: false },
-    { key: 'quality', label: t('aiTagger.catQuality'), default: false },
-    { key: 'model', label: t('aiTagger.catModel'), default: false },
-  ];
-
   // ── 路径 ──
   const [inputPath, setInputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
@@ -271,32 +261,17 @@ export default function HybridTaggerTab() {
   const savedRef = useRef<HybridSettings | null>(null);
   if (savedRef.current === null) savedRef.current = loadSettings();
   const sv = savedRef.current;
-  const [models, setModels] = useState<ModelInfo[]>([]);
-  const [selectedModel, setSelectedModel] = useState(sv.modelId || '');
-  const [genTh, setGenTh] = useState(sv.genTh ?? 0.35);
-  const [charTh, setCharTh] = useState(sv.charTh ?? 0.85);
+  const { models, selectedModel, setSelectedModel, genTh, setGenTh, charTh, setCharTh,
+    enabled: enabledCats, setEnabled: setEnabledCats, cur, reload: reloadModels } = useTaggerModels({
+    initialId: sv.modelId, general: sv.genTh ?? 0.35, character: sv.charTh,
+    categories: sv.enabledCats?.filter(isTaggerCategory),
+  });
   const [useGpu, setUseGpu] = useState(sv.useGpu ?? true);
   const [replaceUnderscore, setReplaceUnderscore] = useState(sv.replaceUnderscore ?? true);
   const [escapeParentheses, setEscapeParentheses] = useState(sv.escapeParentheses ?? false);
   /** 图片已有同格式标签文件时跳过本地打标（保留现成标签，直接进入 LLM 调优） */
   const [preferExisting, setPreferExisting] = useState(sv.preferExisting ?? true);
-  const [enabledCats, setEnabledCats] = useState<Set<string>>(() => {
-    const known = new Set(cats.map(c => c.key));
-    const restored = (sv.enabledCats || []).filter(k => known.has(k));
-    return new Set(restored.length > 0 ? restored : cats.filter(c => c.default).map(c => c.key));
-  });
-
-  // ── LLM 调优 ──
-  const [preset, setPreset] = useState('openai');
-  const [customEndpoint, setCustomEndpoint] = useState('');
-  // 每个预设各存一份 key，切换预设时输入框跟着换，不能只存单个值
-  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
-  const [showKey, setShowKey] = useState(false);
-  const [modelName, setModelName] = useState(sv.modelName || '');
-  const [modelList, setModelList] = useState<string[]>([]);
-  const [fetchingModels, setFetchingModels] = useState(false);
-  const [fetchMsg, setFetchMsg] = useState<{ text: string; ok: boolean } | null>(null);
-  const [saveMsg, setSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const api = useLlmApiConfig({ initialModelName: sv.modelName });
   const [prompt, setPrompt] = useState(defaultPromptTxt);
   const [presetId, setPresetId] = useState('builtin_full');
   const [customPresets, setCustomPresets] = useState<PromptPreset[]>(loadCustomPresets);
@@ -309,7 +284,7 @@ export default function HybridTaggerTab() {
   const [temperature, setTemperature] = useState(sv.temperature || '0.3');
   const [topP, setTopP] = useState(sv.topP || '0');
   const [imageSize, setImageSize] = useState(sv.imageSize || '1024');
-  const [imageDetail, setImageDetail] = useState(sv.imageDetail || '');
+  const [imageDetail, setImageDetail] = useState<ImageDetail>(isOneOf(IMAGE_DETAILS, sv.imageDetail) ? sv.imageDetail : '');
   const [concurrency, setConcurrency] = useState(sv.concurrency || '1');
   const [intervalSec, setIntervalSec] = useState(sv.intervalSec || '-1');
 
@@ -320,60 +295,16 @@ export default function HybridTaggerTab() {
   const [processing, setProcessing] = useState(false);
   const [phase, setPhase] = useState<Phase>('');
   const phaseRef = useRef<Phase>('');
-  // 用户是否点过取消：start_tagging 被取消后仍返回 Ok，靠它拦住阶段二
+  // 用户是否点过取消：start_tagging 被取消后仍返回 Ok，靠它拦住后续阶段，避免继续请求 LLM 并改写标签文件
   const cancelRequestedRef = useRef(false);
-  phaseRef.current = phase;
-  const [progress, setProgress] = useState(0);
+  const changePhase = (value: Phase) => { phaseRef.current = value; setPhase(value); };
   const [pCur, setPCur] = useState(0);
   const [pTot, setPTot] = useState(0);
-  const [logs, setLogs] = useLogState();
+  const taskLogs = useTaskLog();
+  const { logs, setLogs, appendProgressLog, appendDownloadLog } = taskLogs;
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
-  const taskLogs = useUnifiedTaskLogs(setLogs);
   const { addTask, updateTask } = useTaskQueue();
-
-  const PRESETS: Record<string, { label: string; url: string }> = {
-    openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
-    gemini: { label: 'Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/' },
-    deepseek: { label: 'DeepSeek', url: 'https://api.deepseek.com/v1/' },
-    custom: { label: t('llmTagger.customLabel'), url: '' },
-  };
-  const endpoint = preset === 'custom' ? customEndpoint : (PRESETS[preset]?.url || '');
-  const apiKey = apiKeys[preset] || '';
-  const setApiKey = (v: string) => setApiKeys(prev => ({ ...prev, [preset]: v }));
-
-  // 模型列表 + 已保存的 API 配置
-  useEffect(() => {
-    invoke<ModelInfo[]>('get_tagger_models').then(l => {
-      setModels(l);
-      // 回填的模型可能已被删除：不存在时退回第一个已下载模型
-      if (!selectedModel || !l.some(m => m.id === selectedModel)) {
-        const firstDownloaded = l.find(m => m.is_downloaded);
-        setSelectedModel((firstDownloaded || l[0])?.id || '');
-      }
-    }).catch(() => {});
-    invoke<{ preset: string; custom_endpoint: string; api_keys: Record<string, string> }>('load_api_config').then((cfg) => {
-      const known = ['openai', 'gemini', 'deepseek', 'custom'];
-      if (cfg.preset) setPreset(known.includes(cfg.preset) ? cfg.preset : 'custom');
-      if (cfg.custom_endpoint) setCustomEndpoint(cfg.custom_endpoint);
-      if (cfg.api_keys) setApiKeys(cfg.api_keys);
-    }).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // 模型切换时移除其不支持的类别选择（WD 系列只支持部分类别）
-  useEffect(() => {
-    const curModel = models.find(m => m.id === selectedModel);
-    if (!curModel) return;
-    const supported = new Set(curModel.supported_categories);
-    setEnabledCats(prev => {
-      const next = new Set([...prev].filter(k => supported.has(k)));
-      if (next.size === 0) cats.filter(c => c.default && supported.has(c.key)).forEach(c => next.add(c.key));
-      if (next.size === 0 && curModel.supported_categories.length > 0) next.add(curModel.supported_categories[0]);
-      return next;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedModel, models]);
 
   // 设置变更即持久化，下次打开原样回填
   useEffect(() => {
@@ -381,82 +312,57 @@ export default function HybridTaggerTab() {
       modelId: selectedModel, genTh, charTh, useGpu,
       replaceUnderscore, escapeParentheses, preferExisting,
       enabledCats: [...enabledCats],
-      modelName, temperature, topP, imageSize, imageDetail,
+      modelName: api.modelName, temperature, topP, imageSize, imageDetail,
       concurrency, intervalSec, outputFormat,
     };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* 配额满等，忽略 */ }
   }, [selectedModel, genTh, charTh, useGpu, replaceUnderscore, escapeParentheses, preferExisting,
-    enabledCats, modelName, temperature, topP, imageSize, imageDetail, concurrency, intervalSec, outputFormat]);
+    enabledCats, api.modelName, temperature, topP, imageSize, imageDetail, concurrency, intervalSec, outputFormat]);
 
   // 本地打标/转换走 tagger-progress，LLM 调优走 tag-refine-progress，统一进日志与进度条
   useEffect(() => {
     let cancelled = false;
-    const handler = (expectPhases: Phase[]) => (e: { payload: ProgressPayload }) => {
+    const handler = (expectPhases: Phase[]) => (e: { payload: UnifiedProgressPayload }) => {
       if (cancelled || !expectPhases.includes(phaseRef.current)) return;
       const p = e.payload;
       if (p.total > 0) {
         setPCur(p.current); setPTot(p.total);
-        setProgress((p.current / p.total) * 100);
       }
+      if (p.status === 'done' && isCancelMessage(p.message)) { cancelRequestedRef.current = true; return; }
       if (p.status === 'error') setHasErr(true);
-      if (p.status !== 'processing') taskLogs.appendProgressLog(p);
+      // 各阶段的 done 不是整条辅助打标流程的终态。
+      updateTask('hybrid-tagger', { status: 'running', message: resolveProgressMessage(p),
+        ...(p.total > 0 ? { current: p.current, total: p.total } : {}) });
+      if (p.status !== 'processing') appendProgressLog(p);
     };
-    const l1 = listen<ProgressPayload>('tagger-progress', handler(['tagging']));
-    const l2 = listen<ProgressPayload>('tag-refine-progress', handler(['refining']));
+    const l1 = listen<UnifiedProgressPayload>('tagger-progress', handler(['tagging', 'converting']));
+    const l2 = listen<UnifiedProgressPayload>('tag-refine-progress', handler(['refining']));
     return () => { cancelled = true; l1.then(fn => fn()); l2.then(fn => fn()); };
-  }, [taskLogs]);
+  }, [appendProgressLog, updateTask]);
 
-  const handleFetchModels = async () => {
-    if (!endpoint) return;
-    setFetchingModels(true);
-    try {
-      const list = await invoke<string[]>('fetch_llm_models', { apiEndpoint: endpoint, apiKey });
-      setModelList(list);
-      if (list.length > 0 && !list.includes(modelName)) setModelName(list[0]);
-      setFetchMsg({ text: t('llmTagger.fetchOk', { n: list.length }), ok: true });
-    } catch (e: any) {
-      setFetchMsg({ text: `${t('llmTagger.fetchFail')}: ${String(e)}`, ok: false });
-    } finally {
-      setFetchingModels(false);
-      setTimeout(() => setFetchMsg(null), 3000);
-    }
-  };
-
-  const handleSaveConfig = async () => {
-    try {
-      await invoke('save_api_config', { preset, customEndpoint, apiKeys });
-      setSaveMsg({ text: t('llmTagger.configSaved'), ok: true });
-    } catch (e: any) {
-      setSaveMsg({ text: `${t('llmTagger.saveFailed')}: ${String(e)}`, ok: false });
-    }
-    setTimeout(() => setSaveMsg(null), 2000);
-  };
-
-  const toggleCat = (key: string) => {
-    setEnabledCats(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
+  usePythonEnvEvents(processing, setLogs, taskLogs);
+  useEffect(() => {
+    const pending = listen<UnifiedDownloadPayload>('tagger-download', ({ payload }) => {
+      if (phaseRef.current === 'tagging' || phaseRef.current === 'converting') appendDownloadLog(payload);
     });
-  };
+    return () => { pending.then(off => off()); };
+  }, [appendDownloadLog]);
 
   const isJson = outputFormat !== 'txt';
-  const canStart = !!inputPath && !!selectedModel && !!endpoint && !!modelName && enabledCats.size > 0;
+  const canStart = !!inputPath && !!selectedModel && api.ready && enabledCats.size > 0;
 
-  // 内置预设 + 用户预设。「仅补 NL」只在 JSON 模式下有意义（txt 没有 nl 字段）
+  // 内置预设随输出格式变化：完整调优在 txt 下只调标签（txt 没有 nl 字段），JSON 下兼补 nl；
+  // 归类字段与仅补 nl 依赖 JSON 的字段结构，详细自然语言打标只用于 txt
   const builtinPresets: PromptPreset[] = [
-    // txt 只做标签调优（没有 nl 字段可写），JSON 才是"调标签 + 补自然语言描述"
     {
       id: 'builtin_full',
       name: isJson ? t('hybridTagger.presetFull') : t('hybridTagger.presetTagsOnly'),
       prompt: defaultPromptFor(outputFormat),
     },
-    // 「归类字段 + 补描述」「仅补自然语言描述」都依赖 JSON 的字段结构与 nl
     ...(isJson ? [
       { id: 'builtin_sort', name: t('hybridTagger.presetSortOnly'), prompt: promptSortOnly, preserveTags: true },
       { id: 'builtin_nl', name: t('hybridTagger.presetNlOnly'), prompt: promptNlOnly },
     ] : []),
-    // 「详细自然语言打标」整段 caption 就是 txt 的全部内容，标签只作为 LLM 的校准参考
     ...(!isJson ? [{ id: 'builtin_caption', name: t('hybridTagger.presetDetailedCaption'), prompt: promptDetailedCaption, captionMode: true }] : []),
   ];
   const allPresets = [...builtinPresets, ...customPresets];
@@ -501,7 +407,7 @@ export default function HybridTaggerTab() {
   const handleFormatChange = (v: string) => {
     const next = v as typeof outputFormat;
     setOutputFormat(next);
-    // 两个内置预设各自只适用一种格式，切到另一种就退回完整调优
+    // 只适用于某一种格式的内置预设，切到另一种格式时退回完整调优
     if (((presetId === 'builtin_nl' || presetId === 'builtin_sort') && next === 'txt')
       || (presetId === 'builtin_caption' && next !== 'txt')) {
       setPresetId('builtin_full');
@@ -516,13 +422,12 @@ export default function HybridTaggerTab() {
   };
 
   const handleStart = async () => {
-    if (!canStart) return;
+    if (!canStart || processing || phaseRef.current) return;
     cancelRequestedRef.current = false;
-    setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
-    addTask('tagger', t('hybridTagger.taskName'));
-    const sec = parseFloat(intervalSec);
-    const intervalMs = sec < 0 ? -1 : Math.round(sec * 1000);
-    const threads = Math.max(1, parseInt(concurrency) || 1);
+    setProcessing(true); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
+    addTask('hybrid-tagger', t('hybridTagger.taskName'));
+    const intervalMs = toIntervalMs(intervalSec);
+    const threads = toThreads(concurrency, 16);
     taskLogs.setInitialLog(t('hybridTagger.phaseTagging'));
 
     try {
@@ -530,20 +435,18 @@ export default function HybridTaggerTab() {
       // 这样下一步"跳过已有标签"的判定才能命中，不会丢掉手里现成的 txt 标签去重跑模型。
       // 已经有 .json 的图会被跳过（不拿扁平 txt 盖掉带 nl 的成果）
       if (isJson && preferExisting) {
-        setPhase('converting');
+        changePhase('converting');
         taskLogs.appendLog(t('hybridTagger.phaseConverting'), 'info');
-        updateTask('tagger', { status: 'running', message: t('hybridTagger.phaseConverting') });
-        await invoke<ProcessResult>('convert_tags_to_json', {
+        updateTask('hybrid-tagger', { status: 'running', message: t('hybridTagger.phaseConverting') });
+        await invoke('convert_tags_to_json', {
           options: {
             input_path: inputPath,
             model_id: selectedModel,
             json_simplified: outputFormat === 'json_simplified',
-            remove_txt: false,
             recursive,
-            overwrite_existing: false,
-          },
+          } satisfies ConvertTagsOptions,
         });
-        if (cancelRequestedRef.current) throw '已取消';
+        if (cancelRequestedRef.current) return;
       }
 
       // txt 输出 + 优先使用已有标签：不用转换——打标阶段靠 also_skip_json 把
@@ -551,8 +454,10 @@ export default function HybridTaggerTab() {
       // （count/appearance/... 带着含义喂给 VLM），比摊平成 txt 信息更全
 
       // 本地打标（直接按所选格式输出）
-      setPhase('tagging');
-      await invoke<ProcessResult>('start_tagging', {
+      changePhase('tagging');
+      setPCur(0); setPTot(0);
+      updateTask('hybrid-tagger', { status: 'running', current: 0, total: 0, message: t('hybridTagger.phaseTagging') });
+      await invoke('start_tagging', {
         options: {
           input_path: inputPath,
           model_id: selectedModel,
@@ -564,8 +469,7 @@ export default function HybridTaggerTab() {
           append_tags: '',
           append_position: 'append',
           replace_underscore: replaceUnderscore,
-          output_format: isJson ? 'json' : 'txt',
-          json_simplified: outputFormat === 'json_simplified',
+          ...splitOutputFormat(outputFormat),
           escape_parentheses: escapeParentheses,
           sort_by: 'confidence',
           existing_tags_action: preferExisting ? 'skip' : 'overwrite',
@@ -573,36 +477,33 @@ export default function HybridTaggerTab() {
           also_skip_json: !isJson && preferExisting,
           batch_size: 1,
           recursive,
-        },
+        } satisfies TaggerOptions,
       });
 
-      // start_tagging 取消后仍可能返回 Ok；取消时停止后续精修，避免继续请求并改写标签文件。
-      if (cancelRequestedRef.current) throw '已取消';
+      if (cancelRequestedRef.current) return;
 
       // LLM 二次确认与调优（就地更新标签文件）
-      setPhase('refining');
-      setProgress(0); setPCur(0); setPTot(0);
-      updateTask('tagger', { status: 'running', message: t('hybridTagger.phaseRefining') });
+      changePhase('refining');
+      setPCur(0); setPTot(0);
+      updateTask('hybrid-tagger', { status: 'running', current: 0, total: 0, message: t('hybridTagger.phaseRefining') });
       taskLogs.appendLog(t('hybridTagger.phaseRefining'), 'info');
-      // 二次确认：上面那次检查到这里之间点的取消仍会指向已结束的阶段一，尽量收窄窗口
-      if (cancelRequestedRef.current) throw '已取消';
-      await invoke<ProcessResult>('start_tag_refining', {
+      await invoke('start_tag_refining', {
         options: {
           input_path: inputPath,
           output_path: inputPath,
-          api_endpoint: endpoint,
-          api_key: apiKey,
-          model_name: modelName,
+          api_endpoint: api.endpoint,
+          api_key: api.apiKey,
+          model_name: api.modelName,
           prompt: applyTriggerWord(prompt, triggerWord),
-          temperature: Number.isFinite(parseFloat(temperature)) ? parseFloat(temperature) : 0.3,
-          max_tokens: -1,
-          image_size: parseInt(imageSize) || 1024,
+          temperature: Number(temperature),
+          image_size: toImageSize(imageSize),
           image_detail: imageDetail,
-          top_p: parseFloat(topP) || 0,
+          top_p: Number(topP),
           request_interval_ms: intervalMs,
           concurrency: threads,
           recursive,
-          // JSON 模式差量写回：保留本地打标的字段归属，仅应用 LLM 的增删
+          // JSON 写回：回复带字段分段时按 LLM 的归属重排 count/appearance/tags/environment，
+          // 没有分段时差量写回（保留原字段归属，只应用增删）
           file_format: isJson ? 'json' : 'txt',
           // 自然语言打标：LLM 回复整段写入 txt，不做标签解析（仅 txt 有意义）
           caption_mode: !isJson && captionMode,
@@ -610,32 +511,35 @@ export default function HybridTaggerTab() {
           trigger_word: triggerWord,
           // 只归类不增删：标签集合由后端保证恒定（仅 JSON 有字段结构）
           preserve_tags: isJson && preserveTags,
-        },
+        } satisfies TagRefineOptions,
       });
 
+      if (cancelRequestedRef.current) return;
       setIsDone(true);
       taskLogs.appendLog(t('hybridTagger.allDone'), 'success');
-      updateTask('tagger', { status: 'done', message: t('hybridTagger.allDone') });
-    } catch (e: any) {
-      const errStr = typeof e === 'string' ? e : e?.message || String(e);
-      taskLogs.appendCatchError(errStr, t('pages.errorPrefix'));
-      setHasErr(true); setIsDone(true);
-      updateTask('tagger', {
-        status: /已取消|cancel/i.test(errStr) ? 'cancelled' : 'error',
-        message: errStr,
-      });
+      updateTask('hybrid-tagger', { status: 'done', message: t('hybridTagger.allDone') });
+    } catch (e: unknown) {
+      const errStr = e instanceof Error ? e.message : String(e);
+      if (isCancelMessage(errStr)) cancelRequestedRef.current = true;
+      else {
+        taskLogs.appendCatchError(errStr, t('pages.errorPrefix'));
+        setHasErr(true);
+        updateTask('hybrid-tagger', { status: 'error', message: errStr });
+      }
     } finally {
+      if (cancelRequestedRef.current) {
+        const message = t('hybridTagger.cancelled');
+        taskLogs.appendLog(message, 'warning');
+        updateTask('hybrid-tagger', { status: 'cancelled', message });
+      }
+      setIsDone(true);
       setProcessing(false);
-      setPhase('');
+      changePhase('');
+      void reloadModels().catch(() => {});
     }
   };
 
   const clearLogs = () => { setLogs([]); setIsDone(false); setHasErr(false); };
-
-  const numInput = (v: string, set: (n: number) => void, fallback: number, min: number, max: number) => {
-    const n = parseFloat(v);
-    set(Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback);
-  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
@@ -643,10 +547,7 @@ export default function HybridTaggerTab() {
       <div className="tool-panel">
         <div className="tool-panel-header">
           <span className="tool-panel-title">{t('llmTagger.datasetPath')}</span>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: 'var(--color-text-secondary)' }}>
-            <Checkbox checked={recursive} onChange={setRecursive} size={14} />
-            {t('llmTagger.recursiveScan')}
-          </label>
+          <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
         </div>
         <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
           <input className="form-input" placeholder={t('llmTagger.selectFolder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
@@ -661,76 +562,18 @@ export default function HybridTaggerTab() {
           <div className="tool-panel-header">
             <span className="tool-panel-title">{t('hybridTagger.localPhase')}</span>
             <div style={{ display: 'flex', gap: 4 }}>
-              {(['cpu', 'gpu'] as const).map(hw => {
-                const isGpu = hw === 'gpu';
-                const active = isGpu === useGpu;
-                const Icon = isGpu ? Gpu : Cpu;
-                const color = isGpu ? '#4ade80' : '#fbbf24';
-                return (
-                  <button key={hw} onClick={() => setUseGpu(isGpu)} style={{
-                    display: 'flex', alignItems: 'center', gap: 4, padding: '3px 10px',
-                    borderRadius: 'var(--radius-sm)',
-                    border: `1.5px solid ${active ? color : 'var(--color-border)'}`,
-                    background: active ? (isGpu ? 'rgba(74,222,128,0.07)' : 'rgba(251,191,36,0.07)') : 'transparent',
-                    cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                    color: active ? color : 'var(--color-text-tertiary)',
-                  }}>
-                    <Icon style={{ width: 13, height: 13 }} /> {hw.toUpperCase()}
-                  </button>
-                );
-              })}
+              <DeviceToggle useGpu={useGpu} onChange={setUseGpu} />
             </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            <TaggerModelSelect
-              models={models}
-              value={selectedModel}
-              onChange={v => {
-                setSelectedModel(v);
-                // 模型带官方推荐阈值时应用到滑条（用户之后仍可手动调）
-                const m = models.find(x => x.id === v);
-                if (m?.general_threshold != null) setGenTh(m.general_threshold);
-                if (m?.character_threshold != null) setCharTh(m.character_threshold);
-              }}
-              formatLabel={m => m.is_downloaded ? m.name : `${m.name} (${t('hybridTagger.notDownloaded')})`}
-            />
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
-              {(() => {
-                const curModel = models.find(m => m.id === selectedModel);
-                const supported = new Set(curModel?.supported_categories || cats.map(c => c.key));
-                return cats.map(c => {
-                  const on = enabledCats.has(c.key);
-                  const avail = supported.has(c.key);
-                  return (
-                    <div key={c.key} onClick={() => { if (avail) toggleCat(c.key); }}
-                      title={avail ? undefined : t('hybridTagger.catUnsupported')}
-                      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${on && avail ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: !avail ? 'rgba(0,0,0,0.04)' : on ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-input)', cursor: avail ? 'pointer' : 'not-allowed', transition: 'all 0.15s', opacity: avail ? 1 : 0.35, minWidth: 0 }}>
-                      <div style={{ width: 14, height: 14, borderRadius: 3, minWidth: 14, border: `2px solid ${on && avail ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, background: on && avail ? 'var(--color-accent-primary)' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{on && avail && <Check style={{ width: 9, height: 9, color: '#fff' }} />}</div>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: avail ? 'var(--color-text-primary)' : 'var(--color-text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.label}</span>
-                    </div>
-                  );
-                });
-              })()}
-            </div>
-            <div style={{ display: 'flex', gap: 'var(--space-4)' }}>
-              <div style={{ flex: 1 }}>
-                <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <span style={{ fontSize: 12 }}>{t('aiTagger.generalTh')}</span>
-                  <span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', fontSize: 12 }}>{genTh.toFixed(2)}</span>
-                </label>
-                <input type="range" min="0.05" max="1" step="0.01" value={genTh} onChange={e => numInput(e.target.value, setGenTh, 0.35, 0.05, 1)} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                  <span style={{ fontSize: 12 }}>{t('aiTagger.charTh')}</span>
-                  <span style={{ fontWeight: 700, color: '#f59e0b', fontFamily: 'monospace', fontSize: 12 }}>{charTh.toFixed(2)}</span>
-                </label>
-                <input type="range" min="0.05" max="1" step="0.01" value={charTh} onChange={e => numInput(e.target.value, setCharTh, 0.85, 0.05, 1)} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
-              </div>
-            </div>
+            <TaggerModelSelect models={models} value={selectedModel} onChange={setSelectedModel}
+              formatLabel={m => m.name + (m.is_downloaded ? ' ✓' : ' ⬇')} />
+            {cur?.requires_token && <div style={{ fontSize: 11, color: 'var(--color-warning)' }}>{t('aiTagger.requiresToken')}</div>}
+            <TaggerCategoryGrid enabled={enabledCats} onChange={setEnabledCats} supported={cur?.supported_categories} />
+            <ThresholdSliders general={genTh} character={charTh} onGeneral={setGenTh} onCharacter={setCharTh} />
             <div style={{ display: 'flex', gap: 'var(--space-4)', flexWrap: 'wrap' }}>
               <Checkbox checked={replaceUnderscore} onChange={setReplaceUnderscore} label={t('aiTagger.replaceUnderscore')} size={14} />
-              <span title={t('aiTagger.escapeParenthesesTip')}>
+              <span>
                 <Checkbox checked={escapeParentheses} onChange={setEscapeParentheses} label={t('aiTagger.escapeParentheses')} size={14} />
               </span>
               <span title={t('hybridTagger.preferExistingTip')}>
@@ -740,55 +583,7 @@ export default function HybridTaggerTab() {
           </div>
         </div>
 
-        {/* API 设置 */}
-        <div className="tool-panel" style={{ marginBottom: 0 }}>
-          <div className="tool-panel-header">
-            <span className="tool-panel-title">{t('llmTagger.apiSettings')}</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              {saveMsg && <span style={{ fontSize: 11, color: saveMsg.ok ? '#4ade80' : '#f87171' }}>{saveMsg.ok ? '✓' : '✗'} {saveMsg.text}</span>}
-              <button className="btn btn-ghost btn-sm" onClick={handleSaveConfig} style={{ padding: '2px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Save style={{ width: 12, height: 12 }} /> {t('llmTagger.saveConfig')}
-              </button>
-            </div>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-                {Object.entries(PRESETS).map(([key, { label }]) => (
-                  <button key={key} className={`btn btn-sm ${preset === key ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setPreset(key)} style={{ fontSize: 11 }}>{label}</button>
-                ))}
-              </div>
-              {preset === 'custom' ? (
-                <input className="form-input" placeholder="https://api.example.com/v1/" value={customEndpoint} onChange={e => setCustomEndpoint(e.target.value)} style={{ marginTop: 6 }} />
-              ) : (
-                <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{endpoint}</div>
-              )}
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Key style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> API Key</label>
-              <div style={{ position: 'relative' }}>
-                <input className="form-input" type={showKey ? 'text' : 'password'} placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} style={{ paddingRight: 32 }} />
-                <button onClick={() => setShowKey(!showKey)} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', display: 'flex', padding: 2 }}>
-                  {showKey ? <EyeOff style={{ width: 14, height: 14 }} /> : <Eye style={{ width: 14, height: 14 }} />}
-                </button>
-              </div>
-            </div>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Bot style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('llmTagger.modelLabel')}</span>
-                <button className="btn btn-ghost btn-sm" onClick={handleFetchModels} disabled={fetchingModels || !endpoint} style={{ padding: '2px 8px', fontSize: 11 }}>
-                  {fetchingModels ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 12, height: 12 }} />} {t('llmTagger.fetchModels')}
-                </button>
-              </label>
-              {modelList.length > 0 ? (
-                <CustomSelect value={modelName} onChange={setModelName} options={modelList.map(m => ({ value: m, label: m }))} />
-              ) : (
-                <input className="form-input" placeholder={t('llmTagger.modelPlaceholder')} value={modelName} onChange={e => setModelName(e.target.value)} />
-              )}
-              {fetchMsg && <div style={{ fontSize: 11, marginTop: 4, color: fetchMsg.ok ? '#4ade80' : '#f87171' }}>{fetchMsg.ok ? '✓' : '✗'} {fetchMsg.text}</div>}
-            </div>
-          </div>
-        </div>
+        <LlmApiPanel api={api} compact style={{ marginBottom: 0 }} />
       </div>
 
       {/* 调优设置聚合：提示词 + 参数 + 输出格式 */}
@@ -832,9 +627,9 @@ export default function HybridTaggerTab() {
             <div>
               <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
                 <span>Top P</span>
-                <span style={{ fontSize: 11, color: 'var(--color-accent-primary)', fontFamily: 'monospace' }}>{topP || '0'}</span>
+                <span style={{ fontSize: 11, color: 'var(--color-accent-primary)', fontFamily: 'monospace' }}>{topP}</span>
               </label>
-              <input type="range" min="0" max="1" step="0.05" value={topP || '0'} onChange={e => setTopP(e.target.value)} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
+              <input type="range" min="0" max="1" step="0.05" value={topP} onChange={e => setTopP(e.target.value)} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
             </div>
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
               <div style={{ flex: 1 }}>
@@ -847,13 +642,13 @@ export default function HybridTaggerTab() {
               </div>
               <div style={{ flex: 1 }}>
                 <label className="form-label">{t('hybridTagger.interval')}</label>
-                <input className="form-input" type="number" step="0.1" value={intervalSec} onChange={e => setIntervalSec(e.target.value)} />
+                <input className="form-input" type="number" step="0.1" title={t('tagSort.intervalTip')} value={intervalSec} onChange={e => setIntervalSec(e.target.value)} />
               </div>
             </div>
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Focus style={{ width: 12, height: 12, color: 'var(--color-text-tertiary)' }} /> {t('tagRefine.imageDetail')}</label>
-                <CustomSelect value={imageDetail} onChange={setImageDetail} options={IMAGE_DETAIL_OPTIONS(t)} />
+                <CustomSelect value={imageDetail} onChange={v => { if (isOneOf(IMAGE_DETAILS, v)) setImageDetail(v); }} options={IMAGE_DETAIL_OPTIONS(t)} />
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <label className="form-label">{t('hybridTagger.outputFormat')}</label>
@@ -895,13 +690,11 @@ export default function HybridTaggerTab() {
           : phase === 'refining' ? t('hybridTagger.phaseShortRefining')
           : t('pages.processing')
         }
-        onCancelLog={(msg) => {
+        onCancelLog={() => {
           cancelRequestedRef.current = true;
-          setLogs(prev => [...prev, { time: getTimeStr(), message: msg, status: 'warning' }]);
         }}
       />
       <ProgressLog
-        progress={progress}
         current={pCur}
         total={pTot}
         logs={logs}

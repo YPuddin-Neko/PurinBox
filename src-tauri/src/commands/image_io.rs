@@ -12,6 +12,53 @@ use std::sync::OnceLock;
 /// 重新编码 JPEG 的最低质量：低质量源图若按原质量再压一次，损失会叠加一代
 const JPEG_MIN_QUALITY: u8 = 95;
 
+pub(crate) fn read_dimensions(path: &Path) -> image::ImageResult<(u32, u32)> {
+    ImageReader::open(path)?
+        .with_guessed_format()?
+        .into_dimensions()
+}
+
+pub(crate) fn probe_has_alpha_channel(path: &Path) -> Result<bool, String> {
+    let reader = ImageReader::open(path).map_err(|e| format!("无法打开图片: {}", e))?;
+    let decoder = reader
+        .with_guessed_format()
+        .map_err(|e| format!("无法识别图片格式: {}", e))?
+        .into_decoder()
+        .map_err(|e| format!("无法解码图片: {}", e))?;
+    Ok(decoder.color_type().has_alpha())
+}
+
+pub(crate) fn flatten_preserving_depth(img: DynamicImage, bg: [u8; 3]) -> DynamicImage {
+    match img.color() {
+        image::ColorType::La16 | image::ColorType::Rgba16 => {
+            let rgba = img.to_rgba16();
+            let rgb = image::ImageBuffer::from_fn(rgba.width(), rgba.height(), |x, y| {
+                let pixel = rgba.get_pixel(x, y);
+                let alpha = u64::from(pixel[3]);
+                image::Rgb(std::array::from_fn(|c| {
+                    ((u64::from(pixel[c]) * alpha + u64::from(bg[c]) * 257 * (65535 - alpha))
+                        / 65535) as u16
+                }))
+            });
+            DynamicImage::ImageRgb16(rgb)
+        }
+        image::ColorType::Rgba32F => {
+            let rgba = img.to_rgba32f();
+            DynamicImage::ImageRgb32F(image::ImageBuffer::from_fn(
+                rgba.width(),
+                rgba.height(),
+                |x, y| {
+                    let p = rgba.get_pixel(x, y);
+                    image::Rgb(std::array::from_fn(|c| {
+                        p[c] * p[3] + f32::from(bg[c]) / 255.0 * (1.0 - p[3])
+                    }))
+                },
+            ))
+        }
+        _ => super::flatten_onto(img, bg),
+    }
+}
+
 /// JPEG 量化表，按表号（0-3）存放，数值为文件内的 zigzag 顺序
 type JpegTables = [Option<[u16; 64]>; 4];
 
@@ -53,8 +100,7 @@ pub(crate) fn load_image(path: &Path) -> Result<(DynamicImage, SourceInfo), Stri
     let (bytes, format) = read_source(path)?;
     let mut decoder = decoder_for(&bytes, format)?;
     let icc_profile = decoder.icc_profile().ok().flatten();
-    let image =
-        DynamicImage::from_decoder(decoder).map_err(|e| format!("无法解码图片: {}", e))?;
+    let image = DynamicImage::from_decoder(decoder).map_err(|e| format!("无法解码图片: {}", e))?;
     Ok((image, source_info(&bytes, format, icc_profile)))
 }
 
@@ -81,10 +127,7 @@ pub(crate) fn save_like_source(
         img
     };
     let color = img.color().has_color();
-    let icc = source
-        .icc_profile
-        .clone()
-        .filter(|p| icc_matches(p, color));
+    let icc = source.icc_profile.clone().filter(|p| icc_matches(p, color));
     let mut buf = Cursor::new(Vec::new());
     let encoded = match source.format {
         ImageFormat::Jpeg => {
@@ -92,37 +135,27 @@ pub(crate) fn save_like_source(
                 .jpeg_tables
                 .as_ref()
                 .map_or(100, |t| jpeg_quality_for(t, color));
-            let mut encoder = JpegEncoder::new_with_quality(&mut buf, quality);
-            if let Some(p) = icc {
-                let _ = encoder.set_icc_profile(p);
-            }
-            img.write_with_encoder(encoder)
+            encode_with_icc(&img, JpegEncoder::new_with_quality(&mut buf, quality), icc)
         }
-        ImageFormat::Png => {
-            let mut encoder = PngEncoder::new(&mut buf);
-            if let Some(p) = icc {
-                let _ = encoder.set_icc_profile(p);
-            }
-            img.write_with_encoder(encoder)
-        }
-        ImageFormat::WebP => {
-            let mut encoder = WebPEncoder::new_lossless(&mut buf);
-            if let Some(p) = icc {
-                let _ = encoder.set_icc_profile(p);
-            }
-            img.write_with_encoder(encoder)
-        }
-        ImageFormat::Tiff => {
-            let mut encoder = TiffEncoder::new(&mut buf);
-            if let Some(p) = icc {
-                let _ = encoder.set_icc_profile(p);
-            }
-            img.write_with_encoder(encoder)
-        }
+        ImageFormat::Png => encode_with_icc(&img, PngEncoder::new(&mut buf), icc),
+        ImageFormat::WebP => encode_with_icc(&img, WebPEncoder::new_lossless(&mut buf), icc),
+        ImageFormat::Tiff => encode_with_icc(&img, TiffEncoder::new(&mut buf), icc),
         other => img.write_to(&mut buf, other),
     };
     encoded.map_err(|e| format!("无法编码图片: {}", e))?;
     std::fs::write(path, buf.into_inner()).map_err(|e| format!("无法保存图片: {}", e))
+}
+
+/// 有 ICC 配置文件时先交给编码器（编码器不支持就不写），再编码
+fn encode_with_icc(
+    img: &DynamicImage,
+    mut encoder: impl ImageEncoder,
+    icc: Option<Vec<u8>>,
+) -> image::ImageResult<()> {
+    if let Some(p) = icc {
+        let _ = encoder.set_icc_profile(p);
+    }
+    img.write_with_encoder(encoder)
 }
 
 /// 配置文件的色彩空间与输出一致才写回（CMYK JPEG 解码成 RGB 后，原配置文件已不适用）
@@ -228,17 +261,50 @@ fn jpeg_quality_for(tables: &JpegTables, color: bool) -> u8 {
 }
 
 #[cfg(test)]
+pub(crate) fn test_dir(label: &str) -> std::path::PathBuf {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "purin_imageops_{}_{}_{}",
+        label,
+        std::process::id(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+#[cfg(test)]
+pub(crate) fn write_broken_pixels(path: &Path) {
+    image::RgbImage::new(32, 32).save(path).unwrap();
+    let mut bytes = std::fs::read(path).unwrap();
+    let idat = bytes.windows(4).position(|chunk| chunk == b"IDAT").unwrap();
+    bytes[idat + 4] ^= 0xff;
+    std::fs::write(path, bytes).unwrap();
+    assert_eq!(read_dimensions(path).unwrap(), (32, 32));
+    assert!(load_image(path).is_err());
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use image::GenericImageView;
     use std::path::PathBuf;
 
+    #[test]
+    fn dimensions_follow_content_not_extension() {
+        let root = test_dir("dimensions");
+        let path = root.join("webp.png");
+        image::RgbImage::new(17, 23)
+            .save_with_format(&path, ImageFormat::WebP)
+            .unwrap();
+        assert_eq!(read_dimensions(&path).unwrap(), (17, 23));
+        assert!(!probe_has_alpha_channel(&path).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "purinbox_image_io_{}_{}",
-            tag,
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("purinbox_image_io_{}_{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -273,7 +339,12 @@ mod tests {
         let img = noisy_rgb(16, 16);
         for (src_q, expected) in [(100, 100), (98, 98), (96, 96), (95, 95), (80, 95), (40, 95)] {
             let tables = parse_dqt(&jpeg_bytes(&img, src_q));
-            assert_eq!(jpeg_quality_for(&tables, true), expected, "源质量 {}", src_q);
+            assert_eq!(
+                jpeg_quality_for(&tables, true),
+                expected,
+                "源质量 {}",
+                src_q
+            );
         }
         assert_eq!(jpeg_quality_for(&[None; 4], true), 100);
     }
@@ -346,7 +417,10 @@ mod tests {
         let (decoded, info) = load_image(&src).unwrap();
         let out = dir.join("out.png");
         save_like_source(decoded.clone(), &out, &info).unwrap();
-        assert_eq!(probe_image(&out).unwrap().icc_profile, Some(fake_icc(b"RGB ")));
+        assert_eq!(
+            probe_image(&out).unwrap().icc_profile,
+            Some(fake_icc(b"RGB "))
+        );
 
         // 灰度输出不写 RGB 配置文件
         let gray = dir.join("gray.png");

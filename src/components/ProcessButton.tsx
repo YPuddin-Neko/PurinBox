@@ -3,17 +3,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { Play, Loader2, X, AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-/**
- * 统一的处理/取消按钮组件
- *
- * 行为:
- * - 空闲时：显示 startText（如"开始处理"），点击触发 onStart
- * - 处理中未 hover：显示 processingText + 旋转图标
- * - 处理中 hover：显示"取消"，红色
- * - 第一次点击取消：调用 onCancel，按钮变为"再次点击强制结束"
- * - 第二次点击取消：调用 onForceCancel
- */
-
 interface ProcessButtonProps {
   processing: boolean;
   disabled?: boolean;
@@ -25,11 +14,14 @@ interface ProcessButtonProps {
   startText?: string;
   startIcon?: React.ReactNode;
   processingText?: string;
-  style?: React.CSSProperties;
   /** 取消时自动追加日志 */
   onCancelLog?: (msg: string) => void;
 }
 
+/**
+ * 空闲时点击调用 onStart；处理中第一次点击 invoke(cancelCommand)，
+ * 第二次 invoke(forceCancelCommand || cancelCommand)。
+ */
 export default function ProcessButton({
   processing,
   disabled,
@@ -39,7 +31,6 @@ export default function ProcessButton({
   startText,
   startIcon,
   processingText,
-  style,
   onCancelLog,
 }: ProcessButtonProps) {
   const { t } = useTranslation();
@@ -50,11 +41,11 @@ export default function ProcessButton({
   const processingSinceRef = useRef(0);
   useEffect(() => {
     if (processing) processingSinceRef.current = Date.now();
+    else setCancelStage(0);
   }, [processing]);
 
   const handleClick = useCallback(async () => {
     if (!processing) {
-      setCancelStage(0);
       onStart();
       return;
     }
@@ -63,7 +54,6 @@ export default function ProcessButton({
     if (Date.now() - processingSinceRef.current < 400) return;
 
     if (cancelStage === 0) {
-      // 第一次取消 → 优雅取消
       setCancelStage(1);
       onCancelLog?.(t('processButton.cancelSubmitted'));
       try {
@@ -72,7 +62,6 @@ export default function ProcessButton({
         console.error('cancel failed:', e);
       }
     } else {
-      // 第二次取消 → 强制取消
       setCancelStage(2);
       onCancelLog?.(t('processButton.forceStop'));
       try {
@@ -81,21 +70,14 @@ export default function ProcessButton({
         console.error('force cancel failed:', e);
       }
     }
-  }, [processing, cancelStage, cancelCommand, forceCancelCommand, onCancelLog, onStart]);
+  }, [processing, cancelStage, cancelCommand, forceCancelCommand, onCancelLog, onStart, t]);
 
-  // 处理完成后重置 cancelStage
-  useEffect(() => {
-    if (!processing) setCancelStage(0);
-  }, [processing]);
-
-  // 决定显示内容
   const renderContent = () => {
     if (!processing) {
       return <>{startIcon || <Play style={{ width: 18, height: 18 }} />} {resolvedStartText}</>;
     }
 
     if (cancelStage >= 1) {
-      // 已请求取消
       return (
         <>
           <AlertTriangle style={{ width: 18, height: 18 }} />
@@ -111,14 +93,12 @@ export default function ProcessButton({
     return <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {resolvedProcessingText}</>;
   };
 
-  // 决定样式
   const isCancel = processing && (hovered || cancelStage >= 1);
   const btnClass = `btn ${isCancel ? '' : 'btn-primary'} btn-lg`;
   const btnStyle: React.CSSProperties = {
     width: '100%',
     height: 48,
     transition: 'all 0.15s ease',
-    ...style,
     ...(isCancel ? {
       background: cancelStage >= 1
         ? 'rgba(248, 113, 113, 0.15)'

@@ -1,28 +1,27 @@
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::Emitter;
 
+use super::http_download::{download_client, download_to_file, huggingface_url, DownloadProgress};
+use super::python_proc::{self, PidRegistration, ProtocolReader, Recv, PYTHON_SILENCE_LIMIT};
 use super::{
-    collect_image_files_with_recursive_excluding, finalize_part_file, output_dir_for_input,
-    prepare_part_file, ProcessResult, ProgressEvent,
+    collect_image_files_with_recursive_excluding, output_dir_for_input, ProcessResult,
+    ProgressEvent,
 };
 
 // ===== DeepGHS Anime Detection Models =====
 
-/// 5 个裁切类型对应的模型定义
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CropModelDef {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub crop_type: &'static str, // "person" | "halfbody" | "head" | "face" | "eyes"
-    pub repo: &'static str,
-    pub subfolder: &'static str,
-    pub size_mb: f64,
+/// 4 个裁切类型对应的模型定义
+struct CropModelDef {
+    id: &'static str,
+    name: &'static str,
+    crop_type: &'static str, // "person" | "halfbody" | "head" | "eyes"
+    repo: &'static str,
+    subfolder: &'static str,
 }
 
 const CROP_MODELS: &[CropModelDef] = &[
@@ -32,7 +31,6 @@ const CROP_MODELS: &[CropModelDef] = &[
         crop_type: "person",
         repo: "deepghs/anime_person_detection",
         subfolder: "person_detect_v1.1_m",
-        size_mb: 103.0,
     },
     CropModelDef {
         id: "halfbody_detect_v1.0_s",
@@ -40,7 +38,6 @@ const CROP_MODELS: &[CropModelDef] = &[
         crop_type: "halfbody",
         repo: "deepghs/anime_halfbody_detection",
         subfolder: "halfbody_detect_v1.0_s",
-        size_mb: 22.0,
     },
     CropModelDef {
         id: "head_detect_v2.0_x",
@@ -48,7 +45,6 @@ const CROP_MODELS: &[CropModelDef] = &[
         crop_type: "head",
         repo: "deepghs/anime_head_detection",
         subfolder: "head_detect_v2.0_x",
-        size_mb: 247.0,
     },
     CropModelDef {
         id: "eye_detect_v1.0_s",
@@ -56,26 +52,11 @@ const CROP_MODELS: &[CropModelDef] = &[
         crop_type: "eyes",
         repo: "deepghs/anime_eye_detection",
         subfolder: "eye_detect_v1.0_s",
-        size_mb: 22.0,
     },
 ];
 
-/// 模型存储目录
 fn get_models_dir() -> PathBuf {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let base = if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or(exe_dir)
-    } else {
-        exe_dir
-    };
-    base.join("models").join("crop_models")
+    super::config_paths::models_dir("crop_models")
 }
 
 fn model_onnx_path(model: &CropModelDef) -> PathBuf {
@@ -85,251 +66,83 @@ fn model_onnx_path(model: &CropModelDef) -> PathBuf {
 /// 模型状态信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CropModelInfo {
-    pub id: String,
-    pub name: String,
     pub crop_type: String,
-    pub size_mb: f64,
     pub downloaded: bool,
-    pub path: String,
 }
 
 #[tauri::command]
 pub fn get_person_crop_models() -> Result<Vec<CropModelInfo>, String> {
     Ok(CROP_MODELS
         .iter()
-        .map(|m| {
-            let path = model_onnx_path(m);
-            CropModelInfo {
-                id: m.id.to_string(),
-                name: m.name.to_string(),
-                crop_type: m.crop_type.to_string(),
-                size_mb: m.size_mb,
-                downloaded: path.exists(),
-                path: path.to_string_lossy().to_string(),
-            }
+        .map(|m| CropModelInfo {
+            crop_type: m.crop_type.to_string(),
+            downloaded: model_onnx_path(m).exists(),
         })
         .collect())
 }
 
-/// 下载进度
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CropDownloadProgress {
-    pub downloaded: u64,
-    pub total: u64,
-    pub percent: f32,
-    pub speed_mbps: f64,
-    pub status: String,
-    pub message: String,
-}
-
-static DOWNLOAD_CANCEL: AtomicBool = AtomicBool::new(false);
-
-/// 下载所有缺失的模型（一键下载模型包）
 #[tauri::command]
-pub async fn download_person_crop_model(
-    app: tauri::AppHandle,
-    model_id: String,
-) -> Result<String, String> {
-    DOWNLOAD_CANCEL.store(false, Ordering::SeqCst);
-
-    // 支持 model_id = "all" 下载全部，或单个模型 id
-    let models_to_download: Vec<&CropModelDef> = if model_id == "all" {
-        CROP_MODELS
-            .iter()
-            .filter(|m| !model_onnx_path(m).exists())
-            .collect()
-    } else {
-        CROP_MODELS.iter().filter(|m| m.id == model_id).collect()
-    };
-
-    if models_to_download.is_empty() {
+pub async fn download_person_crop_model(app: tauri::AppHandle) -> Result<String, String> {
+    let _busy = super::BusyGuard::acquire(&PERSON_CROP_RUNNING, "人物裁切")?;
+    CANCEL_FLAG.store(false, Ordering::SeqCst);
+    let models: Vec<_> = CROP_MODELS
+        .iter()
+        .filter(|m| !model_onnx_path(m).is_file())
+        .collect();
+    if models.is_empty() {
         let _ = app.emit(
             "person-crop-download",
-            CropDownloadProgress {
-                downloaded: 0,
-                total: 0,
-                percent: 100.0,
-                speed_mbps: 0.0,
-                status: "done".into(),
-                message: "所有模型已就绪".into(),
-            },
+            DownloadProgress::done("所有模型已就绪"),
         );
         return Ok("all_ready".into());
     }
-
-    let client = crate::commands::proxy_config::build_http_client()
-        .user_agent("PurinBox/0.1.7")
-        .timeout(std::time::Duration::from_secs(600))
-        .build()
-        .map_err(|e| format!("HTTP 客户端失败: {}", e))?;
-
-    for (idx, model) in models_to_download.iter().enumerate() {
-        if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
+    let client = download_client()?;
+    for (index, model) in models.iter().enumerate() {
+        let prefix = format!("[{}/{}] {}", index + 1, models.len(), model.name);
+        let url = huggingface_url(model.repo, &format!("{}/model.onnx", model.subfolder));
+        let _ = app.emit(
+            "person-crop-download",
+            DownloadProgress::new("downloading", 0.0, format!("{} — 开始下载...", prefix)),
+        );
+        let outcome = download_to_file(
+            client.get(url),
+            &model_onnx_path(model),
+            &prefix,
+            &CANCEL_FLAG,
+            |p| {
+                let _ = app.emit("person-crop-download", p);
+            },
+        )
+        .await;
+        if let Err(error) = outcome {
+            let p = if CANCEL_FLAG.load(Ordering::SeqCst) {
+                DownloadProgress::cancelled("下载已取消")
+            } else {
+                DownloadProgress::error(error.to_string())
+            };
+            let _ = app.emit("person-crop-download", p);
+            return Err(error.into());
+        }
+        if CANCEL_FLAG.load(Ordering::SeqCst) {
+            let _ = app.emit(
+                "person-crop-download",
+                DownloadProgress::cancelled("下载已取消"),
+            );
             return Err("下载已取消".into());
         }
-
-        let dest = model_onnx_path(model);
-        if dest.exists() {
-            continue;
-        }
-
-        let dir = dest.parent().unwrap();
-        if !dir.exists() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {}", e))?;
-        }
-
-        let url = format!(
-            "https://huggingface.co/{}/resolve/main/{}/model.onnx",
-            model.repo, model.subfolder
-        );
-
-        let prefix = format!("[{}/{}] {}", idx + 1, models_to_download.len(), model.name);
-
         let _ = app.emit(
             "person-crop-download",
-            CropDownloadProgress {
-                downloaded: 0,
-                total: 0,
-                percent: 0.0,
-                speed_mbps: 0.0,
-                status: "downloading".into(),
-                message: format!("{} — 开始下载...", prefix),
-            },
-        );
-
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("请求失败: {}", e))?;
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {}: {}", resp.status(), url));
-        }
-
-        let total_size = resp.content_length().unwrap_or(0);
-        let mut stream = resp.bytes_stream();
-        // 先写入 .part 临时文件，校验完成后再原子替换到最终路径，避免中断残件被当作完整文件
-        let part_path = prepare_part_file(&dest);
-        let mut file = tokio::fs::File::create(&part_path)
-            .await
-            .map_err(|e| format!("创建文件失败: {}", e))?;
-        let mut downloaded: u64 = 0;
-        let mut last_t = std::time::Instant::now();
-        let mut last_b: u64 = 0;
-        let start = std::time::Instant::now();
-
-        // 下载循环结果 — 任何错误（含取消）统一在循环外清理 .part 残件
-        let mut result: Result<(), String> = Ok(());
-
-        while let Some(chunk) = stream.next().await {
-            if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
-                result = Err("下载已取消".into());
-                break;
-            }
-            let chunk = match chunk {
-                Ok(c) => c,
-                Err(e) => {
-                    result = Err(format!("下载失败: {}", e));
-                    break;
-                }
-            };
-            if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
-                result = Err(format!("写入失败: {}", e));
-                break;
-            }
-            downloaded += chunk.len() as u64;
-
-            let now = std::time::Instant::now();
-            let elapsed_ms = now.duration_since(last_t).as_millis();
-            if elapsed_ms >= 500 || (total_size > 0 && downloaded >= total_size) {
-                let speed = if elapsed_ms > 0 {
-                    (downloaded - last_b) as f64 / elapsed_ms as f64 * 1000.0 / 1_048_576.0
-                } else {
-                    0.0
-                };
-                last_t = now;
-                last_b = downloaded;
-                let pct = if total_size > 0 {
-                    (downloaded as f64 / total_size as f64 * 100.0) as f32
-                } else {
-                    0.0
-                };
-                let avg = {
-                    let t = start.elapsed().as_secs_f64();
-                    if t > 0.0 {
-                        downloaded as f64 / t / 1_048_576.0
-                    } else {
-                        0.0
-                    }
-                };
-                let mb_done = downloaded as f64 / 1_048_576.0;
-                let msg = if total_size > 0 {
-                    format!(
-                        "{} — {:.1}/{:.1} MB ({:.1} MB/s)",
-                        prefix,
-                        mb_done,
-                        total_size as f64 / 1_048_576.0,
-                        avg
-                    )
-                } else {
-                    format!("{} — {:.1} MB ({:.1} MB/s)", prefix, mb_done, avg)
-                };
-                let _ = app.emit(
-                    "person-crop-download",
-                    CropDownloadProgress {
-                        downloaded,
-                        total: total_size,
-                        percent: pct,
-                        speed_mbps: speed,
-                        status: "downloading".into(),
-                        message: msg,
-                    },
-                );
-            }
-        }
-
-        // 确保缓冲数据全部落盘
-        if result.is_ok() {
-            if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut file).await {
-                result = Err(format!("写入失败: {}", e));
-            }
-        }
-        drop(file);
-
-        // 任何错误路径（包括取消）都删除 .part 残件
-        if let Err(e) = result {
-            let _ = tokio::fs::remove_file(&part_path).await;
-            return Err(e);
-        }
-
-        // 校验字节数并原子替换到最终文件
-        finalize_part_file(&part_path, &dest, downloaded, total_size)?;
-
-        let _ = app.emit(
-            "person-crop-download",
-            CropDownloadProgress {
-                downloaded,
-                total: total_size,
-                percent: 100.0,
-                speed_mbps: 0.0,
-                status: "done".into(),
-                message: format!("{} — 下载完成 ✓", prefix),
-            },
+            DownloadProgress::done(format!("{} — 下载完成 ✓", prefix)),
         );
     }
-
     Ok("done".into())
-}
-
-#[tauri::command]
-pub fn cancel_person_crop_download() {
-    DOWNLOAD_CANCEL.store(true, Ordering::SeqCst);
 }
 
 // ===== Person Crop Processing =====
 
 static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
 static CHILD_PROCESS: Mutex<Option<u32>> = Mutex::new(None);
+static PERSON_CROP_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonCropOptions {
@@ -364,72 +177,86 @@ pub async fn start_person_crop(
     app: tauri::AppHandle,
     options: PersonCropOptions,
 ) -> Result<ProcessResult, String> {
-    // 互斥：全局子进程 PID/取消标志不允许并发运行（页面 + 工作流节点会互相覆盖）
-    static PERSON_CROP_RUNNING: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
-    let _busy = crate::commands::BusyGuard::acquire(&PERSON_CROP_RUNNING, "人物裁切")?;
-
+    let _busy = super::BusyGuard::acquire(&PERSON_CROP_RUNNING, "人物裁切")?;
     CANCEL_FLAG.store(false, Ordering::SeqCst);
-
-    // 确保 Python 环境 + onnxruntime GPU 运行时
-    let python = super::python_env::setup_python_env(&app, "person-crop").await?;
-    let _has_gpu = super::python_env::ensure_onnx_gpu_runtime(&app, &python, "person-crop").await?;
-
-    let _ = app.emit(
-        "person-crop-progress",
-        ProgressEvent {
-            current: 0,
-            total: 0,
-            filename: String::new(),
-            status: "info".to_string(),
-            message: "开始裁切...".to_string(),
-            ..Default::default()
-        },
-    );
-
-    tokio::task::spawn_blocking(move || run_person_crop(&app, &options))
+    let scan = options.clone();
+    let files = tokio::task::spawn_blocking(move || {
+        collect_image_files_with_recursive_excluding(
+            Path::new(&scan.input_path),
+            scan.recursive,
+            Some(Path::new(&scan.output_path)),
+        )
+    })
+    .await
+    .map_err(|e| format!("读取图片失败: {}", e))??;
+    let total = files.len() as u32;
+    let outcome = async {
+        if files.is_empty() || CANCEL_FLAG.load(Ordering::SeqCst) {
+            return Ok(ProcessResult {
+                total,
+                ..Default::default()
+            });
+        }
+        let model_paths = build_model_paths(&options)?;
+        let python = super::python_env::setup_python_env(&app, "person-crop").await?;
+        if CANCEL_FLAG.load(Ordering::SeqCst) {
+            return Err("已取消".into());
+        }
+        super::python_env::ensure_onnx_gpu_runtime(&app, &python, "person-crop").await?;
+        if CANCEL_FLAG.load(Ordering::SeqCst) {
+            return Err("已取消".into());
+        }
+        ProgressEvent::new("info", "开始裁切...").emit(&app, "person-crop-progress");
+        let app_run = app.clone();
+        tokio::task::spawn_blocking(move || {
+            run_person_crop(&app_run, &python, &options, &files, model_paths)
+        })
         .await
         .map_err(|e| format!("任务执行失败: {}", e))?
+    }
+    .await;
+    let cancelled = CANCEL_FLAG.load(Ordering::SeqCst);
+    let result = if cancelled {
+        outcome.unwrap_or(ProcessResult {
+            total,
+            ..Default::default()
+        })
+    } else {
+        outcome?
+    };
+    terminal_event(&result, cancelled).emit(&app, "person-crop-progress");
+    Ok(result)
+}
+
+fn terminal_event(result: &ProcessResult, cancelled: bool) -> ProgressEvent {
+    let processed = result.success_count + result.fail_count;
+    ProgressEvent::new(
+        "done",
+        if cancelled {
+            format!("已取消: 已处理 {}, 共 {}", processed, result.total)
+        } else {
+            format!(
+                "处理完成: 成功 {}, 失败 {}, 共 {}",
+                result.success_count, result.fail_count, result.total
+            )
+        },
+    )
+    .at(
+        if cancelled { processed } else { result.total },
+        result.total,
+    )
 }
 
 #[tauri::command]
 pub fn cancel_person_crop() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
-    if let Ok(mut guard) = CHILD_PROCESS.lock() {
-        if let Some(pid) = guard.take() {
-            super::kill_process_tree(pid);
-        }
-    }
+    super::python_env::cancel_setup_for("person-crop");
+    python_proc::kill_registered_pid(&CHILD_PROCESS);
 }
 
-/// 强制取消三分法裁切（终止整个子进程树）
 #[tauri::command]
 pub fn force_cancel_person_crop() {
     cancel_person_crop();
-}
-
-fn find_python() -> Result<String, String> {
-    // 1. 优先使用 python_env 模块管理的环境
-    if let Some(python) = super::python_env::get_python_exe() {
-        return Ok(python);
-    }
-    // 2. 系统 Python
-    for name in &["python3", "python"] {
-        if let Ok(output) = Command::new(name).args(["--version"]).output() {
-            if output.status.success() {
-                let ver = String::from_utf8_lossy(&output.stdout).to_string()
-                    + String::from_utf8_lossy(&output.stderr).as_ref();
-                if ver.contains("Python 3") {
-                    return Ok(name.to_string());
-                }
-            }
-        }
-    }
-    Err("未找到可用的 Python 环境。请先在「图片打标」页面初始化 Python 环境。".into())
-}
-
-fn get_crop_script_path() -> Result<std::path::PathBuf, String> {
-    super::python_proc::find_script("person_crop.py")
 }
 
 /// 构建每种裁切类型对应的模型路径映射
@@ -480,361 +307,294 @@ fn build_model_paths(options: &PersonCropOptions) -> Result<serde_json::Value, S
     Ok(serde_json::Value::Object(paths))
 }
 
-fn run_person_crop(
-    app: &tauri::AppHandle,
-    options: &PersonCropOptions,
-) -> Result<ProcessResult, String> {
-    let python = find_python()?;
-    let script = get_crop_script_path()?;
-    let model_paths = build_model_paths(options)?;
+fn wait_image_result(
+    reader: &ProtocolReader,
+    image_path: &str,
+    mut on_log: impl FnMut(&serde_json::Value),
+) -> Result<serde_json::Value, String> {
+    loop {
+        match reader.recv(PYTHON_SILENCE_LIMIT) {
+            Recv::Msg(msg) => match msg["type"].as_str().unwrap_or("") {
+                "log" => on_log(&msg),
+                "result" | "error" if msg["image_path"].as_str() == Some(image_path) => {
+                    return Ok(msg)
+                }
+                "error" if msg.get("image_path").is_none() => {
+                    return Err(msg["message"].as_str().unwrap_or("Python 处理失败").into())
+                }
+                _ => {}
+            },
+            Recv::Closed => return Err("Python 进程已退出".into()),
+            Recv::TimedOut => return Err("Python 进程无响应（300 秒）".into()),
+        }
+    }
+}
 
+fn run_person_crop<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    python: &str,
+    options: &PersonCropOptions,
+    files: &[PathBuf],
+    model_paths: serde_json::Value,
+) -> Result<ProcessResult, String> {
+    let script = python_proc::find_script("person_crop.py")?;
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
-
-    if !output_dir.exists() {
-        std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
-    }
-
-    let files =
-        collect_image_files_with_recursive_excluding(input, options.recursive, Some(output_dir))?;
     let total = files.len() as u32;
-
-    if total == 0 {
-        return Ok(ProcessResult {
-            success_count: 0,
-            fail_count: 0,
-            total: 0,
-            errors: vec![],
-        });
+    let mut result = ProcessResult {
+        total,
+        ..Default::default()
+    };
+    if CANCEL_FLAG.load(Ordering::SeqCst) {
+        return Ok(result);
     }
-
-    let _ = app.emit(
-        "person-crop-progress",
-        ProgressEvent {
-            current: 0,
-            total,
-            filename: String::new(),
-            status: "processing".to_string(),
-            message: format!("正在启动 Python 环境... (共 {} 张图片)", total),
-            ..Default::default()
-        },
-    );
-
-    // 启动 Python 子进程
-    let mut cmd = Command::new(&python);
-    cmd.arg(script.to_str().unwrap_or(""))
+    std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
+    ProgressEvent::new(
+        "processing",
+        format!("正在启动 Python 环境... (共 {} 张图片)", total),
+    )
+    .at(0, total)
+    .emit(app, "person-crop-progress");
+    let mut cmd = python_proc::hidden_command(python);
+    cmd.arg(&script)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("NO_COLOR", "1")
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONIOENCODING", "utf-8");
-
-    // Windows: 无窗口 + GPU 模式注入 CUDA/cuDNN DLL 路径（共享实现见 python_proc）
-    super::python_proc::configure_python_command(&mut cmd, options.use_gpu);
-
+    python_proc::configure_python_command(&mut cmd, options.use_gpu);
     let mut child = cmd.spawn().map_err(|e| format!("无法启动 Python: {}", e))?;
-    let pid = child.id();
-    *CHILD_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = Some(pid);
-
-    let mut stdin = child.stdin.take().ok_or("无法获取 stdin")?;
-    let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
-
-    // 启动 stderr 读取线程（防止缓冲区满导致子进程卡死）
-    if let Some(stderr) = child.stderr.take() {
+    let _registration = PidRegistration::new(&CHILD_PROCESS, child.id());
+    let outcome = (|| {
+        let mut stdin = child.stdin.take().ok_or("无法获取 stdin")?;
+        let stdout = child.stdout.take().ok_or("无法获取 stdout")?;
+        let stderr = child.stderr.take().ok_or("无法获取 stderr")?;
         let app_err = app.clone();
         std::thread::spawn(move || {
-            super::python_proc::for_each_stderr_line(stderr, |clean| {
-                // 过滤 cuDNN/CUDA/onnxruntime 加载警告
-                let lower = clean.to_lowercase();
-                if lower.contains("cudnn")
-                    || lower.contains("cuda_path")
-                    || lower.contains("onnxruntime")
-                    || lower.contains("could not load")
-                    || lower.contains("loaded library")
-                    || lower.contains("context leak")
-                {
-                    return;
+            python_proc::for_each_stderr_line(stderr, |line| {
+                if !python_proc::is_runtime_noise(&line) {
+                    ProgressEvent::new("warning", format!("[Python] {}", line))
+                        .emit(&app_err, "person-crop-progress");
                 }
-                let _ = app_err.emit(
-                    "person-crop-progress",
-                    ProgressEvent {
-                        current: 0,
-                        total: 0,
-                        filename: String::new(),
-                        status: "warning".to_string(),
-                        message: format!("[Python] {}", clean),
-                        ..Default::default()
-                    },
-                );
             });
         });
-    }
-
-    // 发送初始化配置（多模型路径）
-    let init_config = serde_json::json!({
-        "model_paths": model_paths,
-        "use_gpu": options.use_gpu,
-    });
-    writeln!(
-        stdin,
-        "{}",
-        serde_json::to_string(&init_config).map_err(|e| format!("序列化配置失败: {}", e))?
-    )
-    .map_err(|e| format!("写入 stdin 失败: {}", e))?;
-    stdin.flush().map_err(|e| format!("flush 失败: {}", e))?;
-
-    // 等待 ready — 可能先收到 GPU 诊断 log 消息
-    let reader = BufReader::new(stdout);
-    let mut lines = reader.lines();
-
-    loop {
-        let line = lines
-            .next()
-            .ok_or("Python 进程无响应")?
-            .map_err(|e| format!("读取响应失败: {}", e))?;
-
-        // stdout 上可能混入非协议行（site-packages 的 .pth 脚本等第三方 print），跳过而不是整体失败
-        let json: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        // 处理 log 类型消息（GPU 诊断等）
-        if let Some(msg_type) = json.get("type").and_then(|v| v.as_str()) {
-            if msg_type == "log" {
-                let text = json
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let i18n_key = json
-                    .get("i18n_key")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let i18n_params = json.get("i18n_params").cloned();
-                let _ = app.emit(
-                    "person-crop-progress",
-                    ProgressEvent {
-                        current: 0,
-                        total,
-                        filename: String::new(),
-                        status: "info".to_string(),
-                        message: text,
-                        i18n_key,
-                        i18n_params,
-                    },
-                );
-                continue;
-            }
-        }
-
-        // 检查 error
-        if let Some(err) = json.get("error") {
-            return Err(format!("模型加载失败: {}", err));
-        }
-
-        // 检查 ready
-        if json.get("status").and_then(|v| v.as_str()) == Some("ready") {
-            break;
-        }
-
-        // 未知消息类型，继续读取
-    }
-
-    let _ = app.emit(
-        "person-crop-progress",
-        ProgressEvent {
-            current: 0,
-            total,
-            filename: String::new(),
-            status: "processing".to_string(),
-            message: "模型已加载，开始处理...".to_string(),
-            ..Default::default()
-        },
-    );
-
-    let mut success_count = 0u32;
-    let mut fail_count = 0u32;
-    let mut errors = Vec::new();
-
-    for (i, file_path) in files.iter().enumerate() {
-        if CANCEL_FLAG.load(Ordering::SeqCst) {
-            let _ = app.emit(
-                "person-crop-progress",
-                ProgressEvent {
-                    current: i as u32,
-                    total,
-                    filename: String::new(),
-                    status: "done".to_string(),
-                    message: "已取消".to_string(),
-                    ..Default::default()
-                },
-            );
-            break;
-        }
-
-        let filename = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let target_output_dir =
-            output_dir_for_input(input, file_path, output_dir, options.recursive)?;
-
-        let _ = app.emit(
-            "person-crop-progress",
-            ProgressEvent {
-                current: i as u32 + 1,
-                total,
-                filename: filename.clone(),
-                status: "processing".to_string(),
-                message: format!("正在处理: {}", filename),
-                ..Default::default()
-            },
-        );
-
-        // 发送处理命令
-        let cmd_json = serde_json::json!({
-            "action": "process",
-            "image_path": file_path.to_string_lossy(),
-            "output_dir": target_output_dir.to_string_lossy().to_string(),
+        let init_config = serde_json::json!({
+            "model_paths": model_paths, "use_gpu": options.use_gpu,
             "options": {
-                "person_enabled": options.person_enabled,
-                "person_conf": options.person_conf,
-                "upper_enabled": options.upper_enabled,
-                "upper_conf": options.upper_conf,
-                "upper_tag": options.upper_tag,
-                "head_enabled": options.head_enabled,
-                "head_conf": options.head_conf,
-                "head_tag": options.head_tag,
-                "head_scale": options.head_scale,
-                "eyes_enabled": options.eyes_enabled,
-                "eyes_conf": options.eyes_conf,
-                "eyes_tag": options.eyes_tag,
-                "eyes_scale": options.eyes_scale,
-                "keep_original_tags": options.keep_original_tags,
-            }
+                "person_conf": options.person_conf, "upper_conf": options.upper_conf,
+                "upper_tag": options.upper_tag, "head_conf": options.head_conf,
+                "head_tag": options.head_tag, "head_scale": options.head_scale,
+                "eyes_conf": options.eyes_conf, "eyes_tag": options.eyes_tag,
+                "eyes_scale": options.eyes_scale, "keep_original_tags": options.keep_original_tags,
+            },
         });
-
-        if let Err(e) = writeln!(
-            stdin,
-            "{}",
-            serde_json::to_string(&cmd_json).unwrap_or_default()
-        ) {
-            errors.push(format!("{}: 写入失败: {}", filename, e));
-            fail_count += 1;
-            continue;
+        writeln!(stdin, "{}", init_config).map_err(|e| format!("写入 stdin 失败: {}", e))?;
+        let reader = ProtocolReader::spawn(stdout);
+        loop {
+            if CANCEL_FLAG.load(Ordering::SeqCst) {
+                return Ok(result);
+            }
+            match reader.recv(PYTHON_SILENCE_LIMIT) {
+                Recv::Msg(msg) => match msg["type"].as_str().unwrap_or("") {
+                    "log" => {
+                        ProgressEvent::python_log(&msg, 0, total).emit(app, "person-crop-progress")
+                    }
+                    "ready" => break,
+                    "error" => {
+                        return Err(format!(
+                            "模型加载失败: {}",
+                            msg["message"].as_str().unwrap_or("")
+                        ))
+                    }
+                    _ => {}
+                },
+                _ if CANCEL_FLAG.load(Ordering::SeqCst) => return Ok(result),
+                Recv::Closed => return Err("Python 进程无响应".into()),
+                Recv::TimedOut => return Err("模型加载超时（300 秒）".into()),
+            }
         }
-        let _ = stdin.flush();
-
-        // 读取结果
-        match lines.next() {
-            Some(Ok(result_line)) => {
-                match serde_json::from_str::<serde_json::Value>(&result_line) {
-                    Ok(result) => {
-                        let status = result
-                            .get("status")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("error");
-                        let message = result
-                            .get("message")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("")
-                            .to_string();
-
-                        match status {
-                            "success" => {
-                                success_count += 1;
-                                let _ = app.emit(
-                                    "person-crop-progress",
-                                    ProgressEvent {
-                                        current: i as u32 + 1,
-                                        total,
-                                        filename: filename.clone(),
-                                        status: "success".to_string(),
-                                        message: format!("[成功] {} — {}", filename, message),
-                                        ..Default::default()
-                                    },
-                                );
-                            }
-                            "skip" => {
-                                success_count += 1;
-                                let _ = app.emit(
-                                    "person-crop-progress",
-                                    ProgressEvent {
-                                        current: i as u32 + 1,
-                                        total,
-                                        filename: filename.clone(),
-                                        status: "success".to_string(),
-                                        message: format!("[跳过] {} — {}", filename, message),
-                                        ..Default::default()
-                                    },
-                                );
-                            }
-                            _ => {
-                                fail_count += 1;
-                                errors.push(format!("{}: {}", filename, message));
-                                let _ = app.emit(
-                                    "person-crop-progress",
-                                    ProgressEvent {
-                                        current: i as u32 + 1,
-                                        total,
-                                        filename: filename.clone(),
-                                        status: "error".to_string(),
-                                        message: format!("[失败] {} — {}", filename, message),
-                                        ..Default::default()
-                                    },
-                                );
-                            }
+        ProgressEvent::new("processing", "模型已加载，开始处理...")
+            .at(0, total)
+            .emit(app, "person-crop-progress");
+        for (i, file_path) in files.iter().enumerate() {
+            if CANCEL_FLAG.load(Ordering::SeqCst) {
+                break;
+            }
+            let filename = super::file_name_lossy(file_path);
+            let target = output_dir_for_input(input, file_path, output_dir, options.recursive)?;
+            ProgressEvent::new("processing", format!("正在处理: {}", filename))
+                .at(i as u32 + 1, total)
+                .file(&filename)
+                .emit(app, "person-crop-progress");
+            let command = serde_json::json!({
+                "action": "process", "image_path": file_path.to_string_lossy(), "output_dir": target.to_string_lossy(),
+            });
+            let response = writeln!(stdin, "{}", command)
+                .map_err(|e| format!("写入失败: {}", e))
+                .and_then(|()| {
+                    wait_image_result(&reader, &file_path.to_string_lossy(), |msg| {
+                        ProgressEvent::python_log(msg, i as u32 + 1, total)
+                            .file(&filename)
+                            .emit(app, "person-crop-progress");
+                    })
+                });
+            // 被终止的当前图片没有完整结果，不计作失败。
+            if CANCEL_FLAG.load(Ordering::SeqCst) {
+                break;
+            }
+            let (status, message, disconnected) = match response {
+                Ok(msg) => {
+                    let detail = msg["message"].as_str().unwrap_or("");
+                    match (msg["type"].as_str(), msg["status"].as_str()) {
+                        (Some("result"), Some("success" | "skip")) => {
+                            result.success_count += 1;
+                            let label = if msg["status"] == "skip" {
+                                "跳过"
+                            } else {
+                                "成功"
+                            };
+                            (
+                                "success",
+                                format!("[{}] {} — {}", label, filename, detail),
+                                false,
+                            )
+                        }
+                        _ => {
+                            result.fail_count += 1;
+                            result.errors.push(format!("{}: {}", filename, detail));
+                            ("error", format!("[失败] {} — {}", filename, detail), false)
                         }
                     }
-                    Err(e) => {
-                        fail_count += 1;
-                        errors.push(format!("{}: JSON 解析失败: {}", filename, e));
-                    }
                 }
-            }
-            Some(Err(e)) => {
-                fail_count += 1;
-                errors.push(format!("{}: 读取失败: {}", filename, e));
-            }
-            None => {
-                fail_count += 1;
-                errors.push(format!("{}: Python 进程已退出", filename));
+                Err(error) => {
+                    result.fail_count += 1;
+                    result.errors.push(format!("{}: {}", filename, error));
+                    ("error", format!("[失败] {} — {}", filename, error), true)
+                }
+            };
+            ProgressEvent::new(status, message)
+                .at(i as u32 + 1, total)
+                .file(&filename)
+                .emit(app, "person-crop-progress");
+            if disconnected {
                 break;
             }
         }
+        let _ = writeln!(stdin, "EXIT");
+        Ok(result)
+    })();
+    python_proc::kill_registered_pid(&CHILD_PROCESS);
+    let _ = child.kill();
+    let _ = child.wait();
+    outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_result_skips_noise_logs_and_other_images() {
+        let stream = b"\xff\xfe noise\n{\"type\":\"ready\"}\n{\"type\":\"log\",\"message\":\"fallback\"}\n{\"type\":\"result\",\"image_path\":\"other.png\"}\n{\"type\":\"result\",\"image_path\":\"a.png\",\"status\":\"success\"}\n";
+        let reader = ProtocolReader::spawn(std::io::Cursor::new(stream.to_vec()));
+        let mut logs = Vec::new();
+        let result = wait_image_result(&reader, "a.png", |msg| logs.push(msg.clone())).unwrap();
+        assert_eq!(result["status"], "success");
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["message"], "fallback");
     }
 
-    // 终止 Python
-    let _ = writeln!(stdin, "EXIT");
-    let _ = stdin.flush();
-    let _ = child.wait();
-    *CHILD_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = None;
-
-    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
-    if !CANCEL_FLAG.load(Ordering::SeqCst) {
-        let _ = app.emit(
-            "person-crop-progress",
-            ProgressEvent {
-                current: total,
-                total,
-                filename: String::new(),
-                status: "done".to_string(),
-                message: format!(
-                    "处理完成: 成功 {}, 失败 {}, 共 {}",
-                    success_count, fail_count, total
-                ),
-                ..Default::default()
-            },
+    #[test]
+    fn image_error_must_match_path_and_global_error_stops_wait() {
+        let reader = ProtocolReader::spawn(std::io::Cursor::new(
+            b"{\"type\":\"error\",\"message\":\"fatal\"}\n".to_vec(),
+        ));
+        assert_eq!(
+            wait_image_result(&reader, "a.png", |_| {}).unwrap_err(),
+            "fatal"
         );
     }
 
-    Ok(ProcessResult {
-        success_count,
-        fail_count,
-        total,
-        errors,
-    })
+    #[test]
+    fn cancellation_terminal_does_not_count_incomplete_image() {
+        let result = ProcessResult {
+            success_count: 2,
+            total: 3,
+            ..Default::default()
+        };
+        let event = terminal_event(&result, true);
+        assert_eq!(event.status, "done");
+        assert_eq!(event.current, 2);
+        assert!(event.message.starts_with("已取消"));
+        assert_eq!(result.fail_count, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_during_image_does_not_add_failure_and_clears_pid() {
+        use std::os::unix::fs::PermissionsExt;
+        use tauri::Listener;
+        let root = std::env::temp_dir().join(format!("purin_ai_crop_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("fake-python");
+        std::fs::write(&script, "#!/bin/sh\nread -r line\nprintf '%s\\n' '{\"type\":\"ready\"}'\nread -r line\nprintf '\\377noise\\n'\nprintf '%s\\n' '{\"type\":\"log\",\"message\":\"cancel-now\"}'\nread -r line\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let app = tauri::test::mock_app();
+        let events = super::super::batch::capture_events(app.handle(), "person-crop-progress");
+        app.listen_any("person-crop-progress", |event| {
+            let message: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            if message["message"] == "cancel-now" {
+                CANCEL_FLAG.store(true, Ordering::SeqCst);
+                python_proc::kill_registered_pid(&CHILD_PROCESS);
+            }
+        });
+        CANCEL_FLAG.store(false, Ordering::SeqCst);
+        let options = PersonCropOptions {
+            input_path: root.to_string_lossy().into_owned(),
+            output_path: root.join("out").to_string_lossy().into_owned(),
+            use_gpu: false,
+            person_enabled: true,
+            person_conf: 0.3,
+            upper_enabled: false,
+            upper_conf: 0.5,
+            upper_tag: String::new(),
+            head_enabled: false,
+            head_conf: 0.5,
+            head_tag: String::new(),
+            head_scale: 1.5,
+            eyes_enabled: false,
+            eyes_conf: 0.5,
+            eyes_tag: String::new(),
+            eyes_scale: 2.4,
+            keep_original_tags: false,
+            recursive: false,
+        };
+        let result = run_person_crop(
+            app.handle(),
+            script.to_str().unwrap(),
+            &options,
+            &[root.join("a.png")],
+            serde_json::json!({"person": "fake.onnx"}),
+        )
+        .unwrap();
+        assert_eq!(
+            (result.success_count, result.fail_count, result.total),
+            (0, 0, 1)
+        );
+        assert!(result.errors.is_empty());
+        assert!(CHILD_PROCESS.lock().unwrap().is_none());
+        terminal_event(&result, true).emit(app.handle(), "person-crop-progress");
+        assert_eq!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e["status"] == "done")
+                .count(),
+            1
+        );
+        CANCEL_FLAG.store(false, Ordering::SeqCst);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

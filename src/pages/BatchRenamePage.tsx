@@ -1,157 +1,83 @@
-import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
-import { useTaskQueue } from '../components/TaskContext';
-import { useTranslation } from 'react-i18next';
 import {
-  TextCursorInput,
-  Play,
-  Loader2,
-  Eye,
-  Shuffle,
   ArrowRight,
+  Eye,
   Hash,
-  Type,
-  ChevronLeft,
-  ChevronRight,
+  Loader2,
+  Play,
+  Shuffle,
+  TextCursorInput,
+  Type
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
+import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { ProcessResult, RenameOptions } from '../api/commandOptions';
+import Checkbox from '../components/Checkbox';
 import DedupRenameTab from '../components/DedupRenameTab';
 import InputPathPickerButton from '../components/InputPathPickerButton';
-import Checkbox from '../components/Checkbox';
+import ProgressLog from '../components/ProgressLog';
+import NumberInput from '../components/ui/NumberInput';
+import PageHeader from '../components/ui/PageHeader';
+import Pager from '../components/ui/Pager';
+import { useBatchTask } from '../hooks/useBatchTask';
 
-interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
 interface PreviewItem { original: string; renamed: string; }
 
 export default function BatchRenamePage() {
   const { t } = useTranslation();
+  const task = useBatchTask({ event: 'rename-progress', taskId: 'rename' });
   const [activeTab, setActiveTab] = useState<'number' | 'dedup'>('number');
   const [inputPath, setInputPath] = useState('');
   const [prefix, setPrefix] = useState('img_');
   const [startNumber, setStartNumber] = useState(1);
   const [digitCount, setDigitCount] = useState(4);
-  const [shuffleOrder, setShuffleOrder] = useState(false);
-  // 每次生成预览时换一个新种子；执行沿用同一颗种子，保证预览映射与实际重命名一致
-  const [shuffleSeed, setShuffleSeed] = useState<number | undefined>(undefined);
+
   const [renameTags, setRenameTags] = useState(true);
   const [previewPage, setPreviewPage] = useState(0);
   const PREVIEW_PER_PAGE = 15;
-  const [previews, setPreviews] = useState<PreviewItem[]>([]);
+
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressCurrent, setProgressCurrent] = useState(0);
-  const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasError, setHasError] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    const p = listen<ProgressPayload>('rename-progress', (event) => {
-      if (!active) return;
-      const d = event.payload;
-      setProgressCurrent(d.current);
-      setProgressTotal(d.total);
-      if (d.total > 0) setProgress((d.current / d.total) * 100);
-      if (d.status === 'done') setIsDone(true);
-      if (d.status === 'error') setHasError(true);
-      if (d.status !== 'processing') {
-        setLogs((prev) => [...prev, { time: getTimeStr(), message: d.message, status: d.status === 'done' ? 'info' : d.status as LogEntry['status'] }]);
-      }
-    });
-    return () => { active = false; p.then(fn => fn()); };
-  }, []);
+  const [preview, setPreview] = useState<{ options: RenameOptions; items: PreviewItem[]; key: string } | null>(null);
+  const previewRequest = useRef(0);
+  const inputKey = JSON.stringify([inputPath, prefix, startNumber, digitCount, renameTags]);
+  const previewOpts = preview?.key === inputKey ? preview.options : null;
+  const previews = previewOpts ? preview!.items : [];
+  useEffect(() => { previewRequest.current++; setPreview(null); setPreviewLoading(false); }, [inputKey]);
 
-    // 提交前规范数字参数。
-  const sanitizeRenameNums = () => {
-    const sn = Number.isFinite(startNumber) && startNumber >= 0 ? startNumber : 0;
-    const dc = Number.isFinite(digitCount) && digitCount >= 1 ? Math.min(digitCount, 10) : 1;
-    if (sn !== startNumber) setStartNumber(sn);
-    if (dc !== digitCount) setDigitCount(dc);
-    return { sn, dc };
-  };
-
-  const handlePreview = async () => {
-    if (!inputPath) return;
-    const { sn, dc } = sanitizeRenameNums();
-    const seed = shuffleOrder ? Date.now() % 4294967296 : undefined;
-    setShuffleSeed(seed);
-    setPreviewLoading(true);
+  const runPreview = async (shuffle: boolean) => {
+    if (!inputPath || task.processing) return;
+    const request = ++previewRequest.current;
+    const options = {
+      input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount,
+      shuffle, shuffle_seed: shuffle ? Date.now() % 4294967296 : undefined, rename_tags: renameTags
+    } satisfies RenameOptions;
+    setPreview(null); setPreviewLoading(true);
     try {
-      const result = await invoke<PreviewItem[]>('preview_rename', {
-        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: shuffleOrder, shuffle_seed: seed, rename_tags: renameTags },
-      });
-      setPreviews(result);
-      setPreviewPage(0); // 新预览可能页数更少，沿用旧页码会显示空表
-    } catch (e: any) {
-      setPreviews([]);
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('batchRename.previewFailed')}: ${String(e)}`, status: 'error' }]);
-    } finally {
-      setPreviewLoading(false);
-    }
+      const items = await invoke<PreviewItem[]>('preview_rename', { options });
+      if (request !== previewRequest.current) return;
+      setPreview({ options, items, key: inputKey }); setPreviewPage(0);
+    } catch (error) {
+      if (request === previewRequest.current) task.logger.appendCatchError(error, t('batchRename.previewFailed'));
+    } finally { if (request === previewRequest.current) setPreviewLoading(false); }
   };
-
-  const handleShuffle = async () => {
-    if (!inputPath) return;
-    const { sn, dc } = sanitizeRenameNums();
-    const seed = Date.now() % 4294967296;
-    setShuffleSeed(seed);
-    setPreviewLoading(true);
-    try {
-      const result = await invoke<PreviewItem[]>('preview_rename', {
-        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: true, shuffle_seed: seed, rename_tags: renameTags },
-      });
-      setPreviews(result);
-      setPreviewPage(0);
-      setShuffleOrder(true);
-    } catch (e: any) {
-      setPreviews([]);
-    } finally {
-      setPreviewLoading(false);
-    }
-  };
-
-  const { addTask, updateTask } = useTaskQueue();
 
   const handleExecute = async () => {
-    if (!inputPath || previews.length === 0) return;
-    const { sn, dc } = sanitizeRenameNums();
-    setProcessing(true);
-    addTask('rename', t('batchRename.taskName'));
-    setProgress(0); setProgressCurrent(0); setProgressTotal(0);
-    setIsDone(false); setHasError(false);
-    setLogs([{ time: getTimeStr(), message: t('batchRename.startMsg', { prefix, start: sn, digits: dc }), status: 'info' }]);
-    try {
-      await invoke<ProcessResult>('execute_rename', {
-        options: { input_path: inputPath, prefix, start_number: sn, digit_count: dc, shuffle: shuffleOrder, shuffle_seed: shuffleOrder ? shuffleSeed : undefined, rename_tags: renameTags },
-      });
-      setPreviews([]);
-    } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('rename', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
-      setHasError(true); setIsDone(true);
-    } finally {
-      setProcessing(false);
-    }
+    if (!previewOpts || !previews.length) return;
+    const options = previewOpts;
+    await task.run({
+      taskName: t('batchRename.taskName'), startLog: t('batchRename.startMsg', { prefix: options.prefix, start: options.start_number, digits: options.digit_count }), cancellable: false,
+      exec: () => invoke<ProcessResult>('execute_rename', { options: options satisfies RenameOptions })
+    });
+    setPreview(null);
   };
 
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
-
-  // Example preview string
   const exampleNum = String(startNumber).padStart(digitCount, '0');
   const exampleName = `${prefix}${exampleNum}.png`;
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <TextCursorInput style={{ width: 28, height: 28, color: '#38bdf8' }} />
-          <h1 className="page-title">{t('batchRename.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('batchRename.subtitle')}</p>
-      </div>
+    <div className="page" style={activeTab === 'dedup' ? { display: 'flex', flexDirection: 'column', height: '100%' } : undefined}>
+      <PageHeader icon={TextCursorInput} color={'#38bdf8'} title={t('batchRename.title')} subtitle={t('batchRename.subtitle')} />
 
       {/* Tabs */}
       <div style={{
@@ -186,7 +112,7 @@ export default function BatchRenamePage() {
                 <label className="form-label">{t('batchRename.folderDesc')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('batchRename.selectFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <InputPathPickerButton onSelect={(path) => { setInputPath(path); setPreviews([]); }} />
+                  <InputPathPickerButton onSelect={(path) => { setInputPath(path); setPreview(null); }} />
                 </div>
               </div>
             </div>
@@ -208,14 +134,14 @@ export default function BatchRenamePage() {
                       <Hash style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
                       {t('batchRename.startNum')}
                     </label>
-                    <input className="form-input" type="number" value={startNumber} onChange={e => setStartNumber(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setStartNumber(0); }} min={0} />
+                    <NumberInput className="form-input" value={startNumber} min={0} onChange={setStartNumber} fallback={1} integer />
                   </div>
                   <div className="form-group" style={{ flex: 1 }}>
                     <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <Hash style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
                       {t('batchRename.digitCount')}
                     </label>
-                    <input className="form-input" type="number" value={digitCount} onChange={e => setDigitCount(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setDigitCount(1); }} min={1} max={10} />
+                    <NumberInput className="form-input" value={digitCount} min={1} max={10} onChange={setDigitCount} fallback={4} integer />
                   </div>
                 </div>
 
@@ -223,7 +149,6 @@ export default function BatchRenamePage() {
                 <Checkbox checked={renameTags} onChange={setRenameTags} color="#38bdf8" size={14}
                   label={t('batchRename.renameTags')}
                   style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>(.txt, .json)</span>
 
                 {/* 命名示例 */}
                 <div style={{
@@ -241,11 +166,11 @@ export default function BatchRenamePage() {
 
             {/* 操作按钮 */}
             <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
-              <button className="btn btn-secondary" style={{ flex: 1, height: 44 }} onClick={handlePreview} disabled={!inputPath || previewLoading}>
+              <button className="btn btn-secondary" style={{ flex: 1, height: 44 }} onClick={() => runPreview(false)} disabled={!inputPath || previewLoading || task.processing}>
                 {previewLoading ? <Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> : <Eye style={{ width: 16, height: 16 }} />}
                 {t('batchRename.generatePreview')}
               </button>
-              <button className="btn btn-secondary" style={{ flex: 1, height: 44 }} onClick={handleShuffle} disabled={!inputPath || previewLoading}>
+              <button className="btn btn-secondary" style={{ flex: 1, height: 44 }} onClick={() => runPreview(true)} disabled={!inputPath || previewLoading || task.processing}>
                 <Shuffle style={{ width: 16, height: 16 }} />
                 {t('batchRename.shufflePreview')}
               </button>
@@ -286,19 +211,7 @@ export default function BatchRenamePage() {
                     </tbody>
                   </table>
                   {totalPages > 1 && (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '8px 0', borderTop: '1px solid var(--color-border)' }}>
-                      <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 28 }}
-                        disabled={previewPage === 0} onClick={() => setPreviewPage(p => p - 1)}>
-                        <ChevronLeft style={{ width: 14, height: 14 }} />
-                      </button>
-                      <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', fontWeight: 600, minWidth: 60, textAlign: 'center' }}>
-                        {previewPage + 1} / {totalPages}
-                      </span>
-                      <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 28 }}
-                        disabled={previewPage >= totalPages - 1} onClick={() => setPreviewPage(p => p + 1)}>
-                        <ChevronRight style={{ width: 14, height: 14 }} />
-                      </button>
-                    </div>
+                    <Pager footer page={previewPage} pages={totalPages} onChange={setPreviewPage} />
                   )}
                 </div>
               );
@@ -308,16 +221,16 @@ export default function BatchRenamePage() {
           {/* 右侧 */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
             <button className="btn btn-primary btn-lg" style={{ width: '100%', height: 48 }} onClick={handleExecute}
-              disabled={processing || !inputPath || previews.length === 0}>
-              {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {t('batchRename.executing')}</> : <><Play style={{ width: 18, height: 18 }} /> {t('batchRename.executeRename')}</>}
+              disabled={task.processing || !previewOpts || previews.length === 0}>
+              {task.processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {t('batchRename.executing')}</> : <><Play style={{ width: 18, height: 18 }} /> {t('batchRename.executeRename')}</>}
             </button>
-            <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
+            <ProgressLog {...task.progressLogProps} />
           </div>
         </div>
       </div>
 
       {/* Tab: Dedup rename */}
-      <div style={{ display: activeTab === 'dedup' ? 'block' : 'none' }}>
+      <div style={{ display: activeTab === 'dedup' ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0 }}>
         <DedupRenameTab />
       </div>
     </div>

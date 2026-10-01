@@ -1,8 +1,11 @@
 import io
+import json
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -10,6 +13,9 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import image_save
 import person_crop
+import purin_proto
+import aesthetic_inference
+import image_cluster
 
 
 def noisy(mode='RGB', size=(48, 48), seed=0):
@@ -122,8 +128,11 @@ class PersonCropOutputTests(unittest.TestCase):
         self.addCleanup(setattr, person_crop, 'detect_with_model', original)
 
     def crop(self, src):
-        options = {'person_enabled': True, 'upper_enabled': False,
-                   'head_enabled': False, 'eyes_enabled': False}
+        # 与 Rust 在 init 配置里下发的裁切参数同形；models 只含启用的类型
+        options = {'person_conf': 0.3, 'upper_conf': 0.5, 'upper_tag': 'upper body',
+                   'head_conf': 0.4, 'head_tag': 'head view', 'head_scale': 1.5,
+                   'eyes_conf': 0.3, 'eyes_tag': 'eyes view', 'eyes_scale': 2.4,
+                   'keep_original_tags': False}
         result = person_crop.process_image({'person': None}, str(src), options, str(self.out))
         self.assertEqual(result['status'], 'success')
         return self.out / f'{src.stem}_full{src.suffix}'
@@ -140,6 +149,125 @@ class PersonCropOutputTests(unittest.TestCase):
         with Image.open(src) as a, Image.open(self.crop(src)) as b:
             self.assertEqual(b.format, 'JPEG')
             self.assertEqual(dict(b.quantization), dict(a.quantization))
+
+    def crop_tags(self, tag_bytes, kind):
+        """带原标签裁一次，返回裁切结果旁 .txt 的内容（没写出时为 None）和 stderr"""
+        for p in self.out.iterdir():
+            p.unlink()
+        src = self.root / 'c.png'
+        noisy().save(src)
+        src.with_suffix('.txt').write_bytes(tag_bytes)
+        options = {'person_conf': 0.3, 'upper_conf': 0.5, 'upper_tag': 'upper body',
+                   'keep_original_tags': True}
+        with mock.patch('sys.stderr', io.StringIO()) as err:
+            result = person_crop.process_image({kind: None}, str(src), options, str(self.out))
+        self.assertEqual(result['status'], 'success')
+        suffix = {'person': 'full', 'halfbody': 'halfbody'}[kind]
+        tag_out = self.out / f'c_{suffix}.txt'
+        self.assertEqual([p.name for p in self.out.iterdir() if p.suffix == '.tmp'], [])
+        return (tag_out.read_text(encoding='utf-8') if tag_out.exists() else None), err.getvalue()
+
+    def test_original_tags_in_gbk_or_bom_utf8_are_copied_as_utf8(self):
+        for data in ('长发, 蓝色眼睛'.encode('gbk'), b'\xef\xbb\xbf' + '长发, 蓝色眼睛'.encode('utf-8')):
+            with self.subTest(data=data):
+                self.assertEqual(self.crop_tags(data, 'halfbody')[0], 'upper body, 长发, 蓝色眼睛')
+
+    def test_undecodable_original_tags_are_not_copied(self):
+        tags, err = self.crop_tags(b'long hair, \xff\xfe', 'person')
+        self.assertIsNone(tags)
+        self.assertIn('c.txt', err)
+        self.assertEqual(self.crop_tags(b'long hair, \xff\xfe', 'halfbody')[0], 'upper body')
+
+
+class AiProtocolTests(unittest.TestCase):
+    def test_emit_replaces_lone_surrogates(self):
+        output = io.BytesIO()
+        with mock.patch('sys.stdout', types.SimpleNamespace(buffer=output)):
+            purin_proto.emit({'type': 'log', 'message': 'path\udcff.png'})
+        self.assertEqual(json.loads(output.getvalue()), {'type': 'log', 'message': 'path?.png'})
+
+    def test_crop_ready_and_result_are_typed_and_identify_image(self):
+        commands = [{'model_paths': {'person': 'model.onnx'}, 'options': {}},
+                    {'action': 'process', 'image_path': 'a.png', 'output_dir': 'out'},
+                    {'action': 'process', 'image_path': 'b.png', 'output_dir': 'out'}]
+        stream = io.StringIO('\n'.join(map(json.dumps, commands)) + '\nEXIT\n')
+        messages = []
+        with mock.patch.object(person_crop, 'bootstrap'), \
+             mock.patch.object(person_crop, 'utf8_stdin', return_value=stream), \
+             mock.patch.object(person_crop, 'emit', side_effect=messages.append), \
+             mock.patch.object(person_crop, '_diag'), \
+             mock.patch('gpu_diagnostics.resolve_ort_providers', return_value=['CPUExecutionProvider']), \
+             mock.patch.object(person_crop, 'load_model', return_value=object()), \
+             mock.patch.object(person_crop, 'process_image', side_effect=[
+                 {'status': 'skip', 'message': 'empty'}, ValueError('broken')]):
+            person_crop.main()
+        self.assertEqual(messages, [
+            {'type': 'ready'},
+            {'type': 'result', 'image_path': 'a.png', 'status': 'skip', 'message': 'empty'},
+            {'type': 'error', 'image_path': 'b.png', 'message': 'broken'},
+        ])
+
+    def test_crop_init_error_uses_type(self):
+        messages = []
+        with mock.patch.object(person_crop, 'bootstrap'), \
+             mock.patch.object(person_crop, 'utf8_stdin', return_value=io.StringIO('{}\n')), \
+             mock.patch.object(person_crop, 'emit', side_effect=messages.append):
+            person_crop.main()
+        self.assertEqual(messages, [{'type': 'error', 'message': '未指定模型路径'}])
+
+    def test_aesthetic_single_image_uses_batch_and_preserves_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            src = root / 'a.png'
+            noisy().save(src)
+            src.with_suffix('.txt').write_text('tag', encoding='utf-8')
+            (root / 'meta.json').write_text(json.dumps({'labels': ['good', 'low'], 'img_size': 8}))
+            session = mock.Mock()
+            session.get_inputs.return_value = [types.SimpleNamespace(name='input', shape=[None, 3, 8, 8])]
+            session.run.return_value = [np.array([[3., 0.]])]
+            ort = types.SimpleNamespace(InferenceSession=mock.Mock(return_value=session),
+                                        GraphOptimizationLevel=types.SimpleNamespace(ORT_ENABLE_ALL=1))
+            commands = [{'cmd': 'init', 'model_path': str(root / 'model.onnx')},
+                        {'cmd': 'score_batch', 'images': [{'image_path': str(src), 'copy_files': True,
+                                                          'output_path': str(root / 'out')}]},
+                        {'cmd': 'quit'}]
+            messages = []
+            with mock.patch.dict(sys.modules, {'onnxruntime': ort}), \
+                 mock.patch.object(aesthetic_inference, 'bootstrap'), \
+                 mock.patch.object(aesthetic_inference, 'utf8_stdin', return_value=io.StringIO('\n'.join(map(json.dumps, commands)))), \
+                 mock.patch('gpu_diagnostics.resolve_ort_providers', return_value=['CPUExecutionProvider']), \
+                 mock.patch('gpu_diagnostics.quiet_session_options', return_value=types.SimpleNamespace()), \
+                 mock.patch.object(purin_proto, 'emit', side_effect=messages.append), \
+                 mock.patch.object(aesthetic_inference, 'emit', side_effect=messages.append):
+                aesthetic_inference.main()
+            self.assertEqual([m['type'] for m in messages], ['ready', 'result'])
+            self.assertEqual(messages[1]['image_path'], str(src))
+            self.assertEqual(messages[1]['label'], 'good')
+            self.assertTrue(src.exists())
+            self.assertEqual((root / 'out/good/a.png').read_bytes(), src.read_bytes())
+            self.assertEqual((root / 'out/good/a.txt').read_text(), 'tag')
+            self.assertEqual(session.run.call_args.args[1]['input'].shape, (1, 3, 8, 8))
+
+
+class ClusterPcaTests(unittest.TestCase):
+    def test_pca_caps_dimension_by_samples_and_features(self):
+        with mock.patch.object(image_cluster, 'log'):
+            for n in (1, 2, 5, 49, 60):
+                for width in (1, 8, 128):
+                    with self.subTest(samples=n, width=width):
+                        values = np.random.default_rng(42).normal(size=(n, width))
+                        reduced = image_cluster._pca_reduce(values)
+                        expected = min(50, width, n - 1) if n > 1 else width
+                        self.assertEqual(reduced.shape, (n, expected))
+                        self.assertTrue(np.isfinite(reduced).all())
+
+    def test_hdbscan_without_umap_accepts_five_samples(self):
+        import sklearn.cluster
+        import sklearn.decomposition
+        features = np.random.default_rng(42).normal(size=(5, 100))
+        with mock.patch.dict(sys.modules, {'umap': None}), mock.patch.object(image_cluster, 'log'):
+            labels = image_cluster.cluster_hdbscan(features, min_cluster_size=2)
+        self.assertEqual(labels.shape, (5,))
 
 
 if __name__ == '__main__':

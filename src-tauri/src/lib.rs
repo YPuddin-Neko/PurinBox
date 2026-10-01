@@ -25,8 +25,7 @@ use commands::image_dedup::{cancel_image_dedup, delete_dedup_files, start_image_
 use commands::image_flip::{cancel_flip, flip_images};
 use commands::image_scale::{cancel_scale, scale_images};
 use commands::person_crop::{
-    cancel_person_crop, cancel_person_crop_download, download_person_crop_model,
-    force_cancel_person_crop,
+    cancel_person_crop, download_person_crop_model, force_cancel_person_crop,
     get_person_crop_models, start_person_crop,
 };
 use commands::perspective::{cancel_perspective, perspective_transform};
@@ -39,8 +38,8 @@ use commands::resolution_analyze::{
 use commands::resolution_filter::{cancel_filter, filter_by_resolution};
 use commands::sd_metadata::{export_sd_tags, read_single_sd_metadata, scan_sd_metadata};
 use commands::tag_db::{
-    cancel_tag_db_download, check_tag_db_update, clear_tag_db, download_danbooru_tags,
-    get_tag_db_stats, is_tag_db_busy, search_tags, translate_tag_db,
+    cancel_tag_db_download, cancel_tag_db_translation, check_tag_db_update, clear_tag_db,
+    download_danbooru_tags, get_tag_db_stats, is_tag_db_busy, search_tags, translate_tag_db,
 };
 use commands::tag_manager::{
     load_caption_dataset, load_json_dataset, load_tag_dataset, save_all_caption_files,
@@ -49,34 +48,27 @@ use commands::tag_manager::{
 };
 use commands::tag_refine::{cancel_tag_refining, start_tag_refining};
 use commands::tag_sort::{cancel_tag_sorting, start_tag_sorting};
-use commands::thumbnail::get_image_thumbnail;
 use commands::tagger::llm_tagger::{cancel_llm_tagging, fetch_llm_models, start_llm_tagging};
 use commands::tagger::{
-    cancel_tagger_download, cancel_tagging,
-    convert_json_to_txt, convert_tags_to_json, force_cancel_tagging,
-    detect_onnx_model_info, get_tagger_models,
-    import_local_tagger_model, remove_custom_tagger_model, start_tagging,
+    cancel_tagging, convert_tags_to_json, detect_onnx_model_info, force_cancel_tagging,
+    get_tagger_models, import_local_tagger_model, remove_custom_tagger_model, start_tagging,
 };
+use commands::thumbnail::get_image_thumbnail;
 use commands::translator::{
     clear_translation_cache, export_translation_csv, get_cache_path, get_translation_cache_stats,
     import_translation_csv, set_cache_path, test_translation, translate_tags,
 };
 use commands::upscale::{
-    cancel_upscale, cancel_upscale_download, download_upscale_engine, force_cancel_upscale,
-    get_upscale_engines, start_upscale,
+    cancel_upscale, download_upscale_engine, force_cancel_upscale, get_upscale_engines,
+    start_upscale,
 };
-use commands::workflow::{
-    carry_tag_sidecars, cleanup_workflow_temp, load_workflow, save_workflow,
-};
+use commands::workflow::{carry_tag_sidecars, cleanup_workflow_temp, load_workflow, save_workflow};
 use commands::{
-    apply_concept_repeats, check_for_updates, frontend_ready, get_system_stats,
-    allow_asset_dir, scan_concept_folders,
+    allow_asset_dir, apply_concept_repeats, check_for_updates, frontend_ready, get_system_stats,
+    scan_concept_folders,
 };
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Python 子进程方式推理，无需在 Rust 侧初始化 ONNX Runtime
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -96,7 +88,6 @@ pub fn run() {
             force_cancel_person_crop,
             get_person_crop_models,
             download_person_crop_model,
-            cancel_person_crop_download,
             filter_by_resolution,
             cancel_filter,
             analyze_resolutions,
@@ -116,11 +107,9 @@ pub fn run() {
             import_local_tagger_model,
             remove_custom_tagger_model,
             start_tagging,
-            cancel_tagger_download,
             cancel_tagging,
             force_cancel_tagging,
             convert_tags_to_json,
-            convert_json_to_txt,
             reset_python_env,
             deploy_python_env,
             get_python_env_info,
@@ -166,7 +155,6 @@ pub fn run() {
             cancel_blur_noise,
             get_upscale_engines,
             download_upscale_engine,
-            cancel_upscale_download,
             start_upscale,
             cancel_upscale,
             force_cancel_upscale,
@@ -188,6 +176,7 @@ pub fn run() {
             get_tag_db_stats,
             download_danbooru_tags,
             cancel_tag_db_download,
+            cancel_tag_db_translation,
             clear_tag_db,
             search_tags,
             translate_tag_db,
@@ -212,8 +201,6 @@ pub fn run() {
                     .allow_directory(commands::thumbnail::thumb_cache_dir(), true);
             }
 
-            // 初始化翻译缓存数据库路径（默认使用 exe 根目录/tagcache/）
-            commands::translator::init_db_path(None);
 
             // Windows: 禁用 WebView2 的默认右键菜单（前端已有自定义右键菜单）
             #[cfg(target_os = "windows")]
@@ -230,10 +217,6 @@ pub fn run() {
                     });
                 }
             }
-
-            // 所有平台: 禁用 WebView 缩放快捷键（Ctrl+滚轮/Ctrl++/-），防止意外缩放
-            #[cfg(not(target_os = "windows"))]
-            let _ = app;
 
             // 启动看门狗（仅 Windows release）：WebView2 偶发会在初始化阶段卡死
             // （例如恰逢系统后台更新 WebView2 运行时），表现为窗口永久白屏且无响应，

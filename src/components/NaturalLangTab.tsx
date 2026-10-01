@@ -1,10 +1,10 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useTagTranslation } from '../hooks/useTagTranslation';
+import { useDragResize } from '../hooks/useDragResize';
+import ImageGridColumn from './ImageGridColumn';
+import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import {
-  Save, ChevronLeft, ChevronRight, Search,
-  Image as ImageIcon, Loader2, Languages, FileText, FolderOpen, RefreshCw
-} from 'lucide-react';
+import { Save, ChevronLeft, ChevronRight, Image as ImageIcon, Loader2, Languages, FileText } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import ImageLightbox from './ImageLightbox';
 import ThumbImage from './ThumbImage';
@@ -20,55 +20,20 @@ interface Props {
   onRefresh?: () => void;
 }
 
-
-
-
 export default function NaturalLangTab({ images, setImages, onRefresh }: Props) {
   const { t } = useTranslation();
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [searchText, setSearchText] = useState('');
   const [filterMode, setFilterMode] = useState<'all' | 'tagged' | 'untagged'>('all');
-  const [imgPage, setImgPage] = useState(0);
-  const IMG_PER_PAGE = 30;
   const [savingSingle, setSavingSingle] = useState(false);
   const [showLargePreview, setShowLargePreview] = useState(false);
 
-  // 列宽拖拽
-  const [col1W, setCol1W] = useState(220);
-  const [col3W, setCol3W] = useState(320);
-  const resizeRef = useRef<{ col: 'col1' | 'col3'; startX: number; startW: number } | null>(null);
-  const handleResizeStart = useCallback((col: 'col1' | 'col3', e: React.MouseEvent) => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = col === 'col1' ? col1W : col3W;
-    resizeRef.current = { col, startX, startW };
-    const onMove = (ev: MouseEvent) => {
-      if (!resizeRef.current) return;
-      const delta = ev.clientX - resizeRef.current.startX;
-      const newW = Math.max(160, Math.min(500, resizeRef.current.startW + (resizeRef.current.col === 'col1' ? delta : -delta)));
-      if (resizeRef.current.col === 'col1') setCol1W(newW);
-      else setCol3W(newW);
-    };
-    const onUp = () => {
-      resizeRef.current = null;
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      document.body.style.cursor = '';
-      resizeCleanupRef.current = null;
-    };
-    resizeCleanupRef.current = onUp;
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-    document.body.style.cursor = 'col-resize';
-  }, [col1W, col3W]);
-
-  // 卸载时移除拖拽监听。
-  const resizeCleanupRef = useRef<(() => void) | null>(null);
-  useEffect(() => () => { resizeCleanupRef.current?.(); }, []);
-
-  // 翻译
-  const [translatedText, setTranslatedText] = useState('');
-  const [translating, setTranslating] = useState(false);
+  const col1 = useDragResize({ initial: 220, min: 160, max: 500 });
+  const col3 = useDragResize({ initial: 320, min: 200, max: 500, direction: -1 });
+  const col1W = col1.size, col3W = col3.size;
+  const handleResizeStart = (column: 'col1' | 'col3', e: React.MouseEvent) => (column === 'col1' ? col1 : col3).onMouseDown(e);
+  const { translate, translating } = useTagTranslation();
+  const [translation, setTranslation] = useState<{ path: string; caption: string; text: string } | null>(null);
 
   const cur = selectedIdx >= 0 && selectedIdx < images.length ? images[selectedIdx] : null;
   const imgSrc = cur ? convertFileSrc(cur.path) : '';
@@ -81,15 +46,9 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
     return true;
   });
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / IMG_PER_PAGE));
-  const pagedFiltered = filtered.slice(imgPage * IMG_PER_PAGE, (imgPage + 1) * IMG_PER_PAGE);
-  const prevFilteredLen = useRef(filtered.length);
-  if (filtered.length !== prevFilteredLen.current) { prevFilteredLen.current = filtered.length; if (imgPage >= Math.ceil(filtered.length / IMG_PER_PAGE)) { setImgPage(0); } }
-
   const goPrev = useCallback(() => setSelectedIdx(i => Math.max(0, i - 1)), []);
   const goNext = useCallback(() => setSelectedIdx(i => Math.min(images.length - 1, i + 1)), [images.length]);
 
-  // 保存单个
   const handleSaveSingle = async () => {
     if (!cur) return;
     setSavingSingle(true);
@@ -103,92 +62,27 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
     }
   };
 
-  // 翻译当前描述
   const handleTranslate = async () => {
     if (!cur || !cur.caption.trim()) return;
-    const provider = localStorage.getItem('translate_provider') || 'google';
-    const enabled = localStorage.getItem('translate_enabled') === 'true';
-    if (!enabled) {
-      setTranslatedText(t('naturalLang.enableTranslationFirst'));
-      return;
+    const { path, caption } = cur;
+    if (localStorage.getItem('translate_enabled') !== 'true') {
+      setTranslation({ path, caption, text: t('naturalLang.enableTranslationFirst') }); return;
     }
-    setTranslating(true);
     try {
-      const result = await invoke<{ translations: { source: string; translated: string }[]; cached_count: number; translated_count: number }>('translate_tags', {
-        tags: [cur.caption],
-        targetLang: localStorage.getItem('translate_target_lang') || 'zh-CN',
-        provider,
-        baiduAppid: localStorage.getItem('baidu_appid') || '',
-        baiduKey: localStorage.getItem('baidu_key') || '',
-        youdaoAppKey: localStorage.getItem('youdao_app_key') || '',
-        youdaoAppSecret: localStorage.getItem('youdao_app_secret') || '',
-        bingKey: localStorage.getItem('bing_key') || '',
-        bingRegion: localStorage.getItem('bing_region') || '',
-        skipCache: true,
-        translateMode: 'text',
-      });
-      if (result.translations.length > 0) {
-        setTranslatedText(result.translations[0].translated);
-      }
-    } catch (e: any) {
-      setTranslatedText(`${t('naturalLang.translateFailed')}: ${String(e)}`);
-    } finally {
-      setTranslating(false);
-    }
+      const result = await translate([caption], 'text');
+      if (result) setTranslation({ path, caption, text: result.translations[0]?.translated ?? '' });
+    } catch (error) { setTranslation({ path, caption, text: t('naturalLang.translateFailed') + ': ' + String(error) }); }
   };
-
-  // 选中图片变化时清空翻译
-  useEffect(() => {
-    setTranslatedText('');
-  }, [selectedIdx]);
+  const translatedText = translation?.path === cur?.path && translation?.caption === cur?.caption ? translation?.text : '';
 
   return (
     <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
-      {/* ─ Col1: Images ─ */}
-      <div style={{ width: col1W, minWidth: 160, maxWidth: 500, flexShrink: 0, display: 'flex', flexDirection: 'column', background: 'var(--color-bg-secondary)', borderRadius: 12, border: '1px solid var(--color-border)', overflow: 'hidden' }}>
-        <div style={{ padding: 8, borderBottom: '1px solid var(--color-border)' }}>
-          <div style={{ display: 'flex', gap: 4, position: 'relative', marginBottom: 6 }}>
-            <div style={{ position: 'relative', flex: 1 }}>
-              <Search style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', width: 13, height: 13, color: 'var(--color-text-tertiary)' }} />
-              <input className="form-input" placeholder={t('common.search')} value={searchText} onChange={e => setSearchText(e.target.value)} style={{ paddingLeft: 28, fontSize: 11, height: 30 }} />
-            </div>
-            <button className="btn btn-ghost btn-sm" onClick={() => onRefresh?.()} disabled={!onRefresh} title={t('common.refresh')} style={{ width: 30, height: 30, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><RefreshCw style={{ width: 13, height: 13 }} /></button>
-          </div>
-          <div style={{ display: 'flex', gap: 4 }}>
-            {([{ k: 'all' as const, l: t('naturalLang.all'), n: images.length }, { k: 'untagged' as const, l: t('naturalLang.untagged'), n: images.length - taggedN }, { k: 'tagged' as const, l: t('naturalLang.tagged'), n: taggedN }]).map(f => (
-              <button key={f.k} onClick={() => setFilterMode(f.k)} style={{ flex: 1, padding: '3px 0', borderRadius: 6, fontSize: 10, fontWeight: 500, background: filterMode === f.k ? 'rgba(124,92,252,0.15)' : 'transparent', color: filterMode === f.k ? '#a78bfa' : 'var(--color-text-tertiary)', border: filterMode === f.k ? '1px solid rgba(124,92,252,0.25)' : '1px solid transparent' }}>{f.l} {f.n}</button>
-            ))}
-          </div>
-        </div>
-        <div className="image-grid-perf" style={{ flex: 1, overflowY: 'auto', padding: 6 }}>
-          {images.length === 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 8, color: 'var(--color-text-tertiary)' }}>
-              <FolderOpen style={{ width: 32, height: 32, opacity: 0.2 }} />
-              <span style={{ fontSize: 11, opacity: 0.6 }}>{t('naturalLang.loadFolder')}</span>
-            </div>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 4 }}>
-              {pagedFiltered.map(img => { const sel = img._i === selectedIdx; return (
-                <div key={img._i} onClick={() => setSelectedIdx(img._i)} style={{ position: 'relative', aspectRatio: '1', borderRadius: 8, overflow: 'hidden', cursor: 'pointer', border: `2px solid ${sel ? '#7c5cfc' : 'transparent'}`, boxShadow: sel ? '0 0 0 1px rgba(124,92,252,0.3)' : 'none', transition: 'all 0.15s', background: 'var(--color-bg-input)' }}>
-                  <ThumbImage path={img.path} alt={img.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  {img.caption.trim().length > 0 && <div style={{ position: 'absolute', bottom: 2, right: 2, minWidth: 14, height: 14, borderRadius: 7, padding: '0 3px', background: img.dirty ? 'rgba(239,68,68,0.9)' : 'rgba(124,92,252,0.85)', fontSize: 8, color: '#fff', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✓</div>}
-                </div>
-              ); })}
-            </div>
-          )}
-        </div>
-        {images.length > 0 && <div style={{ padding: '4px 10px', borderTop: '1px solid var(--color-border)', fontSize: 10, color: 'var(--color-text-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span>{filtered.length === images.length ? `${images.length} ${t('naturalLang.images')}` : `${filtered.length} / ${images.length}`}</span>
-          {totalPages > 1 && <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <button onClick={() => setImgPage(p => Math.max(0, p - 1))} disabled={imgPage <= 0} style={{ width: 20, height: 20, borderRadius: 4, border: '1px solid var(--color-border)', background: imgPage <= 0 ? 'transparent' : 'rgba(124,92,252,0.08)', color: imgPage <= 0 ? 'var(--color-text-tertiary)' : '#a78bfa', cursor: imgPage <= 0 ? 'default' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}><ChevronLeft style={{ width: 11, height: 11 }} /></button>
-            <span style={{ fontSize: 10, minWidth: 40, textAlign: 'center' }}>{imgPage + 1}/{totalPages}</span>
-            <button onClick={() => setImgPage(p => Math.min(totalPages - 1, p + 1))} disabled={imgPage >= totalPages - 1} style={{ width: 20, height: 20, borderRadius: 4, border: '1px solid var(--color-border)', background: imgPage >= totalPages - 1 ? 'transparent' : 'rgba(124,92,252,0.08)', color: imgPage >= totalPages - 1 ? 'var(--color-text-tertiary)' : '#a78bfa', cursor: imgPage >= totalPages - 1 ? 'default' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}><ChevronRight style={{ width: 11, height: 11 }} /></button>
-          </div>}
-        </div>}
-      </div>
+      <ImageGridColumn width={col1W} items={filtered} total={images.length} tagged={taggedN}
+        search={searchText} onSearch={setSearchText} filter={filterMode} onFilter={setFilterMode}
+        selected={selectedIdx} onSelect={setSelectedIdx} onRefresh={onRefresh} badge={image => image.caption.trim() ? '✓' : null} />
 
       {/* resize handle 1 */}
-      <div onMouseDown={e => handleResizeStart('col1', e)} style={{ width: 6, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} title={t('common.dragResize')}>
+      <div onMouseDown={e => handleResizeStart('col1', e)} style={{ width: 6, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
         <div style={{ width: 2, height: 32, borderRadius: 1, background: 'var(--color-border)', transition: 'background 0.15s' }} />
       </div>
 
@@ -216,7 +110,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, color: 'var(--color-text-tertiary)' }}>
                 <ImageIcon style={{ width: 56, height: 56, opacity: 0.2 }} />
-                <span style={{ fontSize: 12, opacity: 0.6 }}>{images.length === 0 ? t('naturalLang.loadFolderToShow') : t('naturalLang.selectToPreview')}</span>
+                <span style={{ fontSize: 12, opacity: 0.6 }}>{images.length === 0 ? '' : t('naturalLang.selectToPreview')}</span>
               </div>
             )}
           </div>
@@ -224,7 +118,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
       </div>
 
       {/* resize handle 2 */}
-      <div onMouseDown={e => handleResizeStart('col3', e)} style={{ width: 6, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} title={t('common.dragResize')}>
+      <div onMouseDown={e => handleResizeStart('col3', e)} style={{ width: 6, cursor: 'col-resize', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
         <div style={{ width: 2, height: 32, borderRadius: 1, background: 'var(--color-border)', transition: 'background 0.15s' }} />
       </div>
 
@@ -271,7 +165,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh }: Props) 
             </button>
           </div>
           <div style={{ flex: 1, padding: '12px 14px', overflowY: 'auto', fontSize: 12, lineHeight: 1.7, color: 'var(--color-text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-            {translatedText || <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>{t('naturalLang.clickToTranslate')}</span>}
+            {translatedText}
           </div>
         </div>
       </div>

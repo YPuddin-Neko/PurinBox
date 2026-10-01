@@ -1,5 +1,9 @@
 // ═══════════════ 节点定义 ═══════════════
 import type { NodeTypeDef } from './workflowTypes';
+import type { OptionsCommandCall } from '../../api/commandOptions';
+import { loadLlmApiConfig, resolveLlmApi } from '../../utils/llmPresets';
+import { TAGGER_CATEGORIES, JSON_APPEND_FIELDS, categoriesFromFlags, splitOutputFormat, toIntervalMs, toThreads, toImageSize } from '../../utils/taggerOptions';
+import { getDefaultPrompts } from '../../utils/llmPrompts';
 
 // 分类颜色
 export const CATEGORY_COLORS: Record<string, string> = {
@@ -7,13 +11,12 @@ export const CATEGORY_COLORS: Record<string, string> = {
   process: '#00d4ff',
   ai: '#f59e0b',
   tag: '#4ade80',
-  analysis: '#f472b6',
   file: '#a78bfa',
   condition: '#fb923c',
   output: '#7c5cfc',
 };
 
-export const NODE_DEFS: NodeTypeDef[] = [
+const NODE_DEFS: NodeTypeDef[] = [
   // ── 输入 ──
   {
     type: 'image-folder',
@@ -50,7 +53,11 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'scale_images',
+    carrySidecars: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'scale_images', options: {
+      ...io, mode: p.mode, target_width: p.width, target_height: p.height,
+      down_target_width: 0, down_target_height: 0,
+    }}),
     cancelCommand: 'cancel_scale',
     progressEvent: 'scale-progress',
   },
@@ -72,7 +79,11 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'crop_images',
+    carrySidecars: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'crop_images', options: {
+      ...io, mode: p.mode, crop_anchor: 'center', target_width: p.width, target_height: p.height,
+      aspect_ratio: 1, crop_top: 0, crop_bottom: 0, crop_left: 0, crop_right: 0,
+    }}),
     cancelCommand: 'cancel_crop',
     progressEvent: 'crop-progress',
   },
@@ -92,7 +103,8 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'flip_images',
+    carrySidecars: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'flip_images', options: { ...io, direction: p.direction }}),
     cancelCommand: 'cancel_flip',
     progressEvent: 'flip-progress',
   },
@@ -114,7 +126,8 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'convert_format',
+    carrySidecars: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'convert_format', options: { ...io, target_format: p.target_format }}),
     cancelCommand: 'cancel_convert',
     progressEvent: 'convert-progress',
   },
@@ -134,7 +147,8 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'convert_alpha',
+    carrySidecars: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'convert_alpha', options: { ...io, background: p.background }}),
     cancelCommand: 'cancel_alpha',
     progressEvent: 'alpha-progress',
   },
@@ -152,7 +166,10 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'blur_noise_images',
+    carrySidecars: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'blur_noise_images', options: {
+      ...io, blur_radius: p.blur_radius, noise_strength: p.noise_strength,
+    }}),
     cancelCommand: 'cancel_blur_noise',
     progressEvent: 'blur-noise-progress',
   },
@@ -169,7 +186,8 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'perspective_transform',
+    carrySidecars: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'perspective_transform', options: { ...io, intensity: p.intensity }}),
     cancelCommand: 'cancel_perspective',
     progressEvent: 'perspective-progress',
   },
@@ -197,7 +215,12 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'start_upscale',
+    carrySidecars: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'start_upscale', options: {
+      ...io, engine_id: p.engine_id,
+      model_id: p.engine_id === 'realesrgan' ? 'realesrgan-x4plus' : p.engine_id === 'waifu2x' ? 'models-cunet' : 'models-se',
+      scale: Number(p.scale), denoise_level: p.denoise_level, tta: false, gpu_id: 0, tile_size: 0,
+    }}),
     cancelCommand: 'force_cancel_upscale',
     progressEvent: 'upscale-progress',
   },
@@ -217,7 +240,12 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'start_person_crop',
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'start_person_crop', options: {
+      ...io, use_gpu: true, person_enabled: p.person_enabled, person_conf: p.person_conf,
+      upper_enabled: p.upper_enabled, upper_conf: 0.3, upper_tag: '',
+      head_enabled: p.head_enabled, head_conf: 0.3, head_tag: '', head_scale: 1.5,
+      eyes_enabled: false, eyes_conf: 0.3, eyes_tag: '', eyes_scale: 2, keep_original_tags: true,
+    }}),
     cancelCommand: 'force_cancel_person_crop',
     progressEvent: 'person-crop-progress',
   },
@@ -234,7 +262,11 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'start_aesthetic_scoring',
+    nestedOutput: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'start_aesthetic_scoring', options: {
+      // Temporary outputs must never become the only copy of the source images.
+      ...io, use_gpu: true, copy_files: true, batch_size: p.batch_size,
+    }}),
     cancelCommand: 'force_cancel_aesthetic_scoring',
     progressEvent: 'aesthetic-progress',
   },
@@ -255,7 +287,7 @@ export const NODE_DEFS: NodeTypeDef[] = [
       { key: 'output_format', labelKey: 'aiTagger.outputFormat', type: 'select', default: 'txt', options: [
         { value: 'txt', labelKey: 'TXT' },
         { value: 'json', labelKey: 'JSON' },
-        { value: 'json_simplified', labelKey: 'JSON (简化)' },
+        { value: 'json_simplified', labelKey: 'workflow.jsonSimplified' },
       ]},
       { key: 'existing_tags_action', labelKey: 'aiTagger.existingTagsAction', type: 'select', default: 'overwrite', options: [
         { value: 'overwrite', labelKey: 'aiTagger.existingAction_overwrite' },
@@ -267,30 +299,15 @@ export const NODE_DEFS: NodeTypeDef[] = [
         { value: 'confidence', labelKey: 'aiTagger.sortBy_confidence' },
         { value: 'frequency', labelKey: 'aiTagger.sortBy_frequency' },
       ]},
-      { key: 'append_position', labelKey: 'aiTagger.appendTags', type: 'select', default: 'append', options: [
+      { key: 'append_position', labelKey: 'workflow.appendPosition', type: 'select', default: 'append', options: [
         { value: 'prepend', labelKey: 'aiTagger.prepend' },
         { value: 'append', labelKey: 'aiTagger.append' },
       ]},
-      { key: 'json_append_field', labelKey: 'aiTagger.appendField', type: 'select', default: 'tags', options: [
-        { value: 'tags', labelKey: 'aiTagger.fieldTags' },
-        { value: 'appearance', labelKey: 'aiTagger.fieldAppearance' },
-        { value: 'environment', labelKey: 'aiTagger.fieldEnvironment' },
-        { value: 'quality', labelKey: 'aiTagger.fieldQuality' },
-        { value: 'character', labelKey: 'aiTagger.fieldCharacter' },
-        { value: 'series', labelKey: 'aiTagger.fieldSeries' },
-        { value: 'artist', labelKey: 'aiTagger.fieldArtist' },
-        { value: 'count', labelKey: 'aiTagger.fieldCount' },
-      ]},
+      { key: 'json_append_field', labelKey: 'aiTagger.appendField', type: 'select', default: 'tags', options: JSON_APPEND_FIELDS },
       { key: 'batch_size', labelKey: 'aiTagger.batchSize', type: 'number', default: 1, min: 1, max: 32, step: 1 },
       { key: 'exclude_tags', labelKey: 'aiTagger.excludeTags', type: 'string', default: '' },
       { key: 'append_tags', labelKey: 'aiTagger.appendTags', type: 'string', default: '' },
-      { key: 'cat_general', labelKey: 'aiTagger.catGeneral', type: 'boolean', default: true },
-      { key: 'cat_character', labelKey: 'aiTagger.catCharacter', type: 'boolean', default: true },
-      { key: 'cat_rating', labelKey: 'aiTagger.catRating', type: 'boolean', default: false },
-      { key: 'cat_artist', labelKey: 'aiTagger.catArtist', type: 'boolean', default: false },
-      { key: 'cat_style', labelKey: 'aiTagger.catStyle', type: 'boolean', default: false },
-      { key: 'cat_copyright', labelKey: 'aiTagger.catCopyright', type: 'boolean', default: false },
-      { key: 'cat_meta', labelKey: 'aiTagger.catMeta', type: 'boolean', default: false },
+      ...TAGGER_CATEGORIES.map(c => ({ key: `cat_${c.key}`, labelKey: c.labelKey, type: 'boolean' as const, default: c.defaultOn })),
       { key: 'replace_underscore', labelKey: 'aiTagger.replaceUnderscore', type: 'boolean', default: true },
       { key: 'escape_parentheses', labelKey: 'aiTagger.escapeParentheses', type: 'boolean', default: false },
     ],
@@ -298,7 +315,16 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'start_tagging',
+    inPlace: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'start_tagging', options: {
+      input_path: io.input_path, recursive: io.recursive, model_id: p.model_id,
+      general_threshold: p.general_threshold, character_threshold: p.character_threshold,
+      enabled_categories: categoriesFromFlags(p), use_gpu: true,
+      exclude_tags: p.exclude_tags, append_tags: p.append_tags, append_position: p.append_position,
+      json_append_field: p.json_append_field, replace_underscore: p.replace_underscore,
+      ...splitOutputFormat(p.output_format), escape_parentheses: p.escape_parentheses,
+      sort_by: p.sort_by, existing_tags_action: p.existing_tags_action, batch_size: p.batch_size,
+    }}),
     cancelCommand: 'force_cancel_tagging',
     progressEvent: 'tagger-progress',
   },
@@ -309,19 +335,25 @@ export const NODE_DEFS: NodeTypeDef[] = [
     icon: 'Tags',
     color: CATEGORY_COLORS.tag,
     params: [
-      { key: 'api_endpoint', labelKey: 'llmTagger.apiEndpoint', type: 'string', default: '' },
-      { key: 'api_key', labelKey: 'llmTagger.apiKey', type: 'string', default: '' },
-      { key: 'model_name', labelKey: 'llmTagger.modelLabel', type: 'string', default: '' },
-      { key: 'system_prompt', labelKey: 'llmTagger.systemPrompt', type: 'string', default: '' },
-      { key: 'user_prompt', labelKey: 'llmTagger.userPrompt', type: 'string', default: '' },
+      { key: 'model_name', labelKey: 'llmApi.modelLabel', type: 'string', default: '' },
+      { key: 'system_prompt', labelKey: 'llmTagger.systemPrompt', type: 'string', default: getDefaultPrompts('txt', false).sys },
+      { key: 'user_prompt', labelKey: 'llmTagger.userPrompt', type: 'string', default: getDefaultPrompts('txt', false).user },
       { key: 'temperature', labelKey: 'llmTagger.temperature', type: 'number', default: 0.7, min: 0, max: 2, step: 0.1 },
       { key: 'max_tokens', labelKey: 'llmTagger.maxTokens', type: 'number', default: -1, min: -1, max: 4096, step: 1 },
       { key: 'image_size', labelKey: 'llmTagger.imageSize', type: 'number', default: 1024, min: 256, max: 4096, step: 64 },
+      { key: 'image_detail', labelKey: 'tagRefine.imageDetail', type: 'select', default: '', options: [
+        { value: '', labelKey: 'tagRefine.imageDetailDefault' },
+        { value: 'auto', labelKey: 'tagRefine.imageDetailAuto' },
+        { value: 'low', labelKey: 'tagRefine.imageDetailLow' },
+        { value: 'high', labelKey: 'tagRefine.imageDetailHigh' },
+        { value: 'original', labelKey: 'tagRefine.imageDetailOriginal' },
+      ]},
+      { key: 'request_interval', labelKey: 'workflow.requestInterval', type: 'number', default: -1, min: -1, step: 0.1 },
       { key: 'concurrency', labelKey: 'llmTagger.concurrency', type: 'number', default: 1, min: 1, max: 16, step: 1 },
       { key: 'output_format', labelKey: 'llmTagger.outputFormat', type: 'select', default: 'txt', options: [
         { value: 'txt', labelKey: 'TXT' },
         { value: 'json', labelKey: 'JSON' },
-        { value: 'json_simplified', labelKey: 'JSON (简化)' },
+        { value: 'json_simplified', labelKey: 'workflow.jsonSimplified' },
       ]},
       { key: 'skip_existing', labelKey: 'llmTagger.skipExisting', type: 'boolean', default: false },
     ],
@@ -329,12 +361,22 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'start_llm_tagging',
+    inPlace: true,
+    buildOptions: async (p, io): Promise<OptionsCommandCall> => {
+      const { endpoint, apiKey } = resolveLlmApi(await loadLlmApiConfig());
+      return { command: 'start_llm_tagging', options: {
+        input_path: io.input_path, recursive: io.recursive, api_endpoint: endpoint, api_key: apiKey,
+        model_name: p.model_name, system_prompt: p.system_prompt, user_prompt: p.user_prompt,
+        temperature: p.temperature, max_tokens: p.max_tokens, image_size: toImageSize(p.image_size),
+        image_detail: p.image_detail, skip_existing: p.skip_existing, ...splitOutputFormat(p.output_format),
+        request_interval_ms: toIntervalMs(p.request_interval), concurrency: toThreads(p.concurrency, 16),
+      }};
+    },
     cancelCommand: 'cancel_llm_tagging',
     progressEvent: 'llm-tagger-progress',
   },
 
-  // ── 分析/条件 ──
+  // ── 条件 ──
   {
     type: 'bucket-assign',
     nameKey: 'workflow.nodeBucketAssign',
@@ -342,8 +384,8 @@ export const NODE_DEFS: NodeTypeDef[] = [
     icon: 'Grid3X3',
     color: CATEGORY_COLORS.condition,
     params: [
-      { key: 'res_width', labelKey: 'bucketPreview.resolution', type: 'number', default: 1024, min: 64, step: 64 },
-      { key: 'res_height', labelKey: 'bucketPreview.resolution', type: 'number', default: 1024, min: 64, step: 64 },
+      { key: 'res_width', labelKey: 'workflow.bucketWidth', type: 'number', default: 1024, min: 64, step: 64 },
+      { key: 'res_height', labelKey: 'workflow.bucketHeight', type: 'number', default: 1024, min: 64, step: 64 },
       { key: 'steps', labelKey: 'bucketPreview.stepsLabel', type: 'select', default: '64', options: [
         { value: '32', labelKey: '32' },
         { value: '64', labelKey: '64' },
@@ -359,7 +401,10 @@ export const NODE_DEFS: NodeTypeDef[] = [
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.branchUniform',
     outputBLabelKey: 'workflow.branchScattered',
-    tauriCommand: 'analyze_buckets',
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'analyze_buckets', options: {
+      input_path: io.input_path, recursive: io.recursive, res_width: p.res_width,
+      res_height: p.res_height, steps: Number(p.steps), no_upscale: p.no_upscale,
+    }}),
     cancelCommand: 'cancel_bucket_analysis',
     progressEvent: 'bucket-progress',
   },
@@ -389,7 +434,12 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'filter_by_resolution',
+    inPlace: p => p.action === 'delete',
+    carrySidecars: true,
+    allowEmptyResult: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'filter_by_resolution', options: {
+      ...io, action: p.action, condition: p.condition, width: p.width, height: p.height,
+    }}),
     cancelCommand: 'cancel_filter',
     progressEvent: 'filter-progress',
   },
@@ -410,7 +460,12 @@ export const NODE_DEFS: NodeTypeDef[] = [
     hasOutput: true,
     inputLabelKey: 'workflow.slotImage',
     outputLabelKey: 'workflow.slotImage',
-    tauriCommand: 'execute_rename',
+    inPlace: true,
+    flatInputOnly: true,
+    buildOptions: (p, io): OptionsCommandCall => ({ command: 'execute_rename', options: {
+      input_path: io.input_path, prefix: p.prefix, start_number: p.start_number,
+      digit_count: p.digit_count, shuffle: p.shuffle, rename_tags: p.rename_tags,
+    }}),
     progressEvent: 'rename-progress',
   },
 
@@ -443,4 +498,30 @@ export function getNodeDefsByCategory(): Record<string, NodeTypeDef[]> {
 /** 根据 type 获取节点定义 */
 export function getNodeDef(type: string): NodeTypeDef | undefined {
   return NODE_DEFS.find(d => d.type === type);
+}
+
+/** Normalize old files and keep credentials out of node state and serialization. */
+export function withDefaults(def: NodeTypeDef | undefined, params: Record<string, any> = {}): Record<string, any> {
+  const values = Object.fromEntries(Object.entries(params).filter(([key, value]) => key !== 'api_key' && value != null));
+  const result = { ...Object.fromEntries((def?.params ?? []).map(p => [p.key, p.default])), ...values };
+  for (const param of def?.params ?? []) {
+    const value = result[param.key];
+    if (param.type === 'number') {
+      let number = Number(value);
+      if (!Number.isFinite(number) || value === '') number = Number(param.default);
+      if (!param.step || Number.isInteger(param.step)) number = Math.round(number);
+      result[param.key] = Math.min(param.max ?? Infinity, Math.max(param.min ?? -Infinity, number));
+    } else if (param.type === 'select') {
+      result[param.key] = param.options?.some(option => option.value === String(value)) ? String(value) : param.default;
+    } else if (param.type === 'boolean') {
+      result[param.key] = typeof value === 'boolean' ? value : param.default;
+    }
+  }
+  if (def?.type === 'llm-tagger') {
+    delete result.api_endpoint;
+    const defaults = getDefaultPrompts(result.output_format === 'txt' ? 'txt' : 'json', result.output_format === 'json_simplified');
+    if (!values.system_prompt) result.system_prompt = defaults.sys;
+    if (!values.user_prompt) result.user_prompt = defaults.user;
+  }
+  return result;
 }

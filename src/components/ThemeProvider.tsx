@@ -1,10 +1,9 @@
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 
 type ThemeMode = 'dark' | 'light' | 'system';
 
 interface AppSettingsContextType {
   mode: ThemeMode;
-  setMode: (m: ThemeMode) => void;
   resolved: 'dark' | 'light';
   monitorInterval: number;
   setMonitorInterval: (ms: number) => void;
@@ -18,14 +17,13 @@ interface AppSettingsContextType {
 }
 
 const AppSettingsContext = createContext<AppSettingsContextType>({
-  mode: 'dark', setMode: () => {}, resolved: 'dark',
+  mode: 'dark', resolved: 'dark',
   monitorInterval: 0, setMonitorInterval: () => {},
   cycleThemeWithRipple: () => {},
   workflowEnabled: false, setWorkflowEnabled: () => {},
   hybridTaggerEnabled: false, setHybridTaggerEnabled: () => {},
 });
 
-export function useTheme() { return useContext(AppSettingsContext); }
 export function useAppSettings() { return useContext(AppSettingsContext); }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -86,12 +84,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [resolved]);
 
   // 水滴波纹切换主题 (View Transitions API)
-  const cycleThemeWithRipple = useCallback((x: number, y: number) => {
+  const cycleThemeWithRipple = (x: number, y: number) => {
     const next: Record<string, ThemeMode> = { dark: 'light', light: 'system', system: 'dark' };
     const nextMode = next[mode];
     const nextResolved = nextMode === 'system' ? (systemDark ? 'dark' : 'light') : nextMode;
 
-    // 如果实际解析的主题没变，只切换模式不做动画
     if (nextResolved === resolved) {
       setMode(nextMode);
       return;
@@ -103,15 +100,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       Math.max(y, window.innerHeight - y)
     );
 
-    // 设置 CSS 自定义属性供动画使用
     document.documentElement.style.setProperty('--ripple-x', `${x}px`);
     document.documentElement.style.setProperty('--ripple-y', `${y}px`);
     document.documentElement.style.setProperty('--ripple-r', `${maxDist}px`);
 
-    const doc = document as any;
-    // 检查 View Transitions API 是否可用
-    if (!doc.startViewTransition) {
-      // 不支持时直接切换
+    if (!('startViewTransition' in document)) {
       setMode(nextMode);
       return;
     }
@@ -119,7 +112,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     // 标记方向，CSS 会根据这个类来决定动画方向
     document.documentElement.classList.add(isDarkening ? 'theme-darkening' : 'theme-lightening');
 
-    const transition = doc.startViewTransition(() => {
+    const transition = document.startViewTransition(() => {
+      // 回调返回后浏览器即截取新画面，React 的更新未必已提交，所以 data-theme 在这里同步写入
       document.documentElement.setAttribute('data-theme', nextResolved);
       setMode(nextMode);
     });
@@ -130,12 +124,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       document.documentElement.style.removeProperty('--ripple-y');
       document.documentElement.style.removeProperty('--ripple-r');
     });
-  }, [mode, resolved, systemDark, setMode]);
+  };
 
   return (
     <AppSettingsContext.Provider value={{
       mode,
-      setMode,
       resolved,
       monitorInterval,
       setMonitorInterval,

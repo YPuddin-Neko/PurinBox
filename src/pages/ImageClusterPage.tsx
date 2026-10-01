@@ -1,26 +1,19 @@
-import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
-import { open } from '@tauri-apps/plugin-dialog';
-import { useTaskQueue } from '../components/TaskContext';
-import { useTranslation } from 'react-i18next';
-import i18n from '../i18n';
 import {
-  Network,
-  FolderOpen,
   Info,
-  Cpu,
-  Gpu,
-  Sun,
   Moon,
+  Network,
+  Sun
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import ProcessButton from '../components/ProcessButton';
-import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
-import RecursiveScanToggle from '../components/RecursiveScanToggle';
-
-interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; i18n_key?: string; i18n_params?: Record<string, string>; }
+import ProgressLog from '../components/ProgressLog';
+import DeviceToggle from '../components/ui/DeviceToggle';
+import NumberInput from '../components/ui/NumberInput';
+import PageHeader from '../components/ui/PageHeader';
+import PathFields from '../components/ui/PathFields';
+import { useBatchTask, type ProcessResult } from '../hooks/useBatchTask';
 
 type Algorithm = 'kmeans' | 'hdbscan';
 type FeatureType = 'style' | 'semantic' | 'fusion';
@@ -32,6 +25,7 @@ const ALGORITHMS_BASE: { value: Algorithm; label: string }[] = [
 
 export default function ImageClusterPage() {
   const { t } = useTranslation();
+  const task = useBatchTask({ event: 'cluster-progress', taskId: 'image-cluster', pythonEnv: true, logProcessing: p => !!p.message });
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
@@ -44,72 +38,20 @@ export default function ImageClusterPage() {
   const [wSemantic, setWSemantic] = useState(0.5);
   const [wColor, setWColor] = useState(0.0);
   const [mapTheme, setMapTheme] = useState<'light' | 'dark'>('light');
-  const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressCurrent, setProgressCurrent] = useState(0);
-  const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasError, setHasError] = useState(false);
-  const [processStartTime, setProcessStartTime] = useState(0);
 
-  useEffect(() => {
-    let active = true;
-    const p = listen<ProgressPayload>('cluster-progress', (event) => {
-      if (!active) return;
-      const d = event.payload;
-      setProgressCurrent(d.current);
-      setProgressTotal(d.total);
-      if (d.total > 0) setProgress((d.current / d.total) * 100);
-      if (d.status === 'done') setIsDone(true);
-      if (d.status === 'error') setHasError(true);
-      // Show log for all non-processing statuses + processing messages that have content
-      if (d.status !== 'processing' || d.message) {
-        const resolveMsg = (p: ProgressPayload) => p.i18n_key ? (i18n.t(p.i18n_key, p.i18n_params || {}) !== p.i18n_key ? i18n.t(p.i18n_key, p.i18n_params || {}) : p.message) : p.message;
-        setLogs((prev) => [...prev, {
-          time: getTimeStr(),
-          message: resolveMsg(d) || `${d.current}/${d.total}`,
-          status: d.status === 'done' ? 'info' : d.status === 'processing' ? 'info' : d.status as LogEntry['status'],
-        }]);
-      }
-    });
-    return () => { active = false; p.then(fn => fn()); };
-  }, []);
-
-  // Python 环境事件（统一 hook）
-  usePythonEnvEvents(processing, setLogs);
-
-  const selectInputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') }); if (s) setInputPath(s as string); };
-  const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') }); if (s) setOutputPath(s as string); };
-
-  const { addTask, updateTask } = useTaskQueue();
-
-  const handleProcess = async () => {
-    if (!inputPath || !outputPath) return;
-    // 提交前规范数字参数。
-    const num = (v: number, fallback: number) => (Number.isFinite(v) && v >= 2 ? v : fallback);
-    const nC = num(nClusters, 5), minSize = num(minClusterSize, 3);
-    if (nC !== nClusters) setNClusters(nC);
-    if (minSize !== minClusterSize) setMinClusterSize(minSize);
-    setProcessing(true); addTask('image-cluster', t('imageCluster.taskName'));
-    setProgress(0); setProgressCurrent(0); setProgressTotal(0); setIsDone(false); setHasError(false);
-    setProcessStartTime(Date.now());
-
+  const handleProcess = () => {
     const algoLabel = ALGORITHMS_BASE.find(a => a.value === algorithm)?.label || algorithm;
-    const featLabel = featureType;
-    const paramStr = algorithm === 'kmeans' ? `${t('imageCluster.groupCount')}: ${nC}` : `${t('imageCluster.minClusterSize')}: ${minSize}`;
+    const paramStr = algorithm === 'kmeans' ? `${t('imageCluster.groupCount')}: ${nClusters}` : `${t('imageCluster.minClusterSize')}: ${minClusterSize}`;
     const deviceLabel = device === 'auto' ? t('imageCluster.gpuAuto') : 'CPU';
-    setLogs([{ time: getTimeStr(), message: t('imageCluster.startMsg', { algo: algoLabel, feat: featLabel, param: paramStr, device: deviceLabel }), status: 'info' }]);
-
-    try {
-      await invoke<ProcessResult>('start_image_cluster', {
+    return task.run({
+      taskName: t('imageCluster.taskName'), startLog: t('imageCluster.startMsg', { algo: algoLabel, feat: featureType, param: paramStr, device: deviceLabel }), exec: () => invoke<ProcessResult>('start_image_cluster', {
         options: {
           input_path: inputPath,
           output_path: outputPath,
           algorithm,
           feature_type: featureType,
-          n_clusters: nC,
-          min_cluster_size: minSize,
+          n_clusters: nClusters,
+          min_cluster_size: minClusterSize,
           device,
           weight_style: wStyle,
           weight_semantic: wSemantic,
@@ -117,16 +59,9 @@ export default function ImageClusterPage() {
           map_theme: mapTheme,
           recursive,
         },
-      });
-    } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('image-cluster', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
-      setHasError(true); setIsDone(true);
-    } finally { setProcessing(false); }
+      })
+    });
   };
-
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); setProcessStartTime(0); }, []);
-  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   const algoBtnStyle = (active: boolean): React.CSSProperties => ({
     flex: 1, padding: '10px 0', borderRadius: 'var(--radius-sm)', fontSize: 13, fontWeight: 700,
@@ -147,59 +82,20 @@ export default function ImageClusterPage() {
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <Network style={{ width: 28, height: 28, color: '#a78bfa' }} />
-          <h1 className="page-title">{t('imageCluster.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('imageCluster.subtitle')}</p>
-      </div>
+      <PageHeader icon={Network} color={'#a78bfa'} title={t('imageCluster.title')} subtitle={t('imageCluster.subtitle')} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         {/* 左侧设置 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 文件夹 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">{t('imageCluster.folderSelect')}</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div className="form-group">
-                <div className="form-label-row">
-                  <label className="form-label">{t('blurNoise.inputFolder')}</label>
-                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
-                </div>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
-                </div>
-              </div>
-              <div className="form-group">
-                <label className="form-label">{t('blurNoise.outputFolder')}</label>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={e => setOutputPath(e.target.value)} style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <PathFields title={t('imageCluster.folderSelect')} input={inputPath} onInput={setInputPath} output={outputPath} onOutput={setOutputPath} recursive={recursive} onRecursive={setRecursive} />
 
           {/* 参数设置 */}
           <div className="tool-panel">
             <div className="tool-panel-header">
               <span className="tool-panel-title">{t('imageCluster.paramSettings')}</span>
               <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                {([{ value: 'cpu' as const, label: 'CPU', icon: <Cpu style={{ width: 13, height: 13 }} />, color: '#fbbf24' },
-                  { value: 'auto' as const, label: 'GPU', icon: <Gpu style={{ width: 13, height: 13 }} />, color: '#4ade80' }] as const).map(d => (
-                  <button key={d.value} onClick={() => setDevice(d.value)} style={{
-                    padding: '4px 12px', borderRadius: 'var(--radius-sm)', fontSize: 12, fontWeight: 700,
-                    cursor: 'pointer', transition: 'all 0.15s',
-                    display: 'flex', alignItems: 'center', gap: 4,
-                    border: `1.5px solid ${device === d.value ? d.color : 'var(--color-border)'}`,
-                    background: device === d.value ? `${d.color}12` : 'transparent',
-                    color: device === d.value ? d.color : 'var(--color-text-tertiary)',
-                  }}>
-                    {d.icon} {d.label}
-                  </button>
-                ))}
+                <DeviceToggle useGpu={device === 'auto'} onChange={v => setDevice(v ? 'auto' : 'cpu')} />
               </div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
@@ -220,8 +116,8 @@ export default function ImageClusterPage() {
                 <label className="form-label">{t('imageCluster.featureType')}</label>
                 <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                   {([{ value: 'style' as FeatureType, label: t('imageCluster.styleLabel'), desc: t('imageCluster.styleDesc'), color: '#f472b6' },
-                    { value: 'semantic' as FeatureType, label: t('imageCluster.semanticLabel'), desc: t('imageCluster.semanticDesc'), color: '#60a5fa' },
-                    { value: 'fusion' as FeatureType, label: t('imageCluster.fusionLabel'), desc: t('imageCluster.fusionDesc'), color: '#a78bfa' }]).map(f => (
+                  { value: 'semantic' as FeatureType, label: t('imageCluster.semanticLabel'), desc: t('imageCluster.semanticDesc'), color: '#60a5fa' },
+                  { value: 'fusion' as FeatureType, label: t('imageCluster.fusionLabel'), desc: t('imageCluster.fusionDesc'), color: '#a78bfa' }]).map(f => (
                     <button key={f.value} onClick={() => setFeatureType(f.value)} style={featBtnStyle(featureType === f.value, f.color)}>
                       <span>{f.label}</span>
                       <span style={{ fontSize: 9, opacity: 0.7, fontWeight: 400 }}>{f.desc}</span>
@@ -247,7 +143,7 @@ export default function ImageClusterPage() {
                       <span style={{ fontSize: 12, fontWeight: 700, fontFamily: 'monospace', color: w.color, width: 28, textAlign: 'right' }}>{w.value.toFixed(1)}</span>
                     </div>
                   ))}
-                  <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>{t('imageCluster.weightTip')}</span>
+
                 </div>
               )}
 
@@ -255,25 +151,19 @@ export default function ImageClusterPage() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 'var(--space-4)', alignItems: 'start' }}>
                 <div className="form-group" style={{ marginBottom: 0, opacity: algorithm === 'kmeans' ? 1 : 0.4, transition: 'opacity 0.15s' }}>
                   <label className="form-label">{t('imageCluster.groupCount')}</label>
-                  <input className="form-input" type="number" min={2} value={nClusters}
-                    disabled={algorithm !== 'kmeans'}
-                    onChange={(e) => { if (e.target.value === "") { setNClusters("" as any); return; } const v = parseInt(e.target.value); if (v >= 2) setNClusters(v); }} onBlur={(e) => { if (e.target.value === "") setNClusters(5); }}
-                    style={{ height: 36 }} />
+                  <NumberInput className="form-input" min={2} value={nClusters} disabled={algorithm !== 'kmeans'} style={{ height: 36 }} onChange={setNClusters} fallback={8} integer />
                   <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{t('imageCluster.groupCountTip')}</span>
                 </div>
                 <div className="form-group" style={{ marginBottom: 0, opacity: algorithm === 'hdbscan' ? 1 : 0.4, transition: 'opacity 0.15s' }}>
                   <label className="form-label">{t('imageCluster.minClusterSize')}</label>
-                  <input className="form-input" type="number" min={2} value={minClusterSize}
-                    disabled={algorithm !== 'hdbscan'}
-                    onChange={(e) => { if (e.target.value === "") { setMinClusterSize("" as any); return; } const v = parseInt(e.target.value); if (v >= 2) setMinClusterSize(v); }} onBlur={(e) => { if (e.target.value === "") setMinClusterSize(3); }}
-                    style={{ height: 36 }} />
-                  <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{t('imageCluster.minClusterSizeTip')}</span>
+                  <NumberInput className="form-input" min={2} value={minClusterSize} disabled={algorithm !== 'hdbscan'} style={{ height: 36 }} onChange={setMinClusterSize} fallback={5} integer />
+
                 </div>
                 <div className="form-group" style={{ marginBottom: 0, minWidth: 140 }}>
                   <label className="form-label">{t('imageCluster.mapTheme')}</label>
                   <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                     {([{ val: 'light' as const, label: t('imageCluster.mapLight'), icon: <Sun style={{ width: 13, height: 13 }} /> },
-                      { val: 'dark' as const, label: t('imageCluster.mapDark'), icon: <Moon style={{ width: 13, height: 13 }} /> }]).map(th => (
+                    { val: 'dark' as const, label: t('imageCluster.mapDark'), icon: <Moon style={{ width: 13, height: 13 }} /> }]).map(th => (
                       <button key={th.val} onClick={() => setMapTheme(th.val)} style={{
                         flex: 1, height: 36, borderRadius: 'var(--radius-sm)', fontSize: 12, fontWeight: 600,
                         cursor: 'pointer', transition: 'all 0.15s', textAlign: 'center',
@@ -288,27 +178,23 @@ export default function ImageClusterPage() {
               </div>
 
               {/* 提示信息 */}
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(167, 139, 250, 0.06)', border: '1px solid rgba(167, 139, 250, 0.1)' }}>
+              {algorithm === 'hdbscan' && (<div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(167, 139, 250, 0.06)', border: '1px solid rgba(167, 139, 250, 0.1)' }}>
                 <Info style={{ width: 13, height: 13, color: '#a78bfa', marginTop: 2, minWidth: 13 }} />
                 <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-                  {algorithm === 'kmeans'
-                    ? t('imageCluster.kmeansTip')
-                    : t('imageCluster.hdbscanTip')
-                  }
+                  {t('imageCluster.hdbscanTip')}
                 </span>
-              </div>
+              </div>)}
             </div>
           </div>
         </div>
 
         {/* 右侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <ProcessButton processing={processing} onStart={handleProcess}
+          <ProcessButton {...task.buttonProps} onStart={handleProcess}
             disabled={!inputPath || !outputPath}
             cancelCommand="cancel_image_cluster" forceCancelCommand="force_cancel_image_cluster"
-            startText={t('imageCluster.startCluster')} processingText={t('imageCluster.clustering')}
-            onCancelLog={addCancelLog} />
-          <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} externalStartTime={processStartTime} />
+            startText={t('imageCluster.startCluster')} processingText={t('imageCluster.clustering')} />
+          <ProgressLog {...task.progressLogProps} />
         </div>
       </div>
     </div>

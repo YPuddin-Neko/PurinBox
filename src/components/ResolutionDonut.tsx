@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useTheme } from './ThemeProvider';
+import { useAppSettings } from './ThemeProvider';
+import { arcPath } from '../utils/donut';
 
 interface DonutGroup {
   width: number;
@@ -14,8 +15,8 @@ interface ResolutionDonutProps {
   totalImages: number;
 }
 
-// 分类色板（前 6 名各一色，经 dataviz 校验器在两套主题面板底色上全项通过；
-// 亮色模式的对比度 WARN 由图例全量标注 + 2px 表面间隙补偿）
+// 分类色板（前 6 名各一色）；亮色模式下部分颜色与面板底色对比度偏低，
+// 由图例全量标注 + 扇区间 2px 表面色间隙补偿
 const SERIES_LIGHT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300'];
 const SERIES_DARK = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300'];
 // "其他" 是余量而非身份，用中性灰
@@ -32,33 +33,13 @@ interface Slice {
   isOther: boolean;
 }
 
-function polar(cx: number, cy: number, r: number, angle: number): [number, number] {
-  return [cx + r * Math.cos(angle), cy + r * Math.sin(angle)];
-}
-
-/** 环形扇区路径（外弧 → 内弧回勾） */
-function arcPath(cx: number, cy: number, rOuter: number, rInner: number, a0: number, a1: number): string {
-  const largeArc = a1 - a0 > Math.PI ? 1 : 0;
-  const [x0, y0] = polar(cx, cy, rOuter, a0);
-  const [x1, y1] = polar(cx, cy, rOuter, a1);
-  const [x2, y2] = polar(cx, cy, rInner, a1);
-  const [x3, y3] = polar(cx, cy, rInner, a0);
-  return [
-    `M ${x0} ${y0}`,
-    `A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${x1} ${y1}`,
-    `L ${x2} ${y2}`,
-    `A ${rInner} ${rInner} 0 ${largeArc} 0 ${x3} ${y3}`,
-    'Z',
-  ].join(' ');
-}
-
 /**
  * 分辨率分布环形图：前 6 名各占一个分类色，其余折入中性灰的"其他"。
  * 悬停扇区/图例行联动高亮，环心显示悬停项的数量与占比。
  */
 export default function ResolutionDonut({ groups, totalImages }: ResolutionDonutProps) {
   const { t } = useTranslation();
-  const { resolved } = useTheme();
+  const { resolved } = useAppSettings();
   const [hovered, setHovered] = useState<number | null>(null);
 
   const slices = useMemo<Slice[]>(() => {
@@ -89,7 +70,7 @@ export default function ResolutionDonut({ groups, totalImages }: ResolutionDonut
   const cx = size / 2;
   const cy = size / 2;
   const rOuter = 80;
-  const rInner = 56; // 细环
+  const rInner = 56;
 
   // 从 12 点方向起，顺时针
   let angle = -Math.PI / 2;
@@ -165,7 +146,7 @@ export default function ResolutionDonut({ groups, totalImages }: ResolutionDonut
             style={{
               display: 'flex', alignItems: 'center', gap: 8,
               padding: '2px 6px', borderRadius: 4,
-              background: hovered === i ? 'var(--color-bg-hover, rgba(124, 92, 252, 0.06))' : 'transparent',
+              background: hovered === i ? 'var(--color-bg-hover)' : 'transparent',
               transition: 'background 0.15s',
             }}
           >

@@ -1,9 +1,55 @@
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::Emitter;
 
-use super::{collect_image_files, ProcessResult, ProgressEvent};
+use super::{collect_image_files_with_recursive, ProcessResult, ProgressEvent, TAG_SIDECAR_EXTS};
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    #[test]
+    fn caption_preview_execution_and_error_totals_match() {
+        let root = super::super::image_io::test_dir("rename_caption");
+        image::RgbImage::new(2, 2).save(root.join("a.png")).unwrap();
+        std::fs::write(root.join("a.caption"), b"original caption").unwrap();
+        std::fs::write(root.join("new1.caption"), b"existing caption").unwrap();
+        let options = RenameOptions {
+            input_path: root.to_string_lossy().into_owned(),
+            prefix: "new".into(),
+            start_number: 1,
+            digit_count: 1,
+            shuffle: false,
+            shuffle_seed: None,
+            rename_tags: true,
+        };
+        let preview = preview_rename_sync(&options).unwrap();
+        assert_eq!(preview.len(), 2);
+        assert_eq!(preview[1].renamed, "new1.caption");
+        let app = tauri::test::mock_app();
+        let events = super::super::batch::capture_events(app.handle(), "rename-progress");
+        let result = execute_rename_sync(app.handle(), &options).unwrap();
+        assert_eq!(
+            (result.success_count, result.fail_count, result.total),
+            (1, 1, 2)
+        );
+        assert!(events
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|event| event["total"] == 2));
+        assert_eq!(
+            std::fs::read(root.join("a.caption")).unwrap(),
+            b"original caption"
+        );
+        assert_eq!(
+            std::fs::read(root.join("new1.caption")).unwrap(),
+            b"existing caption"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenameOptions {
@@ -20,13 +66,10 @@ pub struct RenameOptions {
     /// 不传（如工作流直接执行）则随机
     #[serde(default)]
     pub shuffle_seed: Option<u64>,
-    /// 是否同步重命名标签文件（.txt, .json）
+    /// 是否同步重命名标签文件（.txt, .json, .caption）
     #[serde(default)]
     pub rename_tags: bool,
 }
-
-/// 标签文件扩展名
-const TAG_EXTS: &[&str] = &["txt", "json"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenamePreviewItem {
@@ -44,51 +87,50 @@ pub async fn preview_rename(options: RenameOptions) -> Result<Vec<RenamePreviewI
 
 fn preview_rename_sync(options: &RenameOptions) -> Result<Vec<RenamePreviewItem>, String> {
     let input = Path::new(&options.input_path);
-    let mut files = collect_image_files(input)?;
+    let mut files = collect_image_files_with_recursive(input, false)?;
 
     if options.shuffle {
         apply_shuffle(&mut files, options.shuffle_seed);
     }
 
-    let mut previews = Vec::new();
+    Ok(plan_renames(&files, options)
+        .into_iter()
+        .map(|(path, renamed)| RenamePreviewItem {
+            original: super::file_name_lossy(&path),
+            renamed,
+        })
+        .collect())
+}
+
+/// 预览与执行共用的命名计划：(源路径, 新文件名)，标签文件紧跟在所属图片之后
+fn plan_renames(files: &[PathBuf], options: &RenameOptions) -> Vec<(PathBuf, String)> {
+    let mut plan = Vec::new();
     for (i, file_path) in files.iter().enumerate() {
-        let original = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
         let ext = file_path
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_else(|| "png".into());
         let number = options.start_number + i as u32;
-        let formatted_num = format!("{:0>width$}", number, width = options.digit_count as usize);
-        let renamed = format!("{}{}.{}", options.prefix, formatted_num, ext);
-        previews.push(RenamePreviewItem {
-            original: original.clone(),
-            renamed: renamed.clone(),
-        });
+        let new_stem = format!(
+            "{}{:0>width$}",
+            options.prefix,
+            number,
+            width = options.digit_count as usize
+        );
+        plan.push((file_path.clone(), format!("{}.{}", new_stem, ext)));
 
-        // 同步预览标签文件
         if options.rename_tags {
             let stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
-            let new_stem = format!("{}{}", options.prefix, formatted_num);
-            for tag_ext in TAG_EXTS {
-                let tag_file = file_path
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join(format!("{}.{}", stem, tag_ext));
-                if tag_file.exists() {
-                    previews.push(RenamePreviewItem {
-                        original: format!("{}.{}", stem, tag_ext),
-                        renamed: format!("{}.{}", new_stem, tag_ext),
-                    });
+            let parent = file_path.parent().unwrap_or(Path::new("."));
+            for tag_ext in TAG_SIDECAR_EXTS {
+                let tag_path = parent.join(format!("{}.{}", stem, tag_ext));
+                if tag_path.exists() {
+                    plan.push((tag_path, format!("{}.{}", new_stem, tag_ext)));
                 }
             }
         }
     }
-
-    Ok(previews)
+    plan
 }
 
 /// 执行批量重命名
@@ -107,56 +149,29 @@ fn execute_rename_sync<R: tauri::Runtime>(
     options: &RenameOptions,
 ) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);
-    let mut files = collect_image_files(input)?;
+    let mut files = collect_image_files_with_recursive(input, false)?;
 
     if options.shuffle {
         apply_shuffle(&mut files, options.shuffle_seed);
     }
 
-    let total = files.len() as u32;
     let mut success_count = 0u32;
     let mut fail_count = 0u32;
     let mut errors = Vec::new();
-    let image_count = files.len() as u32;
 
-    // Step 1: Rename all files to temporary names to avoid conflicts
-    // Each entry: (original_path, temp_path, final_name)
-    let mut temp_mappings: Vec<(std::path::PathBuf, std::path::PathBuf, String)> = Vec::new();
-
-    for (i, file_path) in files.iter().enumerate() {
-        let ext = file_path
-            .extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .unwrap_or_else(|| "png".into());
-        let number = options.start_number + i as u32;
-        let formatted_num = format!("{:0>width$}", number, width = options.digit_count as usize);
-        let final_name = format!("{}{}.{}", options.prefix, formatted_num, ext);
-        let parent = file_path.parent().unwrap_or(Path::new("."));
-
-        // Temp name to avoid collisions
-        let temp_name = format!("__rename_temp_{}_{}", i, uuid_simple());
-        let temp_path = parent.join(&temp_name);
-        temp_mappings.push((file_path.clone(), temp_path, final_name));
-
-        // 标签文件也加入临时映射
-        if options.rename_tags {
-            let stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
-            let new_stem = format!("{}{}", options.prefix, formatted_num);
-            for tag_ext in TAG_EXTS {
-                let tag_path = parent.join(format!("{}.{}", stem, tag_ext));
-                if tag_path.exists() {
-                    let tag_temp = parent.join(format!(
-                        "__rename_temp_{}_tag_{}_{}",
-                        i,
-                        tag_ext,
-                        uuid_simple()
-                    ));
-                    let tag_final = format!("{}.{}", new_stem, tag_ext);
-                    temp_mappings.push((tag_path, tag_temp, tag_final));
-                }
-            }
-        }
-    }
+    // Step 1: Build (original_path, temp_path, final_name) mappings.
+    // 先整批改成临时名再改成最终名，避免新名撞上批内尚未改名的文件；
+    // 临时名里的下标保证批内不重名，批次 ID 避免与目录里已有的文件同名
+    let batch_id = uuid_simple();
+    let temp_mappings: Vec<(PathBuf, PathBuf, String)> = plan_renames(&files, options)
+        .into_iter()
+        .enumerate()
+        .map(|(idx, (original, final_name))| {
+            let parent = original.parent().unwrap_or(Path::new("."));
+            let temp_path = parent.join(format!("__rename_temp_{}_{}", idx, batch_id));
+            (original, temp_path, final_name)
+        })
+        .collect();
 
     // Step 2: Rename to temp names
     for (idx, (original, temp, _)) in temp_mappings.iter().enumerate() {
@@ -188,24 +203,18 @@ fn execute_rename_sync<R: tauri::Runtime>(
     // Step 3: Rename to final names
     let total_mappings = temp_mappings.len() as u32;
     for (i, (original, temp, final_name)) in temp_mappings.iter().enumerate() {
-        let original_name = original
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
+        let original_name = super::file_name_lossy(original);
         let parent = temp.parent().unwrap_or(Path::new("."));
         let final_path = parent.join(final_name);
 
         let _ = app.emit(
             "rename-progress",
-            ProgressEvent {
-                current: i as u32 + 1,
-                total: total_mappings,
-                filename: original_name.clone(),
-                status: "processing".to_string(),
-                message: format!("正在重命名: {} → {}", original_name, final_name),
-                ..Default::default()
-            },
+            ProgressEvent::new(
+                "processing",
+                format!("正在重命名: {} → {}", original_name, final_name),
+            )
+            .at(i as u32 + 1, total_mappings)
+            .file(original_name.clone()),
         );
 
         // 最终名被批外文件占用时拒绝覆盖（批内文件此时都已移到临时名）
@@ -220,14 +229,12 @@ fn execute_rename_sync<R: tauri::Runtime>(
                 success_count += 1;
                 let _ = app.emit(
                     "rename-progress",
-                    ProgressEvent {
-                        current: i as u32 + 1,
-                        total: total_mappings,
-                        filename: original_name.clone(),
-                        status: "success".to_string(),
-                        message: format!("[重命名] {} → {}", original_name, final_name),
-                        ..Default::default()
-                    },
+                    ProgressEvent::new(
+                        "success",
+                        format!("[重命名] {} → {}", original_name, final_name),
+                    )
+                    .at(i as u32 + 1, total_mappings)
+                    .file(original_name.clone()),
                 );
             }
             Err(e) => {
@@ -244,14 +251,9 @@ fn execute_rename_sync<R: tauri::Runtime>(
                 errors.push(err_msg.clone());
                 let _ = app.emit(
                     "rename-progress",
-                    ProgressEvent {
-                        current: i as u32 + 1,
-                        total,
-                        filename: original_name.clone(),
-                        status: "error".to_string(),
-                        message: format!("[错误] {}", err_msg),
-                        ..Default::default()
-                    },
+                    ProgressEvent::new("error", format!("[错误] {}", err_msg))
+                        .at(i as u32 + 1, total_mappings)
+                        .file(original_name.clone()),
                 );
             }
         }
@@ -259,30 +261,29 @@ fn execute_rename_sync<R: tauri::Runtime>(
 
     let _ = app.emit(
         "rename-progress",
-        ProgressEvent {
-            current: total_mappings,
-            total: total_mappings,
-            filename: String::new(),
-            status: "done".to_string(),
-            message: format!(
+        ProgressEvent::new(
+            "done",
+            format!(
                 "重命名完成: 图片 {} 张, 共处理 {} 个文件, 失败 {}",
-                image_count, total_mappings, fail_count
+                files.len(),
+                total_mappings,
+                fail_count
             ),
-            ..Default::default()
-        },
+        )
+        .at(total_mappings, total_mappings),
     );
 
     Ok(ProcessResult {
         success_count,
         fail_count,
-        total,
+        total: total_mappings,
         errors,
     })
 }
 
 /// 打乱文件列表。种子相同时顺序确定，用于让预览与执行的映射一致；
 /// 无种子（工作流等直接执行场景）时完全随机
-fn apply_shuffle(files: &mut [std::path::PathBuf], seed: Option<u64>) {
+fn apply_shuffle(files: &mut [PathBuf], seed: Option<u64>) {
     match seed {
         Some(s) => {
             use rand::SeedableRng;

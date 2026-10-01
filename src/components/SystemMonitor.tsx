@@ -1,14 +1,6 @@
-import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { useAppSettings } from './ThemeProvider';
+import useSystemStats, { getUsageColor } from '../hooks/useSystemStats';
 import { MonitorDot } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-
-interface SystemStats {
-  cpu_usage: number; cpu_name: string; cpu_cores: number;
-  memory_used: number; memory_total: number; memory_percent: number;
-  gpu_name: string; gpu_usage: number; vram_used: number; vram_total: number; vram_percent: number;
-}
 
 function formatBytes(bytes: number): string {
   const gb = bytes / (1024 * 1024 * 1024);
@@ -40,30 +32,9 @@ function GaugeRing({ value, color, label, detail, subtitle, size = 80 }: { value
   );
 }
 
-function getUsageColor(pct: number) {
-  if (pct < 50) return '#4ade80';
-  if (pct < 80) return '#fbbf24';
-  return '#f87171';
-}
-
 export default function SystemMonitor() {
   const { t } = useTranslation();
-  const [stats, setStats] = useState<SystemStats | null>(null);
-  const { monitorInterval } = useAppSettings();
-
-  useEffect(() => {
-    if (monitorInterval <= 0) { setStats(null); return; }
-    let alive = true;
-    const poll = async () => {
-      try {
-        const s = await invoke<SystemStats>('get_system_stats');
-        if (alive) setStats(s);
-      } catch {}
-    };
-    poll();
-    const timer = setInterval(poll, monitorInterval);
-    return () => { alive = false; clearInterval(timer); };
-  }, [monitorInterval]);
+  const stats = useSystemStats();
 
   return (
     <div className="tool-panel" style={{ padding: 'var(--space-5) var(--space-6)' }}>
@@ -107,7 +78,7 @@ export default function SystemMonitor() {
         </div>
       ) : (
         <div style={{ display: 'flex', justifyContent: 'center', padding: 'var(--space-6)', color: 'var(--color-text-tertiary)', fontSize: 12 }}>
-          {monitorInterval <= 0 ? t('systemMonitor.monitorOff') : t('systemMonitor.detecting')}
+          {t('systemMonitor.detecting')}
         </div>
       )}
     </div>

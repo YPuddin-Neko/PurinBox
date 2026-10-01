@@ -1,6 +1,6 @@
-// ═══════════════ 工作流类型定义 ═══════════════
+import type { OptionsCommandCall } from '../../api/commandOptions';
 
-export type NodeCategory = 'input' | 'process' | 'ai' | 'tag' | 'analysis' | 'file' | 'condition' | 'output';
+export type NodeCategory = 'input' | 'process' | 'ai' | 'tag' | 'file' | 'condition' | 'output';
 
 export type NodeStatus = 'idle' | 'waiting' | 'running' | 'done' | 'error';
 
@@ -10,7 +10,7 @@ export interface ParamDef {
   labelKey: string;           // i18n key
   type: 'string' | 'number' | 'boolean' | 'select' | 'path' | 'dynamic-select';
   default: string | number | boolean;
-  options?: { value: string; labelKey: string }[];  // for select type
+  options?: readonly { value: string; labelKey: string }[];  // for select type
   min?: number;
   max?: number;
   step?: number;
@@ -37,7 +37,12 @@ export interface NodeTypeDef {
   inputLabelKey?: string;      // i18n key for input slot label
   outputLabelKey?: string;     // i18n key for output slot label
   outputBLabelKey?: string;    // i18n key for second output slot label
-  tauriCommand?: string;       // mapped Tauri command name
+  buildOptions?: (params: Record<string, any>, io: { input_path: string; output_path: string; recursive: boolean }) => OptionsCommandCall | Promise<OptionsCommandCall>;
+  inPlace?: boolean | ((params: Record<string, any>) => boolean);
+  carrySidecars?: boolean;
+  nestedOutput?: boolean;
+  flatInputOnly?: boolean;
+  allowEmptyResult?: boolean;
   cancelCommand?: string;      // 取消命令（停止工作流时用于终止该节点的子进程）
   progressEvent?: string;      // 后端进度事件名（运行该节点时桥接到画布进度显示）
 }
@@ -46,7 +51,6 @@ export interface NodeTypeDef {
 export interface WorkflowNodeData {
   [key: string]: unknown;      // React Flow requires Record<string, unknown>
   type: string;                // reference to NodeTypeDef.type
-  label: string;               // display label
   params: Record<string, any>; // parameter values
   status: NodeStatus;
   statusMessage?: string;

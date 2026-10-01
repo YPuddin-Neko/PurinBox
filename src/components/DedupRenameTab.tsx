@@ -1,39 +1,49 @@
-import { useState, useEffect, useCallback } from 'react';
-import { createPortal } from 'react-dom';
-import { invoke } from '@tauri-apps/api/core';
-import { ensureAssetScope } from '../utils/assetScope';
-import { listen } from '../utils/tauriRuntime';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { convertFileSrc } from '@tauri-apps/api/core';
-import { FolderOpen, ArrowRight, Play, Loader2, Search, RotateCcw, ChevronLeft, ChevronRight, Download } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr, useLogState } from './ProgressLog';
-import ProcessButton from './ProcessButton';
-import { useTaskQueue } from './TaskContext';
+import { ArrowRight, Download, FolderOpen, Loader2, Play, RotateCcw, Search } from 'lucide-react';
+import { useCallback, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { useBatchTask } from '../hooks/useBatchTask';
+import { ensureAssetScope } from '../utils/assetScope';
+import HashThresholdFields from './HashThresholdFields';
+import LightboxShell from './LightboxShell';
+import ProcessButton from './ProcessButton';
+import ProgressLog from './ProgressLog';
+import Pager from './ui/Pager';
 
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
-interface DedupPair { path_a: string; name_a: string; path_b: string; name_b: string; similarity: number; method: string; }
-interface ScanResult { pairs: DedupPair[]; total_a: number; total_b: number; unmatched_a: string[]; unmatched_b: string[]; scan_time_ms: number; failed_files?: string[]; }
+interface DedupPair { path_a: string; name_a: string; path_b: string; name_b: string; }
+interface ScanResult { pairs: DedupPair[]; total_a: number; total_b: number; unmatched_a: string[]; unmatched_b: string[]; scan_time_ms: number; failed_files: string[]; }
 // direction: 'a' = B uses A's name, 'b' = A uses B's name
 type Direction = 'a' | 'b';
 
+/** srcPath 改用 nameFrom 的主名并保留自己的扩展名；otherPath 是配对中的另一个文件 */
+function buildRenameAction(srcPath: string, srcName: string, nameFrom: string, otherPath: string) {
+  const stem = nameFrom.replace(/\.[^.]+$/, '');
+  const ext = srcName.includes('.') ? srcName.replace(/^.*\./, '.') : '';
+  const targetName = stem + ext;
+  const targetPath = srcPath.substring(0, srcPath.length - srcName.length) + targetName;
+  return {
+    src_path: srcPath,
+    target_name: targetName,
+    conflict_path: targetPath === otherPath && targetPath !== srcPath ? otherPath : null,
+  };
+}
+
 export default function DedupRenameTab() {
   const { t } = useTranslation();
-  const { addTask, updateTask } = useTaskQueue();
+  const task = useBatchTask({ event: 'dedup-rename-progress', taskId: 'dedup-rename', logDone: false });
+  const [scanFolders, setScanFolders] = useState({ a: '', b: '' });
+  const [exportError, setExportError] = useState('');
+
   const [folderA, setFolderA] = useState('');
   const [folderB, setFolderB] = useState('');
   const [dhash, setDhash] = useState(10);
   const [phash, setPhash] = useState(10);
   const [colorTh, setColorTh] = useState(0.85);
-  const [scanning, setScanning] = useState(false);
+
   const [executing, setExecuting] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [pCur, setPCur] = useState(0);
-  const [pTot, setPTot] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasError, setHasError] = useState(false);
-  const [startTime, setStartTime] = useState(0);
+
   const [pairs, setPairs] = useState<DedupPair[]>([]);
   const [directions, setDirections] = useState<Direction[]>([]);
   const [totalA, setTotalA] = useState(0);
@@ -41,136 +51,68 @@ export default function DedupRenameTab() {
   const [unmatchedA, setUnmatchedA] = useState<string[]>([]);
   const [unmatchedB, setUnmatchedB] = useState<string[]>([]);
   const [unmatchModal, setUnmatchModal] = useState<'a' | 'b' | null>(null);
-  const [lightbox, setLightbox] = useState<{ idx: number; side: 'a' | 'b' } | null>(null);
+  const [lightbox, setLightbox] = useState<{ idx: number } | null>(null);
   const [pairPage, setPairPage] = useState(0);
   const PAIRS_PER_PAGE = 15;
-
-  useEffect(() => {
-    let active = true;
-    const p = listen<ProgressPayload>('dedup-rename-progress', (e) => {
-      if (!active) return;
-      const d = e.payload;
-      setPCur(d.current); setPTot(d.total);
-      if (d.total > 0) setProgress(Math.round((d.current / d.total) * 100));
-      if (d.status === 'done') setIsDone(true);
-      if (d.status === 'error') setHasError(true);
-      if (d.status !== 'processing') {
-        setLogs(prev => [...prev, { time: getTimeStr(), message: d.message, status: d.status === 'done' ? 'info' : d.status as LogEntry['status'] }]);
-      }
-    });
-    return () => { active = false; p.then(u => u()); };
-  }, []);
 
   const pickFolder = useCallback(async (setter: (v: string) => void) => {
     const sel = await open({ directory: true, title: t('pages.selectInputTitle') });
     if (sel) setter(sel as string);
   }, [t]);
 
-  const handleScan = useCallback(async () => {
-    if (!folderA || !folderB) return;
-    setScanning(true); setProgress(0); setPCur(0); setPTot(0);
-    setIsDone(false); setHasError(false); setStartTime(Date.now());
-    setPairs([]); setDirections([]);
-    setLogs([{ time: getTimeStr(), message: t('dedupRename.scanStart'), status: 'info' }]);
-    addTask('dedup-rename', t('dedupRename.tabDedup'));
-    try {
-      await ensureAssetScope(folderA);
-      await ensureAssetScope(folderB);
-      const result = await invoke<ScanResult>('scan_dedup_rename', {
-        options: { folder_a: folderA, folder_b: folderB, dhash_threshold: dhash, phash_threshold: phash, color_threshold: colorTh },
-      });
-      setPairs(result.pairs);
-      setDirections(result.pairs.map(() => 'a' as Direction));
-      setPairPage(0);
-      setTotalA(result.total_a);
-      setTotalB(result.total_b);
-      setUnmatchedA(result.unmatched_a);
-      setUnmatchedB(result.unmatched_b); // default: B uses A's name
-      setLogs(prev => [...prev, {
-        time: getTimeStr(),
-        message: t('dedupRename.scanDone', { a: result.total_a, b: result.total_b, pairs: result.pairs.length, time: (result.scan_time_ms / 1000).toFixed(1) }),
-        status: 'success',
-      }]);
-    } catch (e: any) {
-      setLogs(prev => [...prev, { time: getTimeStr(), message: String(e), status: 'error' }]);
-      updateTask('dedup-rename', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
-      setHasError(true);
-    } finally { setIsDone(true); setScanning(false); }
-  }, [folderA, folderB, dhash, phash, colorTh, t]);
+  const handleScan = async () => {
+    setPairs([]); setDirections([]); setUnmatchedA([]); setUnmatchedB([]); setLightbox(null); setUnmatchModal(null);
+    const result = await task.run({
+      taskName: t('dedupRename.tabDedup'), startLog: t('dedupRename.scanStart'), exec: async () => {
+        await ensureAssetScope(folderA); await ensureAssetScope(folderB);
+        return invoke<ScanResult>('scan_dedup_rename', { options: { folder_a: folderA, folder_b: folderB, dhash_threshold: dhash, phash_threshold: phash, color_threshold: colorTh } });
+      }
+    });
+    if (!result) return;
+    setPairs(result.pairs); setDirections(result.pairs.map(() => 'a')); setPairPage(0);
+    setTotalA(result.total_a); setTotalB(result.total_b); setUnmatchedA(result.unmatched_a); setUnmatchedB(result.unmatched_b);
+    setScanFolders({ a: folderA, b: folderB });
+    result.failed_files.forEach(file => task.logger.appendLog(file, 'warning'));
+    task.logger.appendLog(t('dedupRename.scanDone', { a: result.total_a, b: result.total_b, pairs: result.pairs.length, time: (result.scan_time_ms / 1000).toFixed(1) }), 'success');
+  };
 
   const toggleDirection = (idx: number) => {
     setDirections(prev => { const n = [...prev]; n[idx] = n[idx] === 'a' ? 'b' : 'a'; return n; });
   };
   const setAllDirection = (d: Direction) => setDirections(prev => prev.map(() => d));
 
-  const handleExecute = useCallback(async () => {
-    if (pairs.length === 0) return;
-    setExecuting(true); setProgress(0); setPCur(0); setPTot(0);
-    setIsDone(false); setHasError(false);
-    setLogs(prev => [...prev, { time: getTimeStr(), message: t('dedupRename.execStart', { count: pairs.length }), status: 'info' }]);
-    addTask('dedup-rename', t('dedupRename.tabDedup'));
+  const handleExecute = async () => {
+    if (!pairs.length || task.processing) return;
+    setExecuting(true);
     try {
-      const actions = pairs.map((p, i) => {
-        const dir = directions[i];
-        if (dir === 'a') {
-          // B uses A's name: rename B's file to A's name stem + B's extension
-          const aStem = p.name_a.replace(/\.[^.]+$/, '');
-          const bExt = p.name_b.includes('.') ? p.name_b.replace(/^.*\./, '.') : '';
-          const targetName = aStem + bExt;
-          // Check if the target already exists in B's folder (same folder as B)
-          const bDir = p.path_b.substring(0, p.path_b.length - p.name_b.length);
-          const targetPath = bDir + targetName;
-          const needConflict = targetPath !== p.path_b && folderA === folderB;
-          return {
-            src_path: p.path_b,
-            target_name: targetName,
-            conflict_path: needConflict ? p.path_a : null,
-          };
-        } else {
-          // A uses B's name
-          const bStem = p.name_b.replace(/\.[^.]+$/, '');
-          const aExt = p.name_a.includes('.') ? p.name_a.replace(/^.*\./, '.') : '';
-          const targetName = bStem + aExt;
-          const aDir = p.path_a.substring(0, p.path_a.length - p.name_a.length);
-          const targetPath = aDir + targetName;
-          const needConflict = targetPath !== p.path_a && folderA === folderB;
-          return {
-            src_path: p.path_a,
-            target_name: targetName,
-            conflict_path: needConflict ? p.path_b : null,
-          };
+      const result = await task.run({
+        taskName: t('dedupRename.tabDedup'), startLog: t('dedupRename.execStart', { count: pairs.length }), keepLogs: true, cancellable: false, exec: () => {
+          const actions = pairs.map((p, i) => directions[i] === 'a'
+            ? buildRenameAction(p.path_b, p.name_b, p.name_a, p.path_a)
+            : buildRenameAction(p.path_a, p.name_a, p.name_b, p.path_b));
+          return invoke<{ success_count: number; fail_count: number; errors: string[] }>('execute_dedup_rename', { actions });
         }
       });
-      const result = await invoke<{ success_count: number; fail_count: number; errors: string[] }>('execute_dedup_rename', { actions });
-      setLogs(prev => [...prev, {
-        time: getTimeStr(),
-        message: t('dedupRename.execDone', { ok: result.success_count, fail: result.fail_count }),
-        status: result.fail_count > 0 ? 'warning' : 'success',
-      }]);
-      result.errors.forEach(err => setLogs(prev => [...prev, { time: getTimeStr(), message: err, status: 'error' }]));
-      setPairs([]);
-    } catch (e: any) {
-      setLogs(prev => [...prev, { time: getTimeStr(), message: String(e), status: 'error' }]);
-      updateTask('dedup-rename', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
-      setHasError(true);
-    } finally { setExecuting(false); setIsDone(true); }
-  }, [pairs, directions, folderA, folderB, t]);
-
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); setStartTime(0); }, []);
-  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
+      if (!result) return;
+      task.logger.appendLog(t('dedupRename.execDone', { ok: result.success_count, fail: result.fail_count }), result.fail_count ? 'warning' : 'success');
+      if (result.errors.length) task.logger.appendLog(result.errors.join('\n'), 'error');
+      setPairs([]); setLightbox(null);
+    } finally { setExecuting(false); }
+  };
 
   const panel: React.CSSProperties = { background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-lg)', padding: 20 };
   const label: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 6, display: 'block' };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 20, minHeight: 'calc(100vh - 260px)' }}>
+    // 网格占满宿主页剩余高度：配对列表在右栏内滚动，翻页栏始终可见
+    <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gridTemplateRows: 'minmax(0, 1fr)', gap: 20, flex: 1, minHeight: 420 }}>
       {/* Left: settings */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflowY: 'auto' }}>
         <div style={panel}>
           <label style={label}>{t('dedupRename.folderA')}</label>
           <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
             <input className="form-input" value={folderA} onChange={e => setFolderA(e.target.value)}
-              placeholder={t('dedupRename.folderAHint')} style={{ flex: 1, fontSize: 12 }} />
+              placeholder={t('pages.selectInputFolder')} style={{ flex: 1, fontSize: 12 }} />
             <button className="btn btn-secondary" onClick={() => pickFolder(setFolderA)} style={{ flexShrink: 0 }}>
               <FolderOpen style={{ width: 14, height: 14 }} />
             </button>
@@ -178,47 +120,22 @@ export default function DedupRenameTab() {
           <label style={label}>{t('dedupRename.folderB')}</label>
           <div style={{ display: 'flex', gap: 6 }}>
             <input className="form-input" value={folderB} onChange={e => setFolderB(e.target.value)}
-              placeholder={t('dedupRename.folderBHint')} style={{ flex: 1, fontSize: 12 }} />
+              placeholder={t('pages.selectInputFolder')} style={{ flex: 1, fontSize: 12 }} />
             <button className="btn btn-secondary" onClick={() => pickFolder(setFolderB)} style={{ flexShrink: 0 }}>
               <FolderOpen style={{ width: 14, height: 14 }} />
             </button>
           </div>
         </div>
 
-        <div style={panel}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: 12 }}>{t('dedupRename.matchParams')}</div>
-          {[
-            { label: t('dedupRename.dhash'), value: dhash, set: setDhash, min: 1, max: 20, isInt: true },
-            { label: t('dedupRename.phash'), value: phash, set: setPhash, min: 1, max: 20, isInt: true },
-          ].map(s => (
-            <div key={s.label} style={{ marginBottom: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={label}>{s.label}</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: '#7c5cfc', fontFamily: 'monospace' }}>{s.value}</span>
-              </div>
-              <input type="range" min={s.min} max={s.max} value={s.value}
-                onChange={e => s.set(Number(e.target.value))}
-                style={{ width: '100%', accentColor: '#7c5cfc' }} />
-            </div>
-          ))}
-          <div style={{ marginBottom: 4 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-              <span style={label}>{t('dedupRename.colorTh')}</span>
-              <span style={{ fontSize: 13, fontWeight: 700, color: '#7c5cfc', fontFamily: 'monospace' }}>{colorTh.toFixed(2)}</span>
-            </div>
-            <input type="range" min={0} max={100} value={Math.round(colorTh * 100)}
-              onChange={e => setColorTh(Number(e.target.value) / 100)}
-              style={{ width: '100%', accentColor: '#7c5cfc' }} />
-          </div>
-        </div>
+        <div style={panel}><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: 12 }}>{t('dedupRename.matchParams')}</div><HashThresholdFields dhash={dhash} onDhash={setDhash} phash={phash} onPhash={setPhash} color={colorTh} onColor={setColorTh} /></div>
 
-        <ProcessButton processing={scanning} onStart={handleScan}
-          disabled={!folderA || !folderB}
+        <ProcessButton {...task.buttonProps} onStart={handleScan}
+          disabled={!folderA || !folderB || task.processing}
           cancelCommand="cancel_dedup_rename"
           startText={t('dedupRename.startScan')} processingText={t('dedupRename.scanning')}
-          onCancelLog={addCancelLog} />
+        />
 
-        <ProgressLog progress={progress} current={pCur} total={pTot} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} externalStartTime={startTime} />
+        <ProgressLog {...task.progressLogProps} />
       </div>
 
       {/* Right: results */}
@@ -226,7 +143,7 @@ export default function DedupRenameTab() {
         {pairs.length === 0 ? (
           <div style={{ ...panel, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, color: 'var(--color-text-tertiary)' }}>
             <Search style={{ width: 48, height: 48, opacity: 0.15 }} />
-            <span style={{ fontSize: 13 }}>{scanning ? t('dedupRename.scanning') : isDone ? t('dedupRename.noMatch') : t('dedupRename.hint')}</span>
+            <span style={{ fontSize: 13 }}>{task.processing && !executing ? t('dedupRename.scanning') : task.progressLogProps.isDone ? t('dedupRename.noMatch') : ''}</span>
           </div>
         ) : (
           <>
@@ -266,7 +183,7 @@ export default function DedupRenameTab() {
               </button>
               <div style={{ flex: 1 }} />
               <button className="btn btn-primary" style={{ padding: '6px 20px', fontSize: 13 }}
-                onClick={handleExecute} disabled={executing || pairs.length === 0}>
+                onClick={handleExecute} disabled={task.processing || pairs.length === 0}>
                 {executing ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('dedupRename.executing')}</> : <><Play style={{ width: 14, height: 14 }} /> {t('dedupRename.execute')}</>}
               </button>
             </div>
@@ -324,7 +241,7 @@ export default function DedupRenameTab() {
                             </div>
                           </td>
                           <td style={{ padding: '6px 8px', textAlign: 'center' }}>
-                            <button className="btn btn-ghost" onClick={() => setLightbox({ idx, side: 'a' })}
+                            <button className="btn btn-ghost" onClick={() => setLightbox({ idx })}
                               style={{ padding: '2px 6px', height: 22, fontSize: 9 }}>
                               {t('dedupRename.view')}
                             </button>
@@ -337,19 +254,7 @@ export default function DedupRenameTab() {
               </div>
               {/* Pagination */}
               {Math.ceil(pairs.length / PAIRS_PER_PAGE) > 1 && (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '8px 0', borderTop: '1px solid var(--color-border)' }}>
-                  <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 28 }}
-                    disabled={pairPage === 0} onClick={() => setPairPage(p => p - 1)}>
-                    <ChevronLeft style={{ width: 14, height: 14 }} />
-                  </button>
-                  <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', fontWeight: 600, minWidth: 60, textAlign: 'center' }}>
-                    {pairPage + 1} / {Math.ceil(pairs.length / PAIRS_PER_PAGE)}
-                  </span>
-                  <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 28 }}
-                    disabled={pairPage >= Math.ceil(pairs.length / PAIRS_PER_PAGE) - 1} onClick={() => setPairPage(p => p + 1)}>
-                    <ChevronRight style={{ width: 14, height: 14 }} />
-                  </button>
-                </div>
+                <Pager footer page={pairPage} pages={Math.ceil(pairs.length / PAIRS_PER_PAGE)} onChange={setPairPage} />
               )}
             </div>
           </>
@@ -361,12 +266,7 @@ export default function DedupRenameTab() {
         const pair = pairs[lightbox.idx];
         const pathA = pair.path_a, pathB = pair.path_b;
         return (
-          <div onClick={() => setLightbox(null)} style={{
-            position: 'fixed', inset: 0, zIndex: 1000,
-            background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(8px)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 24,
-            animation: 'fadeIn 0.15s ease',
-          }}>
+          <LightboxShell onClose={() => setLightbox(null)}>
             <div onClick={e => e.stopPropagation()} style={{ display: 'flex', gap: 24, maxWidth: '90vw', maxHeight: '85vh' }}>
               {[{ path: pathA, name: pair.name_a, label: 'A' }, { path: pathB, name: pair.name_b, label: 'B' }].map(item => (
                 <div key={item.label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
@@ -379,8 +279,8 @@ export default function DedupRenameTab() {
                 </div>
               ))}
             </div>
-            <div style={{ position: 'absolute', top: 20, right: 20, fontSize: 12, color: 'rgba(255,255,255,0.4)' }}>{t('dedupRename.closeBg')}</div>
-          </div>
+
+          </LightboxShell>
         );
       })(), document.body)}
 
@@ -391,7 +291,7 @@ export default function DedupRenameTab() {
         const title = isA ? t('dedupRename.unmatchATitle') : t('dedupRename.unmatchBTitle');
         const color = isA ? '#f59e0b' : '#ef4444';
         return (
-          <div onClick={() => setUnmatchModal(null)} style={{
+          <div onClick={() => { setExportError(''); setUnmatchModal(null); }} style={{
             position: 'fixed', inset: 0, zIndex: 1000,
             background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -411,18 +311,19 @@ export default function DedupRenameTab() {
                     const dest = await open({ directory: true, title: t('dedupRename.exportSelectDest') });
                     if (!dest) return;
                     try {
-                      const sourceFolder = isA ? folderA : folderB;
+                      const sourceFolder = isA ? scanFolders.a : scanFolders.b;
+                      if (sourceFolder.replace(/[\\/]+$/, '') === String(dest).replace(/[\\/]+$/, '')) {
+                        const message = t('dedupRename.exportSameFolder');
+                        setExportError(message); task.logger.appendLog(message, 'warning'); return;
+                      }
+                      setExportError('');
                       const result = await invoke<{ success_count: number; fail_count: number; errors: string[] }>('export_unmatched_files', {
                         sourceFolder, filenames: items, destFolder: dest as string,
                       });
-                      setLogs(prev => [...prev, {
-                        time: getTimeStr(),
-                        message: t('dedupRename.exportDone', { success: result.success_count, fail: result.fail_count }),
-                        status: result.fail_count > 0 ? 'warning' : 'success',
-                      }]);
+                      task.logger.appendLog(t('dedupRename.exportDone', { success: result.success_count, fail: result.fail_count }), result.fail_count > 0 ? 'warning' : 'success');
                       setUnmatchModal(null);
                     } catch (e: any) {
-                      setLogs(prev => [...prev, { time: getTimeStr(), message: `${t('dedupRename.exportFail')}: ${String(e)}`, status: 'error' }]);
+                      task.logger.appendLog(`${t('dedupRename.exportFail')}: ${String(e)}`, 'error');
                     }
                   }}>
                   <Download style={{ width: 12, height: 12 }} />
@@ -444,9 +345,7 @@ export default function DedupRenameTab() {
                   </div>
                 ))}
               </div>
-              <div style={{ padding: '10px 20px', borderTop: '1px solid var(--color-border)', fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                {t('dedupRename.unmatchHint')}
-              </div>
+              {exportError && <div role="alert" style={{ padding: '10px 20px', color: 'var(--color-error)' }}>{exportError}</div>}
             </div>
           </div>
         );

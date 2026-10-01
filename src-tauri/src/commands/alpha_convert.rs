@@ -1,16 +1,15 @@
-use image::{DynamicImage, GenericImageView};
+use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Emitter;
 
-use super::image_io::{load_image, save_like_source};
-use super::{
-    collect_image_files_with_recursive_excluding, output_path_for_input, ProcessResult,
-    ProgressEvent,
+use super::image_io::{
+    flatten_preserving_depth, load_image, probe_has_alpha_channel, save_like_source,
 };
+use super::{collect_image_files_with_recursive_excluding, same_name_output, ProcessResult};
 
-static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+use super::batch::{BatchJob, FileBatch, FileOutcome};
+
+static JOB: BatchJob = BatchJob::new("透明通道转换");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlphaConvertOptions {
@@ -39,19 +38,12 @@ pub async fn convert_alpha<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: AlphaConvertOptions,
 ) -> Result<ProcessResult, String> {
-    // 互斥：页面与工作流节点共用全局取消标志，并发会互吞取消
-    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let _busy = crate::commands::BusyGuard::acquire(&RUNNING, "透明通道转换")?;
-
-    CANCEL_FLAG.store(false, Ordering::SeqCst);
-    tokio::task::spawn_blocking(move || convert_alpha_sync(&app, &options))
-        .await
-        .map_err(|e| format!("任务执行失败: {}", e))?
+    JOB.run(move || convert_alpha_sync(&app, &options)).await
 }
 
 #[tauri::command]
 pub fn cancel_alpha() {
-    CANCEL_FLAG.store(true, Ordering::SeqCst);
+    JOB.cancel();
 }
 
 fn convert_alpha_sync<R: tauri::Runtime>(
@@ -60,130 +52,37 @@ fn convert_alpha_sync<R: tauri::Runtime>(
 ) -> Result<ProcessResult, String> {
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
-
-    if !output_dir.exists() {
-        std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
-    }
-
+    std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
     let files =
         collect_image_files_with_recursive_excluding(input, options.recursive, Some(output_dir))?;
-    let total = files.len() as u32;
-    let mut success_count = 0u32;
-    let mut fail_count = 0u32;
-    let mut skipped = 0u32;
-    let mut errors = Vec::new();
-
     let bg_color: [u8; 3] = match options.background.as_str() {
         "black" => [0, 0, 0],
         _ => [255, 255, 255],
     };
-
-    for (i, file_path) in files.iter().enumerate() {
-        if CANCEL_FLAG.load(Ordering::SeqCst) {
-            let _ = app.emit(
-                "alpha-progress",
-                ProgressEvent {
-                    current: i as u32,
-                    total,
-                    filename: String::new(),
-                    status: "done".to_string(),
-                    message: format!("已取消: 已处理 {}, 共 {}", i, total),
-                    ..Default::default()
-                },
-            );
-            break;
-        }
-        let filename = file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        let _ = app.emit(
-            "alpha-progress",
-            ProgressEvent {
-                current: i as u32 + 1,
-                total,
-                filename: filename.clone(),
-                status: "processing".to_string(),
-                message: format!("正在检测: {}", filename),
-                ..Default::default()
-            },
-        );
-
-        match process_alpha(file_path, input, output_dir, options, &bg_color) {
-            Ok(converted) => {
-                if converted {
-                    success_count += 1;
-                    let _ = app.emit(
-                        "alpha-progress",
-                        ProgressEvent {
-                            current: i as u32 + 1,
-                            total,
-                            filename: filename.clone(),
-                            status: "success".to_string(),
-                            message: format!("[转换] {} (检测到透明通道, 已转换)", filename),
-                            ..Default::default()
-                        },
-                    );
-                } else {
-                    skipped += 1;
-                    let _ = app.emit(
-                        "alpha-progress",
-                        ProgressEvent {
-                            current: i as u32 + 1,
-                            total,
-                            filename: filename.clone(),
-                            status: "success".to_string(),
-                            message: format!("[跳过] {} (无透明通道)", filename),
-                            ..Default::default()
-                        },
-                    );
-                }
-            }
-            Err(e) => {
-                fail_count += 1;
-                let err_msg = format!("{}: {}", filename, e);
-                errors.push(err_msg.clone());
-                let _ = app.emit(
-                    "alpha-progress",
-                    ProgressEvent {
-                        current: i as u32 + 1,
-                        total,
-                        filename: filename.clone(),
-                        status: "error".to_string(),
-                        message: format!("[错误] {}", err_msg),
-                        ..Default::default()
+    Ok(FileBatch::new(app, "alpha-progress", JOB.cancel_flag())
+        .processing("正在检测")
+        .error_prefix("[错误] ")
+        .run(
+            &files,
+            |item| {
+                Ok(
+                    if process_alpha(item.path, input, output_dir, options, &bg_color)? {
+                        FileOutcome::done(format!("[转换] {} (检测到透明通道, 已转换)", item.name))
+                    } else {
+                        FileOutcome::unchanged(format!("[跳过] {} (无透明通道)", item.name))
                     },
-                );
-            }
-        }
-    }
-
-    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
-    if !CANCEL_FLAG.load(Ordering::SeqCst) {
-        let _ = app.emit(
-            "alpha-progress",
-            ProgressEvent {
-                current: total,
-                total,
-                filename: String::new(),
-                status: "done".to_string(),
-                message: format!(
-                    "完成: 转换 {}, 跳过 {}, 失败 {}, 共 {}",
-                    success_count, skipped, fail_count, total
-                ),
-                ..Default::default()
+                )
             },
-        );
-    }
-
-    Ok(ProcessResult {
-        success_count,
-        fail_count,
-        total,
-        errors,
-    })
+            |c| {
+                format!(
+                    "完成: 转换 {}, 跳过 {}, 失败 {}, 共 {}",
+                    c.success - c.unchanged,
+                    c.unchanged,
+                    c.failed,
+                    c.total
+                )
+            },
+        ))
 }
 
 fn process_alpha(
@@ -193,49 +92,22 @@ fn process_alpha(
     options: &AlphaConvertOptions,
     bg_color: &[u8; 3],
 ) -> Result<bool, String> {
+    let output_path = same_name_output(input_root, file_path, output_dir, options.recursive)?;
+    if !probe_has_alpha_channel(file_path)? {
+        crate::commands::copy_file_safe(file_path, &output_path)?;
+        return Ok(false);
+    }
     let (img, source) = load_image(file_path)?;
 
     if !has_alpha(&img) {
-        let filename = file_path
-            .file_name()
-            .ok_or("无效的文件名")?
-            .to_string_lossy();
-        let dest = output_path_for_input(
-            input_root,
-            file_path,
-            output_dir,
-            filename.as_ref(),
-            options.recursive,
-        )?;
-        crate::commands::copy_file_safe(file_path, &dest)?;
+        crate::commands::copy_file_safe(file_path, &output_path)?;
         return Ok(false);
     }
-
-    let (width, height) = img.dimensions();
-    let rgba = img.to_rgba8();
-    let mut rgb = image::RgbImage::new(width, height);
-
-    for (x, y, pixel) in rgba.enumerate_pixels() {
-        let alpha = pixel[3] as f32 / 255.0;
-        let r = (pixel[0] as f32 * alpha + bg_color[0] as f32 * (1.0 - alpha)) as u8;
-        let g = (pixel[1] as f32 * alpha + bg_color[1] as f32 * (1.0 - alpha)) as u8;
-        let b = (pixel[2] as f32 * alpha + bg_color[2] as f32 * (1.0 - alpha)) as u8;
-        rgb.put_pixel(x, y, image::Rgb([r, g, b]));
-    }
-
-    let file_name = file_path
-        .file_name()
-        .ok_or("无效的文件名")?
-        .to_string_lossy();
-    let output_path = output_path_for_input(
-        input_root,
-        file_path,
-        output_dir,
-        file_name.as_ref(),
-        options.recursive,
+    save_like_source(
+        flatten_preserving_depth(img, *bg_color),
+        &output_path,
+        &source,
     )?;
-
-    save_like_source(DynamicImage::ImageRgb8(rgb), &output_path, &source)?;
 
     Ok(true)
 }
@@ -243,6 +115,68 @@ fn process_alpha(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_alpha_channel_copies_without_pixel_decode() {
+        let root = super::super::image_io::test_dir("alpha_header");
+        let path = root.join("broken.png");
+        super::super::image_io::write_broken_pixels(&path);
+        let output = root.join("out");
+        std::fs::create_dir_all(&output).unwrap();
+        let options = AlphaConvertOptions {
+            input_path: root.to_string_lossy().into_owned(),
+            output_path: output.to_string_lossy().into_owned(),
+            background: "white".into(),
+            recursive: false,
+        };
+        assert!(!process_alpha(&path, &root, &output, &options, &[255, 255, 255]).unwrap());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            std::fs::read(output.join("broken.png")).unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn flatten_preserves_16bit_values_and_counts_unchanged() {
+        let root = super::super::image_io::test_dir("alpha16");
+        let input = root.join("in");
+        let output = root.join("out");
+        std::fs::create_dir_all(&input).unwrap();
+        let pixel = [12345u16, 23456, 34567, 32768];
+        for ext in ["png", "tiff"] {
+            image::ImageBuffer::from_pixel(3, 2, image::Rgba(pixel))
+                .save(input.join(format!("a.{ext}")))
+                .unwrap();
+        }
+        image::RgbImage::new(3, 2)
+            .save(input.join("opaque.png"))
+            .unwrap();
+        let options = AlphaConvertOptions {
+            input_path: input.to_string_lossy().into_owned(),
+            output_path: output.to_string_lossy().into_owned(),
+            background: "white".into(),
+            recursive: false,
+        };
+        let app = tauri::test::mock_app();
+        let result = convert_alpha_sync(app.handle(), &options).unwrap();
+        assert_eq!(
+            (result.success_count, result.fail_count, result.total),
+            (3, 0, 3)
+        );
+        let expected: [u16; 3] =
+            std::array::from_fn(|c| ((u64::from(pixel[c]) * 32768 + 65535 * 32767) / 65535) as u16);
+        for ext in ["png", "tiff"] {
+            let image = image::open(output.join(format!("a.{ext}"))).unwrap();
+            assert_eq!(image.color(), image::ColorType::Rgb16);
+            assert_eq!(image.to_rgb16().get_pixel(0, 0).0, expected);
+        }
+        assert_eq!(
+            std::fs::read(input.join("opaque.png")).unwrap(),
+            std::fs::read(output.join("opaque.png")).unwrap()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn keeps_source_name_and_format() {
@@ -264,7 +198,10 @@ mod tests {
 
         assert!(process_alpha(&src, &input, &out, &options, &[255, 255, 255]).unwrap());
         let bytes = std::fs::read(out.join("w.webp")).unwrap();
-        assert_eq!(image::guess_format(&bytes).unwrap(), image::ImageFormat::WebP);
+        assert_eq!(
+            image::guess_format(&bytes).unwrap(),
+            image::ImageFormat::WebP
+        );
         let img = image::load_from_memory(&bytes).unwrap();
         assert!(!img.color().has_alpha());
         assert_eq!(img.to_rgb8().get_pixel(8, 8).0, [255, 255, 255]);

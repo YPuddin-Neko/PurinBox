@@ -21,10 +21,8 @@ if (hasTauriRuntime()) {
     const btn = document.createElement('button');
     btn.textContent = label;
     btn.disabled = disabled;
-    btn.style.cssText = `display:block;width:100%;padding:6px 12px;border:none;background:none;font-size:12px;text-align:left;border-radius:4px;font-family:inherit;cursor:${disabled ? 'default' : 'pointer'};color:${disabled ? 'var(--color-text-tertiary)' : 'var(--color-text-secondary)'};opacity:${disabled ? '0.5' : '1'};`;
+    btn.className = 'native-context-item';
     if (!disabled) {
-      btn.onmouseenter = () => { btn.style.background = 'var(--color-bg-hover)'; btn.style.color = 'var(--color-text-primary)'; };
-      btn.onmouseleave = () => { btn.style.background = 'none'; btn.style.color = 'var(--color-text-secondary)'; };
       btn.onclick = () => { action(); closeMenu(); };
     }
     return btn;

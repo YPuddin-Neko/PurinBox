@@ -1,13 +1,15 @@
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
+use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::Emitter;
 
-use super::{finalize_part_file, prepare_part_file};
+use super::http_download::{download_client, download_to_file, huggingface_url, DownloadProgress};
+use super::python_proc::{self, ProtocolReader, Recv, PYTHON_SILENCE_LIMIT};
 use super::{ProcessResult, ProgressEvent};
 
 /// 美学评分选项
@@ -18,8 +20,6 @@ pub struct AestheticOptions {
     pub output_path: String,
     #[serde(default)]
     pub use_gpu: bool,
-    #[serde(default = "default_true")]
-    pub move_files: bool,
     /// 复制而非移动（工作流用：输出是临时目录时移动会让原图随清理被删）
     #[serde(default)]
     pub copy_files: bool,
@@ -29,9 +29,6 @@ pub struct AestheticOptions {
     pub recursive: bool,
 }
 
-fn default_true() -> bool {
-    true
-}
 fn default_batch_size() -> u32 {
     1
 }
@@ -41,934 +38,442 @@ static AESTHETIC_CANCELLED: AtomicBool = AtomicBool::new(false);
 static AESTHETIC_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 static DOWNLOAD_CANCELLED: AtomicBool = AtomicBool::new(false);
 
-/// 模型存储目录
 fn get_aesthetic_model_dir() -> PathBuf {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let base = if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or(exe_dir)
-    } else {
-        exe_dir
-    };
-
-    base.join("models")
-        .join("aesthetic_models")
-        .join("swinv2pv3_v0_448_ls0.2_x")
+    super::config_paths::models_dir("aesthetic_models").join("swinv2pv3_v0_448_ls0.2_x")
 }
 
-/// 模型是否已下载
 fn is_model_downloaded() -> bool {
     let dir = get_aesthetic_model_dir();
-    dir.join("model.onnx").exists() && dir.join("meta.json").exists()
-}
-
-/// 获取推理脚本路径
-fn get_script_path() -> Result<PathBuf, String> {
-    super::python_proc::find_script("aesthetic_inference.py")
-}
-
-/// 查找 Python
-fn find_python() -> Result<String, String> {
-    // 使用 tagger 的 Python 环境
-    if let Some(python) = super::python_env::get_python_exe() {
-        return Ok(python);
-    }
-
-    for name in &["python3", "python"] {
-        let mut cmd = Command::new(name);
-        cmd.args(["--version"]);
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000); // 探测也要隐藏控制台窗口
-        }
-        if let Ok(output) = cmd.output() {
-            if output.status.success() {
-                let ver = String::from_utf8_lossy(&output.stdout);
-                if ver.contains("Python 3") {
-                    return Ok(name.to_string());
-                }
-            }
-        }
-    }
-
-    Err("未找到可用的 Python 环境".into())
-}
-
-/// UTF-8 安全行读取 — 非 UTF-8 字节用 lossy 替换
-fn read_utf8_line(reader: &mut impl BufRead) -> Option<String> {
-    let mut buf = Vec::new();
-    match reader.read_until(b'\n', &mut buf) {
-        Ok(0) => None,
-        Ok(_) => {
-            if buf.last() == Some(&b'\n') {
-                buf.pop();
-            }
-            if buf.last() == Some(&b'\r') {
-                buf.pop();
-            }
-            Some(
-                String::from_utf8(buf)
-                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).to_string()),
-            )
-        }
-        Err(_) => None,
-    }
+    dir.join("model.onnx").is_file() && dir.join("meta.json").is_file()
 }
 
 fn kill_process() {
-    // 按进程树终止：Python 会派生工作进程，单杀直接子进程会留下孤儿进程
     super::kill_child_tree(&AESTHETIC_PROCESS);
 }
 
-/// 下载进度事件
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadProgress {
-    pub filename: String,
-    pub downloaded: u64,
-    pub total: u64,
-    pub percent: f32,
-    pub speed_mbps: f64,
-    pub status: String,
-    pub message: String,
+struct ProcessCleanup;
+impl Drop for ProcessCleanup {
+    fn drop(&mut self) {
+        kill_process();
+    }
 }
 
-/// 下载模型
 async fn download_model(app: &tauri::AppHandle) -> Result<(), String> {
-    DOWNLOAD_CANCELLED.store(false, Ordering::SeqCst);
-
+    let client = download_client()?;
     let model_dir = get_aesthetic_model_dir();
-    if !model_dir.exists() {
-        std::fs::create_dir_all(&model_dir).map_err(|e| format!("创建模型目录失败: {}", e))?;
-    }
-
-    let _ = app.emit(
-        "aesthetic-progress",
-        ProgressEvent {
-            current: 0,
-            total: 0,
-            filename: String::new(),
-            status: "info".to_string(),
-            message: "开始下载美学评分模型...".to_string(),
-            ..Default::default()
-        },
-    );
-
-    let base_url =
-        "https://huggingface.co/deepghs/anime_aesthetic/resolve/main/swinv2pv3_v0_448_ls0.2_x";
-
-    // 下载 model.onnx
-    let model_url = format!("{}/model.onnx", base_url);
-    let model_dest = model_dir.join("model.onnx");
-    download_file(app, &model_url, &model_dest, "model.onnx").await?;
-
-    if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
-        let _ = std::fs::remove_file(&model_dest);
-        return Err("下载已取消".into());
-    }
-
-    // 下载 meta.json
-    let meta_url = format!("{}/meta.json", base_url);
-    let meta_dest = model_dir.join("meta.json");
-    download_file(app, &meta_url, &meta_dest, "meta.json").await?;
-
-    let _ = app.emit(
-        "aesthetic-progress",
-        ProgressEvent {
-            current: 0,
-            total: 0,
-            filename: String::new(),
-            status: "success".to_string(),
-            message: "美学评分模型下载完成".to_string(),
-            ..Default::default()
-        },
-    );
-
-    Ok(())
-}
-
-async fn download_file(
-    app: &tauri::AppHandle,
-    url: &str,
-    dest: &Path,
-    label: &str,
-) -> Result<(), String> {
-    let client = crate::commands::proxy_config::build_http_client()
-        .user_agent("PurinBox/0.3.13")
-        .timeout(std::time::Duration::from_secs(600))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
-
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("下载请求失败 ({}): {}", url, e))?;
-
-    if !response.status().is_success() {
-        return Err(format!("下载失败 (HTTP {}): {}", response.status(), url));
-    }
-
-    let total_size = response.content_length().unwrap_or(0);
-    let mut stream = response.bytes_stream();
-
-    // 先写入 .part 临时文件，校验完成后再原子替换到最终路径，避免中断残件被当作完整文件
-    let part_path = prepare_part_file(dest);
-    let mut file = tokio::fs::File::create(&part_path)
-        .await
-        .map_err(|e| format!("创建文件失败: {}", e))?;
-
-    let mut downloaded: u64 = 0;
-    let mut last_report_time = std::time::Instant::now();
-    let mut last_report_bytes: u64 = 0;
-    let start_time = std::time::Instant::now();
-
-    let _ = app.emit(
-        "aesthetic-download",
-        DownloadProgress {
-            filename: label.into(),
-            downloaded: 0,
-            total: total_size,
-            percent: 0.0,
-            speed_mbps: 0.0,
-            status: "downloading".to_string(),
-            message: format!("正在下载 {}", label),
-        },
-    );
-
-    // 下载循环结果 — 任何错误（含取消）统一在循环外清理 .part 残件
-    let mut result: Result<(), String> = Ok(());
-
-    while let Some(chunk) = stream.next().await {
+    ProgressEvent::new("info", "开始下载美学评分模型...").emit(app, "aesthetic-progress");
+    for filename in ["model.onnx", "meta.json"] {
         if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
-            result = Err("下载已取消".into());
-            break;
-        }
-
-        let chunk = match chunk {
-            Ok(c) => c,
-            Err(e) => {
-                result = Err(format!("下载数据失败: {}", e));
-                break;
-            }
-        };
-
-        if let Err(e) = tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await {
-            result = Err(format!("写入文件失败: {}", e));
-            break;
-        }
-
-        downloaded += chunk.len() as u64;
-
-        let now = std::time::Instant::now();
-        let elapsed_since_report = now.duration_since(last_report_time).as_millis();
-        if elapsed_since_report >= 500 || (total_size > 0 && downloaded >= total_size) {
-            last_report_time = now;
-            let elapsed_total = start_time.elapsed().as_secs_f64();
-            let avg_speed = if elapsed_total > 0.0 {
-                downloaded as f64 / elapsed_total / 1_048_576.0
-            } else {
-                0.0
-            };
-            last_report_bytes = downloaded;
-
-            let percent = if total_size > 0 {
-                (downloaded as f64 / total_size as f64 * 100.0) as f32
-            } else {
-                0.0
-            };
-
-            let mb_done = downloaded as f64 / 1_048_576.0;
-            let message = if total_size > 0 {
-                let mb_total = total_size as f64 / 1_048_576.0;
-                format!(
-                    "{} — {:.1}/{:.1} MB ({:.1} MB/s)",
-                    label, mb_done, mb_total, avg_speed
-                )
-            } else {
-                format!("{} — {:.1} MB ({:.1} MB/s)", label, mb_done, avg_speed)
-            };
-
             let _ = app.emit(
                 "aesthetic-download",
-                DownloadProgress {
-                    filename: label.into(),
-                    downloaded,
-                    total: total_size,
-                    percent,
-                    speed_mbps: avg_speed,
-                    status: "downloading".to_string(),
-                    message,
-                },
+                DownloadProgress::cancelled("下载已取消"),
             );
+            return Err("下载已取消".into());
+        }
+        let dest = model_dir.join(filename);
+        // 已完整下载的权重保留，重试时只补缺失文件。
+        if dest.is_file() {
+            continue;
+        }
+        let url = huggingface_url(
+            "deepghs/anime_aesthetic",
+            &format!("swinv2pv3_v0_448_ls0.2_x/{}", filename),
+        );
+        let _ = app.emit("aesthetic-download", DownloadProgress::starting(filename));
+        let downloaded =
+            download_to_file(client.get(url), &dest, filename, &DOWNLOAD_CANCELLED, |p| {
+                let _ = app.emit("aesthetic-download", p);
+            })
+            .await;
+        if let Err(error) = downloaded {
+            let progress = if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+                DownloadProgress::cancelled("下载已取消")
+            } else {
+                DownloadProgress::error(error.to_string())
+            };
+            let _ = app.emit("aesthetic-download", progress);
+            return Err(error.into());
         }
     }
-
-    let _ = last_report_bytes; // suppress warning
-
-    // 确保缓冲数据全部落盘
-    if result.is_ok() {
-        if let Err(e) = tokio::io::AsyncWriteExt::flush(&mut file).await {
-            result = Err(format!("写入文件失败: {}", e));
-        }
+    if DOWNLOAD_CANCELLED.load(Ordering::SeqCst) {
+        let _ = app.emit(
+            "aesthetic-download",
+            DownloadProgress::cancelled("下载已取消"),
+        );
+        return Err("下载已取消".into());
     }
-    drop(file);
-
-    // 任何错误路径（包括取消）都删除 .part 残件
-    if let Err(e) = result {
-        let _ = tokio::fs::remove_file(&part_path).await;
-        return Err(e);
-    }
-
-    // 校验字节数并原子替换到最终文件
-    finalize_part_file(&part_path, dest, downloaded, total_size)?;
-
+    let _ = app.emit(
+        "aesthetic-download",
+        DownloadProgress::done("美学评分模型下载完成"),
+    );
+    ProgressEvent::new("success", "美学评分模型下载完成").emit(app, "aesthetic-progress");
     Ok(())
 }
 
-/// 执行批量美学评分
-fn run_aesthetic_scoring(
-    app: &tauri::AppHandle,
+fn run_aesthetic_scoring<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    python: &str,
     options: &AestheticOptions,
     model_path: &Path,
+    files: &[PathBuf],
 ) -> Result<ProcessResult, String> {
     kill_process();
-
-    let python = find_python()?;
-    let script = get_script_path()?;
-
-    let mut cmd = Command::new(&python);
-    cmd.arg(script.to_string_lossy().as_ref())
+    let _cleanup = ProcessCleanup;
+    let mut result = ProcessResult {
+        total: files.len() as u32,
+        ..Default::default()
+    };
+    if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
+        return Ok(result);
+    }
+    let script = python_proc::find_script("aesthetic_inference.py")?;
+    let mut cmd = python_proc::hidden_command(python);
+    cmd.arg(&script)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("NO_COLOR", "1")
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONIOENCODING", "utf-8");
-
-    // Windows: 无窗口 + GPU 模式注入 CUDA/cuDNN DLL 路径（共享实现见 python_proc，
-    // 相比旧的本地实现补齐了 cuDNN 9.x 子目录与 PATH 扫描）
-    super::python_proc::configure_python_command(&mut cmd, options.use_gpu);
-
+    python_proc::configure_python_command(&mut cmd, options.use_gpu);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("启动 Python 进程失败: {}", e))?;
-
-    // 取出管道句柄（take 出管道后 Child 仍可 kill/wait）
-    let (mut stdin, stdout, stderr) =
-        match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
-            (Some(i), Some(o), Some(e)) => (i, o, e),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("无法获取 Python 进程管道".into());
-            }
-        };
-
-    // 把 Child 句柄存入全局，这样 cancel_aesthetic_scoring() -> kill_process() 才能真正杀掉进程
+    let (Some(mut stdin), Some(stdout), Some(stderr)) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take())
+    else {
+        super::kill_process_tree(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("无法获取 Python 进程管道".into());
+    };
     *AESTHETIC_PROCESS.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
-
-    // stderr 读取线程
     let app_err = app.clone();
     std::thread::spawn(move || {
-        super::python_proc::for_each_stderr_line(stderr, |clean| {
-            let lower = clean.to_lowercase();
-            if lower.contains("context leak")
-                || lower.contains("msgtracer")
-                || lower.contains("onnxruntime")
-                || lower.contains("could not load")
-                || lower.contains("loaded library")
-                || lower.contains("ep error")
-                || lower.contains("provider")
-            {
-                return;
+        python_proc::for_each_stderr_line(stderr, |line| {
+            if !python_proc::is_runtime_noise(&line) {
+                ProgressEvent::new("warning", format!("[Python] {}", line))
+                    .emit(&app_err, "aesthetic-progress");
             }
-            let _ = app_err.emit(
-                "aesthetic-progress",
-                ProgressEvent {
-                    current: 0,
-                    total: 0,
-                    filename: String::new(),
-                    status: "warning".to_string(),
-                    message: format!("[Python] {}", clean),
-                    ..Default::default()
-                },
-            );
         });
     });
-
-    // 发送 init 命令
-    let init_cmd = serde_json::json!({
-        "cmd": "init",
-        "model_path": model_path.to_string_lossy(),
-        "use_gpu": options.use_gpu,
-    });
-
-    if let Err(e) = writeln!(stdin, "{}", init_cmd) {
-        kill_process();
-        return Err(format!("发送 init 命令失败: {}", e));
-    }
-
-    // 等待 ready — UTF-8 安全行读取
-    let mut reader = BufReader::new(stdout);
-
-    let mut ready = false;
-    // 超时看门狗：阻塞读期间 elapsed 检查永远不执行（Python 静默挂死时 read 永久阻塞），
-    // 改由独立线程到点杀进程 → stdout 关闭 → 阻塞读解除 → 走 !ready 错误路径。
-    // 就绪后看门狗自行退出。
-    let ready_flag = std::sync::Arc::new(AtomicBool::new(false));
-    // 按静默时长判定进程无响应；持续输出日志的加载过程不会被终止。
-    let last_activity = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let watch_start = std::time::Instant::now();
-    {
-        let ready_flag = ready_flag.clone();
-        let last_activity = last_activity.clone();
-        std::thread::spawn(move || loop {
-            if ready_flag.load(Ordering::SeqCst) {
-                return;
-            }
-            let idle = watch_start
-                .elapsed()
-                .as_secs()
-                .saturating_sub(last_activity.load(std::sync::atomic::Ordering::SeqCst));
-            if idle > 180 {
-                if !ready_flag.load(Ordering::SeqCst) {
-                    kill_process();
-                }
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        });
-    }
-    while let Some(line) = read_utf8_line(&mut reader) {
-        last_activity.store(
-            watch_start.elapsed().as_secs(),
-            std::sync::atomic::Ordering::SeqCst,
-        );
+    let reader = ProtocolReader::spawn(stdout);
+    let init = serde_json::json!({"cmd": "init", "model_path": model_path.to_string_lossy(), "use_gpu": options.use_gpu});
+    writeln!(stdin, "{}", init).map_err(|e| format!("发送 init 命令失败: {}", e))?;
+    loop {
         if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
-            // 取消时解除看门狗，避免它在静默超时后再次操作进程句柄。
-            ready_flag.store(true, Ordering::SeqCst);
-            kill_process();
-            // 加载期取消也要发终态事件，页面据此复位任务状态。
-            let _ = app.emit(
-                "aesthetic-progress",
-                ProgressEvent {
-                    current: 0,
-                    total: 0,
-                    filename: String::new(),
-                    status: "done".to_string(),
-                    message: "已取消".to_string(),
-                    ..Default::default()
-                },
-            );
-            return Ok(ProcessResult {
-                success_count: 0,
-                fail_count: 0,
-                total: 0,
-                errors: vec![],
-            });
+            return Ok(result);
         }
-
-        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-            let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            match msg_type {
-                "log" => {
-                    let text = msg
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let i18n_key = msg
-                        .get("i18n_key")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let i18n_params = msg.get("i18n_params").cloned();
-                    let _ = app.emit(
-                        "aesthetic-progress",
-                        ProgressEvent {
-                            current: 0,
-                            total: 0,
-                            filename: String::new(),
-                            status: "info".to_string(),
-                            message: text,
-                            i18n_key,
-                            i18n_params,
-                        },
-                    );
-                }
+        match reader.recv(Duration::from_secs(180)) {
+            Recv::Msg(msg) => match msg["type"].as_str().unwrap_or("") {
+                "log" => ProgressEvent::python_log(&msg, 0, 0).emit(app, "aesthetic-progress"),
+                "ready" => break,
                 "error" => {
-                    let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                    ready_flag.store(true, Ordering::SeqCst); // 让看门狗退出
-                    kill_process();
-                    return Err(format!("初始化失败: {}", text));
-                }
-                "ready" => {
-                    ready = true;
-                    ready_flag.store(true, Ordering::SeqCst);
-                    break;
+                    return Err(format!(
+                        "初始化失败: {}",
+                        msg["message"].as_str().unwrap_or("")
+                    ))
                 }
                 _ => {}
-            }
+            },
+            _ if AESTHETIC_CANCELLED.load(Ordering::SeqCst) => return Ok(result),
+            _ => return Err("Python 进程未能成功初始化（退出或加载超时 180 秒）".into()),
         }
     }
-
-    if !ready {
-        ready_flag.store(true, Ordering::SeqCst);
-        kill_process();
-        if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
-            let _ = app.emit(
-                "aesthetic-progress",
-                ProgressEvent {
-                    current: 0,
-                    total: 0,
-                    filename: String::new(),
-                    status: "done".to_string(),
-                    message: "已取消".to_string(),
-                    ..Default::default()
-                },
-            );
-            return Ok(ProcessResult {
-                success_count: 0,
-                fail_count: 0,
-                total: 0,
-                errors: vec![],
-            });
-        }
-        return Err("Python 进程未能成功初始化（退出或加载超时 180 秒）".into());
-    }
-
-    // 收集图片（失败时杀掉已启动的 Python 进程，避免泄漏）
+    ProgressEvent::new("info", format!("读取到 {} 张图片", result.total))
+        .at(0, result.total)
+        .emit(app, "aesthetic-progress");
     let input_dir = Path::new(&options.input_path);
-    let output_dir = if options.output_path.is_empty() {
-        None
-    } else {
-        Some(Path::new(&options.output_path))
-    };
-    let files = match super::collect_image_files_with_recursive_excluding(
-        input_dir,
-        options.recursive,
-        output_dir,
-    ) {
-        Ok(f) => f,
-        Err(e) => {
-            kill_process();
-            return Err(e);
-        }
-    };
-    let total = files.len() as u32;
-    let mut success_count = 0u32;
-    let mut fail_count = 0u32;
-    let mut errors = Vec::new();
-
-    let _ = app.emit(
-        "aesthetic-progress",
-        ProgressEvent {
-            current: 0,
-            total,
-            filename: String::new(),
-            status: "info".to_string(),
-            message: format!("读取到 {} 张图片", total),
-            ..Default::default()
-        },
-    );
-
     let batch_size = options.batch_size.max(1) as usize;
-
-    let mut i = 0usize;
-    while i < files.len() {
+    'batches: for (batch_index, batch) in files.chunks(batch_size).enumerate() {
         if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
-            let _ = app.emit(
-                "aesthetic-progress",
-                ProgressEvent {
-                    current: i as u32,
-                    total,
-                    filename: String::new(),
-                    status: "done".to_string(),
-                    message: format!("已取消: 成功 {}, 失败 {}", success_count, fail_count),
-                    ..Default::default()
-                },
-            );
             break;
         }
-
-        let end = (i + batch_size).min(files.len());
-        let batch_files = &files[i..end];
-        let batch_len = batch_files.len();
-
-        let first_name = batch_files[0]
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let _ = app.emit(
-            "aesthetic-progress",
-            ProgressEvent {
-                current: i as u32 + 1,
-                total,
-                filename: first_name.clone(),
-                status: "processing".to_string(),
-                message: if batch_len > 1 {
-                    format!(
-                        "正在评分: {} 等 {} 张 ({}/{})",
-                        first_name,
-                        batch_len,
-                        i + 1,
-                        total
-                    )
-                } else {
-                    format!("正在评分: {} ({}/{})", first_name, i + 1, total)
-                },
-                ..Default::default()
-            },
-        );
-
-        if batch_len == 1 {
-            // 单张模式
-            let file_path = &batch_files[0];
-            let filename = file_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let relative_dir = if options.output_path.is_empty() {
-                String::new()
-            } else {
-                super::relative_dir_for_input(input_dir, file_path, options.recursive)
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    .unwrap_or_default()
-            };
-            let score_cmd = serde_json::json!({
-                "cmd": "score",
-                "image_path": file_path.to_string_lossy(),
-                "move_files": options.move_files,
-                "copy_files": options.copy_files,
-                "output_path": if options.output_path.is_empty() { "" } else { &options.output_path },
-                "relative_dir": relative_dir,
-            });
-            if let Err(e) = writeln!(stdin, "{}", score_cmd) {
-                fail_count += 1;
-                errors.push(format!("{}: 发送命令失败: {}", filename, e));
-                break;
-            }
-            loop {
-                match read_utf8_line(&mut reader) {
-                    Some(line) => {
-                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                            let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                            match msg_type {
-                                "result" => {
-                                    let label =
-                                        msg.get("label").and_then(|v| v.as_str()).unwrap_or("?");
-                                    let score =
-                                        msg.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                    let confidence = msg
-                                        .get("confidence")
-                                        .and_then(|v| v.as_f64())
-                                        .unwrap_or(0.0);
-                                    success_count += 1;
-                                    let _ = app.emit(
-                                        "aesthetic-progress",
-                                        ProgressEvent {
-                                            current: i as u32 + 1,
-                                            total,
-                                            filename: filename.clone(),
-                                            status: "success".to_string(),
-                                            message: format!(
-                                                "[完成] {} → {} (分数: {:.2}, 置信度: {:.1}%)",
-                                                filename,
-                                                label,
-                                                score,
-                                                confidence * 100.0
-                                            ),
-                                            ..Default::default()
-                                        },
-                                    );
-                                    break;
-                                }
-                                "error" => {
-                                    let text = msg
-                                        .get("message")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("unknown");
-                                    fail_count += 1;
-                                    errors.push(format!("{}: {}", filename, text));
-                                    let _ = app.emit(
-                                        "aesthetic-progress",
-                                        ProgressEvent {
-                                            current: i as u32 + 1,
-                                            total,
-                                            filename: filename.clone(),
-                                            status: "error".to_string(),
-                                            message: format!("[错误] {}: {}", filename, text),
-                                            ..Default::default()
-                                        },
-                                    );
-                                    break;
-                                }
-                                "log" => {
-                                    let text = msg
-                                        .get("message")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let i18n_key = msg
-                                        .get("i18n_key")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
-                                    let i18n_params = msg.get("i18n_params").cloned();
-                                    let _ = app.emit(
-                                        "aesthetic-progress",
-                                        ProgressEvent {
-                                            current: i as u32 + 1,
-                                            total,
-                                            filename: filename.clone(),
-                                            status: "info".to_string(),
-                                            message: text,
-                                            i18n_key,
-                                            i18n_params,
-                                        },
-                                    );
-                                }
-                                _ => {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        fail_count += 1;
-                        errors.push(format!("{}: Python 进程退出", filename));
-                        break;
-                    }
-                }
-            }
+        let offset = batch_index * batch_size;
+        let first_name = super::file_name_lossy(&batch[0]);
+        let message = if batch.len() > 1 {
+            format!(
+                "正在评分: {} 等 {} 张 ({}/{})",
+                first_name,
+                batch.len(),
+                offset + 1,
+                result.total
+            )
         } else {
-            // 批量模式
-            let images: Vec<serde_json::Value> = batch_files.iter().map(|fp| {
+            format!("正在评分: {} ({}/{})", first_name, offset + 1, result.total)
+        };
+        ProgressEvent::new("processing", message)
+            .at(offset as u32 + 1, result.total)
+            .file(&first_name)
+            .emit(app, "aesthetic-progress");
+        let images: Vec<_> = batch
+            .iter()
+            .map(|path| {
                 let relative_dir = if options.output_path.is_empty() {
                     String::new()
                 } else {
-                    super::relative_dir_for_input(input_dir, fp, options.recursive)
+                    super::relative_dir_for_input(input_dir, path, options.recursive)
                         .map(|p| p.to_string_lossy().replace('\\', "/"))
                         .unwrap_or_default()
                 };
                 serde_json::json!({
-                    "image_path": fp.to_string_lossy(),
-                    "move_files": options.move_files,
-                    "copy_files": options.copy_files,
-                    "output_path": if options.output_path.is_empty() { "" } else { &options.output_path },
-                    "relative_dir": relative_dir,
+                    "image_path": path.to_string_lossy(), "copy_files": options.copy_files,
+                    "output_path": options.output_path, "relative_dir": relative_dir,
                 })
-            }).collect();
-            let batch_cmd = serde_json::json!({ "cmd": "score_batch", "images": images });
-            if let Err(e) = writeln!(stdin, "{}", batch_cmd) {
-                fail_count += batch_len as u32;
-                errors.push(format!("批量发送失败: {}", e));
-                break;
+            })
+            .collect();
+        let mut pending: HashSet<String> = batch
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let command = serde_json::json!({"cmd": "score_batch", "images": images});
+        if let Err(e) = writeln!(stdin, "{}", command) {
+            if !AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
+                result.fail_count += pending.len() as u32;
+                result.errors.push(format!("批量发送失败: {}", e));
             }
-            let mut results_read = 0usize;
-            while results_read < batch_len {
-                match read_utf8_line(&mut reader) {
-                    Some(line) => {
-                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                            let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                            match msg_type {
-                                "result" => {
-                                    let img_path = msg
-                                        .get("image_path")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let fname = std::path::Path::new(img_path)
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                        .to_string();
-                                    let label =
-                                        msg.get("label").and_then(|v| v.as_str()).unwrap_or("?");
-                                    let score =
-                                        msg.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                    let confidence = msg
-                                        .get("confidence")
-                                        .and_then(|v| v.as_f64())
-                                        .unwrap_or(0.0);
-                                    success_count += 1;
-                                    results_read += 1;
-                                    let _ = app.emit(
-                                        "aesthetic-progress",
-                                        ProgressEvent {
-                                            current: (i + results_read) as u32,
-                                            total,
-                                            filename: fname.clone(),
-                                            status: "success".to_string(),
-                                            message: format!(
-                                                "[完成] {} → {} (分数: {:.2}, 置信度: {:.1}%)",
-                                                fname,
-                                                label,
-                                                score,
-                                                confidence * 100.0
-                                            ),
-                                            ..Default::default()
-                                        },
-                                    );
-                                }
-                                "error" => {
-                                    let img_path = msg
-                                        .get("image_path")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("");
-                                    let fname = std::path::Path::new(img_path)
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                        .to_string();
-                                    let text = msg
-                                        .get("message")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("unknown");
-                                    fail_count += 1;
-                                    results_read += 1;
-                                    errors.push(format!("{}: {}", fname, text));
-                                    let _ = app.emit(
-                                        "aesthetic-progress",
-                                        ProgressEvent {
-                                            current: (i + results_read) as u32,
-                                            total,
-                                            filename: fname.clone(),
-                                            status: "error".to_string(),
-                                            message: format!("[错误] {}: {}", fname, text),
-                                            ..Default::default()
-                                        },
-                                    );
-                                }
-                                "log" => {
-                                    let text = msg
-                                        .get("message")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    let i18n_key = msg
-                                        .get("i18n_key")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
-                                    let i18n_params = msg.get("i18n_params").cloned();
-                                    let _ = app.emit(
-                                        "aesthetic-progress",
-                                        ProgressEvent {
-                                            current: (i + results_read) as u32 + 1,
-                                            total,
-                                            filename: String::new(),
-                                            status: "info".to_string(),
-                                            message: text,
-                                            i18n_key,
-                                            i18n_params,
-                                        },
-                                    );
-                                }
-                                _ => {
-                                    results_read += 1;
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        fail_count += (batch_len - results_read) as u32;
-                        errors.push("Python 进程退出".to_string());
-                        break;
-                    }
-                }
-            }
+            break;
         }
-        i = end;
+        while !pending.is_empty() {
+            if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
+                break 'batches;
+            }
+            let msg = match reader.recv(PYTHON_SILENCE_LIMIT) {
+                Recv::Msg(msg) => msg,
+                received => {
+                    if !AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
+                        result.fail_count += pending.len() as u32;
+                        result.errors.push(
+                            match received {
+                                Recv::TimedOut => "Python 进程无响应（300 秒）",
+                                _ => "Python 进程退出",
+                            }
+                            .into(),
+                        );
+                    }
+                    break 'batches;
+                }
+            };
+            let kind = msg["type"].as_str().unwrap_or("");
+            if kind == "log" {
+                ProgressEvent::python_log(
+                    &msg,
+                    result.success_count + result.fail_count + 1,
+                    result.total,
+                )
+                .emit(app, "aesthetic-progress");
+                continue;
+            }
+            if !matches!(kind, "result" | "error") {
+                continue;
+            }
+            if kind == "error" && msg.get("image_path").is_none() {
+                result.fail_count += pending.len() as u32;
+                result
+                    .errors
+                    .push(msg["message"].as_str().unwrap_or("Python 处理失败").into());
+                break 'batches;
+            }
+            let path = msg["image_path"].as_str().unwrap_or("");
+            if !pending.remove(path) {
+                continue;
+            }
+            let filename = super::file_name_lossy(Path::new(path));
+            let (status, message) = if kind == "result" {
+                result.success_count += 1;
+                (
+                    "success",
+                    format!(
+                        "[完成] {} → {} (分数: {:.2}, 置信度: {:.1}%)",
+                        filename,
+                        msg["label"].as_str().unwrap_or("?"),
+                        msg["score"].as_f64().unwrap_or(0.0),
+                        msg["confidence"].as_f64().unwrap_or(0.0) * 100.0
+                    ),
+                )
+            } else {
+                result.fail_count += 1;
+                let text = msg["message"].as_str().unwrap_or("unknown");
+                result.errors.push(format!("{}: {}", filename, text));
+                ("error", format!("[错误] {}: {}", filename, text))
+            };
+            ProgressEvent::new(status, message)
+                .at(result.success_count + result.fail_count, result.total)
+                .file(filename)
+                .emit(app, "aesthetic-progress");
+        }
     }
-
     let _ = writeln!(stdin, r#"{{"cmd":"quit"}}"#);
-    // 取出全局句柄并等待进程退出（若已被取消杀掉则为 None）
-    if let Some(mut child) = AESTHETIC_PROCESS.lock().ok().and_then(|mut g| g.take()) {
-        let _ = child.wait();
-    }
-
-    // 取消路径已发过"已取消"的 done 事件，这里不再发完成事件覆盖它
-    if !AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
-        let _ = app.emit(
-            "aesthetic-progress",
-            ProgressEvent {
-                current: total,
-                total,
-                filename: String::new(),
-                status: "done".to_string(),
-                message: format!(
-                    "美学评分完成: 成功 {}, 失败 {}, 共 {}",
-                    success_count, fail_count, total
-                ),
-                ..Default::default()
-            },
-        );
-    }
-
-    Ok(ProcessResult {
-        success_count,
-        fail_count,
-        total,
-        errors,
-    })
+    Ok(result)
 }
 
-// ===== Tauri Commands =====
+fn terminal_event(result: &ProcessResult, cancelled: bool) -> ProgressEvent {
+    let message = if cancelled {
+        format!(
+            "已取消: 成功 {}, 失败 {}",
+            result.success_count, result.fail_count
+        )
+    } else {
+        format!(
+            "美学评分完成: 成功 {}, 失败 {}, 共 {}",
+            result.success_count, result.fail_count, result.total
+        )
+    };
+    ProgressEvent::new("done", message).at(
+        if cancelled {
+            result.success_count + result.fail_count
+        } else {
+            result.total
+        },
+        result.total,
+    )
+}
 
-/// 开始美学评分
 #[tauri::command]
 pub async fn start_aesthetic_scoring(
     app: tauri::AppHandle,
     options: AestheticOptions,
 ) -> Result<ProcessResult, String> {
-    // 互斥：全局子进程句柄/取消标志不允许并发运行（页面 + 工作流节点会互杀进程）
-    static AESTHETIC_RUNNING: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
-    let _busy = crate::commands::BusyGuard::acquire(&AESTHETIC_RUNNING, "美学评分")?;
-
-    // 重置取消标志
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    let _busy = super::BusyGuard::acquire(&RUNNING, "美学评分")?;
     AESTHETIC_CANCELLED.store(false, Ordering::SeqCst);
-
-    // 确保 Python 环境 + onnxruntime GPU 运行时
-    let python = super::python_env::setup_python_env(&app, "aesthetic").await?;
-    let _has_gpu = super::python_env::ensure_onnx_gpu_runtime(&app, &python, "aesthetic").await?;
-
-    // 下载模型
-    if !is_model_downloaded() {
-        download_model(&app).await?;
-
+    DOWNLOAD_CANCELLED.store(false, Ordering::SeqCst);
+    let scan = options.clone();
+    let files = tokio::task::spawn_blocking(move || {
+        let output = (!scan.output_path.is_empty()).then(|| Path::new(&scan.output_path));
+        super::collect_image_files_with_recursive_excluding(
+            Path::new(&scan.input_path),
+            scan.recursive,
+            output,
+        )
+    })
+    .await
+    .map_err(|e| format!("读取图片失败: {}", e))??;
+    let total = files.len() as u32;
+    let outcome = async {
+        if total == 0 || AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
+            return Ok(ProcessResult {
+                total,
+                ..Default::default()
+            });
+        }
+        let python = super::python_env::setup_python_env(&app, "aesthetic").await?;
         if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
             return Err("已取消".into());
         }
-    }
-
-    let model_path = get_aesthetic_model_dir().join("model.onnx");
-    let opts = options.clone();
-    let app_clone = app.clone();
-
-    tokio::task::spawn_blocking(move || run_aesthetic_scoring(&app_clone, &opts, &model_path))
+        super::python_env::ensure_onnx_gpu_runtime(&app, &python, "aesthetic").await?;
+        if AESTHETIC_CANCELLED.load(Ordering::SeqCst) {
+            return Err("已取消".into());
+        }
+        if !is_model_downloaded() {
+            download_model(&app).await?;
+        }
+        let model_path = get_aesthetic_model_dir().join("model.onnx");
+        let app_run = app.clone();
+        tokio::task::spawn_blocking(move || {
+            run_aesthetic_scoring(&app_run, &python, &options, &model_path, &files)
+        })
         .await
         .map_err(|e| format!("任务执行失败: {}", e))?
+    }
+    .await;
+    let cancelled = AESTHETIC_CANCELLED.load(Ordering::SeqCst);
+    let result = if cancelled {
+        outcome.unwrap_or(ProcessResult {
+            total,
+            ..Default::default()
+        })
+    } else {
+        outcome?
+    };
+    terminal_event(&result, cancelled).emit(&app, "aesthetic-progress");
+    Ok(result)
 }
 
-/// 取消美学评分
 #[tauri::command]
 pub fn cancel_aesthetic_scoring() {
     AESTHETIC_CANCELLED.store(true, Ordering::SeqCst);
     DOWNLOAD_CANCELLED.store(true, Ordering::SeqCst);
+    super::python_env::cancel_setup_for("aesthetic");
     kill_process();
 }
 
-/// 强制取消美学评分（终止整个子进程树）
 #[tauri::command]
 pub fn force_cancel_aesthetic_scoring() {
-    AESTHETIC_CANCELLED.store(true, Ordering::SeqCst);
-    DOWNLOAD_CANCELLED.store(true, Ordering::SeqCst);
-    kill_process();
+    cancel_aesthetic_scoring();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_batch_cancellation_has_one_cancelled_terminal() {
+        let result = ProcessResult {
+            success_count: 2,
+            total: 2,
+            ..Default::default()
+        };
+        let event = terminal_event(&result, true);
+        assert_eq!(event.status, "done");
+        assert_eq!(event.current, 2);
+        assert!(event.message.starts_with("已取消"));
+        assert!(terminal_event(&result, false)
+            .message
+            .starts_with("美学评分完成"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn single_batch_skips_noise_and_cancels_after_final_result() {
+        use std::os::unix::fs::PermissionsExt;
+        use tauri::Listener;
+        let root = std::env::temp_dir().join(format!("purin_ai_aesthetic_{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let image = root.join("a.png");
+        let response = serde_json::json!({"type": "result", "image_path": image, "label": "good", "score": 3.0, "confidence": 1.0});
+        let script = root.join("fake-python");
+        std::fs::write(&script, format!("#!/bin/sh\nread -r line\nprintf '%s\\n' '{{\"type\":\"ready\"}}'\nread -r line\ncase \"$line\" in *score_batch*) ;; *) exit 3;; esac\nprintf '\\377noise\\n'\nprintf '%s\\n' '{{\"type\":\"result\",\"image_path\":\"other.png\"}}' '{{\"type\":\"log\",\"message\":\"fallback\"}}' '{}'\nread -r line\n", response)).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let app = tauri::test::mock_app();
+        let events = super::super::batch::capture_events(app.handle(), "aesthetic-progress");
+        app.listen_any("aesthetic-progress", |event| {
+            let message: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
+            if message["status"] == "success" {
+                AESTHETIC_CANCELLED.store(true, Ordering::SeqCst);
+                kill_process();
+            }
+        });
+        AESTHETIC_CANCELLED.store(false, Ordering::SeqCst);
+        let options = AestheticOptions {
+            input_path: root.to_string_lossy().into_owned(),
+            output_path: String::new(),
+            use_gpu: false,
+            copy_files: true,
+            batch_size: 1,
+            recursive: false,
+        };
+        let result = run_aesthetic_scoring(
+            app.handle(),
+            script.to_str().unwrap(),
+            &options,
+            &root.join("fake.onnx"),
+            &[image],
+        )
+        .unwrap();
+        assert_eq!((result.success_count, result.fail_count), (1, 0));
+        terminal_event(&result, AESTHETIC_CANCELLED.load(Ordering::SeqCst))
+            .emit(app.handle(), "aesthetic-progress");
+        let events = events.lock().unwrap();
+        let terminal: Vec<_> = events.iter().filter(|e| e["status"] == "done").collect();
+        assert_eq!(terminal.len(), 1);
+        assert!(terminal[0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("已取消"));
+        assert!(events.iter().any(|e| e["message"] == "fallback"));
+        assert!(AESTHETIC_PROCESS.lock().unwrap().is_none());
+        AESTHETIC_CANCELLED.store(false, Ordering::SeqCst);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { PanelLeftClose } from 'lucide-react';
 import '../styles/sidebar.css';
-import { getAppVersion, packageAppVersion } from '../utils/appVersion';
+import { packageAppVersion, type UpdateCheckResult } from '../utils/appVersion';
 import { navSections, homePage, settingsPage } from '../appRegistry';
 import { useAppSettings } from './ThemeProvider';
 
@@ -12,47 +12,26 @@ export default function Sidebar() {
   const { t } = useTranslation();
   const { workflowEnabled } = useAppSettings();
   const [collapsed, setCollapsed] = useState(false);
-  const [appVersion, setAppVersion] = useState(packageAppVersion);
-  // update status: 'checking' | 'latest' | 'update' | 'error'
-  const [updateStatus, setUpdateStatus] = useState<'checking' | 'latest' | 'update' | 'error'>('latest');
-  const [latestVersion, setLatestVersion] = useState('');
-  const [releaseUrl, setReleaseUrl] = useState('');
+  const appVersion = packageAppVersion;
+  /** 仅在检查到新版本时有值；检查失败按"已是最新"显示 */
+  const [update, setUpdate] = useState<UpdateCheckResult | null>(null);
 
-  useEffect(() => { getAppVersion().then(setAppVersion); }, []);
 
   // Delay version check so startup isn't affected
   useEffect(() => {
     const timer = setTimeout(() => {
-      invoke<{ has_update: boolean; latest_version: string; release_url: string }>('check_for_updates')
-        .then(r => {
-          setUpdateStatus(r.has_update ? 'update' : 'latest');
-          setLatestVersion(r.latest_version);
-          setReleaseUrl(r.release_url);
-        })
-        .catch(() => setUpdateStatus('latest'));
+      invoke<UpdateCheckResult>('check_for_updates')
+        .then(r => { if (r.has_update) setUpdate(r); })
+        .catch(() => {});
     }, 2000);
     return () => clearTimeout(timer);
   }, []);
 
-  const dotColor = updateStatus === 'latest' ? '#4ade80' : updateStatus === 'update' ? '#ef4444' : updateStatus === 'error' ? '#fbbf24' : 'var(--color-text-tertiary)';
-  const dotTitle = updateStatus === 'latest' ? t('sidebar.latestVersion')
-    : updateStatus === 'update' ? t('sidebar.newVersion', { version: latestVersion })
-    : updateStatus === 'error' ? t('sidebar.checkFailed')
-    : t('sidebar.checking');
+  const dotColor = update ? '#ef4444' : '#4ade80';
+  const dotTitle = update ? t('sidebar.newVersion', { version: update.latest_version }) : t('sidebar.latestVersion');
 
   const handleVersionClick = () => {
-    if (updateStatus === 'update' && releaseUrl) {
-      window.open(releaseUrl, '_blank');
-    } else if (updateStatus === 'error') {
-      setUpdateStatus('checking');
-      invoke<{ has_update: boolean; latest_version: string; release_url: string }>('check_for_updates')
-        .then(r => {
-          setUpdateStatus(r.has_update ? 'update' : 'latest');
-          setLatestVersion(r.latest_version);
-          setReleaseUrl(r.release_url);
-        })
-        .catch(() => setUpdateStatus('error'));
-    }
+    if (update?.release_url) window.open(update.release_url, '_blank');
   };
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -77,18 +56,12 @@ export default function Sidebar() {
             <div className="sidebar-section-title">{t(section.titleKey)}</div>
             {section.items.map((item) => (
               <NavLink key={item.path} to={item.path}
-                className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
-                end={item.path === '/'}>
+                className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}>
                 <span className="sidebar-item-icon"><item.icon /></span>
                 <span className="sidebar-item-label">
                   {t(item.i18nKey)}
                   {item.experimental && (
-                    <span style={{
-                      marginLeft: 6, padding: '0 4px', borderRadius: 3,
-                      fontSize: 9, fontWeight: 700, letterSpacing: '0.02em',
-                      color: '#fbbf24', border: '1px solid rgba(251, 191, 36, 0.45)',
-                      verticalAlign: 'middle',
-                    }}>
+                    <span className="beta-badge">
                       Beta
                     </span>
                   )}
@@ -110,9 +83,9 @@ export default function Sidebar() {
         </NavLink>
       </div>
       <div className="sidebar-version" title={dotTitle} onClick={handleVersionClick}
-        style={{ cursor: updateStatus === 'update' || updateStatus === 'error' ? 'pointer' : 'default', background: 'none', border: 'none' }}>
+        style={{ cursor: update ? 'pointer' : 'default' }}>
         <div className="sidebar-version-dot" style={{ background: dotColor }} />
-        <span>v{appVersion} · Release{updateStatus === 'update' ? ` → v${latestVersion}` : ''}</span>
+        <span>v{appVersion} · Release{update ? ` → v${update.latest_version}` : ''}</span>
       </div>
     </aside>
   );

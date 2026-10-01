@@ -2,24 +2,14 @@
 //! 全局共享模块 — 供 tagger、upscale、person_crop 等功能共用
 //! 首次使用时自动下载 standalone Python + 安装基础依赖
 
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 
 use super::ProgressEvent;
 
-/// Python 下载进度事件
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PythonDownloadProgress {
-    pub filename: String,
-    pub downloaded: u64,
-    pub total: u64,
-    pub percent: f32,
-    pub speed_mbps: f64,
-    pub status: String,
-    pub message: String,
-}
+use super::http_download::{self, DownloadError, DownloadProgress};
+use super::python_proc::{configure_python_command, hidden_command};
 
 /// 进度事件名（前端监听此事件）
 const PROGRESS_EVENT: &str = "python-env-progress";
@@ -33,10 +23,12 @@ static SETUP_CANCELLED: AtomicBool = AtomicBool::new(false);
 static SETUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// 当前环境部署/升级的发起方（在 SETUP_LOCK 内登记）。
-/// 取消按归属隔离：取消打标不再连带中止其他功能正在进行的环境部署。
+/// 取消按归属隔离：某个功能的取消只中止它自己发起的部署/升级。
 static SETUP_OWNER: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 
-struct SetupOwnerGuard;
+struct SetupOwnerGuard {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+}
 
 impl Drop for SetupOwnerGuard {
     fn drop(&mut self) {
@@ -44,20 +36,65 @@ impl Drop for SetupOwnerGuard {
     }
 }
 
-fn claim_setup_owner(owner: &'static str) -> SetupOwnerGuard {
-    *SETUP_OWNER.lock().unwrap_or_else(|e| e.into_inner()) = Some(owner);
-    SetupOwnerGuard
+fn take_pending_cancel(owner: &'static str) -> bool {
+    let mut pending = PENDING_CANCELS.lock().unwrap_or_else(|e| e.into_inner());
+    let cancelled = pending.contains(&owner);
+    pending.retain(|o| *o != owner);
+    cancelled
 }
 
-/// 排队中的取消：目标 setup 还在等别人的 SETUP_LOCK 时，取消要记账，
-/// 等它拿到锁后直接退出，而不是照跑几分钟的部署
+async fn acquire_setup(owner: &'static str) -> Result<SetupOwnerGuard, String> {
+    let lock = SETUP_LOCK.lock();
+    tokio::pin!(lock);
+    loop {
+        if take_pending_cancel(owner) {
+            return Err("已取消".into());
+        }
+        tokio::select! {
+            guard = &mut lock => {
+                // 与取消命令共用归属锁，避免登记后复位吞掉刚到的取消。
+                let mut current = SETUP_OWNER.lock().unwrap_or_else(|e| e.into_inner());
+                if take_pending_cancel(owner) {
+                    return Err("已取消".into());
+                }
+                SETUP_CANCELLED.store(false, Ordering::SeqCst);
+                *current = Some(owner);
+                return Ok(SetupOwnerGuard { _lock: guard });
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+    }
+}
+
+async fn run_owned_install(
+    guard: SetupOwnerGuard,
+    install: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    // blocking 任务不能被 abort；锁随实际安装任务持有，不能随等待它的 future 提前释放。
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        if is_cancelled() {
+            return Err("已取消".into());
+        }
+        let result = install();
+        if is_cancelled() {
+            Err("已取消".into())
+        } else {
+            result
+        }
+    })
+    .await
+    .map_err(|e| format!("安装线程异常: {}", e))?
+}
+
+/// 保存排队中或安装阶段之间的取消，避免后续安装重新复位取消状态。
 static PENDING_CANCELS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
 
 /// 仅当 owner 正是当前部署/升级的发起方时才置取消标志；
-/// owner 的 setup 还在排队时记入 PENDING_CANCELS（拿到锁后自查退出）
+/// owner 尚未持锁时记入 PENDING_CANCELS，由等待方消费。
 pub fn cancel_setup_for(owner: &'static str) {
-    let owned = *SETUP_OWNER.lock().unwrap_or_else(|e| e.into_inner());
-    if owned == Some(owner) {
+    let owned = SETUP_OWNER.lock().unwrap_or_else(|e| e.into_inner());
+    if *owned == Some(owner) {
         SETUP_CANCELLED.store(true, Ordering::SeqCst);
     } else {
         let mut pending = PENDING_CANCELS.lock().unwrap_or_else(|e| e.into_inner());
@@ -71,65 +108,25 @@ fn is_cancelled() -> bool {
     SETUP_CANCELLED.load(Ordering::SeqCst)
 }
 
-/// Python standalone 下载信息
-struct PythonDownloadInfo {
-    url: &'static str,
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const PY_TRIPLE: &str = "aarch64-apple-darwin";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const PY_TRIPLE: &str = "x86_64-apple-darwin";
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const PY_TRIPLE: &str = "x86_64-pc-windows-msvc";
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const PY_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const PY_TRIPLE: &str = "aarch64-unknown-linux-gnu";
+
+fn python_download_url() -> String {
+    const RELEASE: &str = "20260414";
+    const VERSION: &str = "3.12.13";
+    format!("https://github.com/astral-sh/python-build-standalone/releases/download/{RELEASE}/cpython-{VERSION}+{RELEASE}-{PY_TRIPLE}-install_only_stripped.tar.gz")
 }
 
-fn get_download_info() -> PythonDownloadInfo {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        PythonDownloadInfo {
-            url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.12.13+20260414-aarch64-apple-darwin-install_only_stripped.tar.gz",
-
-        }
-    }
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    {
-        PythonDownloadInfo {
-            url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.12.13+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz",
-
-        }
-    }
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    {
-        PythonDownloadInfo {
-            url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.12.13+20260414-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
-
-        }
-    }
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    {
-        PythonDownloadInfo {
-            url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.12.13+20260414-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
-
-        }
-    }
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    {
-        PythonDownloadInfo {
-            url: "https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.12.13+20260414-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz",
-
-        }
-    }
-}
-
-/// 获取 env 根目录（存放 Python 环境等）
 fn get_env_dir() -> PathBuf {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or(exe_dir)
-            .join("env")
-    } else {
-        exe_dir.join("env")
-    }
+    super::config_paths::app_data_root().join("env")
 }
 
 /// 获取 Python 安装目录 (standalone 解释器)
@@ -143,7 +140,7 @@ fn get_venv_dir() -> PathBuf {
 }
 
 /// 获取 venv 中的 python 可执行文件路径
-fn get_venv_python() -> PathBuf {
+pub(crate) fn get_venv_python() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         get_venv_dir().join("Scripts").join("python.exe")
@@ -180,14 +177,8 @@ pub fn is_ready() -> bool {
     if !python.exists() {
         return false;
     }
-    // 快速检查 onnxruntime 是否可用
-    let mut cmd = std::process::Command::new(&python);
+    let mut cmd = hidden_command(&python);
     cmd.args(["-c", "import onnxruntime"]);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
     cmd.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
@@ -231,14 +222,8 @@ pub fn get_python_env_info() -> Result<PythonEnvInfo, String> {
         }
     };
 
-    // 获取版本
-    let mut cmd = std::process::Command::new(&python);
+    let mut cmd = hidden_command(&python);
     cmd.args(["--version"]);
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
 
     let version = match cmd.output() {
         Ok(output) if output.status.success() => {
@@ -265,14 +250,7 @@ pub struct PythonEnvInfo {
 fn emit_progress(app: &tauri::AppHandle, message: &str, status: &str) {
     let _ = app.emit(
         PROGRESS_EVENT,
-        ProgressEvent {
-            current: 0,
-            total: 0,
-            filename: String::new(),
-            status: status.to_string(),
-            message: message.to_string(),
-            ..Default::default()
-        },
+        ProgressEvent::new(status, message.to_string()),
     );
 }
 
@@ -290,8 +268,8 @@ fn parse_python_minor(ver_str: &str) -> Option<u32> {
 
 /// 检测系统安装的 Python 3（非 standalone）
 /// 要求 >= 3.10，低于此版本的跳过（依赖包不再支持旧版本）
-/// 返回 (命令/路径, 版本号)
-fn detect_system_python() -> Option<(String, String)> {
+/// 返回解释器路径
+fn detect_system_python() -> Option<String> {
     let candidates = if cfg!(target_os = "windows") {
         vec!["python3", "python", "py"]
     } else {
@@ -299,13 +277,8 @@ fn detect_system_python() -> Option<(String, String)> {
     };
 
     for name in &candidates {
-        let mut cmd = std::process::Command::new(name);
+        let mut cmd = hidden_command(name);
         cmd.args(["--version"]);
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000);
-        }
         if let Ok(output) = cmd.output() {
             if output.status.success() {
                 let ver_output = String::from_utf8_lossy(&output.stdout).to_string()
@@ -319,16 +292,10 @@ fn detect_system_python() -> Option<(String, String)> {
                         }
                     }
                     // 确认解释器可以导入 venv 模块。
-                    let mut test = std::process::Command::new(name);
+                    let mut test = hidden_command(name);
                     test.args(["-c", "import venv"]);
-                    #[cfg(target_os = "windows")]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        test.creation_flags(0x08000000);
-                    }
                     if test.output().map(|o| o.status.success()).unwrap_or(false) {
-                        let real_path = resolve_python_path(name);
-                        return Some((real_path, version));
+                        return Some(resolve_python_path(name));
                     }
                 }
             }
@@ -345,10 +312,8 @@ fn detect_system_python() -> Option<(String, String)> {
         ];
         for p in &paths {
             if std::path::Path::new(p).exists() {
-                let mut cmd = std::process::Command::new(p);
+                let mut cmd = hidden_command(p);
                 cmd.args(["--version"]);
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
                 let version = cmd
                     .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -358,7 +323,7 @@ fn detect_system_python() -> Option<(String, String)> {
                         continue;
                     }
                 }
-                return Some((p.to_string(), version));
+                return Some(p.to_string());
             }
         }
     }
@@ -370,10 +335,8 @@ fn detect_system_python() -> Option<(String, String)> {
 fn resolve_python_path(name: &str) -> String {
     #[cfg(target_os = "windows")]
     {
-        let mut cmd = std::process::Command::new("where");
+        let mut cmd = hidden_command("where");
         cmd.arg(name);
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
         if let Ok(output) = cmd.output() {
             if output.status.success() {
                 let path = String::from_utf8_lossy(&output.stdout);
@@ -388,7 +351,7 @@ fn resolve_python_path(name: &str) -> String {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let mut cmd = std::process::Command::new("which");
+        let mut cmd = hidden_command("which");
         cmd.arg(name);
         if let Ok(output) = cmd.output() {
             if output.status.success() {
@@ -403,33 +366,21 @@ fn resolve_python_path(name: &str) -> String {
 }
 
 /// 完整的 Python 环境设置流程（入口，全局串行化）
-pub async fn setup_python_env(app: &tauri::AppHandle, owner: &'static str) -> Result<String, String> {
+pub async fn setup_python_env(
+    app: &tauri::AppHandle,
+    owner: &'static str,
+) -> Result<String, String> {
     // 清掉同一 owner 的旧取消请求，避免影响新任务。
     PENDING_CANCELS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .retain(|o| *o != owner);
-    // 串行化整个 setup 流程；tokio::sync::Mutex 的 guard 可安全地跨 await 持有
-    let _setup_guard = SETUP_LOCK.lock().await;
-    // 排队等待期间被取消：拿到锁后直接退出
-    let was_cancelled_while_queued = {
-        let mut pending = PENDING_CANCELS.lock().unwrap_or_else(|e| e.into_inner());
-        let hit = pending.contains(&owner);
-        pending.retain(|o| *o != owner);
-        hit
-    };
-    if was_cancelled_while_queued {
-        return Err("已取消".into());
-    }
-    // 归属登记：cancel_setup_for 只命中当前登记者
-    let _owner = claim_setup_owner(owner);
+    let _owner = acquire_setup(owner).await?;
     setup_python_env_inner(app).await
 }
 
 /// setup 实际逻辑（调用方必须已持有 SETUP_LOCK）
 async fn setup_python_env_inner(app: &tauri::AppHandle) -> Result<String, String> {
-    SETUP_CANCELLED.store(false, Ordering::SeqCst);
-
     let venv_python = get_venv_python();
 
     // 1. 如果 venv 已就绪，直接返回（is_ready 内部会运行子进程，放入 blocking 线程）
@@ -437,133 +388,66 @@ async fn setup_python_env_inner(app: &tauri::AppHandle) -> Result<String, String
         return Ok(venv_python.to_string_lossy().to_string());
     }
 
-    // 2. 优先检测系统 Python（内部多次调用 cmd.output()，放入 blocking 线程）
     let detected = tokio::task::spawn_blocking(detect_system_python)
         .await
         .map_err(|e| format!("检测线程异常: {}", e))?;
-    if let Some((sys_python, _sys_version)) = detected {
-        // 步骤 1 已确认环境未就绪，这里总是（重）建 venv
-        {
-            let venv_dir = get_venv_dir();
-            // 清理旧的 venv（可能有残留的 broken symlink）
-            if venv_dir.exists() {
-                let _ = std::fs::remove_dir_all(&venv_dir);
-            }
-            // 确保父目录存在
-            let python_parent = get_env_dir().join("python");
-            std::fs::create_dir_all(&python_parent).map_err(|e| format!("创建目录失败: {}", e))?;
-
-            // venv 创建可能耗时较久，cmd.output() 放入 blocking 线程
-            let sys_python_clone = sys_python.clone();
-            let venv_dir_str = venv_dir.to_string_lossy().to_string();
-            let output = tokio::task::spawn_blocking(move || {
-                let mut cmd = std::process::Command::new(&sys_python_clone);
-                cmd.args(["-m", "venv", &venv_dir_str])
-                    .env("PYTHONIOENCODING", "utf-8");
-                #[cfg(target_os = "windows")]
-                {
-                    use std::os::windows::process::CommandExt;
-                    cmd.creation_flags(0x08000000);
+    if is_cancelled() {
+        return Err("已取消".into());
+    }
+    if let Some(python) = detected {
+        match create_venv(app, PathBuf::from(python)).await {
+            Ok(()) => return finish_setup(app).await,
+            Err(e) => {
+                if is_cancelled() {
+                    return Err("已取消".into());
                 }
-                cmd.output()
-            })
-            .await
-            .map_err(|e| format!("创建 venv 线程异常: {}", e))?
-            .map_err(|e| format!("创建 venv 失败: {}", e))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
                 emit_progress(
                     app,
                     &format!(
                         "@pythonEnv.venvFailed|{}",
-                        stderr.to_string().chars().take(100).collect::<String>()
+                        e.chars().take(100).collect::<String>()
                     ),
                     "info",
                 );
-                // 失败则回退到下载 standalone
-                return setup_with_standalone(app).await;
             }
         }
-
-        if is_cancelled() {
-            return Err("已取消".into());
-        }
-
-        // 安装依赖（pip install 可阻塞数分钟，放入 blocking 线程）
-        let app2 = app.clone();
-        tokio::task::spawn_blocking(move || install_deps(&app2))
-            .await
-            .map_err(|e| format!("安装线程异常: {}", e))??;
-
-        if is_cancelled() {
-            return Err("已取消".into());
-        }
-
-        if !tokio::task::spawn_blocking(is_ready).await.unwrap_or(false) {
-            return Err("Python 环境安装后验证失败".into());
-        }
-
-        emit_progress(app, "@pythonEnv.ready", "success");
-        return Ok(venv_python.to_string_lossy().to_string());
     }
-
-    // 3. 系统没有 Python，下载 standalone 版本
     setup_with_standalone(app).await
 }
 
-/// 使用 standalone Python 完成环境设置（下载+venv+依赖）
 async fn setup_with_standalone(app: &tauri::AppHandle) -> Result<String, String> {
-    let python_exe = get_standalone_python();
-    let venv_python = get_venv_python();
-
-    // 下载 standalone Python
-    if !python_exe.exists() {
+    let python = get_standalone_python();
+    if !python.exists() {
         download_python(app).await?;
     }
-
     if is_cancelled() {
         return Err("已取消".into());
     }
+    create_venv(app, python).await?;
+    finish_setup(app).await
+}
 
-    // 创建 venv（内部 cmd.output() 可能耗时，放入 blocking 线程）。
-    // 能走进 setup 就说明环境未就绪：已存在的 venv 是残骸（如 base 解释器被卸载后的存根，
-    // 此时 pip 永远报 "No Python at ..."），必须与系统 Python 分支一样总是重建
-    {
-        if venv_python.exists() {
-            let _ = std::fs::remove_dir_all(get_venv_dir());
-        }
-        let app2 = app.clone();
-        tokio::task::spawn_blocking(move || create_venv(&app2))
-            .await
-            .map_err(|e| format!("创建 venv 线程异常: {}", e))??;
-    }
-
+async fn finish_setup(app: &tauri::AppHandle) -> Result<String, String> {
     if is_cancelled() {
         return Err("已取消".into());
     }
-
-    // 安装依赖（pip install 可阻塞数分钟，放入 blocking 线程）
     let app2 = app.clone();
     tokio::task::spawn_blocking(move || install_deps(&app2))
         .await
         .map_err(|e| format!("安装线程异常: {}", e))??;
-
     if is_cancelled() {
         return Err("已取消".into());
     }
-
-    // 确认依赖安装完成且环境可用。
     if !tokio::task::spawn_blocking(is_ready).await.unwrap_or(false) {
         return Err("Python 环境安装后验证失败".into());
     }
-
     emit_progress(app, "@pythonEnv.ready", "success");
-    Ok(venv_python.to_string_lossy().to_string())
+    Ok(get_venv_python().to_string_lossy().to_string())
 }
 
 /// 下载 standalone Python
 async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
-    let info = get_download_info();
+    let url = python_download_url();
     let python_dir = get_python_dir();
     let env_dir = get_env_dir();
 
@@ -575,128 +459,43 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
         app,
         &format!(
             "@pythonEnv.downloading|{}",
-            info.url.split('/').next_back().unwrap_or("python")
+            url.split('/').next_back().unwrap_or("python")
         ),
         "info",
     );
 
-    // 下载
-    let client = crate::commands::proxy_config::build_http_client()
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
-    let resp = client
-        .get(info.url)
-        .send()
-        .await
-        .map_err(|e| format!("下载失败: {}", e))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("下载失败: HTTP {}", resp.status()));
-    }
-
-    let total_size = resp.content_length().unwrap_or(0);
+    let client = http_download::download_client()?;
     let archive_path = env_dir.join("python_download.tar.gz");
-
-    // 先写入 .part 临时文件，校验完成后再原子替换，避免中断残件
-    let part_path = super::prepare_part_file(&archive_path);
-
-    // 流式写入
-    use futures_util::StreamExt;
-    let mut stream = resp.bytes_stream();
-    let mut file = tokio::fs::File::create(&part_path)
-        .await
-        .map_err(|e| format!("创建文件失败: {}", e))?;
-
-    let mut downloaded: u64 = 0;
-    let mut last_pct: u64 = 0;
-    let start_time = std::time::Instant::now();
-
-    // 下载循环结果 — 任何错误（含取消）统一在循环外清理 .part 残件
-    let mut result: Result<(), String> = Ok(());
-
-    while let Some(chunk) = stream.next().await {
-        if is_cancelled() {
-            result = Err("已取消".into());
-            break;
-        }
-
-        let bytes = match chunk {
-            Ok(b) => b,
-            Err(e) => {
-                result = Err(format!("下载错误: {}", e));
-                break;
-            }
+    let downloaded = http_download::download_to_file(
+        client.get(&url),
+        &archive_path,
+        "Python",
+        &SETUP_CANCELLED,
+        |p| {
+            let _ = app.emit(DOWNLOAD_EVENT, p.with_filename("python"));
+        },
+    )
+    .await;
+    if let Err(err) = downloaded {
+        let progress = match &err {
+            DownloadError::Cancelled => DownloadProgress::cancelled("已取消"),
+            _ => DownloadProgress::error(err.to_string()),
         };
-        use tokio::io::AsyncWriteExt;
-        if let Err(e) = file.write_all(&bytes).await {
-            result = Err(format!("写入失败: {}", e));
-            break;
-        }
-
-        downloaded += bytes.len() as u64;
-        let pct = (downloaded * 100).checked_div(total_size).unwrap_or(0);
-        if pct != last_pct {
-            last_pct = pct;
-            let mb = downloaded as f64 / 1024.0 / 1024.0;
-            let total_mb = total_size as f64 / 1024.0 / 1024.0;
-            let elapsed = start_time.elapsed().as_secs_f64();
-            let avg_speed = if elapsed > 0.0 {
-                downloaded as f64 / elapsed / 1_048_576.0
-            } else {
-                0.0
-            };
-            let _ = app.emit(
-                DOWNLOAD_EVENT,
-                PythonDownloadProgress {
-                    filename: "python".into(),
-                    downloaded,
-                    total: total_size,
-                    percent: pct as f32,
-                    speed_mbps: avg_speed,
-                    status: "downloading".to_string(),
-                    message: format!(
-                        "Python — {:.1}/{:.1} MB ({:.1} MB/s)",
-                        mb, total_mb, avg_speed
-                    ),
-                },
-            );
-        }
+        let _ = app.emit(DOWNLOAD_EVENT, progress.with_filename("python"));
+        return Err(match err {
+            DownloadError::Cancelled => "已取消".into(),
+            other => other.into(),
+        });
     }
-
-    // 确保缓冲数据全部落盘
-    if result.is_ok() {
-        use tokio::io::AsyncWriteExt;
-        if let Err(e) = file.flush().await {
-            result = Err(format!("写入失败: {}", e));
-        }
-    }
-    drop(file);
-
-    // 任何错误路径（包括取消）都删除 .part 残件
-    if let Err(e) = result {
-        let _ = tokio::fs::remove_file(&part_path).await;
-        return Err(e);
-    }
-
-    // 校验字节数并原子替换到最终文件
-    super::finalize_part_file(&part_path, &archive_path, downloaded, total_size)?;
-
-    // 通知前端下载完成，清除日志中的进度条
     let _ = app.emit(
         DOWNLOAD_EVENT,
-        PythonDownloadProgress {
-            filename: "python".into(),
-            downloaded: total_size,
-            total: total_size,
-            percent: 100.0,
-            speed_mbps: 0.0,
-            status: "done".to_string(),
-            message: "Python 下载完成".to_string(),
-        },
+        DownloadProgress::done("Python 下载完成").with_filename("python"),
     );
+    if is_cancelled() {
+        return Err("已取消".into());
+    }
     emit_progress(app, "@pythonEnv.extracting", "info");
 
-    // 解压到临时目录
     let extract_tmp = env_dir.join("_python_extract_tmp");
     if extract_tmp.exists() {
         let _ = std::fs::remove_dir_all(&extract_tmp);
@@ -709,22 +508,18 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
         .await
         .map_err(|e| format!("解压任务失败: {}", e))??;
 
-    // 清理下载文件
     let _ = tokio::fs::remove_file(&archive_path).await;
 
     // 移动: _python_extract_tmp/python/ → env/python/base/
     let extracted_python = extract_tmp.join("python");
     if !extracted_python.exists() {
-        // 尝试查找解压出来的目录
         let _ = std::fs::remove_dir_all(&extract_tmp);
         return Err("解压后未找到 python 目录".into());
     }
 
-    // 确保目标父目录存在
     let python_parent = get_env_dir().join("python");
     std::fs::create_dir_all(&python_parent).map_err(|e| format!("创建 python 目录失败: {}", e))?;
 
-    // 如果 base/ 已存在，先删除
     if python_dir.exists() {
         let _ = std::fs::remove_dir_all(&python_dir);
     }
@@ -732,10 +527,8 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
     std::fs::rename(&extracted_python, &python_dir)
         .map_err(|e| format!("移动 Python 目录失败: {}", e))?;
 
-    // 清理临时目录
     let _ = std::fs::remove_dir_all(&extract_tmp);
 
-    // 验证
     let python_exe = get_standalone_python();
     if !python_exe.exists() {
         return Err(format!("Python 解压后未找到: {}", python_exe.display()));
@@ -747,21 +540,13 @@ async fn download_python(app: &tauri::AppHandle) -> Result<(), String> {
 
 /// 解压 tar.gz
 fn extract_tar_gz(archive: &std::path::Path, dest: &std::path::Path) -> Result<(), String> {
-    use std::process::Command;
-
-    let mut cmd = Command::new("tar");
+    let mut cmd = hidden_command("tar");
     cmd.args([
         "xzf",
         &archive.to_string_lossy(),
         "-C",
         &dest.to_string_lossy(),
     ]);
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
 
     let status = cmd.status().map_err(|e| format!("解压失败: {}", e))?;
     if !status.success() {
@@ -770,30 +555,111 @@ fn extract_tar_gz(archive: &std::path::Path, dest: &std::path::Path) -> Result<(
     Ok(())
 }
 
-/// 创建 venv
-fn create_venv(app: &tauri::AppHandle) -> Result<(), String> {
-    let python = get_standalone_python();
+async fn create_venv(app: &tauri::AppHandle, python: PathBuf) -> Result<(), String> {
     let venv_dir = get_venv_dir();
-
-    let mut cmd = std::process::Command::new(&python);
-    cmd.args(["-m", "venv", &venv_dir.to_string_lossy()])
-        .env("PYTHONIOENCODING", "utf-8");
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
+    // 未就绪的 venv 可能指向已卸载的解释器，重建前移除残留。
+    if venv_dir.exists() {
+        std::fs::remove_dir_all(&venv_dir).map_err(|e| format!("清理 venv 失败: {}", e))?;
     }
-
-    let output = cmd.output().map_err(|e| format!("创建 venv 失败: {}", e))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("创建 venv 失败: {}", stderr));
-    }
-
+    std::fs::create_dir_all(get_env_dir().join("python"))
+        .map_err(|e| format!("创建目录失败: {}", e))?;
+    tokio::task::spawn_blocking(move || {
+        let output = hidden_command(python)
+            .args(["-m", "venv", &venv_dir.to_string_lossy()])
+            .env("PYTHONIOENCODING", "utf-8")
+            .output()
+            .map_err(|e| format!("创建 venv 失败: {}", e))?;
+        if !output.status.success() {
+            return Err(format!(
+                "创建 venv 失败: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("创建 venv 线程异常: {}", e))??;
     emit_progress(app, "@pythonEnv.venvCreated", "success");
     Ok(())
 }
+
+fn run_pip(python: &str, args: &[&str], with_proxy: bool) -> std::io::Result<std::process::Output> {
+    let mut cmd = hidden_command(python);
+    cmd.args(["-m", "pip"])
+        .args(args)
+        .env("PYTHONIOENCODING", "utf-8");
+    if with_proxy {
+        super::proxy_config::apply_proxy_env(&mut cmd);
+    }
+    cancellable_output(cmd, &SETUP_CANCELLED)
+}
+
+fn cancellable_output(
+    mut cmd: std::process::Command,
+    cancelled: &AtomicBool,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+
+    let cancelled_error = || std::io::Error::new(std::io::ErrorKind::Interrupted, "已取消");
+    if cancelled.load(Ordering::SeqCst) {
+        return Err(cancelled_error());
+    }
+    configure_python_command(&mut cmd, false);
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    std::thread::scope(|scope| {
+        fn read(mut stream: impl Read) -> std::io::Result<Vec<u8>> {
+            let mut bytes = Vec::new();
+            stream.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        }
+        let stdout = scope.spawn(move || read(stdout));
+        let stderr = scope.spawn(move || read(stderr));
+        let mut status = None;
+        let result = loop {
+            if cancelled.load(Ordering::SeqCst) {
+                break Err(cancelled_error());
+            }
+            if status.is_none() {
+                match child.try_wait() {
+                    Ok(value) => status = value,
+                    Err(e) => break Err(e),
+                }
+            }
+            if let Some(status) = status {
+                if stdout.is_finished() && stderr.is_finished() {
+                    break Ok(status);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        if result.is_err() {
+            super::kill_process_tree(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let stdout = stdout
+            .join()
+            .map_err(|_| std::io::Error::other("读取 stdout 线程异常"))?;
+        let stderr = stderr
+            .join()
+            .map_err(|_| std::io::Error::other("读取 stderr 线程异常"))?;
+        Ok(std::process::Output {
+            status: result?,
+            stdout: stdout?,
+            stderr: stderr?,
+        })
+    })
+}
+
+/// onnxruntime / onnxruntime-gpu 共用的固定版本
+const ORT_VERSION: &str = "1.25.1";
 
 /// 安装基础依赖。
 ///
@@ -805,64 +671,51 @@ fn install_deps(app: &tauri::AppHandle) -> Result<(), String> {
     let python = get_venv_python();
     let python_str = python.to_string_lossy().to_string();
     // 固定版本，避免供应链风险
-    pip_install_with_python(app, &python_str, &["onnxruntime==1.25.1", "numpy==2.2.6", "pillow==11.3.0"])
+    pip_install_with_python(
+        app,
+        &python_str,
+        &[
+            &format!("onnxruntime=={}", ORT_VERSION),
+            "numpy==2.2.6",
+            "pillow==11.3.0",
+        ],
+    )
 }
 
-/// 把 CPU-only onnxruntime 换成 onnxruntime-gpu。
-///
-/// 基础依赖（install_deps）装的是 CPU 版 `onnxruntime`——GPU 包在缺 CUDA 库时
-/// import 直接报错，不适合做默认依赖。检测到 NVIDIA GPU 的机器由
-/// `ensure_onnx_gpu_runtime` 调用本函数按需替换为 GPU 包。
+/// 把 CPU-only onnxruntime 换成 onnxruntime-gpu，由 `ensure_onnx_gpu_runtime`
+/// 在检测到 NVIDIA GPU 后调用。
 /// 两个包会争抢同一个 `onnxruntime` 模块名，必须先卸载再装。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "windows")]
 pub fn upgrade_onnxruntime_to_gpu(app: &tauri::AppHandle, python: &str) -> Result<(), String> {
     // 取消标志的复位在 ensure_onnx_gpu_runtime 的归属登记段完成（这里复位会吞掉别人的取消）
 
-    emit_progress(app, "@pythonEnv.installGpu", "info");
     emit_progress(app, "@pythonEnv.uninstallCpu", "info");
-
-    // 两个包共用 onnxruntime 模块名，同时存在会冲突，先一并卸载
-    {
-        let mut cmd = std::process::Command::new(python);
-        cmd.args([
-            "-m",
-            "pip",
-            "uninstall",
-            "-y",
-            "onnxruntime",
-            "onnxruntime-gpu",
-        ])
-        .env("PYTHONIOENCODING", "utf-8");
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000);
-        }
-        let _ = cmd.output();
+    let _ = run_pip(
+        python,
+        &["uninstall", "-y", "onnxruntime", "onnxruntime-gpu"],
+        false,
+    );
+    if is_cancelled() {
+        return Err("已取消".into());
     }
+    emit_progress(app, "@pythonEnv.installGpu", "info");
 
-    pip_install_with_python(app, python, &["onnxruntime-gpu==1.25.1"])
+    pip_install_with_python(app, python, &[&format!("onnxruntime-gpu=={}", ORT_VERSION)])
 }
 
 /// 本会话是否已尝试过把 CPU-only onnxruntime 升级为 GPU 包（避免反复重装）
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "windows")]
 static ORT_UPGRADE_TRIED: AtomicBool = AtomicBool::new(false);
 
 /// 本会话是否已尝试过把 CPU-only torch 升级为 CUDA 构建（避免反复下载 ~2GB）
-#[cfg(target_os = "windows")]
 static TORCH_UPGRADE_TRIED: AtomicBool = AtomicBool::new(false);
 
 /// 在指定 Python 下执行探测脚本并返回 stdout（隐藏 Windows 控制台窗口）
-async fn probe_python(python: &str, script: &'static str) -> Option<String> {
+pub(crate) async fn probe_python(python: &str, script: &'static str) -> Option<String> {
     let p = python.to_string();
     tokio::task::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new(&p);
+        let mut cmd = hidden_command(&p);
         cmd.args(["-c", script]).env("PYTHONIOENCODING", "utf-8");
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000);
-        }
         cmd.output().ok().and_then(|o| {
             if o.status.success() {
                 Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -877,6 +730,7 @@ async fn probe_python(python: &str, script: &'static str) -> Option<String> {
 }
 
 /// onnxruntime 探测：输出「providers|是否装了 onnxruntime-gpu 包」
+#[cfg(target_os = "windows")]
 const ONNX_PROBE: &str = "\
 import importlib.metadata as md
 try:
@@ -891,313 +745,762 @@ except Exception:
     gpu_pkg = '0'
 print(providers + '|' + gpu_pkg)";
 
-/// torch 探测：输出「是否安装|是否 CUDA 构建|cuda 可用|mps 可用」
+#[derive(Debug, PartialEq)]
+struct TorchPackages {
+    torch: bool,
+    torchvision: bool,
+    cuda_build: bool,
+}
+
+impl TorchPackages {
+    fn parse(probe: &str) -> Result<Self, String> {
+        let fields: Vec<_> = probe
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .split('|')
+            .collect();
+        if fields.len() != 3 || fields.iter().any(|f| !matches!(*f, "0" | "1")) {
+            return Err("PyTorch 依赖检测返回了无效结果".into());
+        }
+        Ok(Self {
+            torch: fields[0] == "1",
+            torchvision: fields[1] == "1",
+            cuda_build: fields[2] == "1",
+        })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct TorchInstallPlan {
+    packages: Vec<&'static str>,
+    cuda: bool,
+    replace_cpu: bool,
+}
+
+impl TorchInstallPlan {
+    fn args(&self) -> Vec<&'static str> {
+        let mut args = vec!["install", "--disable-pip-version-check", "--no-cache-dir"];
+        if self.replace_cpu {
+            args.push("--force-reinstall");
+        }
+        args.extend_from_slice(&self.packages);
+        if self.cuda {
+            args.extend(["--index-url", "https://download.pytorch.org/whl/cu121"]);
+        }
+        args
+    }
+}
+
+fn torch_install_plan(
+    installed: &TorchPackages,
+    windows_nvidia: bool,
+    upgrade_tried: bool,
+) -> Option<TorchInstallPlan> {
+    let missing = !installed.torch || !installed.torchvision;
+    let replace_cpu = windows_nvidia && installed.torch && !installed.cuda_build;
+    if !missing && (!replace_cpu || upgrade_tried) {
+        return None;
+    }
+    let packages = if windows_nvidia {
+        vec!["torch", "torchvision"]
+    } else {
+        [
+            (installed.torch, "torch"),
+            (installed.torchvision, "torchvision"),
+        ]
+        .into_iter()
+        .filter_map(|(present, package)| (!present).then_some(package))
+        .collect()
+    };
+    Some(TorchInstallPlan {
+        packages,
+        cuda: windows_nvidia,
+        replace_cpu,
+    })
+}
+
+// 只检查包和构建类型；不初始化 CUDA/MPS，非 Windows 不触发 GPU 换装。
 const TORCH_PROBE: &str = "\
 try:
     import torch
+    torch_ok = True
+    cuda_build = bool(torch.version.cuda)
 except Exception:
-    print('0|0|0|0')
-else:
-    cuda_build = '1' if torch.version.cuda else '0'
-    try:
-        cuda_ok = '1' if torch.cuda.is_available() else '0'
-    except Exception:
-        cuda_ok = '0'
-    try:
-        mps_ok = '1' if (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()) else '0'
-    except Exception:
-        mps_ok = '0'
-    print('1|' + cuda_build + '|' + cuda_ok + '|' + mps_ok)";
+    torch_ok = cuda_build = False
+try:
+    import torchvision
+    vision_ok = True
+except Exception:
+    vision_ok = False
+print('|'.join('1' if flag else '0' for flag in (torch_ok, vision_ok, cuda_build)))";
 
 /// 检测机器上是否存在 NVIDIA GPU（nvidia-smi 探测）。
-/// 自包含实现：不再依赖 tagger 的诊断函数簇（该簇随死代码清理删除）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "windows")]
 async fn has_nvidia_gpu() -> bool {
+    static NVIDIA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     tokio::task::spawn_blocking(|| {
-        // Windows GUI 进程的 PATH 未必包含 nvidia-smi，逐个候选路径尝试
-        let candidates: &[&str] = if cfg!(target_os = "windows") {
-            &[
-                "nvidia-smi",
-                "C:\\Windows\\System32\\nvidia-smi.exe",
-                "C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe",
-            ]
-        } else {
-            &["nvidia-smi"]
-        };
-        for exe in candidates {
-            let mut cmd = std::process::Command::new(exe);
-            cmd.arg("-L");
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-            }
-            if let Ok(out) = cmd.output() {
-                if out.status.success() {
-                    return true;
+        *NVIDIA.get_or_init(|| {
+            // Windows GUI 进程的 PATH 未必包含 nvidia-smi，逐个候选路径尝试
+            let candidates: &[&str] = if cfg!(target_os = "windows") {
+                &[
+                    "nvidia-smi",
+                    "C:\\Windows\\System32\\nvidia-smi.exe",
+                    "C:\\Program Files\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe",
+                ]
+            } else {
+                &["nvidia-smi"]
+            };
+            for exe in candidates {
+                let mut cmd = hidden_command(exe);
+                cmd.arg("-L");
+                if let Ok(out) = cmd.output() {
+                    if out.status.success() {
+                        return true;
+                    }
                 }
             }
-        }
-        false
+            false
+        })
     })
     .await
     .unwrap_or(false)
 }
 
-/// 统一入口：探测 onnxruntime 的 GPU ExecutionProvider 可用性。
+/// 统一入口：探测 onnxruntime 的 GPU ExecutionProvider 可用性，
+/// 本机有 NVIDIA GPU 而装的是 CPU 版时换成 onnxruntime-gpu。
 ///
 /// 不安装 CUDA、不下载 CUDA 运行时，只使用本机既有的 CUDA 环境。
-///
-/// 基础依赖装的是 CPU 版 onnxruntime（保证任何环境都能跑），因此这里承担
-/// 「有 NVIDIA 就换成 onnxruntime-gpu」这一步。无 NVIDIA 的机器（AMD/Intel/
-/// 核显）不会触发升级，继续用 CPU 版，避免装上无法加载 CUDA 库的 GPU 包。
+/// 无 NVIDIA 的机器（AMD/Intel/核显）不会触发升级，继续用 CPU 版
+/// （为什么默认装 CPU 版见 install_deps）。
 /// 每个会话最多尝试升级一次，失败不重复下载。
-/// 返回 Ok(true) 表示有 GPU 加速，Ok(false) 表示按 CPU 运行。
+#[cfg(target_os = "windows")]
 pub async fn ensure_onnx_gpu_runtime(
     app: &tauri::AppHandle,
     python: &str,
     owner: &'static str,
-) -> Result<bool, String> {
-    let _ = app;
-    let _ = owner; // 非 Windows/Linux 构型不触发升级，参数仅在 cfg 块内使用
+) -> Result<(), String> {
+    if ORT_UPGRADE_TRIED.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     let probe = probe_python(python, ONNX_PROBE).await.unwrap_or_default();
     let (providers, gpu_pkg) = probe.split_once('|').unwrap_or(("", "0"));
 
     // 已有 GPU EP → 直接用
-    if providers.contains("CUDAExecutionProvider") || providers.contains("CoreMLExecutionProvider") {
-        return Ok(true);
+    if providers.contains("CUDAExecutionProvider") || providers.contains("CoreMLExecutionProvider")
+    {
+        return Ok(());
     }
 
-    // 装的是 CPU-only 包（旧版本遗留），且本机确有 NVIDIA GPU → 换成 GPU 包
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    // 装的是 CPU-only 包（install_deps 的默认），且本机确有 NVIDIA GPU → 换成 GPU 包
+    #[cfg(target_os = "windows")]
     {
         let is_cpu_only_pkg = gpu_pkg.trim() != "1";
-        if is_cpu_only_pkg
-            && !ORT_UPGRADE_TRIED.load(Ordering::SeqCst)
-            && has_nvidia_gpu().await
-        {
+        if is_cpu_only_pkg && !ORT_UPGRADE_TRIED.load(Ordering::SeqCst) && has_nvidia_gpu().await {
             // 持 SETUP_LOCK：pip 换装期间 import 探测会失败，若放任 setup_python_env
             // 并发进来会把正在写入的 venv 整个删除重建，环境半 CPU 半 GPU 或彻底损坏。
-            // 锁内 CAS：并发调用只有一个执行升级，其余等锁释放后直接复检。
-            let _setup_guard = SETUP_LOCK.lock().await;
+            // 锁内 CAS：并发调用只有一个执行升级，其余等锁释放（升级结束）后直接返回。
+            let guard = acquire_setup(owner).await?;
             if ORT_UPGRADE_TRIED
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
             {
-                // 归属登记 + 清掉他人残留的取消标志（只有 owner 自己的取消能中止升级）
-                let _owner = claim_setup_owner(owner);
-                SETUP_CANCELLED.store(false, Ordering::SeqCst);
                 let p = python.to_string();
                 let app2 = app.clone();
-                tokio::task::spawn_blocking(move || upgrade_onnxruntime_to_gpu(&app2, &p))
-                    .await
-                    .map_err(|e| format!("安装线程异常: {}", e))??;
+                run_owned_install(guard, move || upgrade_onnxruntime_to_gpu(&app2, &p)).await?;
             }
-
-            let probe = probe_python(python, ONNX_PROBE).await.unwrap_or_default();
-            let providers = probe.split('|').next().unwrap_or("");
-            return Ok(providers.contains("CUDAExecutionProvider"));
         }
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    let _ = gpu_pkg;
-
-    Ok(false)
+    Ok(())
 }
 
-/// 统一入口：探测 PyTorch 是否可用 GPU（CUDA / MPS）
-/// 探测 PyTorch 是否可用 GPU（CUDA / MPS）。
-///
-/// 如果 torch 已装但是 CPU-only 构建，且本机有 NVIDIA GPU，
-/// 则自动换成 CUDA 版本（从 PyTorch 官方 wheel index 安装，体积约 2GB，
-/// 仅首次触发一次）。这不是"下载 CUDA"——torch wheel 自带所需的
-/// CUDA 运行时库，用户无需另装 CUDA Toolkit。
-/// 返回 Ok(true) 表示有 GPU 加速，Ok(false) 表示按 CPU 运行。
-pub async fn ensure_torch_gpu_runtime(
-    app: &tauri::AppHandle,
+/// 安装缺失的 PyTorch 依赖；仅 Windows NVIDIA 环境会选择 CUDA wheel。
+pub async fn ensure_torch_gpu_runtime<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     python: &str,
     owner: &'static str,
-) -> Result<bool, String> {
-    let probe = probe_python(python, TORCH_PROBE).await.unwrap_or_default();
-    let f: Vec<&str> = probe.split('|').map(|s| s.trim()).collect();
-    #[allow(unused_variables)]
-    let installed   = f.first().is_some_and(|v| *v == "1");
-    #[allow(unused_variables)]
-    let cuda_build  = f.get(1).is_some_and(|v| *v == "1");
-    let cuda_ok     = f.get(2).is_some_and(|v| *v == "1");
-    let mps_ok      = f.get(3).is_some_and(|v| *v == "1");
-    let _ = app;
-    let _ = owner; // 仅 Windows 构型触发升级
-
-    // GPU 已可用 → 直接用
-    if cuda_ok || mps_ok {
-        return Ok(true);
-    }
-
-    // 已装但是 CPU-only 构建，且本机有 NVIDIA → 换成 CUDA 版
-    #[cfg(target_os = "windows")]
-    if installed && !cuda_build && !TORCH_UPGRADE_TRIED.load(Ordering::SeqCst) && has_nvidia_gpu().await {
-        // 持 SETUP_LOCK + 锁内 CAS，理由同 ensure_onnx_gpu_runtime：
-        // pip 换装期间不允许 setup 删 venv，也不允许并发重复升级
-        let _setup_guard = SETUP_LOCK.lock().await;
-        if TORCH_UPGRADE_TRIED
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            let probe = probe_python(python, TORCH_PROBE).await.unwrap_or_default();
-            let f: Vec<&str> = probe.split('|').map(|s| s.trim()).collect();
-            return Ok(f.get(2).is_some_and(|v| *v == "1"));
-        }
-        // 归属登记 + 清掉他人残留的取消标志
-        let _owner = claim_setup_owner(owner);
-        SETUP_CANCELLED.store(false, Ordering::SeqCst);
-
-        // 先卸载 CPU 版（两者文件冲突，必须先移除）
-        {
-            let p = python.to_string();
-            let _ = tokio::task::spawn_blocking(move || {
-                let mut cmd = std::process::Command::new(&p);
-                cmd.args(["-m", "pip", "uninstall", "-y", "torch", "torchvision"])
-                    .env("PYTHONIOENCODING", "utf-8");
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-                cmd.output()
-            }).await;
-        }
-
-        // 安装 CUDA 版（torch wheel 自带 CUDA 运行时，不依赖系统 CUDA Toolkit）
-        let p = python.to_string();
-        let app2 = app.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new(&p);
-            cmd.args([
-                "-m", "pip", "install",
-                "--disable-pip-version-check", "--no-cache-dir",
-                "torch", "torchvision",
-                "--index-url", "https://download.pytorch.org/whl/cu121",
-            ])
-            .env("PYTHONIOENCODING", "utf-8");
-            super::proxy_config::apply_proxy_env(&mut cmd);
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000);
-            let output = cmd.output().map_err(|e| format!("安装失败: {}", e))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("安装 CUDA 版 torch 失败: {}", stderr));
-            }
-            let _ = app2; // 进度由 pip 自身输出，这里不额外 emit
-            Ok(())
-        })
+) -> Result<(), String> {
+    let guard = acquire_setup(owner).await?;
+    let probe = probe_python(python, TORCH_PROBE)
         .await
-        .map_err(|e| format!("安装线程异常: {}", e))??;
+        .ok_or("PyTorch 依赖检测失败")?;
+    let installed = TorchPackages::parse(&probe)?;
+    #[cfg(target_os = "windows")]
+    let windows_nvidia = has_nvidia_gpu().await;
+    #[cfg(not(target_os = "windows"))]
+    let windows_nvidia = false;
 
-        // 复检
-        let probe = probe_python(python, TORCH_PROBE).await.unwrap_or_default();
-        let f: Vec<&str> = probe.split('|').map(|s| s.trim()).collect();
-        return Ok(f.get(2).is_some_and(|v| *v == "1"));
-    }
-
-    Ok(false)
+    let Some(plan) = torch_install_plan(
+        &installed,
+        windows_nvidia,
+        TORCH_UPGRADE_TRIED.load(Ordering::SeqCst),
+    ) else {
+        return if is_cancelled() {
+            Err("已取消".into())
+        } else {
+            Ok(())
+        };
+    };
+    let python = python.to_string();
+    let app = app.clone();
+    run_owned_install(guard, move || {
+        if plan.replace_cpu {
+            TORCH_UPGRADE_TRIED.store(true, Ordering::SeqCst);
+        }
+        let label = plan.packages.join(", ");
+        emit_pip_progress(&app, &label, 0, 1);
+        let result = pip_result(run_pip(&python, &plan.args(), true), &label);
+        finish_pip_progress(&app, &result);
+        result
+    })
+    .await
 }
 
-/// 获取当前可用的 Python 路径（venv 优先，系统其次）
-#[cfg(target_os = "windows")]
-fn get_active_python() -> Result<String, String> {
-    // 1. 管理的 venv
-    if let Some(p) = get_python_exe() {
-        return Ok(p);
-    }
-    // 2. 系统 Python
-    for name in &["python3", "python"] {
-        let mut cmd = std::process::Command::new(name);
-        cmd.args(["--version"]);
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000);
+/// 额外依赖与基础环境部署共用同一把锁，取消归属于调用方。
+pub(crate) async fn pip_install_for<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    python: &str,
+    deps: &[&str],
+    owner: &'static str,
+) -> Result<(), String> {
+    let guard = acquire_setup(owner).await?;
+    let app = app.clone();
+    let python = python.to_string();
+    let deps: Vec<String> = deps.iter().map(|dep| dep.to_string()).collect();
+    run_owned_install(guard, move || {
+        let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+        pip_install_with_python(&app, &python, &deps)
+    })
+    .await
+}
+
+fn emit_pip_progress<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    dep: &str,
+    index: usize,
+    total: usize,
+) {
+    let _ = app.emit(
+        DOWNLOAD_EVENT,
+        DownloadProgress::new(
+            "downloading",
+            (index as f32 / total as f32) * 100.0,
+            format!("@pythonEnv.installingDep|{}|{}|{}", dep, index + 1, total),
+        )
+        .with_filename(dep),
+    );
+}
+
+fn finish_pip_progress<R: tauri::Runtime>(app: &tauri::AppHandle<R>, result: &Result<(), String>) {
+    let progress = if is_cancelled() {
+        DownloadProgress::cancelled("已取消")
+    } else {
+        match result {
+            Ok(()) => DownloadProgress::done("@pythonEnv.depsInstalled"),
+            Err(error) => DownloadProgress::error(error),
         }
-        if let Ok(output) = cmd.output() {
-            if output.status.success() {
-                let ver = String::from_utf8_lossy(&output.stdout);
-                if ver.contains("Python 3") {
-                    return Ok(name.to_string());
+    };
+    let _ = app.emit(DOWNLOAD_EVENT, progress);
+}
+
+fn pip_result(output: std::io::Result<std::process::Output>, label: &str) -> Result<(), String> {
+    if is_cancelled() {
+        return Err("已取消".into());
+    }
+    let output = output.map_err(|e| format!("安装 {} 失败: {}", label, e))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "安装 {} 失败: {}",
+            label,
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
+/// 调用方必须已持有安装锁并登记 owner；异步调用方使用 pip_install_for。
+pub fn pip_install_with_python<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    python: &str,
+    deps: &[&str],
+) -> Result<(), String> {
+    let result = (|| {
+        for (i, dep) in deps.iter().enumerate() {
+            if is_cancelled() {
+                return Err("已取消".into());
+            }
+            emit_pip_progress(app, dep, i, deps.len());
+            pip_result(
+                run_pip(
+                    python,
+                    &[
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-cache-dir",
+                        dep,
+                    ],
+                    true,
+                ),
+                dep,
+            )?;
+        }
+        Ok(())
+    })();
+    finish_pip_progress(app, &result);
+    result
+}
+
+#[cfg(not(target_os = "windows"))]
+pub async fn ensure_onnx_gpu_runtime(
+    _app: &tauri::AppHandle,
+    _python: &str,
+    _owner: &'static str,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static TEST_SETUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[cfg(unix)]
+    struct TestDir(PathBuf);
+
+    #[cfg(unix)]
+    impl TestDir {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "purinbox-python-env-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::SeqCst)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn packages(torch: bool, torchvision: bool, cuda_build: bool) -> TorchPackages {
+        TorchPackages {
+            torch,
+            torchvision,
+            cuda_build,
+        }
+    }
+
+    #[test]
+    fn torch_probe_requires_three_boolean_fields() {
+        assert_eq!(
+            TorchPackages::parse("log\n1|0|1\n").unwrap(),
+            packages(true, false, true)
+        );
+        for invalid in ["", "1|1", "1|1|0|0", "True|1|0"] {
+            assert!(TorchPackages::parse(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn torch_probe_uses_stub_modules_without_initializing_gpu() {
+        let python = get_venv_python();
+        let python = if python.exists() {
+            python
+        } else {
+            PathBuf::from("python3")
+        };
+        for (torch, vision, cuda, expected) in [
+            (false, false, false, "0|0|0"),
+            (true, false, false, "1|0|0"),
+            (true, true, false, "1|1|0"),
+            (true, true, true, "1|1|1"),
+        ] {
+            let script = format!(
+                "import sys, types\nsys.modules['torch'] = {}\nsys.modules['torchvision'] = {}\n{}",
+                if torch {
+                    format!(
+                        "types.SimpleNamespace(version=types.SimpleNamespace(cuda={}))",
+                        if cuda { "'12.1'" } else { "None" }
+                    )
+                } else {
+                    "None".into()
+                },
+                if vision {
+                    "types.SimpleNamespace()"
+                } else {
+                    "None"
+                },
+                TORCH_PROBE,
+            );
+            let mut cmd = hidden_command(&python);
+            cmd.args(["-I", "-B", "-c", &script]);
+            let output = cancellable_output(cmd, &AtomicBool::new(false)).unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), expected);
+        }
+    }
+
+    #[test]
+    fn non_windows_only_installs_missing_packages() {
+        for cuda in [false, true] {
+            for tried in [false, true] {
+                assert!(torch_install_plan(&packages(true, true, cuda), false, tried).is_none());
+                for (torch, vision, expected) in [
+                    (false, false, vec!["torch", "torchvision"]),
+                    (false, true, vec!["torch"]),
+                    (true, false, vec!["torchvision"]),
+                ] {
+                    let plan =
+                        torch_install_plan(&packages(torch, vision, cuda), false, tried).unwrap();
+                    assert_eq!(plan.packages, expected);
+                    assert!(!plan.cuda);
+                    assert!(!plan.replace_cpu);
+                    assert!(!plan.args().contains(&"--index-url"));
+                    assert!(!plan.args().contains(&"--upgrade"));
                 }
             }
         }
     }
-    Err("未找到可用的 Python".into())
-}
 
-/// 使用指定 Python 执行 pip install（公开供其他模块调用）
-pub fn pip_install_with_python(
-    app: &tauri::AppHandle,
-    python: &str,
-    deps: &[&str],
-) -> Result<(), String> {
-    let total = deps.len();
-    for (i, dep) in deps.iter().enumerate() {
-        if is_cancelled() {
-            return Err("已取消".into());
-        }
-
-        let msg = format!("@pythonEnv.installingDep|{}|{}|{}", dep, i + 1, total);
-
-        // Emit download-style progress bar (single inline entry, no log spam)
-        let _ = app.emit(
-            DOWNLOAD_EVENT,
-            PythonDownloadProgress {
-                filename: dep.to_string(),
-                downloaded: i as u64,
-                total: total as u64,
-                percent: (i as f32 / total as f32) * 100.0,
-                speed_mbps: 0.0,
-                status: "downloading".into(),
-                message: msg,
-            },
+    #[test]
+    fn windows_nvidia_installs_cuda_pair_directly() {
+        let plan = torch_install_plan(&packages(false, false, false), true, false).unwrap();
+        assert_eq!(
+            plan.args(),
+            [
+                "install",
+                "--disable-pip-version-check",
+                "--no-cache-dir",
+                "torch",
+                "torchvision",
+                "--index-url",
+                "https://download.pytorch.org/whl/cu121",
+            ]
         );
+        assert!(!plan.replace_cpu);
+    }
 
-        let mut cmd = std::process::Command::new(python);
-        cmd.args([
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--no-cache-dir",
-            dep,
-        ])
-        .env("PYTHONIOENCODING", "utf-8");
-        // 应用内代理注入给 pip（reqwest 走 build_http_client，pip 得靠环境变量）
-        super::proxy_config::apply_proxy_env(&mut cmd);
+    #[test]
+    fn windows_cpu_upgrade_is_one_install_and_only_one_attempt() {
+        let cpu = packages(true, true, false);
+        let plan = torch_install_plan(&cpu, true, false).unwrap();
+        assert!(plan.replace_cpu);
+        assert!(plan.args().contains(&"--force-reinstall"));
+        assert_eq!(
+            plan.args().iter().filter(|arg| **arg == "install").count(),
+            1
+        );
+        assert!(!plan.args().contains(&"uninstall"));
+        assert!(torch_install_plan(&cpu, true, true).is_none());
+        assert!(torch_install_plan(&packages(true, true, true), true, false).is_none());
+    }
 
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000);
-        }
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("安装 {} 失败: {}", dep, e))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("安装 {} 失败: {}", dep, stderr));
+    #[test]
+    fn missing_vision_and_failed_first_install_remain_repairable() {
+        for state in [packages(false, false, false), packages(true, false, true)] {
+            let plan = torch_install_plan(&state, true, true).unwrap();
+            assert!(plan.cuda);
+            assert_eq!(plan.packages, ["torch", "torchvision"]);
         }
     }
 
-    // Emit done to clear progress bar
-    let _ = app.emit(
-        DOWNLOAD_EVENT,
-        PythonDownloadProgress {
-            filename: String::new(),
-            downloaded: total as u64,
-            total: total as u64,
-            percent: 100.0,
-            speed_mbps: 0.0,
-            status: "done".into(),
-            message: "@pythonEnv.depsInstalled".into(),
-        },
-    );
+    #[tokio::test]
+    async fn owner_cancellation_isolated_and_queued_cancel_returns_without_lock() {
+        let _serial = TEST_SETUP_LOCK.lock().await;
+        let guard = acquire_setup("test-active").await.unwrap();
+        cancel_setup_for("test-queued");
+        cancel_setup_for("test-queued");
+        assert!(!is_cancelled());
+        let queued = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            acquire_setup("test-queued"),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(queued, Err(e) if e == "已取消"));
+        assert_eq!(*SETUP_OWNER.lock().unwrap(), Some("test-active"));
+        cancel_setup_for("test-active");
+        assert!(is_cancelled());
+        drop(guard);
+        let _next = acquire_setup("test-next").await.unwrap();
+        assert!(!is_cancelled());
+    }
 
-    Ok(())
+    #[tokio::test]
+    async fn cancellation_between_setup_and_extra_install_is_not_cleared() {
+        let _serial = TEST_SETUP_LOCK.lock().await;
+        drop(acquire_setup("test-between").await.unwrap());
+        cancel_setup_for("test-between");
+        assert!(matches!(acquire_setup("test-between").await, Err(e) if e == "已取消"));
+        assert!(acquire_setup("test-between").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn aborted_waiter_keeps_lock_until_blocking_install_finishes() {
+        let _serial = TEST_SETUP_LOCK.lock().await;
+        let guard = acquire_setup("test-abort").await.unwrap();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let task = tokio::spawn(run_owned_install(guard, move || {
+            let _ = started_tx.send(());
+            finish_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            Ok(())
+        }));
+        started_rx.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(SETUP_LOCK.try_lock().is_err());
+        assert_eq!(*SETUP_OWNER.lock().unwrap(), Some("test-abort"));
+        finish_tx.send(()).unwrap();
+        let _next = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            acquire_setup("test-after-abort"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    fn mock_python(root: &std::path::Path, probe: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = root.join("mock-python");
+        std::fs::write(&executable, format!(
+            "#!/bin/sh\nif [ \"$1\" = '-c' ]; then printf '%s\\n' '{probe}'; exit 0; fi\nprintf '%s\\n' \"$@\" >> '{}/args'\n{body}\n", root.display()
+        )).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        executable.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_file(path: &std::path::Path) {
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !path.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mock_process_drains_both_pipes_and_preserves_invalid_utf8() {
+        let mut cmd = hidden_command("/bin/sh");
+        cmd.args([
+            "-c",
+            "head -c 131072 /dev/zero; head -c 131072 /dev/zero >&2; printf '\\377' >&2; exit 7",
+        ]);
+        let output = cancellable_output(cmd, &AtomicBool::new(false)).unwrap();
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout.len(), 131072);
+        assert_eq!(output.stderr.len(), 131073);
+        assert_eq!(output.stderr.last(), Some(&255));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_mock_process_is_never_spawned() {
+        let root = TestDir::new();
+        let marker = root.path().join("started");
+        let mut cmd = hidden_command("/bin/sh");
+        cmd.args(["-c", &format!("touch '{}'", marker.display())]);
+        let error = cancellable_output(cmd, &AtomicBool::new(true)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_torch_installs_both_once_without_gpu_upgrade() {
+        let _serial = TEST_SETUP_LOCK.lock().await;
+        let root = TestDir::new();
+        let python = mock_python(root.path(), "0|0|0", "exit 0");
+        let app = tauri::test::mock_app();
+        let events = super::super::batch::capture_events(app.handle(), DOWNLOAD_EVENT);
+        ensure_torch_gpu_runtime(app.handle(), &python, "test-torch")
+            .await
+            .unwrap();
+        let args = std::fs::read_to_string(root.path().join("args")).unwrap();
+        assert_eq!(
+            args,
+            "-m\npip\ninstall\n--disable-pip-version-check\n--no-cache-dir\ntorch\ntorchvision\n"
+        );
+        assert_eq!(events.lock().unwrap().last().unwrap()["status"], "done");
+        assert_eq!(*SETUP_OWNER.lock().unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn installed_cpu_torch_is_left_unchanged_and_probe_errors_do_not_install() {
+        let _serial = TEST_SETUP_LOCK.lock().await;
+        let app = tauri::test::mock_app();
+        for (probe, success) in [("1|1|0", true), ("bad-probe", false)] {
+            let root = TestDir::new();
+            let python = mock_python(root.path(), probe, "exit 0");
+            assert_eq!(
+                ensure_torch_gpu_runtime(app.handle(), &python, "test-torch-noop")
+                    .await
+                    .is_ok(),
+                success
+            );
+            assert!(!root.path().join("args").exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn extra_pip_is_serialized_and_queued_cancel_never_spawns() {
+        let _serial = TEST_SETUP_LOCK.lock().await;
+        let root = TestDir::new();
+        let python = mock_python(root.path(), "", "exit 0");
+        let app = tauri::test::mock_app();
+        let guard = acquire_setup("test-lock-holder").await.unwrap();
+        let handle = app.handle().clone();
+        let task = tokio::spawn(async move {
+            pip_install_for(&handle, &python, &["mock-dependency"], "test-pip-queue").await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!root.path().join("args").exists());
+        assert!(!task.is_finished());
+        cancel_setup_for("test-pip-queue");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, Err("已取消".into()));
+        assert!(!root.path().join("args").exists());
+        assert!(!is_cancelled());
+        drop(guard);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn extra_pip_cancellation_kills_owned_process_and_stops_next_package() {
+        let _serial = TEST_SETUP_LOCK.lock().await;
+        let root = TestDir::new();
+        let pid_file = root.path().join("pid");
+        let python = mock_python(
+            root.path(),
+            "",
+            &format!("echo $$ > '{}'; sleep 30", pid_file.display()),
+        );
+        let app = tauri::test::mock_app();
+        let events = super::super::batch::capture_events(app.handle(), DOWNLOAD_EVENT);
+        let handle = app.handle().clone();
+        let task = tokio::spawn(async move {
+            pip_install_for(&handle, &python, &["first", "second"], "test-pip-running").await
+        });
+        wait_for_file(&pid_file).await;
+        let pid = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(*SETUP_OWNER.lock().unwrap(), Some("test-pip-running"));
+        cancel_setup_for("test-pip-running");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, Err("已取消".into()));
+        assert!(!std::fs::read_to_string(root.path().join("args"))
+            .unwrap()
+            .contains("second"));
+        assert!(!hidden_command("kill")
+            .args(["-0", &pid])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert_eq!(*SETUP_OWNER.lock().unwrap(), None);
+        let events = events.lock().unwrap();
+        assert_eq!(events.last().unwrap()["status"], "cancelled");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["status"] == "cancelled")
+                .count(),
+            1
+        );
+        assert!(!events.iter().any(|event| event["status"] == "done"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn extra_pip_failure_preserves_stderr_and_releases_owner() {
+        let _serial = TEST_SETUP_LOCK.lock().await;
+        let root = TestDir::new();
+        let python = mock_python(root.path(), "", "printf 'mock failure' >&2; exit 9");
+        let app = tauri::test::mock_app();
+        let events = super::super::batch::capture_events(app.handle(), DOWNLOAD_EVENT);
+        let error = pip_install_for(
+            app.handle(),
+            &python,
+            &["first", "second"],
+            "test-pip-error",
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("mock failure"));
+        assert!(!std::fs::read_to_string(root.path().join("args"))
+            .unwrap()
+            .contains("second"));
+        assert_eq!(*SETUP_OWNER.lock().unwrap(), None);
+        assert_eq!(events.lock().unwrap().last().unwrap()["status"], "error");
+    }
+
+    #[test]
+    fn standalone_url_uses_the_current_platform_triple() {
+        let url = python_download_url();
+        assert!(url.starts_with(
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20260414/"
+        ));
+        assert!(url.ends_with(&format!("-{PY_TRIPLE}-install_only_stripped.tar.gz")));
+        assert!(url.contains("cpython-3.12.13+20260414-"));
+    }
+
+    #[test]
+    fn python_minor_parsing_rejects_unrelated_output() {
+        assert_eq!(parse_python_minor("Python 3.12.13\n"), Some(12));
+        assert_eq!(parse_python_minor("Python 3.9.1"), Some(9));
+        assert_eq!(parse_python_minor("Python 2.7.18"), None);
+        assert_eq!(parse_python_minor("not Python"), None);
+    }
+
+    #[tokio::test]
+    async fn probe_only_runs_the_requested_script() {
+        let python =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../env/python/venv/bin/python3");
+        let python = if python.exists() {
+            python.to_string_lossy().into_owned()
+        } else {
+            "python3".into()
+        };
+        assert_eq!(
+            probe_python(&python, "print('probe-ok')").await.as_deref(),
+            Some("probe-ok")
+        );
+        assert!(probe_python(&python, "raise RuntimeError('probe-failed')")
+            .await
+            .is_none());
+    }
 }

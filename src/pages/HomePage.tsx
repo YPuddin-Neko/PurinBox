@@ -1,22 +1,15 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useEffect, useRef, useMemo } from 'react';
 
 // ===== Logo 组件 =====
 const Logo = ({ style, imgStyle }: { style?: React.CSSProperties; imgStyle?: React.CSSProperties }) => (
   <div style={{ display: 'inline-block', ...style }}>
     <img src="/logo.png" alt="PurinBox"
-      style={{ maxWidth: 280, width: '100%', height: 'auto', objectFit: 'contain', userSelect: 'none', pointerEvents: 'none', ...imgStyle }}
+      style={{ maxWidth: 280, width: '100%', height: 'auto', objectFit: 'contain', pointerEvents: 'none', ...imgStyle }}
       draggable={false} />
   </div>
 );
 
-// ===== 50 种搞怪动画 =====
-
-/** 1. 鸡块旋转 */
-function Spin() {
-  return <Logo style={{ animation: 'anim-spin 1.2s linear infinite' }} />;
-}
-
-/** 2. DVD 弹弹乐 */
+/** DVD 弹弹乐：位置逐帧计算，直接写到 DOM 样式上，不触发 React 重渲染 */
 function DvdBounce() {
   const containerRef = useRef<HTMLDivElement>(null);
   const logoRef = useRef<HTMLDivElement>(null);
@@ -25,11 +18,6 @@ function DvdBounce() {
   const hue = useRef(0);
   const squash = useRef({ sx: 1, sy: 1, decay: 0 });
   const initialized = useRef(false);
-  const [s, setS] = useState<React.CSSProperties>({
-    position: 'absolute',
-    left: '50%', top: '50%',
-    transform: 'translate(-50%, -50%)',
-  });
 
   useEffect(() => {
     let raf: number;
@@ -56,12 +44,12 @@ function DvdBounce() {
         sq.sx = 1 + (sq.sx - 1) * sq.decay;
         sq.sy = 1 + (sq.sy - 1) * sq.decay;
       } else { sq.sx = 1; sq.sy = 1; }
-      setS({
-        position: 'absolute', left: p.x, top: p.y,
-        transform: `scale(${sq.sx}, ${sq.sy})`,
-        filter: `hue-rotate(${hue.current}deg)`,
-        transition: 'filter 0.4s',
-      });
+      const st = l.style;
+      st.left = `${p.x}px`;
+      st.top = `${p.y}px`;
+      st.transform = `scale(${sq.sx}, ${sq.sy})`;
+      st.filter = `hue-rotate(${hue.current}deg)`;
+      st.transition = 'filter 0.4s';
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -70,266 +58,69 @@ function DvdBounce() {
 
   return (
     <div ref={containerRef} style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
-      <div ref={logoRef} style={{ display: 'inline-block', ...s }}>
+      <div ref={logoRef} style={{ display: 'inline-block', position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)' }}>
         <Logo />
       </div>
     </div>
   );
 }
 
-/** 3. 果冻抖动 */
-function Jelly() {
-  return <Logo style={{ animation: 'anim-jelly 1.5s ease-in-out infinite' }} />;
-}
+// ===== 50 种搞怪动画 =====
+// 'dvd' 走上面的 DvdBounce，其余都是给 Logo 套一段 CSS 动画
+type LogoAnim = { style: React.CSSProperties; imgStyle?: React.CSSProperties };
 
-/** 4. 醉酒摇摆 */
-function Drunk() {
-  return <Logo style={{ animation: 'anim-drunk 2.5s ease-in-out infinite' }} />;
-}
-
-/** 5. 心跳膨胀 */
-function Heartbeat() {
-  return <Logo style={{ animation: 'anim-heartbeat 1s ease-in-out infinite' }} />;
-}
-
-/** 6. 火箭蹦跳 */
-function Rocket() {
-  return <Logo style={{ animation: 'anim-rocket 1.8s cubic-bezier(0.34, 1.56, 0.64, 1) infinite' }} />;
-}
-
-/** 7. 摇滚摇摆 */
-function RockSwing() {
-  return <Logo style={{ animation: 'anim-rock 0.6s ease-in-out infinite alternate', transformOrigin: 'center bottom' }} />;
-}
-
-/** 8. 海浪漂浮 */
-function WaveFloat() {
-  return <Logo style={{ animation: 'anim-wave 3s ease-in-out infinite' }} />;
-}
-
-/** 9. 翻跟斗 */
-function Somersault() {
-  return <Logo style={{ animation: 'anim-flip 2s ease-in-out infinite' }} />;
-}
-
-/** 10. 幽灵闪现 */
-function GhostFade() {
-  return <Logo style={{ animation: 'anim-ghost 2.5s ease-in-out infinite' }} />;
-}
-
-/** 11. 龙卷风 */
-function Tornado() {
-  return <Logo style={{ animation: 'anim-tornado 2s linear infinite' }} />;
-}
-
-/** 12. 弹簧弹跳 */
-function SpringBounce() {
-  return <Logo style={{ animation: 'anim-spring 1s ease-in-out infinite' }} />;
-}
-
-/** 13. 迪斯科 */
-function Disco() {
-  return <Logo style={{ animation: 'anim-disco 0.8s steps(8) infinite' }} imgStyle={{ filter: 'saturate(2)' }} />;
-}
-
-/** 14. 毛毛虫蠕动 */
-function Caterpillar() {
-  return <Logo style={{ animation: 'anim-worm 1.5s ease-in-out infinite' }} />;
-}
-
-/** 15. 钟摆摇 */
-function Pendulum() {
-  return <Logo style={{ animation: 'anim-pendulum 2s ease-in-out infinite', transformOrigin: 'center top' }} />;
-}
-
-/** 16. 像素抖动 */
-function PixelShake() {
-  return <Logo style={{ animation: 'anim-pixel 0.1s steps(2) infinite' }} imgStyle={{ imageRendering: 'pixelated' }} />;
-}
-
-/** 17. 呼吸灯 — 缓慢明暗变化 */
-function Breathe() {
-  return <Logo style={{ animation: 'anim-breathe 3s ease-in-out infinite' }} />;
-}
-
-/** 18. 橡皮筋 — 拉伸弹回 */
-function RubberBand() {
-  return <Logo style={{ animation: 'anim-rubber 1.2s ease-in-out infinite' }} />;
-}
-
-/** 19. 故障闪烁 — 赛博朋克感 */
-function Glitch() {
-  return <Logo style={{ animation: 'anim-glitch 0.3s steps(3) infinite' }} />;
-}
-
-/** 20. 太空漂移 — 失重旋转飘 */
-function SpaceDrift() {
-  return <Logo style={{ animation: 'anim-space 6s ease-in-out infinite' }} />;
-}
-
-/** 21. 跳绳 — 原地跳跃 */
-function JumpRope() {
-  return <Logo style={{ animation: 'anim-jump 0.8s cubic-bezier(0.33, 1, 0.68, 1) infinite', transformOrigin: 'center bottom' }} />;
-}
-
-/** 22. 打字机 — 从左展开 */
-function Typewriter() {
-  return <Logo style={{ animation: 'anim-typewriter 2s steps(20) infinite alternate', overflow: 'hidden' }} />;
-}
-
-/** 23. 膨胀爆炸 — 膨胀后缩回 */
-function Inflate() {
-  return <Logo style={{ animation: 'anim-inflate 2s ease-in-out infinite' }} />;
-}
-
-/** 24. 3D翻转 — X轴翻转 */
-function FlipX() {
-  return <Logo style={{ animation: 'anim-flipx 2.5s ease-in-out infinite', perspective: '800px' }} />;
-}
-
-/** 25. 抖一抖 — 快速水平抖动 */
-function Wiggle() {
-  return <Logo style={{ animation: 'anim-wiggle 0.5s ease-in-out infinite' }} />;
-}
-
-/** 26. 弹出 — pop效果 */
-function Pop() {
-  return <Logo style={{ animation: 'anim-pop 1.5s cubic-bezier(0.68, -0.55, 0.27, 1.55) infinite' }} />;
-}
-
-/** 27. 3D倾斜 — 透视倾斜 */
-function Tilt3D() {
-  return <Logo style={{ animation: 'anim-tilt3d 3s ease-in-out infinite' }} />;
-}
-
-/** 28. 流星 — 斜向飞过 */
-function Meteor() {
-  return <Logo style={{ animation: 'anim-meteor 2.5s ease-in-out infinite' }} />;
-}
-
-/** 29. 多米诺 — 倒下又立起 */
-function Domino() {
-  return <Logo style={{ animation: 'anim-domino 2s ease-in-out infinite', transformOrigin: 'bottom center' }} />;
-}
-
-/** 30. 手风琴 — 水平压缩 */
-function Accordion() {
-  return <Logo style={{ animation: 'anim-accordion 1.5s ease-in-out infinite' }} />;
-}
-
-/** 31. 传送门 — 缩小消失再出现 */
-function Portal() {
-  return <Logo style={{ animation: 'anim-portal 2.5s ease-in-out infinite' }} />;
-}
-
-/** 32. 轨道运动 — 椭圆轨道 */
-function Orbit() {
-  return <Logo style={{ animation: 'anim-orbit 3s linear infinite' }} />;
-}
-
-/** 33. 蹦迪 — 上下有节奏跳 */
-function BounceBeats() {
-  return <Logo style={{ animation: 'anim-bounce-beats 0.6s ease-in-out infinite' }} />;
-}
-
-/** 34. 霓虹闪烁 — 发光效果 */
-function NeonGlow() {
-  return <Logo style={{ animation: 'anim-neon 1.5s ease-in-out infinite' }}
-    imgStyle={{ filter: 'drop-shadow(0 0 8px rgba(124, 92, 252, 0.8))' }} />;
-}
-
-/** 35. 纸飞机 — 俯冲滑翔 */
-function PaperPlane() {
-  return <Logo style={{ animation: 'anim-plane 3s ease-in-out infinite' }} />;
-}
-
-/** 36. 果冻落地 — 从上掉下弹几下 */
-function JellyDrop() {
-  return <Logo style={{ animation: 'anim-jellydrop 2s cubic-bezier(0.34, 1.56, 0.64, 1) infinite' }} />;
-}
-
-/** 37. 旋转木马 — Y轴持续旋转 */
-function Carousel() {
-  return <Logo style={{ animation: 'anim-carousel 3s linear infinite' }} />;
-}
-
-/** 38. 摇骰子 — 随机方向快速晃 */
-function DiceShake() {
-  return <Logo style={{ animation: 'anim-dice 0.6s ease-in-out infinite' }} />;
-}
-
-/** 39. 蝴蝶 — 忽上忽下飘忽 */
-function Butterfly() {
-  return <Logo style={{ animation: 'anim-butterfly 3s ease-in-out infinite' }} />;
-}
-
-/** 40. 弹力球 — 地面弹跳渐弱 */
-function BouncingBall() {
-  return <Logo style={{ animation: 'anim-bball 2s ease-in infinite', transformOrigin: 'center bottom' }} />;
-}
-
-/** 41. 磁铁吸引 — 左右吸引 */
-function Magnet() {
-  return <Logo style={{ animation: 'anim-magnet 2s ease-in-out infinite' }} />;
-}
-
-/** 42. 水滴 — 拉长滴落 */
-function WaterDrop() {
-  return <Logo style={{ animation: 'anim-waterdrop 2s ease-in-out infinite', transformOrigin: 'center top' }} />;
-}
-
-/** 43. 电视噪点 — 快速小幅偏移+亮度变化 */
-function TVStatic() {
-  return <Logo style={{ animation: 'anim-tvstatic 0.15s steps(4) infinite' }} />;
-}
-
-/** 44. 跷跷板 — 左右交替倾斜 */
-function Seesaw() {
-  return <Logo style={{ animation: 'anim-seesaw 1.5s ease-in-out infinite', transformOrigin: 'center bottom' }} />;
-}
-
-/** 45. 螺旋上升 — 旋转+上移 */
-function Spiral() {
-  return <Logo style={{ animation: 'anim-spiral 3s linear infinite' }} />;
-}
-
-/** 46. 熔化 — 上半透明下半扭曲 */
-function Melt() {
-  return <Logo style={{ animation: 'anim-melt 3s ease-in-out infinite', transformOrigin: 'center bottom' }} />;
-}
-
-/** 47. 回旋镖 — 飞出去再飞回来 */
-function Boomerang() {
-  return <Logo style={{ animation: 'anim-boomerang 2s ease-in-out infinite' }} />;
-}
-
-/** 48. 脉冲波 — 放大+透明度扩散 */
-function PulseWave() {
-  return <Logo style={{ animation: 'anim-pulse-wave 2s ease-out infinite' }} />;
-}
-
-/** 49. 翻书 — Z轴旋转翻页感 */
-function FlipBook() {
-  return <Logo style={{ animation: 'anim-flipbook 2s ease-in-out infinite' }} />;
-}
-
-/** 50. 8字形 — 走∞路线 */
-function FigureEight() {
-  return <Logo style={{ animation: 'anim-eight 4s ease-in-out infinite' }} />;
-}
-
-// ===== 动画列表 =====
-const ANIMATIONS = [
-  Spin, DvdBounce, Jelly, Drunk, Heartbeat, Rocket,
-  RockSwing, WaveFloat, Somersault, GhostFade, Tornado, SpringBounce,
-  Disco, Caterpillar, Pendulum, PixelShake,
-  Breathe, RubberBand, Glitch, SpaceDrift, JumpRope, Typewriter,
-  Inflate, FlipX, Wiggle, Pop, Tilt3D, Meteor,
-  Domino, Accordion, Portal, Orbit, BounceBeats, NeonGlow,
-  PaperPlane, JellyDrop, Carousel, DiceShake, Butterfly, BouncingBall,
-  Magnet, WaterDrop, TVStatic, Seesaw, Spiral, Melt,
-  Boomerang, PulseWave, FlipBook, FigureEight,
-] as const;
+const ANIMATIONS: (LogoAnim | 'dvd')[] = [
+  { style: { animation: 'anim-spin 1.2s linear infinite' } }, // 鸡块旋转
+  'dvd', // DVD 弹弹乐
+  { style: { animation: 'anim-jelly 1.5s ease-in-out infinite' } }, // 果冻抖动
+  { style: { animation: 'anim-drunk 2.5s ease-in-out infinite' } }, // 醉酒摇摆
+  { style: { animation: 'anim-heartbeat 1s ease-in-out infinite' } }, // 心跳膨胀
+  { style: { animation: 'anim-rocket 1.8s cubic-bezier(0.34, 1.56, 0.64, 1) infinite' } }, // 火箭蹦跳
+  { style: { animation: 'anim-rock 0.6s ease-in-out infinite alternate', transformOrigin: 'center bottom' } }, // 摇滚摇摆
+  { style: { animation: 'anim-wave 3s ease-in-out infinite' } }, // 海浪漂浮
+  { style: { animation: 'anim-flip 2s ease-in-out infinite' } }, // 翻跟斗
+  { style: { animation: 'anim-ghost 2.5s ease-in-out infinite' } }, // 幽灵闪现
+  { style: { animation: 'anim-tornado 2s linear infinite' } }, // 龙卷风
+  { style: { animation: 'anim-spring 1s ease-in-out infinite' } }, // 弹簧弹跳
+  { style: { animation: 'anim-disco 0.8s steps(8) infinite' }, imgStyle: { filter: 'saturate(2)' } }, // 迪斯科
+  { style: { animation: 'anim-worm 1.5s ease-in-out infinite' } }, // 毛毛虫蠕动
+  { style: { animation: 'anim-pendulum 2s ease-in-out infinite', transformOrigin: 'center top' } }, // 钟摆摇
+  { style: { animation: 'anim-pixel 0.1s steps(2) infinite' }, imgStyle: { imageRendering: 'pixelated' } }, // 像素抖动
+  { style: { animation: 'anim-breathe 3s ease-in-out infinite' } }, // 呼吸灯 — 缓慢明暗变化
+  { style: { animation: 'anim-rubber 1.2s ease-in-out infinite' } }, // 橡皮筋 — 拉伸弹回
+  { style: { animation: 'anim-glitch 0.3s steps(3) infinite' } }, // 故障闪烁 — 赛博朋克感
+  { style: { animation: 'anim-space 6s ease-in-out infinite' } }, // 太空漂移 — 失重旋转飘
+  { style: { animation: 'anim-jump 0.8s cubic-bezier(0.33, 1, 0.68, 1) infinite', transformOrigin: 'center bottom' } }, // 跳绳 — 原地跳跃
+  { style: { animation: 'anim-typewriter 2s steps(20) infinite alternate', overflow: 'hidden' } }, // 打字机 — 从左展开
+  { style: { animation: 'anim-inflate 2s ease-in-out infinite' } }, // 膨胀爆炸 — 膨胀后缩回
+  { style: { animation: 'anim-flipx 2.5s ease-in-out infinite' } }, // 3D翻转 — X轴翻转
+  { style: { animation: 'anim-wiggle 0.5s ease-in-out infinite' } }, // 抖一抖 — 快速水平抖动
+  { style: { animation: 'anim-pop 1.5s cubic-bezier(0.68, -0.55, 0.27, 1.55) infinite' } }, // 弹出 — pop效果
+  { style: { animation: 'anim-tilt3d 3s ease-in-out infinite' } }, // 3D倾斜 — 透视倾斜
+  { style: { animation: 'anim-meteor 2.5s ease-in-out infinite' } }, // 流星 — 斜向飞过
+  { style: { animation: 'anim-domino 2s ease-in-out infinite', transformOrigin: 'bottom center' } }, // 多米诺 — 倒下又立起
+  { style: { animation: 'anim-accordion 1.5s ease-in-out infinite' } }, // 手风琴 — 水平压缩
+  { style: { animation: 'anim-portal 2.5s ease-in-out infinite' } }, // 传送门 — 缩小消失再出现
+  { style: { animation: 'anim-orbit 3s linear infinite' } }, // 轨道运动 — 椭圆轨道
+  { style: { animation: 'anim-bounce-beats 0.6s ease-in-out infinite' } }, // 蹦迪 — 上下有节奏跳
+  { style: { animation: 'anim-neon 1.5s ease-in-out infinite' }, imgStyle: { filter: 'drop-shadow(0 0 8px rgba(124, 92, 252, 0.8))' } }, // 霓虹闪烁 — 发光效果
+  { style: { animation: 'anim-plane 3s ease-in-out infinite' } }, // 纸飞机 — 俯冲滑翔
+  { style: { animation: 'anim-jellydrop 2s cubic-bezier(0.34, 1.56, 0.64, 1) infinite' } }, // 果冻落地 — 从上掉下弹几下
+  { style: { animation: 'anim-carousel 3s linear infinite' } }, // 旋转木马 — Y轴持续旋转
+  { style: { animation: 'anim-dice 0.6s ease-in-out infinite' } }, // 摇骰子 — 随机方向快速晃
+  { style: { animation: 'anim-butterfly 3s ease-in-out infinite' } }, // 蝴蝶 — 忽上忽下飘忽
+  { style: { animation: 'anim-bball 2s ease-in infinite', transformOrigin: 'center bottom' } }, // 弹力球 — 地面弹跳渐弱
+  { style: { animation: 'anim-magnet 2s ease-in-out infinite' } }, // 磁铁吸引 — 左右吸引
+  { style: { animation: 'anim-waterdrop 2s ease-in-out infinite', transformOrigin: 'center top' } }, // 水滴 — 拉长滴落
+  { style: { animation: 'anim-tvstatic 0.15s steps(4) infinite' } }, // 电视噪点 — 快速小幅偏移+亮度变化
+  { style: { animation: 'anim-seesaw 1.5s ease-in-out infinite', transformOrigin: 'center bottom' } }, // 跷跷板 — 左右交替倾斜
+  { style: { animation: 'anim-spiral 3s linear infinite' } }, // 螺旋上升 — 旋转+上移
+  { style: { animation: 'anim-melt 3s ease-in-out infinite', transformOrigin: 'center bottom' } }, // 熔化 — 上半透明下半扭曲
+  { style: { animation: 'anim-boomerang 2s ease-in-out infinite' } }, // 回旋镖 — 飞出去再飞回来
+  { style: { animation: 'anim-pulse-wave 2s ease-out infinite' } }, // 脉冲波 — 放大+透明度扩散
+  { style: { animation: 'anim-flipbook 2s ease-in-out infinite' } }, // 翻书 — Z轴旋转翻页感
+  { style: { animation: 'anim-eight 4s ease-in-out infinite' } }, // 8字形 — 走∞路线
+];
 
 // ===== CSS Keyframes =====
 const KEYFRAMES = `
@@ -442,9 +233,6 @@ const KEYFRAMES = `
   75% { transform: translate(-2px, -1px); }
   100% { transform: translate(3px, 1px); }
 }
-
-/* ===== 17–50 新增动画 ===== */
-
 @keyframes anim-breathe {
   0%, 100% { transform: scale(1); opacity: 1; }
   50% { transform: scale(1.08); opacity: 0.7; }
@@ -699,9 +487,7 @@ const KEYFRAMES = `
 `;
 
 export default function HomePage() {
-  const AnimComponent = useMemo(() => {
-    return ANIMATIONS[Math.floor(Math.random() * ANIMATIONS.length)];
-  }, []);
+  const anim = useMemo(() => ANIMATIONS[Math.floor(Math.random() * ANIMATIONS.length)], []);
 
   const containerStyle: React.CSSProperties = {
     position: 'relative',
@@ -717,7 +503,7 @@ export default function HomePage() {
     <div className="page" style={{ margin: 'calc(-1 * var(--space-6))', padding: 0 }}>
       <style>{KEYFRAMES}</style>
       <div style={containerStyle}>
-        <AnimComponent />
+        {anim === 'dvd' ? <DvdBounce /> : <Logo style={anim.style} imgStyle={anim.imgStyle} />}
       </div>
     </div>
   );

@@ -11,7 +11,7 @@
   emit_gpu_report(emit, ..) → 按上述顺序输出 i18n 日志，返回最终是否用 GPU
   resolve_ort_providers(..) → 探测 + 日志 + 决定 onnxruntime providers 列表
   quiet_session_options(ort)→ 日志压到 Error 级的 SessionOptions，建 session 必用
-  diagnose_gpu()            → 兼容旧接口，返回 i18n 条目列表
+  create_session_with_cpu_fallback(..) → 建 session，GPU provider 建不起来时改用 CPU
 """
 import sys
 import os
@@ -39,7 +39,6 @@ class GpuInfo:
     """GPU 环境探测结果"""
 
     def __init__(self):
-        self.platform = sys.platform
         # 独立显卡
         self.has_discrete_gpu = False
         self.gpu_name = None
@@ -56,13 +55,6 @@ class GpuInfo:
         """CUDA 是否可用：驱动支持 CUDA 即可（Toolkit 非必需，
         onnxruntime-gpu / torch 自带运行时库）"""
         return bool(self.driver_cuda_version or self.cuda_toolkit_version)
-
-    @property
-    def can_use_gpu(self):
-        """最终是否可用 GPU 加速"""
-        if self.vendor == "apple":
-            return True  # Apple Silicon 走 CoreML / MPS
-        return self.has_discrete_gpu and self.cuda_available
 
 
 def _detect_nvidia(info):
@@ -283,10 +275,19 @@ def quiet_session_options(ort):
     return opts
 
 
-def diagnose_gpu():
-    """兼容旧接口：返回 i18n 条目列表 [{"key":..., "params":...}]"""
-    items = []
-    emit_gpu_report(lambda key, params=None: items.append(
-        {"key": key, **({"params": params} if params else {})}
-    ))
-    return items
+def create_session_with_cpu_fallback(model_path, providers, sess_options, on_fallback=None):
+    """按 providers 建 InferenceSession；首选的 GPU provider 建不起来时（缺 cuDNN、CoreML 不支持
+    某些算子等）改用纯 CPU 重建。
+
+    on_fallback(provider, err) 在重建前调用，provider 是 providers[0] 原样（可能是带选项的元组），
+    由调用方按自己的输出通道报告原因。providers 首项已是 CPU 时不重试，异常原样抛出。
+    """
+    import onnxruntime as ort
+    try:
+        return ort.InferenceSession(model_path, sess_options, providers=providers)
+    except Exception as e:
+        if providers[0] == "CPUExecutionProvider":
+            raise
+        if on_fallback is not None:
+            on_fallback(providers[0], e)
+        return ort.InferenceSession(model_path, sess_options, providers=["CPUExecutionProvider"])

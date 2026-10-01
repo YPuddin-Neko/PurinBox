@@ -1,279 +1,73 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import ProcessButton from './ProcessButton';
+import { useLlmApiConfig } from '../hooks/useLlmApiConfig';
+import LlmApiPanel from './LlmApiPanel';
+import { toIntervalMs, toThreads, toImageSize } from '../utils/taggerOptions';
+import { IMAGE_DETAILS, isOneOf, type ImageDetail, type LlmTaggerOptions } from '../api/commandOptions';
+import { useBatchTask } from '../hooks/useBatchTask';
+import { useBatchRunStats } from '../hooks/useBatchRunStats';
+import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
-import {
-  Play, Loader2, Globe, Key, MessageSquare, Bot,
-  RefreshCw, Thermometer, Hash, StopCircle, Save, ImageIcon, Timer, Layers,
-  CheckCircle2, XCircle, Info, ScrollText, Trash2, Eye, EyeOff, Focus
-} from 'lucide-react';
-import { LogEntry, getTimeStr, useLogState } from './ProgressLog';
-import { useTaskQueue } from './TaskContext';
+import { MessageSquare, Thermometer, Hash, ImageIcon, Timer, Layers, Focus } from 'lucide-react';
+import ProgressLog from './ProgressLog';
 import CustomSelect from './CustomSelect';
 import { useTranslation } from 'react-i18next';
 import { IMAGE_DETAIL_OPTIONS } from '../utils/imageDetail';
 import InputPathPickerButton from './InputPathPickerButton';
-import Checkbox from './Checkbox';
-import { useUnifiedTaskLogs } from '../hooks/useUnifiedTaskLogs';
+import RecursiveScanToggle from './RecursiveScanToggle';
 
-interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
-
-// ── 默认提示词模板 ──────────────────────────────────
-
-// TXT 自然语言描述
-const defaultSystemPrompt_txt = `You are a professional image captioning assistant. Provide a detailed, natural language description of the image suitable for training image generation models.`;
-const defaultUserPrompt_txt = `Please describe this image in detail.`;
-
-// JSON 完整格式 (Full) — 嵌套 ai_output 结构
-const defaultSystemPrompt_json_full = `You are an anime image tagging expert. Output ONLY valid JSON.
-
-Output a JSON object with an "ai_output" wrapper. Fields (tag fields are arrays of lowercase strings):
-1. count: string - Character count ("1girl", "2boys", "1girl, 1boy", "no humans")
-2. appearance: string[] - Visual features (hair color, eye color, hairstyle, clothing, accessories)
-3. tags: string[] - Actions, expressions, poses, composition, objects
-4. environment: string[] - Background, location, lighting, atmosphere
-5. nl: string - One sentence natural language description
-
-Rules:
-- Use lowercase English booru-style tags
-- Each tag is a separate array element
-- Only describe what is clearly visible
-- Be detailed but don't repeat tags
-- Output ONLY the JSON object, no markdown or explanation
-
-Example:
-{"ai_output": {"count": "1girl", "appearance": ["long hair", "blue eyes", "school uniform"], "tags": ["smile", "standing", "looking at viewer"], "environment": ["classroom", "window", "sunlight"], "nl": "A cheerful girl stands by the window in a sunny classroom."}}`;
-
-const defaultUserPrompt_json_full = `Analyze this image and output structured tags as JSON with the "ai_output" wrapper.`;
-
-// JSON 简化格式 (Simplified) — 扁平结构
-const defaultSystemPrompt_json_simplified = `You are an anime image tagging expert. Output ONLY valid JSON.
-
-JSON fields (tag fields are arrays of lowercase strings):
-1. count: string - Character count ("1girl", "2boys", "1girl, 1boy", "no humans")
-2. appearance: string[] - Visual features (hair color, eye color, hairstyle, clothing, accessories)
-3. tags: string[] - Actions, expressions, poses, composition, objects
-4. environment: string[] - Background, location, lighting, atmosphere
-5. nl: string - One sentence natural language description
-
-Rules:
-- Use lowercase English booru-style tags
-- Each tag is a separate array element
-- Only describe what is clearly visible
-- Be detailed but don't repeat tags
-- Output ONLY the JSON object, no markdown or explanation
-
-Example:
-{"count": "1girl", "appearance": ["long hair", "blue eyes", "school uniform"], "tags": ["smile", "standing", "looking at viewer"], "environment": ["classroom", "window", "sunlight"], "nl": "A cheerful girl stands by the window in a sunny classroom."}`;
-
-const defaultUserPrompt_json_simplified = `Analyze this image and output structured tags as a flat JSON object.`;
-
-// 根据输出格式获取默认提示词
-function getDefaultPrompts(format: 'txt' | 'json', simplified: boolean) {
-  if (format === 'json') {
-    return simplified
-      ? { sys: defaultSystemPrompt_json_simplified, user: defaultUserPrompt_json_simplified }
-      : { sys: defaultSystemPrompt_json_full, user: defaultUserPrompt_json_full };
-  }
-  return { sys: defaultSystemPrompt_txt, user: defaultUserPrompt_txt };
-}
+import { getDefaultPrompts } from '../utils/llmPrompts';
 
 export default function LlmTaggerTab() {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
-  const [preset, setPreset] = useState('openai');
-  const [customEndpoint, setCustomEndpoint] = useState('');
-  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
-  const [modelName, setModelName] = useState('');
-  const [modelList, setModelList] = useState<string[]>([]);
-  const [fetchingModels, setFetchingModels] = useState(false);
-  const [fetchMsg, setFetchMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [temperature, setTemperature] = useState('0.2');
   const [maxTokens, setMaxTokens] = useState('-1');
   const [sysPrompt, setSysPrompt] = useState(() => getDefaultPrompts('txt', false).sys);
   const [userPrompt, setUserPrompt] = useState(() => getDefaultPrompts('txt', false).user);
-  const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [pCur, setPCur] = useState(0);
-  const [pTot, setPTot] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasErr, setHasErr] = useState(false);
-  const [saveMsg, setSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [imageSize, setImageSize] = useState('1024');
-  const [imageDetail, setImageDetail] = useState('');
-  const [topP, setTopP] = useState('');
+  const [imageDetail, setImageDetail] = useState<ImageDetail>('');
+  const [topP, setTopP] = useState('0');
   const [skipExisting, setSkipExisting] = useState(false);
   const [outputFormat, setOutputFormat] = useState<'txt' | 'json'>('txt');
   const [jsonSimplified, setJsonSimplified] = useState(()=>localStorage.getItem('tagger_json_simplified')==='true');
-  const [showKey, setShowKey] = useState(false);
-  const [successCnt, setSuccessCnt] = useState(0);
-  const [failCnt, setFailCnt] = useState(0);
-  const [startTime, setStartTime] = useState<number>(0);
-  const [elapsed, setElapsed] = useState('');
-  const errorFilesRef = useRef<string[]>([]);
   const [intervalSec, setIntervalSec] = useState('-1');
   const [concurrency, setConcurrency] = useState('1');
   const [recursive, setRecursive] = useState(false);
-  const taskLogs = useUnifiedTaskLogs(setLogs);
-  const PRESETS: Record<string, { label: string; url: string }> = {
-    openai: { label: 'OpenAI', url: 'https://api.openai.com/v1/' },
-    gemini: { label: 'Gemini', url: 'https://generativelanguage.googleapis.com/v1beta/openai/' },
-    deepseek: { label: 'DeepSeek', url: 'https://api.deepseek.com/v1/' },
-    custom: { label: t('llmTagger.customLabel'), url: '' },
-  };
-
-  const endpoint = preset === 'custom' ? customEndpoint : (PRESETS[preset]?.url || '');
-  const apiKey = apiKeys[preset] || '';
-  const setApiKey = (v: string) => setApiKeys(prev => ({ ...prev, [preset]: v }));
-
-  // 加载保存的配置
-  interface ApiConfigResponse { preset: string; custom_endpoint: string; api_keys: Record<string, string>; }
-  useEffect(() => {
-    invoke<ApiConfigResponse>('load_api_config').then((cfg) => {
-      // Vertex AI 支持已移除：旧配置里的 vertex 预设回退到自定义
-      const known = ['openai', 'gemini', 'deepseek', 'custom'];
-      if (cfg.preset) setPreset(known.includes(cfg.preset) ? cfg.preset : 'custom');
-      if (cfg.custom_endpoint) setCustomEndpoint(cfg.custom_endpoint);
-      if (cfg.api_keys) setApiKeys(cfg.api_keys);
-    }).catch(() => {});
-  }, []);
-
-  const handleSaveConfig = async () => {
-    try {
-      await invoke('save_api_config', { preset, customEndpoint, apiKeys });
-      setSaveMsg({ text: t('llmTagger.configSaved'), ok: true });
-    } catch (e: any) {
-      setSaveMsg({ text: `${t('llmTagger.saveFailed')}: ${String(e)}`, ok: false });
-    }
-    setTimeout(() => setSaveMsg(null), 2000);
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    const listenPromise = listen<ProgressPayload>('llm-tagger-progress', (e) => {
-      if (cancelled) return;
-      const p = e.payload;
-      setPTot(p.total);
-      if (p.status === 'success' || p.status === 'error' || p.status === 'done') {
-        setPCur(p.current);
-        if (p.total > 0) setProgress((p.current / p.total) * 100);
-      }
-      if (p.status === 'done') { setIsDone(true); setProcessing(false); }
-      if (p.status === 'error') {
-        setHasErr(true);
-        setFailCnt(c => c + 1);
-        const m = p.message.match(/\[错误\] ([^:(]+)/);
-        if (m) { errorFilesRef.current = [...errorFilesRef.current, m[1].trim()]; }
-      }
-      if (p.status === 'success') setSuccessCnt(c => c + 1);
-      taskLogs.appendProgressLog(p);
-    });
-    return () => { cancelled = true; listenPromise.then(fn => fn()); };
-  }, [taskLogs]);
-
-  const handleFetchModels = async () => {
-    if (!endpoint) return;
-    setFetchingModels(true);
-    try {
-      const models = await invoke<string[]>('fetch_llm_models', { apiEndpoint: endpoint, apiKey: apiKey });
-      setModelList(models);
-      if (models.length > 0 && !models.includes(modelName)) {
-        setModelName(models[0]);
-      }
-      setFetchMsg({ text: t('llmTagger.fetchOk', { n: models.length }), ok: true });
-    } catch (e: any) {
-      setFetchMsg({ text: `${t('llmTagger.fetchFail')}: ${String(e)}`, ok: false });
-    } finally {
-      setFetchingModels(false);
-      setTimeout(() => setFetchMsg(null), 3000);
-    }
-  };
-
-  const { addTask, updateTask } = useTaskQueue();
-
+  const api = useLlmApiConfig();
+  const stats = useBatchRunStats();
+  const task = useBatchTask({ event: 'llm-tagger-progress', taskId: 'llm-tagger',
+    onEvent: stats.onEvent, logStatus: p => p.status === 'warning' ? 'warning' : undefined });
   const handleStart = async () => {
-    if (!inputPath || !endpoint || !modelName) return;
-    setProcessing(true); setProgress(0); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
-    setSuccessCnt(0); setFailCnt(0); errorFilesRef.current = []; setStartTime(Date.now()); setElapsed('');
-    addTask('llm-tagger', t('llmTagger.taskName'));
-    const sec = parseFloat(intervalSec);
-    const intervalMs = sec < 0 ? -1 : Math.round(sec * 1000);
-    const threads = Math.max(1, parseInt(concurrency) || 1);
-    taskLogs.setInitialLog(t('llmTagger.startMsg', { model: modelName, api: endpoint }));
-    try {
-      await invoke<ProcessResult>('start_llm_tagging', {
-        options: {
-          input_path: inputPath, api_endpoint: endpoint, api_key: apiKey, model_name: modelName,
+    if (task.processing || !inputPath || !api.ready) return;
+    stats.reset();
+    const intervalMs = toIntervalMs(intervalSec);
+    const threads = toThreads(concurrency);
+    await task.run({
+      taskName: t('llmTagger.taskName'),
+      startLog: t('llmTagger.startMsg', { model: api.modelName, api: api.endpoint, threads, interval: intervalMs < 0 ? t('tagSort.noInterval') : `${intervalMs / 1000}s` }),
+      exec: () => invoke('start_llm_tagging', { options: {
+          input_path: inputPath, api_endpoint: api.endpoint, api_key: api.apiKey, model_name: api.modelName,
           system_prompt: sysPrompt, user_prompt: userPrompt,
-          temperature: Number.isFinite(parseFloat(temperature)) ? parseFloat(temperature) : 0.2, max_tokens: parseInt(maxTokens) || -1,
-          image_size: parseInt(imageSize) || 1024,
+          temperature: Number(temperature), max_tokens: parseInt(maxTokens) || -1,
+          image_size: toImageSize(imageSize),
           image_detail: imageDetail,
-          top_p: parseFloat(topP) || 0,
+          top_p: Number(topP),
           skip_existing: skipExisting,
           output_format: outputFormat,
           json_simplified: jsonSimplified,
           request_interval_ms: intervalMs,
           concurrency: threads,
           recursive,
-        },
-      });
-    } catch (e: any) {
-      const errorText = taskLogs.appendCatchError(e, t('pages.errorPrefix'));
-      updateTask('llm-tagger', { status: /已取消|cancel/i.test(errorText) ? 'cancelled' : 'error', message: errorText });
-      setHasErr(true); setIsDone(true);
-    } finally { setProcessing(false); }
+      } satisfies LlmTaggerOptions }),
+    });
+    stats.summarize(task.logger);
   };
 
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasErr(false); setSuccessCnt(0); setFailCnt(0); errorFilesRef.current = []; setElapsed(''); }, []);
-
-  // 耗时计时器
-  useEffect(() => {
-    if (!processing || startTime === 0) return;
-    const timer = setInterval(() => {
-      const sec = Math.floor((Date.now() - startTime) / 1000);
-      const m = Math.floor(sec / 60);
-      const s = sec % 60;
-      setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [processing, startTime]);
-
-  // 完成后输出失败文件摘要
-  useEffect(() => {
-    if (!isDone) return;
-    if (startTime > 0) {
-      const sec = Math.floor((Date.now() - startTime) / 1000);
-      const m = Math.floor(sec / 60);
-      const s = sec % 60;
-      setElapsed(m > 0 ? `${m}m${s}s` : `${s}s`);
-    }
-    const errs = errorFilesRef.current;
-    if (errs.length > 0) {
-      setLogs(p => [...p, { time: getTimeStr(), message: `${t('llmTagger.failedFiles')}: ${errs.join(', ')}`, status: 'error' }]);
-    }
-  }, [isDone, t]);
-
-  // 日志自动滚动
-  const logContainerRef = useRef<HTMLDivElement>(null);
-  const isNearBottomRef = useRef(true);
-  const handleLogScroll = () => {
-    const el = logContainerRef.current;
-    if (!el) return;
-    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-  };
-  useEffect(() => {
-    if (isNearBottomRef.current && logContainerRef.current) {
-      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-    }
-  }, [logs.length]);
-
-  const statusIcon = (status: LogEntry['status']) => {
-    switch (status) {
-      case 'success': return <CheckCircle2 className="log-entry-icon success" />;
-      case 'error': return <XCircle className="log-entry-icon error" />;
-      case 'processing': return <Loader2 className="log-entry-icon processing" />;
-      default: return <Info className="log-entry-icon info" />;
+  const applyFormatDefaults = (format: 'txt' | 'json', simplified: boolean) => {
+    const defaults = [getDefaultPrompts('txt', false), getDefaultPrompts('json', false), getDefaultPrompts('json', true)];
+    if (defaults.some(p => p.sys === sysPrompt && p.user === userPrompt)) {
+      const next = getDefaultPrompts(format, simplified);
+      setSysPrompt(next.sys); setUserPrompt(next.user);
     }
   };
 
@@ -285,10 +79,7 @@ export default function LlmTaggerTab() {
         <div className="tool-panel">
           <div className="tool-panel-header">
             <span className="tool-panel-title">{t('llmTagger.datasetPath')}</span>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: 'var(--color-text-secondary)' }}>
-              <Checkbox checked={recursive} onChange={setRecursive} size={14} />
-              {t('llmTagger.recursiveScan')}
-            </label>
+            <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
           </div>
           <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
             <input className="form-input" placeholder={t('llmTagger.selectFolder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
@@ -296,80 +87,7 @@ export default function LlmTaggerTab() {
           </div>
         </div>
 
-        {/* API 设置 */}
-        <div className="tool-panel">
-          <div className="tool-panel-header">
-            <span className="tool-panel-title">{t('llmTagger.apiSettings')}</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              {saveMsg && <span style={{ fontSize: 11, color: saveMsg.ok ? '#4ade80' : '#f87171' }}>{saveMsg.ok ? '✓' : '✗'} {saveMsg.text}</span>}
-              <button className="btn btn-ghost btn-sm" onClick={handleSaveConfig} style={{ padding: '2px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Save style={{ width: 12, height: 12 }} /> {t('llmTagger.saveConfig')}
-              </button>
-            </div>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Globe style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('llmTagger.apiEndpoint')}</label>
-              <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-                {Object.entries(PRESETS).map(([key, { label }]) => (
-                  <button key={key} className={`btn btn-sm ${preset === key ? 'btn-primary' : 'btn-secondary'}`}
-                    onClick={() => setPreset(key)} style={{ fontSize: 11 }}>{label}</button>
-                ))}
-              </div>
-              {preset === 'custom' && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 6 }}>
-                  <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>{t('llmTagger.apiAddress')}</span>
-                  <span title={t('llmTagger.openaiOnly')} style={{ cursor: 'help', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, borderRadius: '50%', fontSize: 9, fontWeight: 700, color: 'var(--color-text-tertiary)', border: '1px solid var(--color-border)' }}>?</span>
-                </div>
-              )}
-              {preset === 'custom' && (
-                <>
-                  <input className="form-input" placeholder="https://api.example.com/v1/" value={customEndpoint}
-                    onChange={e => setCustomEndpoint(e.target.value)} style={{ marginTop: 4 }} />
-                  {customEndpoint && (
-                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2, fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                      → {customEndpoint}{customEndpoint.endsWith('/') ? '' : '/'}chat/completions
-                    </div>
-                  )}
-                </>
-              )}
-              {preset !== 'custom' && (
-                <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{endpoint}</div>
-              )}
-            </div>
-            {(
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Key style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> API Key</label>
-                <div style={{ position: 'relative' }}>
-                  <input className="form-input" type={showKey ? 'text' : 'password'} placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} style={{ paddingRight: 32 }} />
-                  <button onClick={() => setShowKey(!showKey)} style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', display: 'flex', padding: 2 }}>
-                    {showKey ? <EyeOff style={{ width: 14, height: 14 }} /> : <Eye style={{ width: 14, height: 14 }} />}
-                  </button>
-                </div>
-              </div>
-            )}
-            {/* 模型选择 */}
-            <div className="form-group" style={{ marginBottom: 0 }}>
-              <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Bot style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('llmTagger.modelLabel')}</span>
-                <button className="btn btn-ghost btn-sm" onClick={handleFetchModels} disabled={fetchingModels || !endpoint} style={{ padding: '2px 8px', fontSize: 11 }}>
-                  {fetchingModels ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <RefreshCw style={{ width: 12, height: 12 }} />} {t('llmTagger.fetchModels')}
-                </button>
-              </label>
-              {modelList.length > 0 ? (
-                <CustomSelect value={modelName} onChange={v => setModelName(v)}
-                  options={modelList.map(m => ({ value: m, label: m }))} />
-              ) : (
-                <input className="form-input" placeholder={t('llmTagger.modelPlaceholder')} value={modelName} onChange={e => setModelName(e.target.value)} />
-              )}
-              {fetchMsg && (
-                <div style={{ fontSize: 11, marginTop: 4, color: fetchMsg.ok ? '#4ade80' : '#f87171' }}>
-                  {fetchMsg.ok ? '✓' : '✗'} {fetchMsg.text}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        <LlmApiPanel api={api} />
 
         {/* 模型设置 */}
         <div className="tool-panel">
@@ -388,10 +106,10 @@ export default function LlmTaggerTab() {
               <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <span>Top P</span>
-                  <span style={{ fontSize: 11, color: 'var(--color-accent-primary)', fontFamily: 'monospace' }}>{topP || '0'}</span>
+                  <span style={{ fontSize: 11, color: 'var(--color-accent-primary)', fontFamily: 'monospace' }}>{topP}</span>
                 </label>
-                <input type="range" min="0" max="1" step="0.05" value={topP || '0'}
-                  onChange={e => setTopP(e.target.value === '0' ? '' : e.target.value)}
+                <input type="range" min="0" max="1" step="0.05" value={topP}
+                  onChange={e => setTopP(e.target.value)}
                   style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />
               </div>
             </div>
@@ -406,7 +124,7 @@ export default function LlmTaggerTab() {
               </div>
               <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Focus style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('tagRefine.imageDetail')}</label>
-                <CustomSelect value={imageDetail} onChange={setImageDetail} options={IMAGE_DETAIL_OPTIONS(t)} />
+                <CustomSelect value={imageDetail} onChange={v => { if (isOneOf(IMAGE_DETAILS, v)) setImageDetail(v); }} options={IMAGE_DETAIL_OPTIONS(t)} />
               </div>
             </div>
             <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
@@ -417,8 +135,7 @@ export default function LlmTaggerTab() {
               </div>
               <div className="form-group" style={{ marginBottom: 0, flex: 1 }}>
                 <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Layers style={{ width: 13, height: 13, color: 'var(--color-text-tertiary)' }} /> {t('llmTagger.concurrency')}</label>
-                <input className="form-input" type="number" min="1" max="32" step="1" value={concurrency} onChange={e => setConcurrency(e.target.value)}
-                  title={t('llmTagger.concurrencyTip')} />
+                <input className="form-input" type="number" min="1" max="32" step="1" value={concurrency} onChange={e => setConcurrency(e.target.value)} />
               </div>
             </div>
             {/* 跳过已有描述 + 输出格式 */}
@@ -441,12 +158,7 @@ export default function LlmTaggerTab() {
                 {(['txt', 'json'] as const).map(fmt => (
                   <button key={fmt} onClick={() => {
                     setOutputFormat(fmt);
-                    // 自动切换提示词（仅当用户没有自定义时）
-                    const allDefaults = [defaultSystemPrompt_txt, defaultSystemPrompt_json_full, defaultSystemPrompt_json_simplified];
-                    if (allDefaults.some(d => sysPrompt === d)) {
-                      const p = getDefaultPrompts(fmt, jsonSimplified);
-                      setSysPrompt(p.sys); setUserPrompt(p.user);
-                    }
+                    applyFormatDefaults(fmt, jsonSimplified);
                   }} style={{ padding: '2px 10px', borderRadius: 'var(--radius-sm)', border: `1px solid ${outputFormat === fmt ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: outputFormat === fmt ? 'rgba(124,92,252,0.08)' : 'transparent', color: outputFormat === fmt ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>.{fmt}</button>
                 ))}
                 {(['full', 'simplified'] as const).map(mode => {
@@ -457,12 +169,7 @@ export default function LlmTaggerTab() {
                       const v = mode === 'simplified';
                       setJsonSimplified(v);
                       localStorage.setItem('tagger_json_simplified', String(v));
-                      // 自动切换提示词
-                      const allDefaults = [defaultSystemPrompt_txt, defaultSystemPrompt_json_full, defaultSystemPrompt_json_simplified];
-                      if (allDefaults.some(d => sysPrompt === d)) {
-                        const p = getDefaultPrompts('json', v);
-                        setSysPrompt(p.sys); setUserPrompt(p.user);
-                      }
+                      applyFormatDefaults('json', v);
                     }} style={{
                       padding: '2px 10px', borderRadius: 'var(--radius-sm)',
                       border: `1px solid ${isActive ? 'var(--color-border-active)' : 'var(--color-border)'}`,
@@ -489,67 +196,11 @@ export default function LlmTaggerTab() {
         </div>
       </div>
 
-      {/* 右栏 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-          <button className="btn btn-primary btn-lg" style={{ flex: 1, height: 48 }} onClick={handleStart}
-            disabled={processing || !inputPath || !endpoint || !modelName}>
-            {processing ? <><Loader2 style={{ width: 18, height: 18, animation: 'spin 1s linear infinite' }} /> {t('llmTagger.tagging')}</> : <><Play style={{ width: 18, height: 18 }} /> {t('llmTagger.startLlmTag')}</>}
-          </button>
-          {processing && (
-            <button className="btn btn-lg" style={{ height: 48, background: 'rgba(248,113,113,0.1)', color: '#f87171', border: '1px solid rgba(248,113,113,0.3)' }}
-              onClick={() => invoke('cancel_llm_tagging')}>
-              <StopCircle style={{ width: 18, height: 18 }} />
-            </button>
-          )}
-        </div>
-
-        {/* 自定义进度日志 */}
-        <div className="progress-section">
-          <div className="progress-header">
-            <span className="progress-label">{isDone ? t('llmTagger.progressDone') : t('llmTagger.progressLabel')}</span>
-            <span className="progress-percent">
-              {(() => {
-                if (!startTime || pCur <= 0) return null;
-                const el = (Date.now() - startTime) / 1000;
-                if (el < 0.5) return null;
-                const spd = pCur / el;
-                const txt = spd >= 1 ? `${spd.toFixed(1)} it/s` : `${(1 / spd).toFixed(1)} s/it`;
-                return <span style={{ marginRight: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{txt}</span>;
-              })()}
-              {Math.round(progress)}%
-            </span>
-          </div>
-          <div className="progress-bar-lg">
-            <div className={`progress-fill-lg ${isDone ? (hasErr ? 'has-error' : 'done') : ''}`} style={{ width: `${progress}%` }} />
-          </div>
-          <div className="progress-count">{pCur} / {pTot} {t('llmTagger.fileCount')}</div>
-
-          <div className="log-panel" style={{ marginTop: 'var(--space-4)' }}>
-            <div className="log-panel-header">
-              <div className="log-panel-title"><ScrollText style={{ width: 14, height: 14 }} /> {t('llmTagger.logTitle')}</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', fontSize: 12 }}>
-                {elapsed && <span style={{ color: 'var(--color-text-tertiary)' }}>⏱ {elapsed}</span>}
-                {successCnt > 0 && <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: '#4ade80' }}><CheckCircle2 style={{ width: 12, height: 12 }} /> {successCnt}</span>}
-                {failCnt > 0 && <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: '#f87171' }}><XCircle style={{ width: 12, height: 12 }} /> {failCnt}</span>}
-                <span className="log-panel-count">{t('llmTagger.logCount', { n: logs.length })}</span>
-                <button className="btn btn-ghost btn-sm" onClick={clearLogs} style={{ padding: '2px 6px' }} title={t('llmTagger.logTitle')}><Trash2 style={{ width: 12, height: 12 }} /></button>
-              </div>
-            </div>
-
-            <div className="log-content" ref={logContainerRef} onScroll={handleLogScroll}>
-              {logs.length === 0 ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>{t('llmTagger.noLogs')}</div>
-              ) : logs.map((log, i) => (
-                <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
-                  <span className="log-entry-time">{log.time}</span>
-                  {statusIcon(log.status)}
-                  <span className={`log-entry-message ${log.status}`}>{log.message}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+        <ProcessButton {...task.buttonProps} onStart={handleStart} disabled={!inputPath || !api.ready}
+          cancelCommand="cancel_llm_tagging" startText={t('llmTagger.startLlmTag')} processingText={t('llmTagger.tagging')} />
+        <ProgressLog {...task.progressLogProps} headerExtra={stats.headerExtra}
+          onClearLogs={() => { task.progressLogProps.onClearLogs(); stats.reset(); }} />
       </div>
     </div>
   );

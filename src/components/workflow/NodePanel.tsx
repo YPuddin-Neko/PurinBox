@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getNodeDefsByCategory, CATEGORY_COLORS } from './nodeDefinitions';
 import type { NodeCategory } from './workflowTypes';
@@ -11,7 +11,6 @@ const CATEGORY_LABEL_KEYS: Record<NodeCategory, string> = {
   process: 'workflow.catProcess',
   ai: 'workflow.catAI',
   tag: 'workflow.catTag',
-  analysis: 'workflow.catAnalysis',
   file: 'workflow.catFile',
   condition: 'workflow.catCondition',
   output: 'workflow.catOutput',
@@ -27,29 +26,41 @@ export default function NodePanel({ onAddNode, onDragStarted, onDragEnded }: Pro
   const { t } = useTranslation();
   const groups = getNodeDefsByCategory();
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [dragging, setDragging] = useState(false);
+  const dragged = useRef(false);
+  const releaseListeners = useRef<(() => void) | null>(null);
+  useEffect(() => () => releaseListeners.current?.(), []);
 
   const toggle = (cat: string) => setExpanded(prev => ({ ...prev, [cat]: !prev[cat] }));
 
-  // mousedown 开始拖拽
-  const handleMouseDown = useCallback((nodeType: string) => {
-    setDragging(true);
-    onDragStarted?.(nodeType);
-
-    const handleGlobalMouseUp = () => {
-      setDragging(false);
-      onDragEnded?.();
-      window.removeEventListener('mouseup', handleGlobalMouseUp);
+  const handleMouseDown = useCallback((event: React.MouseEvent, nodeType: string) => {
+    if (event.button !== 0) return;
+    releaseListeners.current?.();
+    dragged.current = false;
+    const { clientX, clientY } = event;
+    const handleMove = (move: MouseEvent) => {
+      if (!dragged.current && Math.hypot(move.clientX - clientX, move.clientY - clientY) >= 4) {
+        dragged.current = true;
+        onDragStarted?.(nodeType);
+      }
     };
+    const handleGlobalMouseUp = () => {
+      if (dragged.current) onDragEnded?.();
+      releaseListeners.current?.();
+    };
+    releaseListeners.current = () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+      releaseListeners.current = null;
+    };
+    window.addEventListener('mousemove', handleMove);
     window.addEventListener('mouseup', handleGlobalMouseUp);
   }, [onDragStarted, onDragEnded]);
 
-  // click = 直接添加（只在非拖拽时）
   const handleClick = useCallback((nodeType: string) => {
-    if (!dragging) {
+    if (!dragged.current) {
       onAddNode(nodeType);
     }
-  }, [dragging, onAddNode]);
+  }, [onAddNode]);
 
   return (
     <div className="wf-node-panel">
@@ -73,7 +84,7 @@ export default function NodePanel({ onAddNode, onDragStarted, onDragEnded }: Pro
                     <div
                       key={def.type}
                       className="wf-node-item"
-                      onMouseDown={() => handleMouseDown(def.type)}
+                      onMouseDown={event => handleMouseDown(event, def.type)}
                       onClick={() => handleClick(def.type)}
                       style={{ '--item-color': color } as React.CSSProperties}
                     >

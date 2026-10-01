@@ -7,26 +7,39 @@
 //! 旧版本将配置写在 exe 同目录的 `config/` 下，读取时自动迁移（复制）到新位置；
 //! 迁移失败不阻塞，回退读旧位置。
 
-use std::path::PathBuf;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+
+/// 应用数据根目录：release 为 exe 所在目录，debug 为仓库根目录。
+/// `models/`、`env/` 和旧版 `config/` 都在它下面。
+/// 和 `exe_root()` 不是一回事：macOS 上这里是 `.app/Contents/MacOS`，`exe_root()` 是 `.app` 的外层目录。
+pub fn app_data_root() -> PathBuf {
+    let exe_dir = || {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+    if cfg!(debug_assertions) {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(exe_dir)
+    } else {
+        exe_dir()
+    }
+}
+
+/// `<app_data_root>/models/<sub>`，如 `models_dir("tagger_models")`
+pub fn models_dir(sub: &str) -> PathBuf {
+    app_data_root().join("models").join(sub)
+}
 
 /// 旧配置目录（exe 同目录下的 config/；开发模式为仓库根目录下的 config/）。
 /// 仅用于读取旧配置做迁移，不再写入。
 fn legacy_config_dir() -> PathBuf {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let base = if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or(exe_dir)
-    } else {
-        exe_dir
-    };
-
-    base.join("config")
+    app_data_root().join("config")
 }
 
 /// 新配置目录：系统用户配置目录下的 PurinBox/。
@@ -63,8 +76,7 @@ pub fn resolve_config_file(file_name: &str) -> PathBuf {
 }
 
 /// 软件根目录（exe 所在目录，macOS .app 则取 bundle 外层）。
-/// 翻译缓存与标签库数据库默认落在此目录下（便于随应用一起搬迁）。
-pub fn exe_root() -> PathBuf {
+fn exe_root() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let exe_dir = exe
         .parent()
@@ -139,4 +151,183 @@ pub fn write_file_atomic(path: &std::path::Path, contents: &[u8]) -> std::io::Re
         return Err(e);
     }
     Ok(())
+}
+
+/// 配置里存密码/令牌用的 base64（只为不让明文直接出现在文件里，不是加密）
+pub fn b64_encode(s: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
+}
+
+/// `b64_encode` 的逆操作；空串、非法 base64 或解出来不是 UTF-8 时返回空串
+pub fn b64_decode(s: &str) -> String {
+    use base64::Engine;
+    if s.is_empty() {
+        return String::new();
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .unwrap_or_default()
+}
+
+/// 读取 JSON 配置（经 `resolve_config_file` 定位，含旧位置迁移）。
+/// 文件不存在时返回默认值；读取或解析失败时报"读取{what}失败: …"/"解析{what}失败: …"。
+pub fn load_json_config<T: DeserializeOwned + Default>(
+    file_name: &str,
+    what: &str,
+) -> Result<T, String> {
+    read_json_file(&resolve_config_file(file_name), what)
+}
+
+/// 同 `load_json_config`，但读取或解析失败也返回默认值
+pub fn load_json_config_or_default<T: DeserializeOwned + Default>(file_name: &str) -> T {
+    load_json_config(file_name, "").unwrap_or_default()
+}
+
+/// 把配置格式化成带缩进的 JSON，原子写入用户配置目录（只写新位置）。
+/// 失败时报"创建配置目录失败: …"、"序列化失败: …"或"写入{what}失败: …"。
+pub fn save_json_config<T: Serialize>(
+    file_name: &str,
+    value: &T,
+    what: &str,
+) -> Result<(), String> {
+    write_json_file(&user_config_dir(), file_name, value, what)
+}
+
+fn read_json_file<T: DeserializeOwned + Default>(path: &Path, what: &str) -> Result<T, String> {
+    if !path.exists() {
+        return Ok(T::default());
+    }
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("{}: {}", failure_text("读取", what), e))?;
+    serde_json::from_str(&content).map_err(|e| format!("{}: {}", failure_text("解析", what), e))
+}
+
+fn write_json_file<T: Serialize>(
+    dir: &Path,
+    file_name: &str,
+    value: &T,
+    what: &str,
+) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
+    let json = serde_json::to_string_pretty(value).map_err(|e| format!("序列化失败: {}", e))?;
+    write_file_atomic(&dir.join(file_name), json.as_bytes())
+        .map_err(|e| format!("{}: {}", failure_text("写入", what), e))
+}
+
+/// "{verb}{what}失败"；`what` 首尾是 ASCII 字母数字时与中文之间补一个空格，
+/// 如 "写入 Hugging Face 配置失败"
+fn failure_text(verb: &str, what: &str) -> String {
+    let gap = |c: Option<char>| {
+        if c.is_some_and(|c| c.is_ascii_alphanumeric()) {
+            " "
+        } else {
+            ""
+        }
+    };
+    format!(
+        "{}{}{}{}失败",
+        verb,
+        gap(what.chars().next()),
+        what,
+        gap(what.chars().last())
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+    struct Sample {
+        name: String,
+        port: u16,
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "purinbox_config_paths_{}_{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn app_data_root_is_repo_root_in_debug() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        assert_eq!(app_data_root(), repo);
+        assert_eq!(
+            models_dir("tagger_models"),
+            repo.join("models").join("tagger_models")
+        );
+        assert_eq!(legacy_config_dir(), repo.join("config"));
+    }
+
+    #[test]
+    fn b64_round_trip_and_fallbacks() {
+        assert_eq!(b64_encode("p@ss 密码"), "cEBzcyDlr4bnoIE=");
+        assert_eq!(b64_decode(&b64_encode("p@ss 密码")), "p@ss 密码");
+        assert_eq!(b64_decode(""), "");
+        assert_eq!(b64_decode("不是base64"), "");
+        // 合法 base64 但不是 UTF-8
+        assert_eq!(b64_decode("/w=="), "");
+    }
+
+    #[test]
+    fn failure_text_spaces_latin_labels() {
+        assert_eq!(failure_text("写入", "代理配置"), "写入代理配置失败");
+        assert_eq!(failure_text("读取", "配置"), "读取配置失败");
+        assert_eq!(
+            failure_text("写入", "Hugging Face 配置"),
+            "写入 Hugging Face 配置失败"
+        );
+        assert_eq!(failure_text("写入", "API Key"), "写入 API Key 失败");
+    }
+
+    #[test]
+    fn json_config_write_then_read() {
+        let dir = temp_dir("rw");
+        let value = Sample {
+            name: "a".into(),
+            port: 7890,
+        };
+        write_json_file(&dir.join("nested"), "s.json", &value, "测试配置").unwrap();
+        let path = dir.join("nested").join("s.json");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            serde_json::to_string_pretty(&value).unwrap()
+        );
+        assert_eq!(read_json_file::<Sample>(&path, "测试配置").unwrap(), value);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn json_config_missing_or_broken() {
+        let dir = temp_dir("broken");
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("missing.json");
+        assert_eq!(
+            read_json_file::<Sample>(&missing, "代理配置").unwrap(),
+            Sample::default()
+        );
+
+        let broken = dir.join("broken.json");
+        std::fs::write(&broken, "{ not json").unwrap();
+        let err = read_json_file::<Sample>(&broken, "代理配置").unwrap_err();
+        assert!(err.starts_with("解析代理配置失败: "), "{}", err);
+
+        // 路径是目录：存在但读不出来
+        let err = read_json_file::<Sample>(&dir, "代理配置").unwrap_err();
+        assert!(err.starts_with("读取代理配置失败: "), "{}", err);
+
+        // 配置目录的位置被一个普通文件占着
+        let err = write_json_file(&broken, "s.json", &Sample::default(), "代理配置").unwrap_err();
+        assert!(err.starts_with("创建配置目录失败: "), "{}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

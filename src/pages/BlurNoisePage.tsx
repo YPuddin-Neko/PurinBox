@@ -1,93 +1,37 @@
-import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
-import { open } from '@tauri-apps/plugin-dialog';
-import { useTaskQueue } from '../components/TaskContext';
-import { useTranslation } from 'react-i18next';
 import {
-  Sparkles,
-  FolderOpen,
-  Info,
+  Sparkles
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { BlurNoiseOptions } from '../api/commandOptions';
 import ProcessButton from '../components/ProcessButton';
-import RecursiveScanToggle from '../components/RecursiveScanToggle';
-import InputPathPickerButton from '../components/InputPathPickerButton';
-
-interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
+import ProgressLog from '../components/ProgressLog';
+import PageHeader from '../components/ui/PageHeader';
+import PathFields from '../components/ui/PathFields';
+import { useBatchTask, type ProcessResult } from '../hooks/useBatchTask';
 
 export default function BlurNoisePage() {
   const { t } = useTranslation();
+  const task = useBatchTask({ event: 'blur-noise-progress', taskId: 'blur-noise' });
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
   const [blurRadius, setBlurRadius] = useState(2.0);
   const [noiseStrength, setNoiseStrength] = useState(15);
-  const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressCurrent, setProgressCurrent] = useState(0);
-  const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasError, setHasError] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    const p = listen<ProgressPayload>('blur-noise-progress', (event) => {
-      if (!active) return;
-      const d = event.payload;
-      setProgressCurrent(d.current);
-      setProgressTotal(d.total);
-      if (d.total > 0) setProgress((d.current / d.total) * 100);
-      if (d.status === 'done') setIsDone(true);
-      if (d.status === 'error') setHasError(true);
-      if (d.status !== 'processing') {
-        setLogs((prev) => [...prev, {
-          time: getTimeStr(),
-          message: d.message,
-          status: d.status === 'done' ? 'info' : d.status as LogEntry['status'],
-        }]);
-      }
+  const handleProcess = () => {
+
+    return task.run({
+      taskName: t('blurNoise.taskName'), startLog: t('blurNoise.startMsg', { blur: blurRadius.toFixed(1), noise: noiseStrength }), exec: () => invoke<ProcessResult>('blur_noise_images', {
+        options: { input_path: inputPath, output_path: outputPath, blur_radius: blurRadius, noise_strength: noiseStrength, recursive } satisfies BlurNoiseOptions,
+      })
     });
-    return () => { active = false; p.then(fn => fn()); };
-  }, []);
-
-  const selectOutputFolder = async () => { const s = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') }); if (s) setOutputPath(s as string); };
-
-  const { addTask, updateTask } = useTaskQueue();
-
-  const handleProcess = async () => {
-    if (!inputPath || !outputPath) return;
-    setProcessing(true); addTask('blur-noise', t('blurNoise.taskName'));
-    setProgress(0); setProgressCurrent(0); setProgressTotal(0); setIsDone(false); setHasError(false);
-    const parts = [];
-    if (blurRadius > 0) parts.push(`${t('blurNoise.blurLabel')}: ${blurRadius.toFixed(1)}`);
-    if (noiseStrength > 0) parts.push(`${t('blurNoise.noiseLabel')}: ${noiseStrength}`);
-    setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${t('pages.process')} | ${parts.join(' | ')}`, status: 'info' }]);
-    try {
-      await invoke<ProcessResult>('blur_noise_images', {
-        options: { input_path: inputPath, output_path: outputPath, blur_radius: blurRadius, noise_strength: noiseStrength, recursive },
-      });
-    } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('blur-noise', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
-      setHasError(true); setIsDone(true);
-    } finally { setProcessing(false); }
   };
-
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
-  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <Sparkles style={{ width: 28, height: 28, color: '#60a5fa' }} />
-          <h1 className="page-title">{t('blurNoise.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('blurNoise.subtitle')}</p>
-      </div>
+      <PageHeader icon={Sparkles} color={'#60a5fa'} title={t('blurNoise.title')} subtitle={t('blurNoise.subtitle')} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         {/* 左侧 */}
@@ -95,23 +39,7 @@ export default function BlurNoisePage() {
           <div className="tool-panel">
             <div className="tool-panel-header"><span className="tool-panel-title">{t('blurNoise.paramSettings')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div className="form-group">
-                <div className="form-label-row">
-                  <label className="form-label">{t('blurNoise.inputFolder')}</label>
-                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
-                </div>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('blurNoise.inputPlaceholder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <InputPathPickerButton onSelect={setInputPath} />
-                </div>
-              </div>
-              <div className="form-group">
-                <label className="form-label">{t('blurNoise.outputFolder')}</label>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('blurNoise.outputPlaceholder')} value={outputPath} onChange={e => setOutputPath(e.target.value)} style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
-                </div>
-              </div>
+              <PathFields embedded allowFile input={inputPath} onInput={setInputPath} output={outputPath} onOutput={setOutputPath} recursive={recursive} onRecursive={setRecursive} />
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-4)' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
@@ -141,23 +69,16 @@ export default function BlurNoisePage() {
                 </div>
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(96, 165, 250, 0.06)', border: '1px solid rgba(96, 165, 250, 0.1)' }}>
-                <Info style={{ width: 13, height: 13, color: '#60a5fa', marginTop: 2, minWidth: 13 }} />
-                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-                  {t('blurNoise.tip')}
-                </span>
-              </div>
             </div>
           </div>
         </div>
 
         {/* 右侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <ProcessButton processing={processing} onStart={handleProcess}
+          <ProcessButton {...task.buttonProps} onStart={handleProcess}
             disabled={!inputPath || !outputPath || (blurRadius <= 0 && noiseStrength <= 0)}
-            cancelCommand="cancel_blur_noise" startText={t('blurNoise.startProcess')} processingText={t('pages.processing')}
-            onCancelLog={addCancelLog} />
-          <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
+            cancelCommand="cancel_blur_noise" startText={t('blurNoise.startProcess')} />
+          <ProgressLog {...task.progressLogProps} />
         </div>
       </div>
     </div>

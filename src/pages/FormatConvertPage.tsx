@@ -1,27 +1,25 @@
-import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
-import { open } from '@tauri-apps/plugin-dialog';
-import { useTaskQueue } from '../components/TaskContext';
+import { FileType, Info } from 'lucide-react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FileType, FolderOpen, Info } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
+import type { ConvertFormat, FormatConvertOptions } from '../api/commandOptions';
 import ProcessButton from '../components/ProcessButton';
-import RecursiveScanToggle from '../components/RecursiveScanToggle';
-import InputPathPickerButton from '../components/InputPathPickerButton';
-
-interface ProcessResult { success_count: number; fail_count: number; total: number; errors: string[]; }
-interface ProgressPayload { current: number; total: number; filename: string; status: string; message: string; }
+import ProgressLog from '../components/ProgressLog';
+import ChoiceCard from '../components/ui/ChoiceCard';
+import PageHeader from '../components/ui/PageHeader';
+import PathFields from '../components/ui/PathFields';
+import { useBatchTask, type ProcessResult } from '../hooks/useBatchTask';
 
 export default function FormatConvertPage() {
   const { t } = useTranslation();
+  const task = useBatchTask({ event: 'convert-progress', taskId: 'convert' });
 
-  const targetFormats = [
-    { value: 'png', label: 'PNG', desc: t('formatConvert.pngDesc'), color: '#4ade80' },
-    { value: 'jpg', label: 'JPG', desc: t('formatConvert.jpgDesc'), color: '#ffa647' },
-    { value: 'jpeg', label: 'JPEG', desc: t('formatConvert.jpegDesc'), color: '#ffa647' },
-    { value: 'bmp', label: 'BMP', desc: t('formatConvert.bmpDesc'), color: '#f87171' },
-    { value: 'webp', label: 'WebP', desc: t('formatConvert.webpDesc'), color: '#60a5fa' },
+  const targetFormats: { value: ConvertFormat; desc?: string; color: string }[] = [
+    { value: 'png', color: '#4ade80' },
+    { value: 'jpg', desc: t('formatConvert.jpgDesc'), color: '#ffa647' },
+    { value: 'jpeg', desc: t('formatConvert.jpgDesc'), color: '#ffa647' },
+    { value: 'bmp', desc: t('formatConvert.bmpDesc'), color: '#f87171' },
+    { value: 'webp', color: '#60a5fa' },
   ];
 
   const sourceFormats = ['PNG', 'JPG', 'JPEG', 'WebP', 'BMP', 'TIFF', 'GIF', 'PSD'];
@@ -29,116 +27,36 @@ export default function FormatConvertPage() {
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
-  const [targetFormat, setTargetFormat] = useState('png');
-  const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressCurrent, setProgressCurrent] = useState(0);
-  const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasError, setHasError] = useState(false);
+  const [targetFormat, setTargetFormat] = useState<ConvertFormat>('png');
 
-  useEffect(() => {
-    let active = true;
-    const p = listen<ProgressPayload>('convert-progress', (event) => {
-      if (!active) return;
-      const d = event.payload;
-      setProgressCurrent(d.current);
-      setProgressTotal(d.total);
-      if (d.total > 0) setProgress((d.current / d.total) * 100);
-      if (d.status === 'done') setIsDone(true);
-      if (d.status === 'error') setHasError(true);
-      if (d.status !== 'processing') {
-        setLogs((prev) => [...prev, { time: getTimeStr(), message: d.message, status: d.status === 'done' ? 'info' : d.status as LogEntry['status'] }]);
-      }
+  const handleProcess = () => {
+
+    return task.run({
+      taskName: t('formatConvert.taskName'), startLog: t('formatConvert.startConvertMsg', { format: targetFormat }), exec: () => invoke<ProcessResult>('convert_format', {
+        options: { input_path: inputPath, output_path: outputPath, target_format: targetFormat, recursive } satisfies FormatConvertOptions,
+      })
     });
-    return () => { active = false; p.then(fn => fn()); };
-  }, []);
-
-  const selectOutputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: t('pages.selectOutputTitle') });
-    if (selected) setOutputPath(selected as string);
   };
-
-  const { addTask, updateTask } = useTaskQueue();
-
-  const handleProcess = async () => {
-    if (!inputPath || !outputPath) return;
-    setProcessing(true);
-    addTask('convert', t('formatConvert.taskName'));
-    setProgress(0); setProgressCurrent(0); setProgressTotal(0);
-    setIsDone(false); setHasError(false);
-    setLogs([{ time: getTimeStr(), message: t('formatConvert.startConvertMsg', { format: targetFormat }), status: 'info' }]);
-    try {
-      await invoke<ProcessResult>('convert_format', {
-        options: { input_path: inputPath, output_path: outputPath, target_format: targetFormat, recursive },
-      });
-    } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('convert', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
-      setHasError(true); setIsDone(true);
-    } finally {
-      setProcessing(false);
-    }
-  };
-
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
-  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <FileType style={{ width: 28, height: 28, color: '#ffa647' }} />
-          <h1 className="page-title">{t('formatConvert.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('formatConvert.subtitle')}</p>
-      </div>
+      <PageHeader icon={FileType} color={'#ffa647'} title={t('formatConvert.title')} subtitle={t('formatConvert.subtitle')} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-              <div className="form-group">
-                <div className="form-label-row">
-                  <label className="form-label">{t('pages.inputPathShort')}</label>
-                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
-                </div>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <InputPathPickerButton onSelect={setInputPath} />
-                </div>
-              </div>
-              <div className="form-group">
-                <label className="form-label">{t('pages.outputPath')}</label>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectOutputFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <PathFields allowFile input={inputPath} onInput={setInputPath} output={outputPath} onOutput={setOutputPath} recursive={recursive} onRecursive={setRecursive} />
 
           {/* 目标格式 */}
           <div className="tool-panel">
             <div className="tool-panel-header"><span className="tool-panel-title">{t('formatConvert.targetFormat')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               {targetFormats.map((fmt) => (
-                <div key={fmt.value} onClick={() => setTargetFormat(fmt.value)} style={{
-                  display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
-                  padding: 'var(--space-3) var(--space-4)', borderRadius: 'var(--radius-md)',
-                  border: `1px solid ${targetFormat === fmt.value ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                  background: targetFormat === fmt.value ? 'rgba(124, 92, 252, 0.06)' : 'var(--color-bg-input)',
-                  cursor: 'pointer', transition: 'all 0.2s',
-                }}>
-                  <div style={{ width: 18, height: 18, borderRadius: '50%', minWidth: 18, border: `2px solid ${targetFormat === fmt.value ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {targetFormat === fmt.value && <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--color-accent-primary)' }} />}
-                  </div>
+                <ChoiceCard key={fmt.value} selected={targetFormat === fmt.value} onSelect={() => setTargetFormat(fmt.value)} indicator="radio">
+
                   <span style={{ fontWeight: 700, fontSize: 'var(--font-size-md)', color: targetFormat === fmt.value ? fmt.color : 'var(--color-text-tertiary)', minWidth: 50 }}>.{fmt.value}</span>
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>{fmt.desc}</span>
-                </div>
+                  {fmt.desc && <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>{fmt.desc}</span>}
+                </ChoiceCard>
               ))}
             </div>
           </div>
@@ -158,13 +76,11 @@ export default function FormatConvertPage() {
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <ProcessButton processing={processing} onStart={handleProcess}
+          <ProcessButton {...task.buttonProps} onStart={handleProcess}
             disabled={!inputPath || !outputPath}
-            cancelCommand="cancel_convert" startText={t('formatConvert.startConvert')} processingText={t('formatConvert.converting')}
-            onCancelLog={addCancelLog} />
+            cancelCommand="cancel_convert" startText={t('formatConvert.startConvert')} processingText={t('formatConvert.converting')} />
 
-          
-            <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
+          <ProgressLog {...task.progressLogProps} />
         </div>
       </div>
     </div>

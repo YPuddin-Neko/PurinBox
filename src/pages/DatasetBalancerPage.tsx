@@ -4,6 +4,11 @@ import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import CustomSelect from '../components/CustomSelect';
+import { ConfirmModal } from '../components/Modal';
+import PageHeader from '../components/ui/PageHeader';
+import NumberInput from '../components/ui/NumberInput';
+import SegmentedTabs from '../components/ui/SegmentedTabs';
+import { arcPath } from '../utils/donut';
 
 interface ConceptFolder { id: number; name: string; imageCount: number; repeats: number; folderName?: string; }
 const COLORS = ['#7c5cfc', '#f59e0b', '#4ade80', '#38bdf8', '#f87171', '#a78bfa', '#fb923c', '#2dd4bf', '#e879f9', '#facc15'];
@@ -11,17 +16,22 @@ let nextId = 1;
 const mkFolder = (n?: string, ic?: number, r?: number, fn?: string): ConceptFolder => ({ id: nextId++, name: n || `concept_${nextId - 1}`, imageCount: ic ?? 20, repeats: r ?? 1, folderName: fn });
 
 type InputMode = 'manual' | 'local';
+type VizMode = 'treemap' | 'pie' | 'timeline';
+
+function VizBtn({ active, onClick, icon, title }: { active: boolean; onClick: () => void; icon: React.ReactNode; title: string }) {
+  return <button className={`seg-btn${active ? ' active' : ''}`} onClick={onClick} title={title} aria-label={title}>{icon}</button>;
+}
 
 export default function DatasetBalancerPage() {
   const { t } = useTranslation();
-  const [folders, setFolders] = useState<ConceptFolder[]>([mkFolder('character'), mkFolder('outfit')]);
+  const [folders, setFolders] = useState<ConceptFolder[]>(() => [mkFolder('character'), mkFolder('outfit')]);
   const [mode, setMode] = useState<'by_epoch' | 'by_steps'>('by_epoch');
-  const [batchSize, setBatchSize] = useState<number|string>(1);
-  const [gradAccum, setGradAccum] = useState<number|string>(1);
-  const [epochs, setEpochs] = useState<number|string>(10);
-  const [maxSteps, setMaxSteps] = useState<number|string>(2000);
-  type VizMode = 'treemap' | 'pie' | 'timeline';
+  const [batchSize, setBatchSize] = useState(1);
+  const [gradAccum, setGradAccum] = useState(1);
+  const [epochs, setEpochs] = useState(10);
+  const [maxSteps, setMaxSteps] = useState(2000);
   const [vizMode, setVizMode] = useState<VizMode>('treemap');
+  const viz = vizMode === 'timeline' && mode !== 'by_steps' ? 'treemap' : vizMode;
   const [hovered, setHovered] = useState<number | null>(null);
   const [inputMode, setInputMode] = useState<InputMode>('manual');
   const [localPath, setLocalPath] = useState('');
@@ -62,13 +72,13 @@ export default function DatasetBalancerPage() {
 
   // 应用到数据集: 重命名文件夹
   const [applying, setApplying] = useState(false);
+  const [confirmApply, setConfirmApply] = useState(false);
   const [applyMsg, setApplyMsg] = useState('');
   const [applyOk, setApplyOk] = useState(true);
   const applyToDataset = async () => {
     if (!localPath || applying) return;
     const hasChanges = folders.some(f => f.folderName);
     if (!hasChanges) return;
-    if (!window.confirm(t('datasetBalancer.applyConfirm'))) return;
     setApplying(true);
     setApplyMsg('');
     try {
@@ -80,7 +90,6 @@ export default function DatasetBalancerPage() {
       const result = await invoke<string[]>('apply_concept_repeats', { dir: localPath, items });
       setApplyOk(true);
       setApplyMsg(t('datasetBalancer.applySuccess', { count: result.length }));
-      // 重新扫描以刷新状态
       await scanLocalFolder();
     } catch (e: any) {
       setApplyOk(false);
@@ -111,18 +120,7 @@ export default function DatasetBalancerPage() {
     return { stepsPerEpoch, totalSteps: _maxSteps, totalSamples, folders: withPct, eb, epochs: computedEpochs, fullEpochs, remaining, suggestedSteps };
   }, [folders, batchSize, gradAccum, epochs, maxSteps, mode]);
 
-  const _maxStepsNum = Number(maxSteps) || 0;
-
   const isCut = mode === 'by_steps' && calc.remaining > 0;
-
-  // === Viz toggle button ===
-  const VizBtn = ({ m, icon }: { m: VizMode; icon: React.ReactNode }) => (
-    <button onClick={() => setVizMode(m)} style={{
-      padding: '4px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${vizMode === m ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-      background: vizMode === m ? 'rgba(124,92,252,0.08)' : 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
-      color: vizMode === m ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
-    }}>{icon}</button>
-  );
 
   // === Treemap ===
   const renderTreemap = () => (
@@ -161,14 +159,7 @@ export default function DatasetBalancerPage() {
     const segs = calc.folders.map((f, i) => {
       const angle = (f.percent / 100) * Math.PI * 2;
       const end = startAngle + angle;
-      const la = angle > Math.PI ? 1 : 0;
-      const path = [
-        `M ${cx + r * Math.cos(startAngle)} ${cy + r * Math.sin(startAngle)}`,
-        `A ${r} ${r} 0 ${la} 1 ${cx + r * Math.cos(end)} ${cy + r * Math.sin(end)}`,
-        `L ${cx + ir * Math.cos(end)} ${cy + ir * Math.sin(end)}`,
-        `A ${ir} ${ir} 0 ${la} 0 ${cx + ir * Math.cos(startAngle)} ${cy + ir * Math.sin(startAngle)}`,
-        'Z',
-      ].join(' ');
+      const path = arcPath(cx, cy, r, ir, startAngle, end);
       const mid = startAngle + angle / 2;
       const seg = { ...f, path, mid, idx: i };
       startAngle = end;
@@ -208,7 +199,7 @@ export default function DatasetBalancerPage() {
     const totalEpochs = calc.epochs;
     const spe = calc.stepsPerEpoch;
     const totalUsed = totalEpochs * spe;
-    const cutPos = spe > 0 ? (_maxStepsNum / totalUsed) * 100 : 100;
+    const cutPos = spe > 0 ? (calc.totalSteps / totalUsed) * 100 : 100;
     const stepsNeeded = spe - calc.remaining;
     return (
       <div style={{ height: 220, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 'var(--space-3)' }}>
@@ -239,7 +230,7 @@ export default function DatasetBalancerPage() {
                 <div style={{
                   position: 'absolute', top: -2, left: 6, fontSize: 10, color: '#f87171',
                   whiteSpace: 'nowrap', fontWeight: 600, fontFamily: 'monospace',
-                }}>MAX_TRAIN_STEPS={_maxStepsNum}</div>
+                }}>MAX_TRAIN_STEPS={calc.totalSteps}</div>
               </div>
             )}
           </div>
@@ -273,28 +264,21 @@ export default function DatasetBalancerPage() {
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <Scale style={{ width: 28, height: 28, color: '#f59e0b' }} />
-          <h1 className="page-title">{t('datasetBalancer.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('datasetBalancer.subtitle')}</p>
-      </div>
+      <PageHeader icon={Scale} color="#f59e0b" title={t('datasetBalancer.title')} subtitle={t('datasetBalancer.subtitle')} />
 
       {/* Row 1: Visualization */}
       <div className="tool-panel" style={{ marginBottom: 'var(--space-4)' }}>
         <div className="tool-panel-header">
           <span className="tool-panel-title">{t('datasetBalancer.balancePreview')}</span>
           <div style={{ display: 'flex', gap: 4 }}>
-            <VizBtn m="treemap" icon={<LayoutGrid style={{ width: 14, height: 14 }} />} />
-            <VizBtn m="pie" icon={<PieIcon style={{ width: 14, height: 14 }} />} />
-            {mode === 'by_steps' && <VizBtn m="timeline" icon={<AlignLeft style={{ width: 14, height: 14 }} />} />}
+            <VizBtn active={viz === 'treemap'} onClick={() => setVizMode('treemap')} title={t('datasetBalancer.treemap')} icon={<LayoutGrid style={{ width: 14, height: 14 }} />} />
+            <VizBtn active={viz === 'pie'} onClick={() => setVizMode('pie')} title={t('datasetBalancer.pie')} icon={<PieIcon style={{ width: 14, height: 14 }} />} />
+            {mode === 'by_steps' && <VizBtn active={viz === 'timeline'} onClick={() => setVizMode('timeline')} title={t('datasetBalancer.timeline')} icon={<AlignLeft style={{ width: 14, height: 14 }} />} />}
           </div>
         </div>
-        {vizMode === 'treemap' && renderTreemap()}
-        {vizMode === 'pie' && renderPie()}
-        {vizMode === 'timeline' && mode === 'by_steps' && renderTimeline()}
-        {vizMode === 'timeline' && mode !== 'by_steps' && renderTreemap()}
+        {viz === 'treemap' && renderTreemap()}
+        {viz === 'pie' && renderPie()}
+        {viz === 'timeline' && renderTimeline()}
       </div>
 
       {/* Row 2: Three columns */}
@@ -305,13 +289,10 @@ export default function DatasetBalancerPage() {
             <span className="tool-panel-title">{t('datasetBalancer.conceptFolders')}</span>
             <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
               {/* Mode toggle */}
-              {(['manual', 'local'] as const).map(m => (
-                <button key={m} onClick={() => setInputMode(m)} style={{
-                  padding: '3px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${inputMode === m ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                  background: inputMode === m ? 'rgba(124,92,252,0.08)' : 'transparent', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
-                  color: inputMode === m ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
-                }}>{t(m === 'manual' ? 'datasetBalancer.manualMode' : 'datasetBalancer.localMode')}</button>
-              ))}
+              <SegmentedTabs className="ui-seg-compact" value={inputMode} onChange={setInputMode} tabs={[
+                { id: 'manual', label: t('datasetBalancer.manualMode') },
+                { id: 'local', label: t('datasetBalancer.localMode') },
+              ]} />
             </div>
           </div>
 
@@ -355,14 +336,14 @@ export default function DatasetBalancerPage() {
                 </div>
                 <div>
                   <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginBottom: 2 }}>{t('datasetBalancer.imageCount')}</div>
-                  <input className="form-input" type="number" min={1} value={f.imageCount}
-                    onChange={e => updFolder(f.id, 'imageCount', e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') updFolder(f.id, 'imageCount', 1); }}
+                  <NumberInput min={0} integer value={f.imageCount}
+                    onChange={value => updFolder(f.id, 'imageCount', value)}
                     style={{ width: '100%', fontSize: 11, padding: '3px 4px', height: 26, textAlign: 'center' }} />
                 </div>
                 <div>
                   <div style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginBottom: 2 }}>{t('datasetBalancer.repeats')}</div>
-                  <input className="form-input" type="number" min={1} value={f.repeats}
-                    onChange={e => updFolder(f.id, 'repeats', e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') updFolder(f.id, 'repeats', 1); }}
+                  <NumberInput min={1} integer value={f.repeats}
+                    onChange={value => updFolder(f.id, 'repeats', value)}
                     style={{ width: '100%', fontSize: 11, padding: '3px 4px', height: 26, textAlign: 'center' }} />
                 </div>
                 <button className="btn btn-ghost btn-sm" onClick={() => rmFolder(f.id)} disabled={folders.length <= 1}
@@ -381,7 +362,7 @@ export default function DatasetBalancerPage() {
                 <Wand2 style={{ width: 13, height: 13 }} /> {t('datasetBalancer.autoBalance')}
               </button>
               {inputMode === 'local' && localPath && folders.some(f => f.folderName) && (
-                <button className="btn btn-primary" onClick={applyToDataset} disabled={applying}
+                <button className="btn btn-primary" onClick={() => setConfirmApply(true)} disabled={applying}
                   style={{ flex: 1, fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
                   <Check style={{ width: 13, height: 13 }} /> {applying ? t('datasetBalancer.applying') : t('datasetBalancer.applyToDataset')}
                 </button>
@@ -403,7 +384,7 @@ export default function DatasetBalancerPage() {
           </div>
           <div style={{ marginBottom: 'var(--space-3)' }}>
             <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginBottom: 4 }}>{t('datasetBalancer.calcMode')}</div>
-            <CustomSelect value={mode} onChange={v => { setMode(v as any); if (v === 'by_epoch' && vizMode === 'timeline') setVizMode('treemap'); }} options={[
+            <CustomSelect value={mode} onChange={v => setMode(v as 'by_epoch' | 'by_steps')} options={[
               { value: 'by_epoch', label: t('datasetBalancer.modeEpoch') },
               { value: 'by_steps', label: t('datasetBalancer.modeSteps') },
             ]} />
@@ -411,21 +392,21 @@ export default function DatasetBalancerPage() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
             <div>
               <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>{t('datasetBalancer.batchSize')}</label>
-              <input className="form-input" type="number" min={1} value={batchSize} onChange={e => setBatchSize(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setBatchSize(1); }} style={{ width: '100%' }} />
+              <NumberInput min={1} integer value={batchSize} onChange={setBatchSize} style={{ width: '100%' }} />
             </div>
             <div>
               <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>{t('datasetBalancer.gradAccum')}</label>
-              <input className="form-input" type="number" min={1} value={gradAccum} onChange={e => setGradAccum(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setGradAccum(1); }} style={{ width: '100%' }} />
+              <NumberInput min={1} integer value={gradAccum} onChange={setGradAccum} style={{ width: '100%' }} />
             </div>
             {mode === 'by_epoch' ? (
               <div>
                 <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>{t('datasetBalancer.epochs')}</label>
-                <input className="form-input" type="number" min={1} value={epochs} onChange={e => setEpochs(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setEpochs(10); }} style={{ width: '100%' }} />
+                <NumberInput min={1} integer fallback={10} value={epochs} onChange={setEpochs} style={{ width: '100%' }} />
               </div>
             ) : (
               <div>
                 <label className="form-label" style={{ fontSize: 10, marginBottom: 4 }}>{t('datasetBalancer.maxSteps')}</label>
-                <input className="form-input" type="number" min={1} value={maxSteps} onChange={e => setMaxSteps(e.target.value === '' ? '' : Math.max(1, Number(e.target.value)))} onBlur={e => { if (e.target.value === '') setMaxSteps(2000); }} style={{ width: '100%' }} />
+                <NumberInput min={1} integer fallback={2000} value={maxSteps} onChange={setMaxSteps} style={{ width: '100%' }} />
               </div>
             )}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 6,
@@ -469,6 +450,8 @@ export default function DatasetBalancerPage() {
           </div>
         </div>
       </div>
+      <ConfirmModal open={confirmApply} onClose={() => setConfirmApply(false)} onConfirm={() => void applyToDataset()}
+        message={t('datasetBalancer.applyConfirm')} />
     </div>
   );
 }

@@ -1,28 +1,13 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useState, useEffect, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Sun, Moon, Monitor, ListTodo, Cpu, MemoryStick, MonitorDot, Trash2 } from 'lucide-react';
-import { useTheme } from './ThemeProvider';
-import { useTaskQueue } from './TaskContext';
+import { useAppSettings } from './ThemeProvider';
+import { useTaskList, useTaskQueue } from './TaskContext';
 import { changeLanguage, availableLanguages } from '../i18n';
-import { hasTauriRuntime } from '../utils/tauriRuntime';
+import useSystemStats, { getUsageColor } from '../hooks/useSystemStats';
 import { routeI18nMap, TASK_ROUTE_MAP } from '../appRegistry';
 import '../styles/layout.css';
-
-interface SystemStats {
-  cpu_usage: number;
-  cpu_name: string;
-  cpu_cores: number;
-  memory_used: number;
-  memory_total: number;
-  memory_percent: number;
-  gpu_name: string;
-  gpu_usage: number;
-  vram_used: number;
-  vram_total: number;
-  vram_percent: number;
-}
 
 function MiniBar({ value, color, max = 100 }: { value: number; color: string; max?: number }) {
   const pct = Math.min(Math.max(value / max * 100, 0), 100);
@@ -38,40 +23,19 @@ function formatBytes(bytes: number) {
   return gb >= 1 ? `${gb.toFixed(1)}G` : `${(bytes / (1024 * 1024)).toFixed(0)}M`;
 }
 
-function getUsageColor(pct: number) {
-  if (pct < 50) return '#4ade80';
-  if (pct < 80) return '#fbbf24';
-  return '#f87171';
-}
-
 export default function Header() {
   const { t, i18n } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const i18nKey = routeI18nMap[location.pathname];
   const currentBreadcrumb = i18nKey ? t(i18nKey) : t('header.unknown');
-  const { mode, monitorInterval, cycleThemeWithRipple } = useTheme();
-  const { tasks: allTasks, clearCompleted } = useTaskQueue();
+  const { mode, cycleThemeWithRipple } = useAppSettings();
+  const allTasks = useTaskList();
+  const { clearCompleted } = useTaskQueue();
   const runningTasks = allTasks.filter(t => t.status === 'running');
   const completedTasks = allTasks.filter(t => t.status !== 'running');
-  const [stats, setStats] = useState<SystemStats | null>(null);
+  const stats = useSystemStats();
   const [showTaskPanel, setShowTaskPanel] = useState(false);
-
-  // 轮询系统状态
-  useEffect(() => {
-    if (!hasTauriRuntime()) { setStats(null); return; }
-    if (monitorInterval <= 0) { setStats(null); return; }
-    let alive = true;
-    const poll = async () => {
-      try {
-        const s = await invoke<SystemStats>('get_system_stats');
-        if (alive) setStats(s);
-      } catch {}
-    };
-    poll();
-    const timer = setInterval(poll, monitorInterval);
-    return () => { alive = false; clearInterval(timer); };
-  }, [monitorInterval]);
 
   const themeBtnRef = useRef<HTMLButtonElement>(null);
 
@@ -140,7 +104,7 @@ export default function Header() {
                 </>
               )}
             </>
-          ) : stats.gpu_name && stats.gpu_name.length > 0 ? (
+          ) : stats.gpu_name ? (
             <>
               <div className="header-stat-divider" />
               <div className="header-stat-item" title={stats.gpu_name}>
@@ -155,23 +119,20 @@ export default function Header() {
       <div className="header-right">
         {/* 任务队列 */}
         <div style={{ position: 'relative' }}>
-          <button className="header-btn" title={t('header.taskQueue')} onClick={() => setShowTaskPanel(!showTaskPanel)} style={{ position: 'relative' }}>
+          <button className="header-btn" title={t('header.taskQueue')} onClick={() => setShowTaskPanel(!showTaskPanel)}>
             <ListTodo />
             {runningTasks.length > 0 && (
               <span style={{ position: 'absolute', top: 2, right: 2, width: 8, height: 8, borderRadius: '50%', background: '#4ade80', animation: 'pulse 2s infinite' }} />
             )}
           </button>
           {showTaskPanel && (
-            <div className="header-dropdown" style={{ minWidth: 280 }}>
+            <div className="header-dropdown">
               <div style={{ padding: '12px 16px', fontWeight: 700, fontSize: 13, borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span>{t('header.taskQueue')}</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {allTasks.length > 0 && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{runningTasks.length} {t('header.running')}</span>}
                   {completedTasks.length > 0 && (
-                    <button onClick={(e) => { e.stopPropagation(); clearCompleted(); }} title={t('header.clearDoneTitle')}
-                      style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--color-border)', background: 'transparent', color: 'var(--color-text-tertiary)', fontSize: 10, cursor: 'pointer', transition: 'all 0.15s' }}
-                      onMouseEnter={e => { (e.currentTarget).style.color = '#f87171'; (e.currentTarget).style.borderColor = 'rgba(248,113,113,0.3)'; }}
-                      onMouseLeave={e => { (e.currentTarget).style.color = 'var(--color-text-tertiary)'; (e.currentTarget).style.borderColor = 'var(--color-border)'; }}
+                    <button className="task-clear-button" onClick={(e) => { e.stopPropagation(); clearCompleted(); }} title={t('header.clearDoneTitle')}
                     >
                       <Trash2 style={{ width: 10, height: 10 }} /> {t('header.clearDone')}
                     </button>
@@ -185,18 +146,16 @@ export default function Header() {
               ) : (
                 <div style={{ maxHeight: 300, overflowY: 'auto' }}>
                   {allTasks.map(task => (
-                    <div key={task.id}
+                    <div key={task.id} className={TASK_ROUTE_MAP[task.id] ? 'task-queue-item' : undefined}
                       onClick={() => { const route = TASK_ROUTE_MAP[task.id]; if (route) { navigate(route); setShowTaskPanel(false); } }}
                       style={{ padding: '10px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 4, cursor: TASK_ROUTE_MAP[task.id] ? 'pointer' : 'default', transition: 'background 0.15s' }}
-                      onMouseEnter={e => { if (TASK_ROUTE_MAP[task.id]) (e.currentTarget as HTMLDivElement).style.background = 'var(--color-bg-hover)'; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = ''; }}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                         <span style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{task.name}</span>
                         <span style={{
                           fontSize: 10, padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap', flexShrink: 0,
-                          background: task.status === 'running' ? 'rgba(74,222,128,0.1)' : task.status === 'done' ? 'rgba(96,165,250,0.1)' : 'rgba(248,113,113,0.1)',
-                          color: task.status === 'running' ? '#4ade80' : task.status === 'done' ? '#60a5fa' : '#f87171',
+                          background: task.status === 'running' ? 'rgba(74,222,128,0.1)' : task.status === 'done' ? 'rgba(96,165,250,0.1)' : task.status === 'cancelled' ? 'var(--color-bg-tertiary)' : 'rgba(248,113,113,0.1)',
+                          color: task.status === 'running' ? '#4ade80' : task.status === 'done' ? '#60a5fa' : task.status === 'cancelled' ? 'var(--color-text-tertiary)' : '#f87171',
                         }}>
                           {taskStatusLabel(task.status)}
                         </span>
@@ -204,7 +163,7 @@ export default function Header() {
                       {task.status === 'running' && task.total > 0 && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <div style={{ flex: 1, height: 3, borderRadius: 2, background: 'var(--color-border)', overflow: 'hidden' }}>
-                            <div style={{ width: `${task.progress}%`, height: '100%', borderRadius: 2, background: '#4ade80', transition: 'width 0.3s' }} />
+                            <div style={{ width: `${Math.min(100, (task.current / task.total) * 100)}%`, height: '100%', borderRadius: 2, background: '#4ade80', transition: 'width 0.3s' }} />
                           </div>
                           <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', whiteSpace: 'nowrap' }}>{task.current}/{task.total}</span>
                         </div>
@@ -226,11 +185,10 @@ export default function Header() {
         {/* 语言切换 */}
         <button className="header-btn" title={t('settings.language')}
           onClick={() => {
-            const langs = availableLanguages.map(l => l.value);
-            const idx = langs.indexOf(i18n.language);
-            changeLanguage(langs[(idx + 1) % langs.length]);
+            const idx = availableLanguages.indexOf(i18n.language);
+            changeLanguage(availableLanguages[(idx + 1) % availableLanguages.length]);
           }}
-          style={{ fontSize: 13, fontWeight: 800, letterSpacing: '-0.02em' }}
+          style={{ fontSize: 13, fontWeight: 800 }}
         >
           {{ 'zh-CN': '中', en: 'EN', ja: '日' }[i18n.language] || '中'}
         </button>

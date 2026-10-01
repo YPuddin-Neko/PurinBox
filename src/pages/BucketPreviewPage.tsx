@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, type WheelEvent } from 'react';
+import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -10,8 +10,6 @@ import {
   Loader2,
   Download,
   ImageIcon,
-  ChevronLeft,
-  ChevronRight,
   ChevronDown,
   Check,
   SlidersHorizontal,
@@ -19,6 +17,12 @@ import {
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
+import PageHeader from '../components/ui/PageHeader';
+import NumberInput from '../components/ui/NumberInput';
+import Switch from '../components/ui/Switch';
+import SegmentedTabs from '../components/ui/SegmentedTabs';
+import Pager from '../components/ui/Pager';
+import ExportBar from '../components/ExportBar';
 
 type BucketEngine = 'sd' | 'diffusion_pipe';
 type SdBucketMode = 'legacy' | 'nearest_only';
@@ -54,7 +58,6 @@ interface BucketAnalysis {
   batch_count: number;
   short_batch_count: number;
   usable_rate: number;
-  batch_size: number;
   drop_last: boolean;
   bucket_count: number;
   skipped: [string, string][];
@@ -72,8 +75,6 @@ interface BucketParamCandidate {
   dp_num_ar_buckets: number;
   batch_size: number;
   active_bucket_count: number;
-  total_count: number;
-  effective_count: number;
   dropped_count: number;
   usable_rate: number;
   mean_ar_error: number;
@@ -81,23 +82,9 @@ interface BucketParamCandidate {
 
 interface BucketParamRecommendation {
   total_images: number;
-  skipped_count: number;
   unique_sizes: number;
-  unique_aspect_ratios: number;
-  res_width: number;
-  res_height: number;
-  steps: number;
-  dp_min_ar: number;
-  dp_max_ar: number;
-  dp_num_ar_buckets: number;
   min_bucket_reso: number;
   max_bucket_reso: number;
-  batch_size: number;
-  active_bucket_count: number;
-  total_count: number;
-  effective_count: number;
-  dropped_count: number;
-  usable_rate: number;
   candidates: BucketParamCandidate[];
 }
 
@@ -122,21 +109,13 @@ function bucketColor(ratio: number): string {
   return `hsl(${Math.round(hue % 360)}, 65%, 55%)`;
 }
 
-function containWheelScroll(event: WheelEvent<HTMLElement>) {
-  const element = event.currentTarget;
-  const canScrollY = element.scrollHeight > element.clientHeight + 1;
-  if (!canScrollY) return;
+const fieldLabelStyle = (invalid: boolean): CSSProperties => ({ fontSize: 10, color: invalid ? '#ef4444' : undefined });
 
-  const atTop = element.scrollTop <= 0;
-  const atBottom = element.scrollTop + element.clientHeight >= element.scrollHeight - 1;
-  const scrollingUp = event.deltaY < 0;
-  const scrollingDown = event.deltaY > 0;
-
-  event.stopPropagation();
-  if ((scrollingUp && atTop) || (scrollingDown && atBottom)) {
-    event.preventDefault();
-  }
-}
+const fieldInputStyle = (invalid: boolean): CSSProperties => ({
+  height: 32,
+  borderColor: invalid ? '#ef4444' : undefined,
+  boxShadow: invalid ? '0 0 0 1px #ef4444' : undefined,
+});
 
 export default function BucketPreviewPage() {
   const { t } = useTranslation();
@@ -180,6 +159,7 @@ export default function BucketPreviewPage() {
 
 
   const [analyzing, setAnalyzing] = useState(false);
+  const analyzeActive = useRef(false);
   const [analysis, setAnalysis] = useState<BucketAnalysis | null>(null);
   const analysisIsDpMode = analysis?.ar_error_metric === 'log';
   const droppedMaterialPreview = useMemo<DroppedBucketPreview[]>(() => {
@@ -221,7 +201,7 @@ export default function BucketPreviewPage() {
   const [bucketPage, setBucketPage] = useState(0);
   const BUCKETS_PER_PAGE = 3;
   const RECOMMENDATIONS_PER_PAGE = 4;
-  // 展开桶的图片分批渲染（每批 60 张）
+  // 展开桶内图片的分批渲染数量
   const IMAGES_PER_BATCH = 60;
   const [bucketImgLimits, setBucketImgLimits] = useState<Record<number, number>>({});
   const bucketEngineOptions: { value: BucketEngine; label: string }[] = [
@@ -229,6 +209,21 @@ export default function BucketPreviewPage() {
     { value: 'diffusion_pipe', label: t('bucketPreview.modeDiffusionPipe') },
   ];
   const currentBucketEngineLabel = bucketEngineOptions.find(option => option.value === bucketEngine)?.label ?? t('bucketPreview.modeSd');
+
+  const clearAnalysisResult = () => {
+    setAnalysis(null);
+    setScanMsg('');
+    setScanProgress(0);
+    setExpandedBuckets(new Set());
+    setBucketPage(0);
+    setBucketImgLimits({});
+  };
+
+  const showToast = (msg: string, type: 'success' | 'error') => {
+    setToast({ msg, type });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 3000);
+  };
 
   useEffect(() => {
     if (!modeMenuOpen) return;
@@ -245,29 +240,18 @@ export default function BucketPreviewPage() {
     analyzeGenRef.current++; // 让在途分析的 resolve 作废，旧目录/旧引擎的结果不能回填
     setRecommendation(null);
     setRecommendPage(0);
-    setAnalysis(null);
-    setScanMsg('');
-    setScanProgress(0);
-    setExpandedBuckets(new Set());
-    setBucketPage(0);
-    setBucketImgLimits({});
+    clearAnalysisResult();
   }, [inputPath, recursive, bucketEngine]);
 
   useEffect(() => {
     let active = true;
     const p1 = listen<ScanProgress>('bucket-progress', (e) => {
-      if (!active) return;
+      if (!active || !analyzeActive.current) return;
       setScanMsg(e.payload.message);
       if (e.payload.total > 0) setScanProgress((e.payload.current / e.payload.total) * 100);
     });
-    const p2 = listen<ScanProgress>('bucket-export-progress', (e) => {
-      if (!active) return;
-      setToast({ msg: e.payload.message, type: 'success' });
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      toastTimerRef.current = setTimeout(() => setToast(null), 3000);
-    });
     return () => {
-      active = false; p1.then(fn => fn()); p2.then(fn => fn());
+      active = false; p1.then(fn => fn());
       if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); toastTimerRef.current = null; }
     };
   }, []);
@@ -283,30 +267,25 @@ export default function BucketPreviewPage() {
   };
 
   const handleAnalyze = async () => {
-    if (!inputPath) return;
+    if (!inputPath || analyzing || recommending || exporting) return;
     if (resError || stepsError || dpArError || dpBucketError || batchSizeError) return;
-    // 提交前规范数字参数。
-    const stepsVal = Number.isFinite(steps) && steps >= 32 ? steps : 32;
-    const dpArBucketCountVal = Number.isFinite(dpArBucketCount) && dpArBucketCount >= 1 ? Math.floor(dpArBucketCount) : 7;
-    const batchSizeVal = Number.isFinite(batchSize) && batchSize >= 1 ? Math.floor(batchSize) : 1;
-    if (stepsVal !== steps) setSteps(stepsVal);
+    // 通过上面的校验后各值都已在合法范围内，只剩小数需要取整
+    const dpArBucketCountVal = Math.floor(dpArBucketCount);
+    const batchSizeVal = Math.floor(batchSize);
     if (isDpMode && dpArBucketCountVal !== dpArBucketCount) setDpArBucketCount(dpArBucketCountVal);
     if (batchSizeVal !== batchSize) setBatchSize(batchSizeVal);
     const gen = ++analyzeGenRef.current;
+    analyzeActive.current = true;
     setAnalyzing(true);
-    setAnalysis(null);
-    setScanProgress(0);
+    clearAnalysisResult();
     setScanMsg(t('bucketPreview.scanning'));
-    setExpandedBuckets(new Set());
-    setBucketPage(0);
-    setBucketImgLimits({});
     try {
       const result = await invoke<BucketAnalysis>('analyze_buckets', {
         options: {
           input_path: inputPath,
           res_width: resWidth,
           res_height: resHeight,
-          steps: stepsVal,
+          steps,
           no_upscale: isDpMode ? true : noUpscale,
           min_bucket_reso: noUpscale || isDpMode ? null : minBucketReso,
           max_bucket_reso: noUpscale || isDpMode ? null : maxBucketReso,
@@ -324,15 +303,9 @@ export default function BucketPreviewPage() {
     } catch (e: any) {
       if (gen === analyzeGenRef.current) setScanMsg(`${t('pages.errorPrefix')}: ${String(e)}`);
     } finally {
-      // 过期的 finally 不能把新一轮分析的按钮态复位
-      if (gen === analyzeGenRef.current) setAnalyzing(false);
+      analyzeActive.current = false;
+      setAnalyzing(false);
     }
-  };
-
-  const showToast = (msg: string, type: 'success' | 'error') => {
-    setToast({ msg, type });
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(null), 3000);
   };
 
   const formatRecommendedAr = (value: number) => {
@@ -342,16 +315,7 @@ export default function BucketPreviewPage() {
 
   const formatPercent = (value: number) => `${(value * 100).toFixed(1)}%`;
 
-  const clearAnalysisResult = () => {
-    setAnalysis(null);
-    setScanMsg('');
-    setScanProgress(0);
-    setExpandedBuckets(new Set());
-    setBucketPage(0);
-    setBucketImgLimits({});
-  };
-
-  const applyRecommendation = (candidate: BucketParamCandidate | BucketParamRecommendation) => {
+  const applyRecommendation = (candidate: BucketParamCandidate) => {
     setResolution(`${candidate.res_width},${candidate.res_height}`);
     setSteps(candidate.steps);
     setDpMinArInput(formatRecommendedAr(candidate.dp_min_ar));
@@ -371,7 +335,8 @@ export default function BucketPreviewPage() {
   };
 
   const handleRecommend = async () => {
-    if (!inputPath) return;
+    if (!inputPath || recommending || analyzing || exporting) return;
+    const gen = analyzeGenRef.current;
     setRecommending(true);
     try {
       const recommendation = await invoke<BucketParamRecommendation>('recommend_bucket_params', {
@@ -380,9 +345,11 @@ export default function BucketPreviewPage() {
           recursive,
         },
       });
+      if (gen !== analyzeGenRef.current) return;
+      if (!recommendation.candidates.length) throw new Error(t('bucketPreview.recommendFailed'));
       setRecommendation(recommendation);
       setRecommendPage(0);
-      applyRecommendation(recommendation);
+      applyRecommendation(recommendation.candidates[0]);
       setBucketRange(`${recommendation.min_bucket_reso},${recommendation.max_bucket_reso}`);
       showToast(t('bucketPreview.recommendApplied', {
         n: recommendation.total_images,
@@ -396,7 +363,7 @@ export default function BucketPreviewPage() {
   };
 
   const handleExport = async () => {
-    if (!analysis || !exportPath) return;
+    if (!analysis || !exportPath || exporting || analyzing || recommending) return;
     setExporting(true);
     try {
       const msg = await invoke<string>('export_buckets', { analysis, outputPath: exportPath });
@@ -441,17 +408,11 @@ export default function BucketPreviewPage() {
       )}
       <style>{`@keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(-10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }`}</style>
       {/* Header */}
-      <div className="page-header" style={{ flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <Grid3X3 style={{ width: 28, height: 28, color: '#f59e0b' }} />
-          <h1 className="page-title">{t('bucketPreview.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('bucketPreview.subtitle')}</p>
-      </div>
+      <PageHeader icon={Grid3X3} color="#f59e0b" title={t('bucketPreview.title')} subtitle={t('bucketPreview.subtitle')} style={{ flexShrink: 0 }} />
 
       {/* Params */}
       <div className="tool-panel" style={{ flexShrink: 0 }}>
-        <div className="tool-panel-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div className="tool-panel-header" style={{ gap: 12 }}>
           <span className="tool-panel-title" style={{ minHeight: 30, display: 'flex', alignItems: 'center' }}>{t('bucketPreview.paramSettings')}</span>
           <div ref={modeMenuRef} style={{ position: 'relative', flexShrink: 0 }}>
             <button
@@ -536,32 +497,20 @@ export default function BucketPreviewPage() {
           <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
             {/* 训练分辨率 */}
             <div style={{ position: 'relative', flex: '1 1 120px', minWidth: 100 }}>
-              <label className="form-label" style={{ fontSize: 10, color: resError ? '#ef4444' : undefined }}>{t('bucketPreview.resolution')}</label>
-              <input className="form-input" placeholder={t('bucketPreview.resolutionPlaceholder')} value={resolution} onChange={e => setResolution(e.target.value)} style={{
-                height: 32,
-                borderColor: resError ? '#ef4444' : undefined,
-                boxShadow: resError ? '0 0 0 1px #ef4444' : undefined,
-              }} />
+              <label className="form-label" style={fieldLabelStyle(resError)}>{t('bucketPreview.resolution')}</label>
+              <input className="form-input" placeholder={t('bucketPreview.resolutionPlaceholder')} value={resolution} onChange={e => setResolution(e.target.value)} style={fieldInputStyle(resError)} />
             </div>
 
             {isDpMode && (
               <>
                 <div style={{ position: 'relative', width: 92 }}>
-                  <label className="form-label" style={{ fontSize: 10, color: dpArError ? '#ef4444' : undefined }}>{t('bucketPreview.dpMinAr')}</label>
-                  <input className="form-input" type="number" step="0.01" min="0.01" value={dpMinArInput} onChange={e => setDpMinArInput(e.target.value)} style={{
-                    height: 32,
-                    borderColor: dpArError ? '#ef4444' : undefined,
-                    boxShadow: dpArError ? '0 0 0 1px #ef4444' : undefined,
-                  }} />
+                  <label className="form-label" style={fieldLabelStyle(dpArError)}>{t('bucketPreview.dpMinAr')}</label>
+                  <input className="form-input" type="number" step="0.01" min="0.01" value={dpMinArInput} onChange={e => setDpMinArInput(e.target.value)} style={fieldInputStyle(dpArError)} />
                 </div>
 
                 <div style={{ position: 'relative', width: 92 }}>
-                  <label className="form-label" style={{ fontSize: 10, color: dpArError ? '#ef4444' : undefined }}>{t('bucketPreview.dpMaxAr')}</label>
-                  <input className="form-input" type="number" step="0.01" min="0.01" value={dpMaxArInput} onChange={e => setDpMaxArInput(e.target.value)} style={{
-                    height: 32,
-                    borderColor: dpArError ? '#ef4444' : undefined,
-                    boxShadow: dpArError ? '0 0 0 1px #ef4444' : undefined,
-                  }} />
+                  <label className="form-label" style={fieldLabelStyle(dpArError)}>{t('bucketPreview.dpMaxAr')}</label>
+                  <input className="form-input" type="number" step="0.01" min="0.01" value={dpMaxArInput} onChange={e => setDpMaxArInput(e.target.value)} style={fieldInputStyle(dpArError)} />
                 </div>
               </>
             )}
@@ -574,12 +523,8 @@ export default function BucketPreviewPage() {
 
             {/* 桶分辨率划分单位 */}
             <div style={{ position: 'relative', width: 90 }}>
-              <label className="form-label" style={{ fontSize: 10, color: stepsError ? '#ef4444' : undefined }}>{t('bucketPreview.stepsLabel')}</label>
-              <input className="form-input" type="number" value={steps} onChange={e => setSteps(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setSteps(32); }} min={32} step={32} style={{
-                height: 32,
-                borderColor: stepsError ? '#ef4444' : undefined,
-                boxShadow: stepsError ? '0 0 0 1px #ef4444' : undefined,
-              }} />
+              <label className="form-label" style={fieldLabelStyle(stepsError)}>{t('bucketPreview.stepsLabel')}</label>
+              <NumberInput value={steps} onChange={setSteps} min={32} step={32} integer fallback={32} style={fieldInputStyle(stepsError)} />
               {stepsError && <div style={{
                 position: 'absolute', top: '100%', left: 0, marginTop: 2,
                 fontSize: 9, color: '#ef4444', whiteSpace: 'nowrap',
@@ -587,88 +532,57 @@ export default function BucketPreviewPage() {
             </div>
 
             <div style={{ position: 'relative', width: 82 }}>
-              <label className="form-label" style={{ fontSize: 10, color: batchSizeError ? '#ef4444' : undefined }}>{t('bucketPreview.batchSize')}</label>
-              <input className="form-input" type="number" value={batchSize} onChange={e => setBatchSize(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setBatchSize(1); }} min={1} step={1} style={{
-                height: 32,
-                borderColor: batchSizeError ? '#ef4444' : undefined,
-                boxShadow: batchSizeError ? '0 0 0 1px #ef4444' : undefined,
-              }} />
+              <label className="form-label" style={fieldLabelStyle(batchSizeError)}>{t('bucketPreview.batchSize')}</label>
+              <NumberInput value={batchSize} onChange={setBatchSize} min={1} step={1} integer fallback={1} style={fieldInputStyle(batchSizeError)} />
             </div>
 
             {isDpMode && (
-              <button type="button" onClick={() => { setDropLast(v => !v); clearAnalysisResult(); }} title={dropLast ? t('bucketPreview.dpDropLastTip') : t('bucketPreview.dpKeepShortBatchTip')} style={{
+              <label title={dropLast ? t('bucketPreview.dpDropLastTip') : t('bucketPreview.dpKeepShortBatchTip')} style={{
                 display: 'flex', alignItems: 'center', gap: 8, height: 32,
                 padding: '0 10px', borderRadius: 'var(--radius-md)',
                 border: dropLast ? '1px solid rgba(248,113,113,0.55)' : '1px solid rgba(96,165,250,0.45)',
                 background: dropLast ? 'rgba(248,113,113,0.08)' : 'rgba(96,165,250,0.08)',
-                userSelect: 'none', flexShrink: 0, cursor: 'pointer',
+                flexShrink: 0, cursor: 'pointer',
                 transition: 'all 0.2s',
                 color: 'inherit', font: 'inherit',
               }}>
                 <span style={{ fontSize: 10, color: dropLast ? '#ef4444' : '#60a5fa', whiteSpace: 'nowrap', fontWeight: 700 }}>
                   {dropLast ? t('bucketPreview.dropLast') : t('bucketPreview.keepShortBatch')}
                 </span>
-                <div style={{
-                  width: 30, height: 16, borderRadius: 8, transition: 'all 0.2s',
-                  background: dropLast ? '#ef4444' : 'rgba(96,165,250,0.65)',
-                  position: 'relative', flexShrink: 0,
-                }}>
-                  <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: dropLast ? 16 : 2, transition: 'left 0.2s' }} />
-                </div>
-              </button>
+                <Switch checked={dropLast} onChange={value => { setDropLast(value); clearAnalysisResult(); }} size="sm"
+                  color="#ef4444" offColor="rgba(96,165,250,0.65)" aria-label={t('bucketPreview.dropLast')} />
+              </label>
             )}
 
             {!isDpMode && (
               <div>
                 <label className="form-label" style={{ fontSize: 10 }}>{t('bucketPreview.sdBucketMode')}</label>
-                <div style={{ display: 'flex', gap: 2, height: 32, alignItems: 'center' }}>
-                  {([['legacy', t('bucketPreview.modeLegacy')], ['nearest_only', t('bucketPreview.modeNearest')]] as const).map(([val, label]) => (
-                    <button key={val} onClick={() => setBucketMode(val)} style={{
-                      padding: '4px 10px',
-                      borderRadius: 'var(--radius-sm)',
-                      border: `1px solid ${bucketMode === val ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                      background: bucketMode === val ? 'rgba(124,92,252,0.08)' : 'transparent',
-                      color: bucketMode === val ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
-                      fontSize: 11,
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      whiteSpace: 'nowrap',
-                      transition: 'all 0.15s',
-                    }}>{label}</button>
-                  ))}
-                </div>
+                <SegmentedTabs className="ui-seg-compact" value={bucketMode} onChange={setBucketMode} tabs={[
+                  { id: 'legacy', label: t('bucketPreview.modeLegacy') },
+                  { id: 'nearest_only', label: t('bucketPreview.modeNearest') },
+                ]} />
               </div>
             )}
 
             {isDpMode && (
               <div style={{ position: 'relative', width: 84 }}>
-                <label className="form-label" style={{ fontSize: 10, color: dpBucketError ? '#ef4444' : undefined }}>{t('bucketPreview.dpArBuckets')}</label>
-                <input className="form-input" type="number" value={dpArBucketCount} min={1} step={1} onChange={e => setDpArBucketCount(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setDpArBucketCount(7); }} style={{
-                  height: 32,
-                  borderColor: dpBucketError ? '#ef4444' : undefined,
-                  boxShadow: dpBucketError ? '0 0 0 1px #ef4444' : undefined,
-                }} />
+                <label className="form-label" style={fieldLabelStyle(dpBucketError)}>{t('bucketPreview.dpArBuckets')}</label>
+                <NumberInput value={dpArBucketCount} onChange={setDpArBucketCount} min={1} step={1} integer fallback={7} style={fieldInputStyle(dpBucketError)} />
               </div>
             )}
 
             {/* 桶不放大图片 */}
-            {!isDpMode && <div onClick={() => setNoUpscale(!noUpscale)} style={{
+            {!isDpMode && <label style={{
               display: 'flex', alignItems: 'center', gap: 8, height: 32,
               padding: '0 10px', borderRadius: 'var(--radius-md)',
               border: `1px solid ${noUpscale ? 'var(--color-accent-primary)' : 'var(--color-border)'}`,
               background: noUpscale ? 'rgba(124,58,237,0.06)' : 'var(--color-bg-secondary)',
-              cursor: 'pointer', userSelect: 'none', flexShrink: 0,
+              cursor: 'pointer', flexShrink: 0,
               transition: 'all 0.2s',
             }}>
               <span style={{ fontSize: 10, color: 'var(--color-text-secondary)', whiteSpace: 'nowrap' }}>{t('bucketPreview.noUpscale')}</span>
-              <div style={{
-                width: 30, height: 16, borderRadius: 8, transition: 'all 0.2s',
-                background: noUpscale ? 'var(--color-accent-primary)' : 'var(--color-border)',
-                position: 'relative', flexShrink: 0,
-              }}>
-                <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: noUpscale ? 16 : 2, transition: 'left 0.2s' }} />
-              </div>
-            </div>}
+              <Switch checked={noUpscale} onChange={setNoUpscale} size="sm" aria-label={t('bucketPreview.noUpscale')} />
+            </label>}
           </div>
 
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -706,28 +620,13 @@ export default function BucketPreviewPage() {
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 12, fontWeight: 800, color: 'var(--color-text-primary)' }}>{t('bucketPreview.recommendCandidates')}</span>
-                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.recommendBatch', { n: recommendation.batch_size })}</span>
-                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.activeBuckets', { n: recommendation.active_bucket_count })}</span>
-                    <span style={{ fontSize: 11, color: recommendation.usable_rate >= 0.97 ? '#22c55e' : '#f59e0b', fontWeight: 700 }}>{t('bucketPreview.usableRate', { rate: formatPercent(recommendation.usable_rate) })}</span>
-                    {totalRecommendPages > 1 && (
-                      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <button className="btn btn-ghost" style={{ width: 26, height: 24, padding: 0 }}
-                          disabled={currentRecommendPage === 0}
-                          onClick={() => setRecommendPage(page => Math.max(0, page - 1))}
-                          title={t('bucketPreview.previousRecommendPage')}>
-                          <ChevronLeft style={{ width: 13, height: 13 }} />
-                        </button>
-                        <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', minWidth: 42, textAlign: 'center' }}>
-                          {t('bucketPreview.recommendPage', { current: currentRecommendPage + 1, total: totalRecommendPages })}
-                        </span>
-                        <button className="btn btn-ghost" style={{ width: 26, height: 24, padding: 0 }}
-                          disabled={currentRecommendPage >= totalRecommendPages - 1}
-                          onClick={() => setRecommendPage(page => Math.min(totalRecommendPages - 1, page + 1))}
-                          title={t('bucketPreview.nextRecommendPage')}>
-                          <ChevronRight style={{ width: 13, height: 13 }} />
-                        </button>
-                      </div>
-                    )}
+                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.recommendBatch', { n: recommendation.candidates[0].batch_size })}</span>
+                    <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.activeBuckets', { n: recommendation.candidates[0].active_bucket_count })}</span>
+                    <span style={{ fontSize: 11, color: recommendation.candidates[0].usable_rate >= 0.97 ? '#22c55e' : '#f59e0b', fontWeight: 700 }}>{t('bucketPreview.usableRate', { rate: formatPercent(recommendation.candidates[0].usable_rate) })}</span>
+                    {totalRecommendPages > 1 && <Pager page={currentRecommendPage} pages={totalRecommendPages} onChange={setRecommendPage}
+                      size="sm" style={{ marginLeft: 'auto' }}
+                      prevTitle={t('bucketPreview.previousRecommendPage')} nextTitle={t('bucketPreview.nextRecommendPage')}
+                      formatLabel={(current, total) => t('bucketPreview.recommendPage', { current, total })} />}
                   </div>
                   <div style={{
                     display: 'flex',
@@ -801,8 +700,8 @@ export default function BucketPreviewPage() {
             {analysis.short_batch_count > 0 && <span style={{ fontSize: 11, color: '#60a5fa' }}>{t('bucketPreview.shortBatchCount', { n: analysis.short_batch_count })}</span>}
             {analysisIsDpMode && analysis.dropped_count > 0 && <span style={{ fontSize: 11, color: '#ef4444', fontWeight: 700 }}>{t('bucketPreview.droppedCount', { n: analysis.dropped_count })}</span>}
             {analysis.skipped.length > 0 && <span style={{ fontSize: 11, color: '#f87171' }}>{t('bucketPreview.readFail', { n: analysis.skipped.length })}</span>}
-            <span style={{ fontSize: 11, fontWeight: 600, fontFamily: '"SF Mono","Fira Code",Menlo,monospace', color: analysis.mean_ar_error < 0.01 ? '#4ade80' : analysis.mean_ar_error < 0.05 ? '#fbbf24' : '#f87171' }} title={`Mean ${analysis.ar_error_metric === 'log' ? 'log ' : ''}AR Error (without repeats): ${analysis.mean_ar_error}`}>
-              {analysis.ar_error_metric === 'log' ? 'Log AR Error' : 'AR Error'}: {analysis.mean_ar_error.toFixed(16)}
+            <span style={{ fontSize: 11, fontWeight: 600, fontFamily: '"SF Mono","Fira Code",Menlo,monospace', color: analysis.mean_ar_error < 0.01 ? '#4ade80' : analysis.mean_ar_error < 0.05 ? '#fbbf24' : '#f87171' }} title={`Mean ${analysisIsDpMode ? 'log ' : ''}AR Error (without repeats): ${analysis.mean_ar_error}`}>
+              {analysisIsDpMode ? 'Log AR Error' : 'AR Error'}: {analysis.mean_ar_error.toFixed(16)}
             </span>
 
           </div>
@@ -833,13 +732,12 @@ export default function BucketPreviewPage() {
                   {t('bucketPreview.droppedMaterialsHint')}
                 </span>
               </div>
-              <div onWheel={containWheelScroll} style={{
+              <div style={{
                 display: 'grid',
                 gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
                 gap: 8,
                 maxHeight: 142,
                 overflowY: 'auto',
-                overscrollBehavior: 'contain',
                 paddingRight: 2,
               }}>
                 {droppedMaterialPreview.map(({ bucket, items }) => (
@@ -973,7 +871,7 @@ export default function BucketPreviewPage() {
                         color: 'var(--color-text-tertiary)', textAlign: 'center', lineHeight: 1.3,
                         transition: 'font-size 0.3s ease',
                       }}>
-                        {bucket.image_count} {t('bucketPreview.nImagesShort', { n: '' }).trim()} · count {bucket.total_count}
+                        {t('bucketPreview.nImagesShort', { n: bucket.image_count })} · count {bucket.total_count}
                       </div>
                       <div style={{
                         fontSize: isExpanded ? 8 : 9,
@@ -1005,7 +903,7 @@ export default function BucketPreviewPage() {
                         lineHeight: 1.25,
                         transition: 'font-size 0.3s ease',
                       }}>
-                        {analysis.ar_error_metric === 'log' ? 'LogErr' : 'Err'} {bucket.mean_ar_error.toFixed(6)}
+                        {analysisIsDpMode ? 'LogErr' : 'Err'} {bucket.mean_ar_error.toFixed(6)}
                       </div>
                       {/* Mini bar — hides when expanded */}
                       <div style={{
@@ -1031,7 +929,7 @@ export default function BucketPreviewPage() {
                       padding: isExpanded ? '4px 6px 6px' : '0 6px',
                       minHeight: 0,
                     }}>
-                      <div onWheel={containWheelScroll} style={{
+                      <div style={{
                         display: 'grid',
                         gridTemplateColumns: 'repeat(3, 1fr)',
                         gridAutoRows: 'calc((100% - 8px) / 3)',
@@ -1039,7 +937,7 @@ export default function BucketPreviewPage() {
                         height: '100%',
                         overflowY: 'auto',
                         overflowX: 'hidden',
-                        overscrollBehavior: 'contain',
+                        // 同时写了 overflowX/Y 会被序列化成 overflow 简写，global.css 的属性选择器匹配不到，这里要自己声明
                         alignContent: 'start',
                       }}>
                         {(() => {
@@ -1061,10 +959,9 @@ export default function BucketPreviewPage() {
                             }}>
                               <ThumbImage path={img.path} alt={img.name}
                                 draggable={false}
-                                onDragStart={e => e.preventDefault()}
                                 style={{
                                   maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
-                                  userSelect: 'none', pointerEvents: 'none',
+                                  pointerEvents: 'none',
                                 }} />
                             </div>
                             <div style={{
@@ -1093,58 +990,28 @@ export default function BucketPreviewPage() {
           </div>
 
           {/* Pagination */}
-          {totalBucketPages > 1 && (
-            <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '6px 0' }}>
-              <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 30 }}
-                disabled={bucketPage === 0} onClick={() => setBucketPage(p => p - 1)}>
-                <ChevronLeft style={{ width: 14, height: 14 }} />
-              </button>
-              <span style={{ fontSize: 12, color: 'var(--color-text-secondary)', fontWeight: 600, minWidth: 80, textAlign: 'center' }}>
-                {bucketPage + 1} / {totalBucketPages}
-              </span>
-              <button className="btn btn-ghost" style={{ padding: '4px 8px', height: 30 }}
-                disabled={bucketPage >= totalBucketPages - 1} onClick={() => setBucketPage(p => p + 1)}>
-                <ChevronRight style={{ width: 14, height: 14 }} />
-              </button>
-              <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-                {t('bucketPreview.allBuckets', { n: analysis.buckets.length })}
-              </span>
-            </div>
-          )}
+          {totalBucketPages > 1 && <Pager page={bucketPage} pages={totalBucketPages} onChange={setBucketPage} footer>
+            <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.allBuckets', { n: analysis.buckets.length })}</span>
+          </Pager>}
               </>
             );
           })()}
 
-          {/* Export */}
-          <div style={{
-            flexShrink: 0, marginTop: 'var(--space-3)', padding: '10px 16px',
-            borderRadius: 'var(--radius-md)', border: '1px solid var(--color-border)',
-            background: 'var(--color-bg-secondary)',
-            display: 'flex', alignItems: 'center', gap: 12,
-          }}>
-            <div onClick={() => setEnableExport(!enableExport)} style={{
-              width: 18, height: 18, borderRadius: 4, cursor: 'pointer',
-              border: `2px solid ${enableExport ? 'var(--color-accent-primary)' : 'var(--color-border)'}`,
-              background: enableExport ? 'var(--color-accent-primary)' : 'transparent',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'all 0.2s', flexShrink: 0,
-            }}>
-              {enableExport && <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 5L4 7L8 3" stroke="#fff" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-            </div>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)', whiteSpace: 'nowrap' }}>{t('bucketPreview.exportResult')}</span>
+          <ExportBar enabled={enableExport} onChange={setEnableExport} label={t('bucketPreview.exportResult')}
+            disabled={exporting} style={{ marginTop: 'var(--space-3)' }}>
             {enableExport && (
               <>
                 <div style={{ flex: 1, display: 'flex', gap: 'var(--space-2)' }}>
                   <input className="form-input" placeholder={t('bucketPreview.exportPlaceholder')} value={exportPath} onChange={e => setExportPath(e.target.value)} style={{ flex: 1, height: 32, fontSize: 12 }} />
                   <button className="btn btn-secondary" onClick={selectExportFolder} style={{ height: 32 }}><FolderOpen style={{ width: 14, height: 14 }} /></button>
                 </div>
-                <button className="btn btn-primary" style={{ height: 32, padding: '0 16px', fontSize: 12, whiteSpace: 'nowrap' }} onClick={handleExport} disabled={exporting || !exportPath}>
+                <button className="btn btn-primary" style={{ height: 32, padding: '0 16px', fontSize: 12, whiteSpace: 'nowrap' }} onClick={handleExport} disabled={exporting || analyzing || recommending || !exportPath}>
                   {exporting ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('bucketPreview.exporting')}</> : <><Download style={{ width: 14, height: 14 }} /> {t('bucketPreview.export')}</>}
                 </button>
               </>
             )}
 
-          </div>
+          </ExportBar>
         </div>
       )}
 

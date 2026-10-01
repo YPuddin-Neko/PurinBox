@@ -2,7 +2,6 @@
 name = "purinbox"
 version = "0.4.1"
 description = "PurinBox - AI训练数据处理工具箱"
-authors = ["you"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -12,13 +11,10 @@ edition = "2021"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "purinbox_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
-
-[features]
-default = []
+tauri-build = "2"
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
@@ -65,4 +61,4 @@ windows = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32
 
 [dev-dependencies]
 # 单元测试用 MockRuntime 构造 AppHandle（工作流节点命令测试）
-tauri = { version = "2", features = ["protocol-asset", "test"] }
+tauri = { version = "2", features = ["test"] }

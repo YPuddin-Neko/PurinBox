@@ -1,41 +1,27 @@
-import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
-import { open } from '@tauri-apps/plugin-dialog';
-import { useTaskQueue } from '../components/TaskContext';
-import { useTranslation } from 'react-i18next';
 import {
-  ScanSearch,
-  FolderOpen,
-  Info,
-  Trash2,
   Copy,
+  Info,
+  ScanSearch,
+  Trash2
 } from 'lucide-react';
-import ProgressLog, { LogEntry, getTimeStr, useLogState } from '../components/ProgressLog';
+import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { FilterOptions } from '../api/commandOptions';
 import ProcessButton from '../components/ProcessButton';
-import RecursiveScanToggle from '../components/RecursiveScanToggle';
-
-interface ProcessResult {
-  success_count: number;
-  fail_count: number;
-  total: number;
-  errors: string[];
-}
-
-interface ProgressPayload {
-  current: number;
-  total: number;
-  filename: string;
-  status: string;
-  message: string;
-}
+import ProgressLog from '../components/ProgressLog';
+import ChoiceCard from '../components/ui/ChoiceCard';
+import NumberInput from '../components/ui/NumberInput';
+import PageHeader from '../components/ui/PageHeader';
+import PathFields from '../components/ui/PathFields';
+import { useBatchTask, type ProcessResult } from '../hooks/useBatchTask';
 
 type ConditionType = 'min_width' | 'min_height' | 'below_resolution' | 'above_resolution';
 type ActionType = 'copy' | 'delete';
 
-
 export default function FilterPage() {
   const { t } = useTranslation();
+  const task = useBatchTask({ event: 'filter-progress', taskId: 'filter' });
 
   const conditionOptions: { value: ConditionType; label: string; desc: string }[] = [
     { value: 'min_width', label: t('filter.condMinWidth'), desc: t('filter.condMinWidthDesc') },
@@ -50,150 +36,44 @@ export default function FilterPage() {
   const [condition, setCondition] = useState<ConditionType>('below_resolution');
   const [width, setWidth] = useState(512);
   const [height, setHeight] = useState(512);
-  const [processing, setProcessing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [progressCurrent, setProgressCurrent] = useState(0);
-  const [progressTotal, setProgressTotal] = useState(0);
-  const [logs, setLogs] = useLogState();
-  const [isDone, setIsDone] = useState(false);
-  const [hasError, setHasError] = useState(false);
 
   const needsOutput = action === 'copy';
   const needsWidth = condition !== 'min_height';
   const needsHeight = condition !== 'min_width';
 
-  useEffect(() => {
-    let active = true;
-    const p = listen<ProgressPayload>('filter-progress', (event) => {
-      if (!active) return;
-      const d = event.payload;
-      setProgressCurrent(d.current);
-      setProgressTotal(d.total);
-      if (d.total > 0) setProgress((d.current / d.total) * 100);
-      if (d.status === 'done') setIsDone(true);
-      if (d.status === 'error') setHasError(true);
-      if (d.status !== 'processing') {
-        setLogs((prev) => [...prev, {
-          time: getTimeStr(),
-          message: d.message,
-          status: d.status === 'done' ? 'info' : d.status as LogEntry['status'],
-        }]);
-      }
+  const handleProcess = () => {
+
+    return task.run({
+      taskName: t('filter.taskName'), startLog: t('filter.startMsg', { condition: conditionOptions.find(c => c.value === condition)!.label, action: action === 'copy' ? t('filter.actionCopy') : t('filter.actionDelete') }), exec: () => invoke<ProcessResult>('filter_by_resolution', {
+        options: { input_path: inputPath, output_path: outputPath || inputPath, action, condition, width: width, height: height, recursive } satisfies FilterOptions,
+      })
     });
-    return () => { active = false; p.then(fn => fn()); };
-  }, []);
-
-  const selectInputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: t('pages.selectInputTitle') });
-    if (selected) setInputPath(selected as string);
   };
-
-  const selectOutputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: t('filter.selectSaveFolder') });
-    if (selected) setOutputPath(selected as string);
-  };
-
-  const { addTask, updateTask } = useTaskQueue();
-
-  const handleProcess = async () => {
-    if (!inputPath) return;
-    if (action === 'copy' && !outputPath) return;
-    // 提交前规范数字参数。
-    const num = (v: number, fallback: number) => (Number.isFinite(v) && v >= 1 ? v : fallback);
-    const w = num(width, 512), h = num(height, 512);
-    if (w !== width) setWidth(w);
-    if (h !== height) setHeight(h);
-    setProcessing(true);
-    addTask('filter', t('filter.taskName'));
-    setProgress(0);
-    setProgressCurrent(0);
-    setProgressTotal(0);
-    setIsDone(false);
-    setHasError(false);
-    const condLabel = conditionOptions.find((c) => c.value === condition)!.label;
-    setLogs([{ time: getTimeStr(), message: `${t('pages.startPrefix')}${t('filter.startFilter')}: ${condLabel}, ${action === 'copy' ? t('filter.actionCopy') : t('filter.actionDelete')}`, status: 'info' }]);
-    try {
-      await invoke<ProcessResult>('filter_by_resolution', {
-        options: { input_path: inputPath, output_path: outputPath || inputPath, action, condition, width: w, height: h, recursive },
-      });
-    } catch (e: any) {
-      setLogs((prev) => [...prev, { time: getTimeStr(), message: `${t('pages.errorPrefix')}: ${String(e)}`, status: 'error' }]);
-      updateTask('filter', { status: /已取消|cancel/i.test(String(e)) ? 'cancelled' : 'error', message: String(e) });
-      setHasError(true);
-      setIsDone(true);
-    } finally {
-      setProcessing(false);
-    }
-  };
-
-  const clearLogs = useCallback(() => { setLogs([]); setProgress(0); setIsDone(false); setHasError(false); }, []);
-  const addCancelLog = useCallback((msg: string) => setLogs(p => [...p, { time: getTimeStr(), message: msg, status: 'warning' as const }]), []);
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <ScanSearch style={{ width: 28, height: 28, color: '#ff6b9d' }} />
-          <h1 className="page-title">{t('filter.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('filter.subtitle')}</p>
-      </div>
+      <PageHeader icon={ScanSearch} color={'#ff6b9d'} title={t('filter.title')} subtitle={t('filter.subtitle')} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
         {/* 左侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {/* 路径设置 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">{t('pages.pathSettings')}</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-              <div className="form-group">
-                <div className="form-label-row">
-                  <label className="form-label">{t('filter.inputFolder')}</label>
-                  <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
-                </div>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('pages.selectInputFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
-                </div>
-              </div>
-              {needsOutput && (
-                <div className="form-group">
-                  <label className="form-label">{t('filter.savePath')}</label>
-                  <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                    <input className="form-input" placeholder={t('filter.selectSaveFolder')} value={outputPath} onChange={(e) => setOutputPath(e.target.value)} style={{ flex: 1 }} />
-                    <button className="btn btn-secondary" onClick={selectOutputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          <PathFields input={inputPath} onInput={setInputPath} output={needsOutput ? outputPath : undefined} onOutput={setOutputPath} recursive={recursive} onRecursive={setRecursive} />
 
           {/* 操作方式 */}
           <div className="tool-panel">
             <div className="tool-panel-header"><span className="tool-panel-title">{t('filter.actionMode')}</span></div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
-              <div onClick={() => setAction('copy')} style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)',
-                padding: 'var(--space-4)', borderRadius: 'var(--radius-md)',
-                border: `1px solid ${action === 'copy' ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                background: action === 'copy' ? 'rgba(124, 92, 252, 0.06)' : 'var(--color-bg-input)',
-                cursor: 'pointer', transition: 'all 0.2s',
-              }}>
+              <ChoiceCard selected={action === 'copy'} onSelect={() => setAction('copy')}>
                 <Copy style={{ width: 24, height: 24, color: action === 'copy' ? '#4ade80' : 'var(--color-text-tertiary)' }} />
                 <span style={{ fontWeight: 700, fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}>{t('filter.actionCopy')}</span>
                 <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', textAlign: 'center' }}>{t('filter.actionCopyDesc')}</span>
-              </div>
-              <div onClick={() => setAction('delete')} style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-2)',
-                padding: 'var(--space-4)', borderRadius: 'var(--radius-md)',
-                border: `1px solid ${action === 'delete' ? 'rgba(248, 113, 113, 0.5)' : 'var(--color-border)'}`,
-                background: action === 'delete' ? 'rgba(248, 113, 113, 0.06)' : 'var(--color-bg-input)',
-                cursor: 'pointer', transition: 'all 0.2s',
-              }}>
+              </ChoiceCard>
+              <ChoiceCard selected={action === 'delete'} onSelect={() => setAction('delete')} tone="danger">
                 <Trash2 style={{ width: 24, height: 24, color: action === 'delete' ? '#f87171' : 'var(--color-text-tertiary)' }} />
                 <span style={{ fontWeight: 700, fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}>{t('filter.actionDelete')}</span>
                 <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', textAlign: 'center' }}>{t('filter.actionDeleteDesc')}</span>
-              </div>
+              </ChoiceCard>
             </div>
             {action === 'delete' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(248, 113, 113, 0.06)', border: '1px solid rgba(248, 113, 113, 0.15)', marginTop: 'var(--space-3)' }}>
@@ -208,21 +88,13 @@ export default function FilterPage() {
             <div className="tool-panel-header"><span className="tool-panel-title">{t('filter.filterCondition')}</span></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               {conditionOptions.map((opt) => (
-                <div key={opt.value} onClick={() => setCondition(opt.value)} style={{
-                  display: 'flex', alignItems: 'center', gap: 'var(--space-3)',
-                  padding: 'var(--space-3) var(--space-4)', borderRadius: 'var(--radius-md)',
-                  border: `1px solid ${condition === opt.value ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                  background: condition === opt.value ? 'rgba(124, 92, 252, 0.06)' : 'var(--color-bg-input)',
-                  cursor: 'pointer', transition: 'all 0.2s',
-                }}>
-                  <div style={{ width: 18, height: 18, borderRadius: '50%', minWidth: 18, border: `2px solid ${condition === opt.value ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {condition === opt.value && <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--color-accent-primary)' }} />}
-                  </div>
+                <ChoiceCard key={opt.value} selected={condition === opt.value} onSelect={() => setCondition(opt.value)} indicator="radio">
+
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 'var(--font-size-base)', color: 'var(--color-text-primary)' }}>{opt.label}</div>
                     <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>{opt.desc}</div>
                   </div>
-                </div>
+                </ChoiceCard>
               ))}
             </div>
 
@@ -230,13 +102,13 @@ export default function FilterPage() {
               {needsWidth && (
                 <div className="form-group" style={{ flex: 1 }}>
                   <label className="form-label">{condition === 'min_width' ? t('filter.minWidthPx') : t('filter.widthPx')}</label>
-                  <input className="form-input" type="number" value={width} onChange={e => setWidth(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setWidth(1); }} min={1} />
+                  <NumberInput className="form-input" value={width} min={1} onChange={setWidth} fallback={512} integer />
                 </div>
               )}
               {needsHeight && (
                 <div className="form-group" style={{ flex: 1 }}>
                   <label className="form-label">{condition === 'min_height' ? t('filter.minHeightPx') : t('filter.heightPx')}</label>
-                  <input className="form-input" type="number" value={height} onChange={e => setHeight(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setHeight(1); }} min={1} />
+                  <NumberInput className="form-input" value={height} min={1} onChange={setHeight} fallback={512} integer />
                 </div>
               )}
             </div>
@@ -245,17 +117,12 @@ export default function FilterPage() {
 
         {/* 右侧 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-
-
-          <ProcessButton processing={processing} onStart={handleProcess}
+          <ProcessButton {...task.buttonProps} onStart={handleProcess}
             disabled={!inputPath || (action === 'copy' && !outputPath)}
             cancelCommand="cancel_filter"
-            startText={action === 'delete' ? t('filter.startFilterDelete') : t('filter.startFilterOutput')}
-            processingText={t('pages.processing')}
-            onCancelLog={addCancelLog} />
+            startText={action === 'delete' ? t('filter.startFilterDelete') : t('filter.startFilterOutput')} />
 
-          
-            <ProgressLog progress={progress} current={progressCurrent} total={progressTotal} logs={logs} isDone={isDone} hasError={hasError} onClearLogs={clearLogs} />
+          <ProgressLog {...task.progressLogProps} />
         </div>
       </div>
     </div>

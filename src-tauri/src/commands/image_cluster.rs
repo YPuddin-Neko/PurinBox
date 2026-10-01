@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::Emitter;
 
+use super::python_proc::{self, hidden_command};
 use super::{ProcessResult, ProgressEvent};
 
 /// 子进程 PID
@@ -27,171 +26,53 @@ pub struct ClusterOptions {
     pub recursive: bool,
 }
 
-/// 获取聚类脚本路径
-fn get_cluster_script() -> Result<PathBuf, String> {
-    super::python_proc::find_script("image_cluster.py")
-}
-
-/// 获取聚类模型缓存目录 (models/cluster_models/)
-fn get_cluster_model_dir() -> PathBuf {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let base = if cfg!(debug_assertions) {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or(exe_dir)
-    } else {
-        exe_dir
+async fn ensure_cluster_deps(app: &tauri::AppHandle, algorithm: &str) -> Result<String, String> {
+    let emit_log = |msg: String| {
+        ProgressEvent::new("info", msg).emit(app, "cluster-progress");
     };
-    base.join("models").join("cluster_models")
-}
-
-/// 确保聚类所需 Python 依赖
-async fn ensure_cluster_deps(app: &tauri::AppHandle) -> Result<(), String> {
-    let emit_log = |msg: &str| {
-        let _ = app.emit(
-            "cluster-progress",
-            ProgressEvent {
-                current: 0,
-                total: 0,
-                filename: String::new(),
-                status: "info".to_string(),
-                message: msg.to_string(),
-                ..Default::default()
-            },
-        );
-    };
-
-    emit_log("正在检查 Python 环境...");
+    emit_log("正在检查 Python 环境...".into());
     let python = super::python_env::setup_python_env(app, "cluster").await?;
+    check_cancelled()?;
+    super::python_env::ensure_torch_gpu_runtime(app, &python, "cluster").await?;
+    check_cancelled()?;
 
-    // 检查 torch（聚类的 ResNet50 特征提取依赖它）
-    let has_torch = {
-        let p = python.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new(&p);
-            cmd.args(["-c", "import torch, torchvision"]);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output().map(|o| o.status.success()).unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false)
-    };
-
-    if !has_torch {
-        emit_log("正在安装 PyTorch（首次安装体积较大，请耐心等待）...");
-        let p = python.clone();
-        let app2 = app.clone();
-        // 只装 PyPI 默认发行版，不指定 CUDA wheel index：
-        // 使用本机既有的 CUDA 环境，不额外下载 CUDA 运行时
-        tokio::task::spawn_blocking(move || {
-            super::python_env::pip_install_with_python(&app2, &p, &["torch", "torchvision"])
-        })
-        .await
-        .map_err(|e| format!("安装线程异常: {}", e))??;
-        emit_log("PyTorch 安装完成");
+    let dependencies = [
+        (
+            "import sklearn",
+            "scikit-learn",
+            &["scikit-learn"][..],
+            false,
+        ),
+        ("import umap", "umap-learn", &["umap-learn"][..], true),
+        ("from PIL import Image", "Pillow", &["pillow"][..], false),
+    ];
+    for (probe, label, packages, hdbscan_only) in dependencies {
+        if hdbscan_only && algorithm != "hdbscan" {
+            continue;
+        }
+        check_cancelled()?;
+        if super::python_env::probe_python(&python, probe)
+            .await
+            .is_some()
+        {
+            continue;
+        }
+        check_cancelled()?;
+        emit_log(format!("正在安装 {}...", label));
+        super::python_env::pip_install_for(app, &python, packages, "cluster").await?;
+        check_cancelled()?;
+        emit_log(format!("{} 安装完成", label));
     }
+    emit_log("环境检查完成".into());
+    Ok(python)
+}
 
-    // 探测 torch 能用的加速后端（只读，不安装）
-    let _has_gpu = super::python_env::ensure_torch_gpu_runtime(app, &python, "cluster").await?;
-
-    // 检查 sklearn
-    let has_sklearn = {
-        let p = python.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new(&p);
-            cmd.args(["-c", "import sklearn; print(sklearn.__version__)"]);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output().map(|o| o.status.success()).unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false)
-    };
-
-    if !has_sklearn {
-        emit_log("正在安装 scikit-learn...");
-        let p = python.clone();
-        let app2 = app.clone();
-        tokio::task::spawn_blocking(move || {
-            super::python_env::pip_install_with_python(&app2, &p, &["scikit-learn"])
-        })
-        .await
-        .map_err(|e| format!("安装线程异常: {}", e))??;
-        emit_log("scikit-learn 安装完成");
+fn check_cancelled() -> Result<(), String> {
+    if CANCEL_FLAG.load(Ordering::SeqCst) {
+        Err("已取消".into())
+    } else {
+        Ok(())
     }
-
-    // 检查 umap-learn（HDBSCAN 降维需要）
-    let has_umap = {
-        let p = python.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new(&p);
-            cmd.args(["-c", "import umap; print(umap.__version__)"]);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output().map(|o| o.status.success()).unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false)
-    };
-
-    if !has_umap {
-        emit_log("正在安装 umap-learn（HDBSCAN 降维依赖）...");
-        let p = python.clone();
-        let app2 = app.clone();
-        tokio::task::spawn_blocking(move || {
-            super::python_env::pip_install_with_python(&app2, &p, &["umap-learn"])
-        })
-        .await
-        .map_err(|e| format!("安装线程异常: {}", e))??;
-        emit_log("umap-learn 安装完成");
-    }
-
-    // 检查 pillow (PIL)
-    let has_pillow = {
-        let p = python.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut cmd = std::process::Command::new(&p);
-            cmd.args(["-c", "from PIL import Image"]);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000);
-            }
-            cmd.output().map(|o| o.status.success()).unwrap_or(false)
-        })
-        .await
-        .unwrap_or(false)
-    };
-
-    if !has_pillow {
-        emit_log("正在安装 Pillow...");
-        let p = python.clone();
-        let app2 = app.clone();
-        tokio::task::spawn_blocking(move || {
-            super::python_env::pip_install_with_python(&app2, &p, &["pillow"])
-        })
-        .await
-        .map_err(|e| format!("安装线程异常: {}", e))??;
-        emit_log("Pillow 安装完成");
-    }
-
-    emit_log("环境检查完成");
-    Ok(())
 }
 
 #[tauri::command]
@@ -199,22 +80,21 @@ pub async fn start_image_cluster(
     app: tauri::AppHandle,
     options: ClusterOptions,
 ) -> Result<ProcessResult, String> {
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    let _busy = super::BusyGuard::acquire(&RUNNING, "聚类")?;
     CANCEL_FLAG.store(false, Ordering::SeqCst);
-
-    // 确保依赖
-    ensure_cluster_deps(&app).await?;
-
-    let python = super::python_env::get_python_exe().ok_or("Python 环境未就绪")?;
-    let script = get_cluster_script()?;
-    let model_dir = get_cluster_model_dir();
-
-    let app_clone = app.clone();
+    let prepared = ensure_cluster_deps(&app, &options.algorithm).await;
+    if CANCEL_FLAG.load(Ordering::SeqCst) {
+        ProgressEvent::new("done", "已取消").emit(&app, "cluster-progress");
+        return Ok(ProcessResult::default());
+    }
+    let python = prepared?;
+    let script = python_proc::find_script("image_cluster.py")?;
+    let model_dir = super::config_paths::models_dir("cluster_models");
 
     tokio::task::spawn_blocking(move || {
-        use std::io::BufRead;
-
-        let mut cmd = std::process::Command::new(&python);
-        cmd.arg(script.to_string_lossy().as_ref())
+        let mut cmd = hidden_command(&python);
+        cmd.arg(&script)
             .arg("--input")
             .arg(&options.input_path)
             .arg("--output")
@@ -236,233 +116,100 @@ pub async fn start_image_cluster(
             .arg("--weight-color")
             .arg(format!("{:.2}", options.weight_color))
             .arg("--model-dir")
-            .arg(model_dir.to_string_lossy().as_ref())
+            .arg(&model_dir)
             .arg("--map-theme")
-            .arg(&options.map_theme)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .env("PYTHONUNBUFFERED", "1")
-            .env("PYTHONIOENCODING", "utf-8");
-
+            .arg(&options.map_theme);
         if options.recursive {
             cmd.arg("--recursive");
         }
-
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000);
-        }
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("启动 Python 失败: {}", e))?;
-
-        if let Ok(mut guard) = CHILD_PID.lock() {
-            *guard = Some(child.id());
-        }
-
-        let (stdout, stderr) = match (child.stdout.take(), child.stderr.take()) {
-            (Some(o), Some(e)) => (o, e),
-            _ => {
-                // 取管道失败：杀掉并回收子进程，清空 PID 记录
-                let _ = child.kill();
-                let _ = child.wait();
-                if let Ok(mut guard) = CHILD_PID.lock() {
-                    *guard = None;
-                }
-                return Err("无法获取 Python 进程管道".into());
-            }
-        };
-
-        // stderr 线程
-        let app_err = app_clone.clone();
-        std::thread::spawn(move || {
-            super::python_proc::for_each_stderr_line(stderr, |clean| {
-                if clean.matches('%').count() > 3 {
-                    return;
-                }
-                if clean.contains("UserWarning")
-                    || clean.contains("FutureWarning")
-                    || clean.contains("RuntimeWarning")
+        let app_err = app.clone();
+        let mut result = ProcessResult::default();
+        let mut summary = None;
+        let mut progress_total = 0;
+        let mut progress_current = 0;
+        let exit = python_proc::run_json_lines_script(
+            cmd,
+            options.device != "cpu",
+            &CHILD_PID,
+            &CANCEL_FLAG,
+            move |line| {
+                if !python_proc::is_runtime_noise(&line)
+                    && !python_proc::is_python_library_noise(&line)
                 {
-                    return;
+                    ProgressEvent::new("warning", format!("[Python] {}", line))
+                        .emit(&app_err, "cluster-progress");
                 }
-                if clean.starts_with("Downloading:") || clean.starts_with("100%") {
-                    return;
-                }
-                if clean == "warn(" || clean.starts_with("warnings.warn(") {
-                    return;
-                }
-                if clean.contains("site-packages/") && clean.contains(".py:") {
-                    return;
-                }
-                if clean.starts_with("eigenvalues") || clean.starts_with("scipy.") {
-                    return;
-                }
-                // 过滤 cuDNN/CUDA/onnxruntime 加载警告
-                let lower = clean.to_lowercase();
-                if lower.contains("cudnn")
-                    || lower.contains("cuda_path")
-                    || lower.contains("onnxruntime")
-                    || lower.contains("could not load")
-                    || lower.contains("loaded library")
-                {
-                    return;
-                }
-
-                let _ = app_err.emit(
-                    "cluster-progress",
-                    ProgressEvent {
-                        current: 0,
-                        total: 0,
-                        filename: String::new(),
-                        status: "warning".to_string(),
-                        message: format!("[Python] {}", clean),
-                        ..Default::default()
-                    },
-                );
-            });
-        });
-
-        // 解析 stdout JSON
-        let reader = std::io::BufReader::new(stdout);
-        let mut success_count = 0u32;
-        let mut fail_count = 0u32;
-        let mut total = 0u32;
-        let mut errors = Vec::new();
-        let mut got_result = false;
-
-        for line in reader.lines().map_while(Result::ok) {
-            if CANCEL_FLAG.load(Ordering::SeqCst) {
-                let _ = child.kill();
-                break;
-            }
-
-            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-                let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                match msg_type {
-                    "log" => {
-                        let text = msg
-                            .get("message")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let i18n_key = msg
-                            .get("i18n_key")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        let i18n_params = msg.get("i18n_params").cloned();
-                        let _ = app_clone.emit(
-                            "cluster-progress",
-                            ProgressEvent {
-                                current: 0,
-                                total: 0,
-                                filename: String::new(),
-                                status: "info".to_string(),
-                                message: text,
-                                i18n_key,
-                                i18n_params,
-                            },
-                        );
-                    }
+            },
+            |msg| {
+                match msg["type"].as_str().unwrap_or("") {
+                    "log" => ProgressEvent::python_log(&msg, 0, 0).emit(&app, "cluster-progress"),
                     "error" => {
-                        let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                        // 出错时先回收子进程，再清空 PID 记录。
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        if let Ok(mut guard) = CHILD_PID.lock() {
-                            *guard = None;
-                        }
-                        return Err(format!("聚类错误: {}", text));
+                        return Err(format!(
+                            "聚类错误: {}",
+                            msg["message"].as_str().unwrap_or("")
+                        ))
                     }
                     "progress" => {
-                        let cur = msg.get("current").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        let tot = msg.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        let fname = msg.get("filename").and_then(|v| v.as_str()).unwrap_or("");
-                        let status = msg
-                            .get("status")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("processing");
-                        let message = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                        total = tot;
-
+                        progress_current = msg["current"].as_u64().unwrap_or(0) as u32;
+                        progress_total = msg["total"].as_u64().unwrap_or(0) as u32;
+                        let status = msg["status"].as_str().unwrap_or("processing");
+                        let message = msg["message"].as_str().unwrap_or("");
                         if status == "success" {
-                            success_count += 1;
-                        } else if status == "error" {
-                            fail_count += 1;
-                            errors.push(message.to_string());
+                            result.success_count += 1;
                         }
-
-                        let _ = app_clone.emit(
-                            "cluster-progress",
-                            ProgressEvent {
-                                current: cur,
-                                total: tot,
-                                filename: fname.to_string(),
-                                status: status.to_string(),
-                                message: message.to_string(),
-                                ..Default::default()
-                            },
-                        );
+                        if status == "error" {
+                            result.fail_count += 1;
+                            result.errors.push(message.into());
+                        }
+                        // Python 的进度还含聚类和分布图步骤，不是图片总数。
+                        result.total = progress_total.saturating_sub(2) / 2;
+                        ProgressEvent::new(status, message)
+                            .at(progress_current, progress_total)
+                            .file(msg["filename"].as_str().unwrap_or(""))
+                            .emit(&app, "cluster-progress");
                     }
                     "done" => {
-                        let text = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                        let _ = app_clone.emit(
-                            "cluster-progress",
-                            ProgressEvent {
-                                current: total,
-                                total,
-                                filename: String::new(),
-                                status: "done".to_string(),
-                                message: text.to_string(),
-                                ..Default::default()
-                            },
-                        );
-                    }
-                    "result" => {
-                        got_result = true;
-                        success_count = msg
-                            .get("success_count")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
-                        fail_count =
-                            msg.get("fail_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        total = msg.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        if let Some(errs) = msg.get("errors").and_then(|v| v.as_array()) {
-                            for e in errs {
-                                if let Some(s) = e.as_str() {
-                                    errors.push(s.to_string());
-                                }
-                            }
-                        }
+                        result.success_count = msg["success_count"].as_u64().unwrap_or(0) as u32;
+                        result.fail_count = msg["fail_count"].as_u64().unwrap_or(0) as u32;
+                        result.total = msg["total"].as_u64().unwrap_or(0) as u32;
+                        result.errors = msg["errors"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect();
+                        summary = Some(msg["message"].as_str().unwrap_or("").to_owned());
                     }
                     _ => {}
                 }
+                Ok(())
+            },
+        );
+        if CANCEL_FLAG.load(Ordering::SeqCst) {
+            ProgressEvent::new(
+                "done",
+                format!(
+                    "已取消: 已处理 {}, 共 {}",
+                    result.success_count + result.fail_count,
+                    result.total
+                ),
+            )
+            .at(progress_current, progress_total)
+            .emit(&app, "cluster-progress");
+        } else {
+            let exit = exit?;
+            if let Some(summary) = summary {
+                ProgressEvent::new("done", summary)
+                    .at(progress_total, progress_total)
+                    .emit(&app, "cluster-progress");
+            } else {
+                return Err(format!(
+                    "聚类进程异常退出（退出码 {:?}），未返回结果；详见日志",
+                    exit.code
+                ));
             }
         }
-
-        let exit_status = child.wait();
-        if let Ok(mut guard) = CHILD_PID.lock() {
-            *guard = None;
-        }
-
-        // Python 没发 result 行就退出（import 失败/崩溃/被杀）时，
-        // 不能默默返回"成功 0/0"——按取消或失败如实上报
-        if !got_result && !CANCEL_FLAG.load(Ordering::SeqCst) {
-            let code = exit_status.ok().and_then(|s| s.code());
-            return Err(format!(
-                "聚类进程异常退出（退出码 {:?}），未返回结果；详见日志",
-                code
-            ));
-        }
-
-        Ok(ProcessResult {
-            success_count,
-            fail_count,
-            total,
-            errors,
-        })
+        Ok(result)
     })
     .await
     .map_err(|e| format!("任务执行失败: {}", e))?
@@ -471,14 +218,11 @@ pub async fn start_image_cluster(
 #[tauri::command]
 pub fn cancel_image_cluster() {
     CANCEL_FLAG.store(true, Ordering::SeqCst);
+    super::python_env::cancel_setup_for("cluster");
 }
 
 #[tauri::command]
 pub fn force_cancel_image_cluster() {
-    CANCEL_FLAG.store(true, Ordering::SeqCst);
-    if let Ok(mut guard) = CHILD_PID.lock() {
-        if let Some(pid) = guard.take() {
-            super::kill_process_tree(pid);
-        }
-    }
+    cancel_image_cluster();
+    python_proc::kill_registered_pid(&CHILD_PID);
 }
