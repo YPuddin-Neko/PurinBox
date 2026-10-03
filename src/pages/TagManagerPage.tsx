@@ -7,7 +7,7 @@ import ImageGridColumn from '../components/ImageGridColumn';
 import TagStatsPanel from '../components/TagStatsPanel';
 import ScopeToggle from '../components/ScopeToggle';
 import SegmentedTabs from '../components/ui/SegmentedTabs';
-import { useState, useRef, useCallback, useMemo } from 'react';
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ensureAssetScope } from '../utils/assetScope';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -74,10 +74,30 @@ export default function TagManagerPage() {
 
   const col1 = useDragResize({ initial: 220, min: 160, max: 500 });
   const col3 = useDragResize({ initial: 250, min: 160, max: 500, direction: -1 });
-  const preview = useDragResize({ initial: 330, min: 100, max: 500, axis: 'y' });
+  const previewColumn = useRef<HTMLDivElement>(null);
+  const [previewFlex, setPreviewFlex] = useState(3);
+  const rowResizeCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => rowResizeCleanup.current?.(), []);
   const col1W = col1.size, col3W = col3.size;
   const handleResizeStart = (column: 'col1' | 'col3', e: React.MouseEvent) => (column === 'col1' ? col1 : col3).onMouseDown(e);
-  const handleRowResizeStart = preview.onMouseDown;
+  const handleRowResizeStart = (event: React.MouseEvent) => {
+    event.preventDefault();
+    rowResizeCleanup.current?.();
+    const startY = event.clientY;
+    const height = previewColumn.current?.getBoundingClientRect().height || 1;
+    const oldCursor = document.body.style.cursor;
+    const move = (e: MouseEvent) => setPreviewFlex(Math.max(0.5, Math.min(6, previewFlex + (e.clientY - startY) / height * 4)));
+    const stop = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', stop);
+      document.body.style.cursor = oldCursor;
+      rowResizeCleanup.current = null;
+    };
+    rowResizeCleanup.current = stop;
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', stop);
+    document.body.style.cursor = 'row-resize';
+  };
   // ── 右栏状态 ──
   const [showAddModal, setShowAddModal] = useState(false);
   const [addTagInput, setAddTagInput] = useState('');
@@ -364,9 +384,9 @@ export default function TagManagerPage() {
         </div>
 
         {/* ─ Col2: Preview + Tags ─ */}
-        <div style={{flex:1,display:'flex',flexDirection:'column',minWidth:0,overflow:'hidden'}}>
+        <div ref={previewColumn} style={{flex:1,display:'flex',flexDirection:'column',minWidth:0,overflow:'hidden'}}>
           {/* preview */}
-          <div style={{height:preview.size,flexShrink:0,display:'flex',flexDirection:'column',background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',overflow:'hidden',minHeight:80}}>
+          <div style={{flex:previewFlex,display:'flex',flexDirection:'column',background:'var(--color-bg-secondary)',borderRadius:12,border:'1px solid var(--color-border)',overflow:'hidden',minHeight:80}}>
             <div style={phdr}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <ImageIcon style={{width:14,height:14,color:'#7c5cfc'}} />
@@ -411,6 +431,7 @@ export default function TagManagerPage() {
               </button>
             </div>
             <div style={{ flex: 1, padding: '10px 14px', overflowY: 'auto' }}>
+              {!cur && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>{t('tagManager.selectToEdit')}</span>}
               {cur && <TagChipList key={cur.path} values={cur.tags} translations={translations} normalize={raw => normalizeNewTag(raw, cur)}
                 onChange={tags => setImages(previous => previous.map(image => image.path === cur.path && !sameTags(image.tags, tags) ? { ...image, tags, dirty: true } : image))} />}
             </div>

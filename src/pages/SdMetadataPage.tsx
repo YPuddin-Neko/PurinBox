@@ -14,6 +14,7 @@ import { Modal } from '../components/Modal';
 import PageHeader from '../components/ui/PageHeader';
 import Pager from '../components/ui/Pager';
 import { useTranslation } from 'react-i18next';
+import '../styles/metadata.css';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
 interface SdImageMeta { path: string; filename: string; positive: string; negative: string; params: string; source: string; }
@@ -35,20 +36,20 @@ const SOURCE_COLORS: Record<string, string> = {
 
 const sourceColor = (source: string) => SOURCE_COLORS[source] || '#6b7280';
 
-function PromptBlock({ label, text, color, copied, onCopy }: {
-  label: string; text: string; color: string; copied: boolean; onCopy: () => void;
+function PromptBlock({ label, text, color, copied, onCopy, monospace = false }: {
+  label: string; text: string; color: string; copied: boolean; onCopy: () => void; monospace?: boolean;
 }) {
   const { t } = useTranslation();
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span style={{ fontSize: 11, fontWeight: 700, color }}>{label}</span>
-        {text && <button className="btn btn-ghost btn-sm" onClick={onCopy} title={t('common.copy')}>
+        {text && <button className="btn btn-ghost btn-sm" onClick={onCopy} title={t('common.copy')} style={{ padding: '2px 8px', fontSize: 10, gap: 4, height: 22 }}>
           {copied ? <Check size={12} /> : <Clipboard size={12} />}
           {copied ? t('sdMetadata.copied') : null}
         </button>}
       </div>
-      <div style={{ fontSize: 12, marginTop: 6, padding: '12px 14px', background: color + '0f',
+      <div style={{ fontSize: monospace ? 11 : 12, fontFamily: monospace ? 'monospace' : undefined, lineHeight: monospace ? 1.6 : 1.7, marginTop: 6, padding: '12px 14px', background: color + '0f',
         borderRadius: 8, overflowWrap: 'anywhere', userSelect: 'text', maxHeight: 240, overflowY: 'auto' }}>
         {text || '-'}
       </div>
@@ -350,20 +351,22 @@ export default function SdMetadataPage() {
       </div>
 
       {modalItem && (
-        <Modal open onClose={() => setModalItem(null)} title={modalItem.filename} maxWidth={960}
-          headerExtra={<span style={{ fontSize: 10, color: sourceColor(modalItem.source) }}>{modalItem.source.toUpperCase()}</span>}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 20 }}>
-            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+        <Modal open onClose={() => setModalItem(null)} title={modalItem.filename} maxWidth={960} className="metadata-detail-modal" headerIcon={false} bodyStyle={{ padding: 20 }}
+          headerExtra={<span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: `${sourceColor(modalItem.source)}22`, color: sourceColor(modalItem.source) }}>{modalItem.source.toUpperCase()}</span>}>
+          <div className="metadata-detail-content">
+            <div className="metadata-detail-preview">
+              <div style={{ borderRadius: 'var(--radius-md)', overflow: 'hidden', border: '1px solid var(--color-border)', background: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 200 }}>
               <ThumbImage path={modalItem.path} maxEdge={1024} alt={modalItem.filename}
                 style={{ maxWidth: '100%', maxHeight: 360, objectFit: 'contain' }} />
-              <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', overflowWrap: 'anywhere' }}>{modalItem.path}</div>
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', overflowWrap: 'anywhere', fontFamily: 'monospace' }}>{modalItem.path}</div>
             </div>
             <div style={{ flex: '2 1 280px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
               <PromptBlock label={t('sdMetadata.positive')} text={modalItem.positive} color="#4ade80"
                 copied={copiedField === 'positive'} onCopy={() => copyText(modalItem.positive, 'positive')} />
               <PromptBlock label={t('sdMetadata.negative')} text={modalItem.negative} color="#ef4444"
                 copied={copiedField === 'negative'} onCopy={() => copyText(modalItem.negative, 'negative')} />
-              {modalItem.params && <PromptBlock label={t('sdMetadata.params')} text={modalItem.params} color="#60a5fa"
+              {modalItem.params && <PromptBlock label={t('sdMetadata.params')} text={modalItem.params} color="#60a5fa" monospace
                 copied={copiedField === 'params'} onCopy={() => copyText(modalItem.params, 'params')} />}
             </div>
           </div>

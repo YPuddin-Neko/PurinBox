@@ -22,7 +22,7 @@ export default function HashThresholdFields({ dhash, onDhash, phash, onPhash, co
     <div key={field.key} style={{ marginBottom: 12 }}>
       <label htmlFor={`${id}-${field.key}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 6 }}>
         <span>{t(`imageDedup.${field.key}`)}</span>
-        <span>{field.max === 100 ? color.toFixed(2) : field.value}</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: '#7c5cfc', fontFamily: 'monospace' }}>{field.max === 100 ? color.toFixed(2) : field.value}</span>
       </label>
       <input id={`${id}-${field.key}`} type="range" min={field.min} max={field.max} value={field.value}
         onChange={e => field.onChange(Number(e.target.value))} style={{ width: '100%', accentColor: 'var(--color-accent-primary)' }} />

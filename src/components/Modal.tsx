@@ -12,9 +12,11 @@ interface ModalProps {
   maxWidth?: number;
   headerExtra?: ReactNode;
   bodyStyle?: CSSProperties;
+  className?: string;
+  headerIcon?: ReactNode;
 }
 
-export function Modal({ open, onClose, title, children, variant = 'info', maxWidth = 480, headerExtra, bodyStyle }: ModalProps) {
+export function Modal({ open, onClose, title, children, variant = 'info', maxWidth = 480, headerExtra, bodyStyle, className, headerIcon }: ModalProps) {
   const { t } = useTranslation();
 
   useEffect(() => {
@@ -36,17 +38,17 @@ export function Modal({ open, onClose, title, children, variant = 'info', maxWid
         background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)',
         animation: 'fadeIn 0.15s ease',
       }}>
-      <div role="dialog" aria-modal="true" aria-label={title || t('modal.hint')} style={{
+      <div role="dialog" className={className} aria-modal="true" aria-label={title || t('modal.hint')} style={{
         background: 'var(--color-bg-secondary)', border: '1px solid var(--color-border)',
         borderRadius: 12, padding: '20px 24px', width: 'calc(100vw - 32px)', maxWidth,
         maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
         boxShadow: '0 16px 48px rgba(0,0,0,0.3)', animation: 'slideUp 0.2s ease',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div className="modal-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-            {variant === 'error' || variant === 'warning'
+            {headerIcon ?? (variant === 'error' || variant === 'warning'
               ? <AlertTriangle style={{ width: 18, height: 18, color: iconColor }} />
-              : <Info style={{ width: 18, height: 18, color: iconColor }} />}
+              : <Info style={{ width: 18, height: 18, color: iconColor }} />)}
             <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--color-text-primary)', overflowWrap: 'anywhere' }}>{title || t('modal.hint')}</span>
           </div>
           {headerExtra}

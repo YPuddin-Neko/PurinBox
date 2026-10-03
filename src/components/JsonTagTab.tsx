@@ -8,7 +8,6 @@ import TagChipList from './TagChipList';
 import ImageGridColumn from './ImageGridColumn';
 import TagStatsPanel from './TagStatsPanel';
 import ScopeToggle from './ScopeToggle';
-import CustomSelect from './CustomSelect';
 import { Modal, AlertModal } from './Modal';
 import { useState, useEffect, useMemo, useCallback, forwardRef, useImperativeHandle } from 'react';
 import TagAutocomplete from './TagAutocomplete';
@@ -18,7 +17,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { ensureAssetScope } from '../utils/assetScope';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
-import { Save, ChevronLeft, ChevronRight, Image as ImageIcon, Loader2, Sparkles, Eye, Languages, ListPlus, ListX, BarChart3, Filter, Code, Trash2, CopyX } from 'lucide-react';
+import { Save, ChevronLeft, ChevronRight, Image as ImageIcon, Loader2, Sparkles, Eye, Languages, ListPlus, ListX, BarChart3, Filter, Code, Trash2, CopyX, Lock, User, Layers, Shirt, Tags, TreePine } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 /** parse_failed：JSON 存在但解析失败，data 只是空默认值。保存时会跳过这类条目，
@@ -28,6 +27,13 @@ interface JsonDataset { folder: string; images: JsonImageItem[]; detected_format
 
 const phdr: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6, padding: '10px 14px', borderBottom: '1px solid var(--color-border)', flexShrink: 0 };
 const ptitle: React.CSSProperties = { fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)', whiteSpace: 'nowrap' };
+const sections = [
+  { key: 'fixed', label: 'fixedSection', icon: Lock, color: '#f59e0b' },
+  { key: 'character', label: 'characterSection', icon: User, color: '#f472b6' },
+  { key: 'from_path', label: 'fromPathSection', icon: Layers, color: '#22d3ee' },
+  { key: 'ai_output', label: 'aiOutputSection', icon: Sparkles, color: '#818cf8' },
+] as const;
+const listIcons = { appearance: Shirt, tags: Tags, environment: TreePine };
 
 export interface JsonTagTabHandle {
   loadFolder: () => Promise<void>;
@@ -267,18 +273,26 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
 
           <div {...tagDrag.editorProps} style={{flex:1,overflowY:'auto',padding:'12px 14px',display:'flex',flexDirection:'column',gap:14}}>
             {!cur?<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('jsonTag.selectToEdit')}</span>:(<>
-              {(['fixed', 'character', 'from_path', 'ai_output'] as const).filter(section => !simplified || section !== 'from_path').map(section => (
-                <div key={section}>
-                  <div style={{ fontSize: 10, fontWeight: 700, marginBottom: 6 }}>{t({ fixed: 'jsonTag.fixedSection', character: 'jsonTag.characterSection', from_path: 'jsonTag.fromPathSection', ai_output: 'jsonTag.aiOutputSection' }[section])}</div>
-                  {JSON_FIELDS.filter(field => field.section === section && (!simplified || field.simplified)).map(field => (
-                    <div key={field.key} style={{ marginBottom: 6 }}>
-                      <div style={{ fontSize: 10, color: field.color, marginBottom: 3 }}>{field.name} - {t(field.labelKey)}</div>
-                      <fieldset disabled={cur.parse_failed} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+              {sections.filter(section => !simplified || section.key !== 'from_path').map(section => (
+                <div key={section.key} style={{ marginBottom: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, fontWeight: 700, marginBottom: 6, color: section.color }}>
+                    <section.icon size={11} /><span>{t(`jsonTag.${section.label}`)}</span>
+                    {section.key === 'from_path' && <span style={{ fontSize: 9, padding: '0 5px', borderRadius: 6, background: `${section.color}14` }}>{cur.data.from_path.appearance.length}</span>}
+                  </div>
+                  {JSON_FIELDS.filter(field => field.section === section.key && (!simplified || field.simplified)).map(field => {
+                    const Icon = field.section === 'ai_output' && field.kind === 'list' ? listIcons[field.name as keyof typeof listIcons] : null;
+                    return <div key={field.key} style={{ marginBottom: 6 }}>
+                      {field.section !== 'from_path' && <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: Icon ? 10 : 9, fontWeight: 600, color: field.color, opacity: Icon ? 1 : 0.7, marginBottom: Icon ? 4 : 2 }}>
+                        {Icon && <Icon size={11} />}
+                        <span>{field.name === 'name' && simplified ? `character - ${t('jsonTag.fieldCharacter')}` : t(`jsonTag.${Icon ? field.name : field.name + 'Label'}`)}</span>
+                        {Icon && <span style={{ fontSize: 9, padding: '0 5px', borderRadius: 6, background: `${field.color}14` }}>{field.get(cur.data).length}</span>}
+                      </div>}
+                      <fieldset disabled={cur.parse_failed} style={{ padding: '5px 8px', borderRadius: 'var(--radius-md)', background: `${field.color}${Icon ? '14' : '0f'}`, border: `1px solid ${field.color}${Icon ? '40' : '26'}`, margin: 0, minWidth: 0 }}>
                         <TagChipList key={cur.path + field.key} values={field.get(cur.data)} translations={translations} color={field.color} fieldDrag={tagDrag.bindField(field.key)}
                           onChange={values => updateData(data => field.set(data, values))} />
                       </fieldset>
-                    </div>
-                  ))}
+                    </div>;
+                  })}
                 </div>
               ))}
               {/* nl — 自然语言描述 */}
@@ -361,38 +375,40 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
 
       {showLargePreview&&cur&&<ImageLightbox src={imgSrc} filename={cur.filename} onClose={()=>setShowLargePreview(false)} />}
 
-      <Modal open={showBatchAddModal} onClose={() => setShowBatchAddModal(false)} title={t('jsonTag.batchAddTitle')}>
-        <label className="form-label">{t('jsonTag.targetField')}</label>
-        <CustomSelect value={batchField} onChange={setBatchField} options={visibleBatchFieldOptions} />
-        <div style={{ display: 'flex', gap: 12, marginTop: 12 }}>
-          {(['prepend', 'append'] as const).map(value => <label key={value}><input type="radio" checked={batchPosition === value} onChange={() => setBatchPosition(value)} />{t('tagManager.' + value)}</label>)}
-        </div>
-        <ScopeToggle value={batchScope} onChange={setBatchScope} hasCurrent={!!cur && !cur.parse_failed} />
-        <label className="form-label">{t('jsonTag.batchTagsPlaceholder')}</label>
+      <Modal open={showBatchAddModal} onClose={() => setShowBatchAddModal(false)} title={t('jsonTag.batchAddTitle')} maxWidth={440} className="tag-batch-modal" headerIcon={<ListPlus size={16} color="#4ade80" />} bodyStyle={{ padding: '16px 20px' }}>
+        <fieldset className="tag-batch-fieldset"><legend>{t('jsonTag.targetField')}</legend>
+          <div className="tag-batch-options">{visibleBatchFieldOptions.map(option => <label key={option.value} className="tag-option"><input type="radio" name="json-batch-add-field" checked={batchField === option.value} onChange={() => setBatchField(option.value)} />{option.label}</label>)}</div>
+        </fieldset>
+        <fieldset className="tag-batch-fieldset"><legend>{t('jsonTag.position')}</legend>
+          <div className="tag-batch-options" style={{ '--option-color': '#4ade80' } as React.CSSProperties}>{(['prepend', 'append'] as const).map(value => <label key={value} className="tag-option"><input type="radio" name="json-batch-add-position" checked={batchPosition === value} onChange={() => setBatchPosition(value)} />{t('tagManager.' + value)}</label>)}</div>
+        </fieldset>
+        <ScopeToggle value={batchScope} onChange={setBatchScope} hasCurrent={!!cur && !cur.parse_failed} appearance="chips" />
+        <label className="form-label" style={{ fontSize: 11 }}>{t('jsonTag.batchTagsPlaceholder')}</label>
         <TagAutocomplete multi value={batchTags} onChange={setBatchTags} onSelect={handleBatchAdd} autoFocus placeholder="tag1, tag2, tag3" />
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+        <div className="tag-batch-actions">
           <button className="btn btn-ghost" onClick={() => setShowBatchAddModal(false)}>{t('jsonTag.cancel')}</button>
-          <button className="btn btn-primary" onClick={handleBatchAdd} disabled={!batchTags.trim()}>{t('jsonTag.batchApplyAdd')}</button>
+          <button className="btn btn-primary" onClick={handleBatchAdd} disabled={!batchTags.trim()}><ListPlus size={12} />{t('jsonTag.batchApplyAdd')}</button>
         </div>
       </Modal>
-      <Modal open={showBatchDeleteModal} onClose={() => setShowBatchDeleteModal(false)} title={t('jsonTag.batchDeleteTitle')} variant="warning">
-        <label className="form-label">{t('jsonTag.targetField')}</label>
-        <CustomSelect value={batchField} onChange={setBatchField} options={[{ value: 'all', label: t('jsonTag.allFields') }, ...visibleBatchFieldOptions]} />
-        <ScopeToggle value={batchScope} onChange={setBatchScope} hasCurrent={!!cur && !cur.parse_failed} />
-        <label className="form-label">{t('jsonTag.batchTagsPlaceholder')}</label>
+      <Modal open={showBatchDeleteModal} onClose={() => setShowBatchDeleteModal(false)} title={t('jsonTag.batchDeleteTitle')} variant="warning" maxWidth={440} className="tag-batch-modal" headerIcon={<ListX size={16} color="#f87171" />} bodyStyle={{ padding: '16px 20px' }}>
+        <fieldset className="tag-batch-fieldset"><legend>{t('jsonTag.targetField')}</legend>
+          <div className="tag-batch-options" style={{ '--option-color': '#f87171' } as React.CSSProperties}>{[{ value: 'all', label: t('jsonTag.allFields') }, ...visibleBatchFieldOptions].map(option => <label key={option.value} className="tag-option"><input type="radio" name="json-batch-delete-field" checked={batchField === option.value} onChange={() => setBatchField(option.value)} />{option.label}</label>)}</div>
+        </fieldset>
+        <ScopeToggle value={batchScope} onChange={setBatchScope} hasCurrent={!!cur && !cur.parse_failed} appearance="chips" />
+        <label className="form-label" style={{ fontSize: 11 }}>{t('jsonTag.batchTagsPlaceholder')}</label>
         <TagAutocomplete multi value={batchTags} onChange={setBatchTags} onSelect={handleBatchDelete} autoFocus placeholder="tag1, tag2, tag3" />
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+        <div className="tag-batch-actions">
           <button className="btn btn-ghost" onClick={() => setShowBatchDeleteModal(false)}>{t('jsonTag.cancel')}</button>
-          <button className="btn btn-primary" onClick={handleBatchDelete} disabled={!batchTags.trim()}>{t('jsonTag.batchApplyDelete')}</button>
+          <button className="btn btn-danger" onClick={handleBatchDelete} disabled={!batchTags.trim()}><ListX size={12} />{t('jsonTag.batchApplyDelete')}</button>
         </div>
       </Modal>
-      <Modal open={showSelDeleteModal} onClose={() => setShowSelDeleteModal(false)} title={t('jsonTag.deleteSelectedTitle')} variant="warning">
+      <Modal open={showSelDeleteModal} onClose={() => setShowSelDeleteModal(false)} title={t('jsonTag.deleteSelectedTitle')} variant="warning" maxWidth={440} className="tag-batch-modal" headerIcon={<Trash2 size={16} color="#f87171" />} bodyStyle={{ padding: '16px 20px' }}>
         <div>{t('jsonTag.deleteTagsHint', { n: selectedTags.size })}</div>
-        <div style={{ maxHeight: 96, overflowY: 'auto', overflowWrap: 'anywhere' }}>{[...selectedTags].join(', ')}</div>
-        <ScopeToggle value={selDeleteScope} onChange={setSelDeleteScope} hasCurrent={!!cur && !cur.parse_failed} />
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+        <div style={{ maxHeight: 96, overflowY: 'auto', display: 'flex', flexWrap: 'wrap', gap: 4, padding: 8, background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.15)', borderRadius: 8, margin: '8px 0' }}>{[...selectedTags].map(tag => <span key={tag} style={{ fontSize: 10, color: '#f87171', background: 'rgba(248,113,113,0.1)', borderRadius: 12, padding: '2px 8px', overflowWrap: 'anywhere' }}>{tag}</span>)}</div>
+        <ScopeToggle value={selDeleteScope} onChange={setSelDeleteScope} hasCurrent={!!cur && !cur.parse_failed} appearance="chips" />
+        <div className="tag-batch-actions">
           <button className="btn btn-ghost" onClick={() => setShowSelDeleteModal(false)}>{t('jsonTag.cancel')}</button>
-          <button className="btn btn-primary" onClick={handleSidebarBatchDelete} disabled={selDeleteScope === 'current' && (!cur || cur.parse_failed)}>{t(selDeleteScope === 'all' ? 'jsonTag.deleteFromAll' : 'jsonTag.deleteFromCurrentOne')}</button>
+          <button className="btn btn-danger" onClick={handleSidebarBatchDelete} disabled={selDeleteScope === 'current' && (!cur || cur.parse_failed)}><Trash2 size={12} />{t(selDeleteScope === 'all' ? 'jsonTag.deleteFromAll' : 'jsonTag.deleteFromCurrentOne')}</button>
         </div>
       </Modal>
       <AlertModal open={!!alertMsg} onClose={() => setAlertMsg('')} message={alertMsg} />

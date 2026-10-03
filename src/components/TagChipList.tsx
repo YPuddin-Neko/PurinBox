@@ -1,9 +1,10 @@
-import { useRef, useState, type PointerEvent } from 'react';
+import { useRef, useState, type CSSProperties, type PointerEvent } from 'react';
 import { Plus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import TagAutocomplete from './TagAutocomplete';
 import { dedupeTags, getTagChipColor, normalizeEditableTag, replaceTagAtIndex, splitTagInput } from '../utils/tagText';
 import type { TagFieldDragBinding } from '../hooks/useTagFieldDrag';
+import '../styles/tags.css';
 
 export default function TagChipList({ values, onChange, translations = {}, normalize = normalizeEditableTag, color, fieldDrag }: {
   values: string[]; onChange: (values: string[]) => void; translations?: Record<string, string>;
@@ -44,13 +45,15 @@ export default function TagChipList({ values, onChange, translations = {}, norma
   };
   const activeIndex = fieldDrag ? fieldDrag.dragging : dragging;
   const dropIndex = fieldDrag?.insertionIndex;
-  return <div data-tag-field={fieldDrag?.field} style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center', minHeight: 26, touchAction: 'none',
-    outline: fieldDrag?.insertionIndex != null ? `1px dashed ${color ?? 'var(--color-accent-primary)'}` : undefined, outlineOffset: 2 }}
+  return <div className={`tag-chip-list${color ? ' tag-chip-list-field' : ''}`} data-tag-field={fieldDrag?.field}
+    style={{ '--tag-color': color ?? '#4ade80',
+    outline: fieldDrag?.insertionIndex != null ? `1px dashed ${color ?? 'var(--color-accent-primary)'}` : undefined, outlineOffset: 2 } as CSSProperties}
     onPointerMove={fieldDrag ? undefined : move} onPointerUp={fieldDrag ? undefined : () => end()} onPointerCancel={fieldDrag ? undefined : () => end(true)}>
-    {values.map((tag, index) => editing === index ? <div key={index} style={{ width: 180, maxWidth: '100%' }}>
+    {values.map((tag, index) => editing === index ? <div key={index} style={{ width: Math.max(60, Math.min(200, tag.length * 7 + 24)), maxWidth: '100%' }}>
       <TagAutocomplete autoFocus initialValue={tag} onSelect={raw => { onChange(replaceTagAtIndex(values, index, raw, normalize)); setEditing(null); }}
+        inputStyle={{ fontSize: 11, height: color ? 24 : 26, border: 'none', background: 'var(--color-bg-input)', padding: '0 8px' }}
         onBlur={() => setEditing(null)} onKeyDown={e => { if (e.key === 'Escape') setEditing(null); }} />
-    </div> : <div key={index} ref={el => { elements.current[index] = el; }} data-tag-index={index}
+    </div> : <div key={index} className="tag-chip" ref={el => { elements.current[index] = el; }} data-tag-index={index}
       onPointerDown={e => {
         if (fieldDrag) { fieldDrag.onPointerDown(e, index, tag); return; }
         if (e.button !== 0 || e.detail > 1 || (e.target as HTMLElement).closest('button')) return;
@@ -58,18 +61,19 @@ export default function TagChipList({ values, onChange, translations = {}, norma
         drag.current = { index, x: e.clientX, y: e.clientY, id: e.pointerId, element: e.currentTarget, active: false, target: null };
       }}
       onDoubleClick={e => { if (!(e.target as HTMLElement).closest('button')) setEditing(index); }}
-      style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 3, padding: '3px 8px', borderRadius: 8,
-        background: getTagChipColor(tag).bg, border: `1px solid ${getTagChipColor(tag).bd}`, color: color ?? getTagChipColor(tag).tx,
-        fontSize: 11, maxWidth: '100%', cursor: 'grab', userSelect: 'none', opacity: activeIndex === index ? 0.35 : 1 }}>
+      style={{ background: color ? `${color}1a` : getTagChipColor(tag).bg, borderColor: color ? `${color}40` : getTagChipColor(tag).bd,
+        color: color ?? getTagChipColor(tag).tx, opacity: activeIndex === index ? 0.35 : 1 }}>
       {(fieldDrag ? dropIndex === index || dropIndex === values.length && index === values.length - 1 : target?.index === index) && <span style={{ position: 'absolute', top: 0, bottom: 0, width: 2, background: 'var(--color-accent-primary)', [fieldDrag ? dropIndex === index ? 'left' : 'right' : target?.after ? 'right' : 'left']: -3, pointerEvents: 'none' }} />}
-      <span style={{ overflowWrap: 'anywhere' }}>{tag}{translations[tag] && <span style={{ color: 'var(--color-text-tertiary)', marginLeft: 3 }}>({translations[tag]})</span>}</span>
-      <button type="button" title={t('tagManager.deleteSelected')} aria-label={`${t('tagManager.deleteSelected')}: ${tag}`}
-        onClick={() => onChange(values.filter((_, i) => i !== index))} style={{ display: 'flex', border: 0, padding: 0, background: 'transparent', color: 'inherit', flexShrink: 0 }}><X size={12} /></button>
+      <span style={{ overflowWrap: 'anywhere' }}>{tag}{translations[tag] && <span style={{ color: 'var(--color-text-tertiary)', fontSize: 10, marginLeft: 3 }}>({translations[tag]})</span>}</span>
+      <button type="button" className="tag-chip-remove" title={t('tagManager.deleteSelected')} aria-label={`${t('tagManager.deleteSelected')}: ${tag}`}
+        onClick={() => onChange(values.filter((_, i) => i !== index))}><X size={color ? 8 : 9} /></button>
     </div>)}
-    {editing === 'add' ? <div style={{ width: 180, maxWidth: '100%' }}><TagAutocomplete autoFocus keepOpen
+    {editing === 'add' ? <div style={{ flex: '1 0 80px', minWidth: 60, maxWidth: 200 }}><TagAutocomplete autoFocus keepOpen
+      inputStyle={{ fontSize: 11, height: color ? 24 : 26, border: 'none', background: 'transparent', padding: '0 4px' }}
       onSelect={raw => onChange(dedupeTags([...values, ...splitTagInput(raw, normalize)]).tags)}
       onBlur={() => setEditing(null)} onKeyDown={e => { if (e.key === 'Escape') setEditing(null); }} /></div>
-      : <button type="button" className="btn btn-ghost btn-sm" title={t('tagManager.batchAdd')} aria-label={t('tagManager.batchAdd')}
-        onClick={() => setEditing('add')} style={{ padding: 3, height: 24, minWidth: 24 }}><Plus size={13} /></button>}
+      : values.length === 0 ? <button type="button" className="tag-chip-empty" onClick={() => setEditing('add')}>{t(color ? 'jsonTag.noTagData' : 'tagManager.noTagsClick')}</button>
+      : <button type="button" className="tag-chip-add" title={t('tagManager.batchAdd')} aria-label={t('tagManager.batchAdd')}
+        onClick={() => setEditing('add')}><Plus size={color ? 10 : 11} /></button>}
   </div>;
 }
