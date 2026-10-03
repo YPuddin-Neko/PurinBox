@@ -1,8 +1,9 @@
-import { JSON_FIELDS, collectAllTags, jsonTagPreview, type JsonTagData } from '../utils/jsonTagFields';
+import { JSON_FIELDS, collectAllTags, jsonTagPreview, moveJsonTag, type JsonTagData } from '../utils/jsonTagFields';
 import { dedupeTags, splitTagInput } from '../utils/tagText';
 import { useTagStats } from '../hooks/useTagStats';
 import { useTagTranslation } from '../hooks/useTagTranslation';
 import { useDragResize } from '../hooks/useDragResize';
+import { useTagFieldDrag } from '../hooks/useTagFieldDrag';
 import TagChipList from './TagChipList';
 import ImageGridColumn from './ImageGridColumn';
 import TagStatsPanel from './TagStatsPanel';
@@ -156,6 +157,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
       return data === image.data ? image : { ...image, data, dirty: true };
     }));
   }, [selectedIdx]);
+  const tagDrag = useTagFieldDrag({
+    scope: `${cur?.path ?? ''}:${simplified}`, revision: cur?.data, disabled: !cur || !!cur.parse_failed || loading,
+    onDrop: (source, target) => updateData(data => moveJsonTag(data, source, target, simplified)),
+  });
   const removeTags = (tags: Set<string>, scope: 'current' | 'all', field = 'all') => {
     if (scope === 'current' && !cur) return;
     const keys = new Set([...tags].map(tag => tag.toLowerCase()));
@@ -260,7 +265,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
             </div>
           </div>
 
-          <div style={{flex:1,overflowY:'auto',padding:'12px 14px',display:'flex',flexDirection:'column',gap:14}}>
+          <div {...tagDrag.editorProps} style={{flex:1,overflowY:'auto',padding:'12px 14px',display:'flex',flexDirection:'column',gap:14}}>
             {!cur?<span style={{fontSize:11,color:'var(--color-text-tertiary)',fontStyle:'italic'}}>{t('jsonTag.selectToEdit')}</span>:(<>
               {(['fixed', 'character', 'from_path', 'ai_output'] as const).filter(section => !simplified || section !== 'from_path').map(section => (
                 <div key={section}>
@@ -269,7 +274,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
                     <div key={field.key} style={{ marginBottom: 6 }}>
                       <div style={{ fontSize: 10, color: field.color, marginBottom: 3 }}>{field.name} - {t(field.labelKey)}</div>
                       <fieldset disabled={cur.parse_failed} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
-                        <TagChipList key={cur.path + field.key} values={field.get(cur.data)} translations={translations} color={field.color}
+                        <TagChipList key={cur.path + field.key} values={field.get(cur.data)} translations={translations} color={field.color} fieldDrag={tagDrag.bindField(field.key)}
                           onChange={values => updateData(data => field.set(data, values))} />
                       </fieldset>
                     </div>

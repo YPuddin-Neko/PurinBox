@@ -37,6 +37,29 @@ export const JSON_FIELDS = [
 
 export const collectAllTags = (data: JsonTagData) => JSON_FIELDS.flatMap(field => field.get(data));
 
+export interface JsonTagPosition { field: string; index: number; }
+
+export function moveJsonTag(data: JsonTagData, source: JsonTagPosition & { value: string }, target: JsonTagPosition, simplified: boolean) {
+  const from = JSON_FIELDS.find(field => field.key === source.field);
+  const to = JSON_FIELDS.find(field => field.key === target.field);
+  if (!from || !to || simplified && (!from.simplified || !to.simplified)) return data;
+  const sourceValues = from.get(data), targetValues = to.get(data);
+  if (!Number.isInteger(source.index) || source.index < 0 || sourceValues[source.index] !== source.value
+    || !Number.isInteger(target.index) || target.index < 0 || target.index > targetValues.length) return data;
+  const remaining = sourceValues.filter((_, index) => index !== source.index);
+  if (from === to) {
+    const index = target.index > source.index ? target.index - 1 : target.index;
+    if (index === source.index) return data;
+    remaining.splice(index, 0, source.value);
+    return from.set(data, remaining);
+  }
+  const next = from.set(data, remaining);
+  if (targetValues.some(value => value.toLowerCase() === source.value.toLowerCase())) return next;
+  const inserted = [...targetValues];
+  inserted.splice(target.index, 0, source.value);
+  return to.set(next, inserted);
+}
+
 // Mirrors tag_manager::to_simplified; full JSON retains extension fields and empty schema values.
 export function jsonTagPreview(data: JsonTagData, simplified: boolean) {
   if (!simplified) return { ...data,
