@@ -1,4 +1,5 @@
 pub mod download;
+pub mod hybrid;
 pub mod inference;
 pub mod llm_tagger;
 pub mod models;
@@ -50,6 +51,8 @@ pub struct TaggerOptions {
     /// 是否递归扫描子文件夹
     #[serde(default)]
     pub recursive: bool,
+    #[serde(default)]
+    pub hybrid_mode: bool,
 }
 
 fn default_batch_size() -> u32 {
@@ -352,7 +355,7 @@ pub fn force_cancel_tagging() {
 static TAGGING_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
-static TAGGER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static TAGGER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 开始打标
 #[tauri::command]
@@ -363,6 +366,22 @@ pub async fn start_tagging(
     let _busy = crate::commands::BusyGuard::acquire(&TAGGING_RUNNING, "打标")?;
 
     inference::reset_tagging_cancel();
+
+    if options.hybrid_mode {
+        let scan_options = options.clone();
+        let skipped = tokio::task::spawn_blocking(move || inference::all_skipped(&scan_options))
+            .await
+            .map_err(|e| format!("读取图片失败: {}", e))??;
+        if let Some(result) = skipped {
+            inference::emit_summary(
+                &app,
+                &result,
+                result.total,
+                inference::is_tagging_cancelled(),
+            );
+            return Ok(result);
+        }
+    }
 
     let prepared = prepare_tagger(&app, &options.model_id, options.use_gpu).await;
     if inference::is_tagging_cancelled() {
@@ -432,6 +451,66 @@ pub struct ConvertTagsOptions {
     pub recursive: bool,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PrepareHybridTagsOptions {
+    pub input_path: String,
+    pub model_id: String,
+    pub file_format: String,
+    #[serde(default)]
+    pub json_simplified: bool,
+    #[serde(default)]
+    pub recursive: bool,
+}
+
+#[tauri::command]
+pub async fn prepare_hybrid_tags(
+    app: tauri::AppHandle,
+    options: PrepareHybridTagsOptions,
+) -> Result<ProcessResult, String> {
+    let _busy = crate::commands::BusyGuard::acquire(&TAGGING_RUNNING, "打标")?;
+    inference::reset_tagging_cancel();
+    let scan = options.clone();
+    let prepared = tokio::task::spawn_blocking(move || {
+        hybrid::prepare_sources(
+            std::path::Path::new(&scan.input_path),
+            scan.recursive,
+            &scan.file_format,
+        )
+    })
+    .await
+    .map_err(|e| format!("准备已有标签失败: {}", e))??;
+    if prepared.needs_json_conversion {
+        let mut result = convert_prepared_tags(
+            app,
+            ConvertTagsOptions {
+                input_path: options.input_path,
+                model_id: options.model_id,
+                json_simplified: options.json_simplified,
+                recursive: options.recursive,
+            },
+            true,
+        )
+        .await?;
+        result.success_count += prepared.copied;
+        return Ok(result);
+    }
+    ProgressEvent::new(
+        "done",
+        format!(
+            "已有标签准备完成: {} 个复用，{} 个无标签",
+            prepared.copied,
+            prepared.total - prepared.copied
+        ),
+    )
+    .at(prepared.total, prepared.total)
+    .emit(&app, "tagger-progress");
+    Ok(ProcessResult {
+        total: prepared.total,
+        success_count: prepared.copied,
+        ..Default::default()
+    })
+}
+
 /// 将图片旁的 .txt 标签按模型词表分类后转换为 JSON。
 /// 复用 Python 端的分类与 JSON 构建逻辑（--convert 模式，不加载 ONNX，速度快）。
 #[tauri::command]
@@ -443,6 +522,14 @@ pub async fn convert_tags_to_json(
     // 与打标共用取消标志：拿到锁后才能复位
     inference::reset_tagging_cancel();
 
+    convert_prepared_tags(app, options, false).await
+}
+
+async fn convert_prepared_tags(
+    app: tauri::AppHandle,
+    options: ConvertTagsOptions,
+    intermediate: bool,
+) -> Result<ProcessResult, String> {
     let prepared = prepare_tagger(&app, &options.model_id, false).await;
     if inference::is_tagging_cancelled() {
         let result = ProcessResult::default();
@@ -454,9 +541,11 @@ pub async fn convert_tags_to_json(
     if !tags_path.exists() {
         return Err(format!("模型词表下载后仍不存在: {}", tags_path.display()));
     }
-    tokio::task::spawn_blocking(move || run_convert_tags(&app, &options, &python, &tags_path))
-        .await
-        .map_err(|e| format!("转换任务执行失败: {}", e))?
+    tokio::task::spawn_blocking(move || {
+        run_convert_tags(&app, &options, &python, &tags_path, intermediate)
+    })
+    .await
+    .map_err(|e| format!("转换任务执行失败: {}", e))?
 }
 
 fn run_convert_tags<R: tauri::Runtime>(
@@ -464,6 +553,7 @@ fn run_convert_tags<R: tauri::Runtime>(
     options: &ConvertTagsOptions,
     python: &str,
     tags_path: &std::path::Path,
+    intermediate: bool,
 ) -> Result<ProcessResult, String> {
     use crate::commands::python_proc::{ProtocolReader, Recv, PYTHON_SILENCE_LIMIT};
 
@@ -479,6 +569,9 @@ fn run_convert_tags<R: tauri::Runtime>(
     }
     if options.recursive {
         args.push("--recursive".into());
+    }
+    if intermediate {
+        args.push("--intermediate".into());
     }
 
     let script = crate::commands::python_proc::find_script("tagger_inference.py")?;
@@ -615,6 +708,52 @@ mod tests {
     use tauri::Listener;
 
     #[test]
+    fn hybrid_conversion_protocol_preserves_txt_and_writes_private_json() {
+        let _lock = TAGGER_TEST_LOCK.lock().unwrap();
+        let temp = TempDir::new("hybrid_convert_protocol");
+        let tags = temp.join("tags.csv");
+        std::fs::write(&tags, "id,name,category\n0,solo,0\n").unwrap();
+        let python =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../env/python/venv/bin/python3");
+        let python = if python.exists() {
+            python.to_string_lossy().into_owned()
+        } else {
+            "python3".into()
+        };
+        for simplified in [false, true] {
+            let input = temp.join(simplified.to_string());
+            std::fs::create_dir(&input).unwrap();
+            let image = input.join("a.png");
+            std::fs::write(&image, "image").unwrap();
+            std::fs::write(image.with_extension("txt"), "solo").unwrap();
+            std::fs::write(hybrid::draft_path(&image, "json"), "stale").unwrap();
+            inference::reset_tagging_cancel();
+            let prepared = hybrid::prepare_sources(&input, false, "json").unwrap();
+            assert!(prepared.needs_json_conversion);
+            assert!(!hybrid::draft_path(&image, "json").exists());
+            let app = tauri::test::mock_app();
+            let opts = ConvertTagsOptions {
+                input_path: input.to_string_lossy().into_owned(),
+                model_id: "mock".into(),
+                json_simplified: simplified,
+                recursive: false,
+            };
+            let result = run_convert_tags(app.handle(), &opts, &python, &tags, true).unwrap();
+            assert_eq!((result.success_count, result.fail_count), (1, 0));
+            let data: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(hybrid::draft_path(&image, "json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(data.get("ai_output").is_some(), !simplified);
+            assert!(!image.with_extension("json").exists());
+            assert_eq!(
+                std::fs::read_to_string(image.with_extension("txt")).unwrap(),
+                "solo"
+            );
+        }
+    }
+
+    #[test]
     fn conversion_reads_protocol_and_cancels_with_one_done_event() {
         let _lock = TAGGER_TEST_LOCK.lock().unwrap();
         let temp = TempDir::new("tagger_convert");
@@ -651,7 +790,7 @@ mod tests {
                 json_simplified: false,
                 recursive: false,
             };
-            let result = run_convert_tags(app.handle(), &opts, &python, &tags).unwrap();
+            let result = run_convert_tags(app.handle(), &opts, &python, &tags, false).unwrap();
             let events = events.lock().unwrap();
             let done: Vec<_> = events.iter().filter(|e| e["status"] == "done").collect();
             assert_eq!(done.len(), 1);

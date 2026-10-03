@@ -22,7 +22,7 @@ import LlmApiPanel from './LlmApiPanel';
 import { TaggerCategoryGrid, ThresholdSliders } from './TaggerControls';
 import DeviceToggle from './ui/DeviceToggle';
 import { toIntervalMs, toThreads, toImageSize, splitOutputFormat, isTaggerCategory } from '../utils/taggerOptions';
-import { IMAGE_DETAILS, isOneOf, type ImageDetail, type TaggerOptions, type ConvertTagsOptions, type TagRefineOptions } from '../api/commandOptions';
+import { IMAGE_DETAILS, isOneOf, type ImageDetail, type TaggerOptions, type PrepareHybridTagsOptions, type TagRefineOptions } from '../api/commandOptions';
 
 type Phase = '' | 'converting' | 'tagging' | 'refining';
 
@@ -232,6 +232,7 @@ interface HybridSettings {
   replaceUnderscore?: boolean;
   escapeParentheses?: boolean;
   preferExisting?: boolean;
+  skipExisting?: boolean;
   enabledCats?: string[];
   modelName?: string;
   temperature?: string;
@@ -269,8 +270,12 @@ export default function HybridTaggerTab() {
   const [useGpu, setUseGpu] = useState(sv.useGpu ?? true);
   const [replaceUnderscore, setReplaceUnderscore] = useState(sv.replaceUnderscore ?? true);
   const [escapeParentheses, setEscapeParentheses] = useState(sv.escapeParentheses ?? false);
-  /** 图片已有同格式标签文件时跳过本地打标（保留现成标签，直接进入 LLM 调优） */
   const [preferExisting, setPreferExisting] = useState(sv.preferExisting ?? true);
+  const [skipExisting, setSkipExisting] = useState((sv.preferExisting ?? true) && (sv.skipExisting ?? true));
+  const changePreferExisting = (checked: boolean) => {
+    setPreferExisting(checked);
+    if (!checked) setSkipExisting(false);
+  };
   const api = useLlmApiConfig({ initialModelName: sv.modelName });
   const [prompt, setPrompt] = useState(defaultPromptTxt);
   const [presetId, setPresetId] = useState('builtin_full');
@@ -310,13 +315,13 @@ export default function HybridTaggerTab() {
   useEffect(() => {
     const s: HybridSettings = {
       modelId: selectedModel, genTh, charTh, useGpu,
-      replaceUnderscore, escapeParentheses, preferExisting,
+      replaceUnderscore, escapeParentheses, preferExisting, skipExisting,
       enabledCats: [...enabledCats],
       modelName: api.modelName, temperature, topP, imageSize, imageDetail,
       concurrency, intervalSec, outputFormat,
     };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* 配额满等，忽略 */ }
-  }, [selectedModel, genTh, charTh, useGpu, replaceUnderscore, escapeParentheses, preferExisting,
+  }, [selectedModel, genTh, charTh, useGpu, replaceUnderscore, escapeParentheses, preferExisting, skipExisting,
     enabledCats, api.modelName, temperature, topP, imageSize, imageDetail, concurrency, intervalSec, outputFormat]);
 
   // 本地打标/转换走 tagger-progress，LLM 调优走 tag-refine-progress，统一进日志与进度条
@@ -429,31 +434,27 @@ export default function HybridTaggerTab() {
     const intervalMs = toIntervalMs(intervalSec);
     const threads = toThreads(concurrency, 16);
     taskLogs.setInitialLog(t('hybridTagger.phaseTagging'));
+    changePhase('tagging');
 
     try {
-      // JSON 输出 + 优先使用已有标签：先把只有 .txt 的图按模型词表转成 JSON，
-      // 这样下一步"跳过已有标签"的判定才能命中，不会丢掉手里现成的 txt 标签去重跑模型。
-      // 已经有 .json 的图会被跳过（不拿扁平 txt 盖掉带 nl 的成果）
-      if (isJson && preferExisting) {
+      // 复用的标签先准备为中间文件；两个选项都开启时不转换已有标签。
+      if (preferExisting && !skipExisting) {
         changePhase('converting');
         taskLogs.appendLog(t('hybridTagger.phaseConverting'), 'info');
         updateTask('hybrid-tagger', { status: 'running', message: t('hybridTagger.phaseConverting') });
-        await invoke('convert_tags_to_json', {
+        await invoke('prepare_hybrid_tags', {
           options: {
             input_path: inputPath,
             model_id: selectedModel,
+            file_format: isJson ? 'json' : 'txt',
             json_simplified: outputFormat === 'json_simplified',
             recursive,
-          } satisfies ConvertTagsOptions,
+          } satisfies PrepareHybridTagsOptions,
         });
         if (cancelRequestedRef.current) return;
       }
 
-      // txt 输出 + 优先使用已有标签：不用转换——打标阶段靠 also_skip_json 把
-      // 同名 .json 算作"已有标签"跳过；LLM 调优阶段直接读 JSON 的字段结构
-      // （count/appearance/... 带着含义喂给 VLM），比摊平成 txt 信息更全
-
-      // 本地打标（直接按所选格式输出）
+      // 本地结果使用专用扩展名，正式标签由 VLM 调优完成后写入。
       changePhase('tagging');
       setPCur(0); setPTot(0);
       updateTask('hybrid-tagger', { status: 'running', current: 0, total: 0, message: t('hybridTagger.phaseTagging') });
@@ -477,6 +478,7 @@ export default function HybridTaggerTab() {
           also_skip_json: !isJson && preferExisting,
           batch_size: 1,
           recursive,
+          hybrid_mode: true,
         } satisfies TaggerOptions,
       });
 
@@ -511,6 +513,9 @@ export default function HybridTaggerTab() {
           trigger_word: triggerWord,
           // 只归类不增删：标签集合由后端保证恒定（仅 JSON 有字段结构）
           preserve_tags: isJson && preserveTags,
+          hybrid_mode: true,
+          skip_existing_labels: preferExisting && skipExisting,
+          prefer_existing_tags: preferExisting,
         } satisfies TagRefineOptions,
       });
 
@@ -577,7 +582,7 @@ export default function HybridTaggerTab() {
                 <Checkbox checked={escapeParentheses} onChange={setEscapeParentheses} label={t('aiTagger.escapeParentheses')} size={14} />
               </span>
               <span title={t('hybridTagger.preferExistingTip')}>
-                <Checkbox checked={preferExisting} onChange={setPreferExisting} label={t('hybridTagger.preferExisting')} size={14} />
+                <Checkbox checked={preferExisting} onChange={changePreferExisting} disabled={processing} label={t('hybridTagger.preferExisting')} size={14} />
               </span>
             </div>
           </div>
@@ -663,15 +668,20 @@ export default function HybridTaggerTab() {
                 />
               </div>
             </div>
-            <div>
-              <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Hash style={{ width: 12, height: 12, color: 'var(--color-text-tertiary)' }} /> {t('hybridTagger.triggerWord')}
-              </label>
-              <input className="form-input" value={triggerWord}
-                onChange={e => {
-                  setTriggerWord(e.target.value);
-                  try { localStorage.setItem(TRIGGER_WORD_KEY, e.target.value); } catch { /* 配额满等，忽略 */ }
-                }} />
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+              <div style={{ flex: '1 1 100px', minWidth: 0 }}>
+                <label htmlFor="hybrid-trigger-word" className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <Hash style={{ width: 12, height: 12, color: 'var(--color-text-tertiary)' }} /> {t('hybridTagger.triggerWord')}
+                </label>
+                <input id="hybrid-trigger-word" className="form-input" value={triggerWord}
+                  onChange={e => {
+                    setTriggerWord(e.target.value);
+                    try { localStorage.setItem(TRIGGER_WORD_KEY, e.target.value); } catch { /* 配额满等，忽略 */ }
+                  }} />
+              </div>
+              <span title={t(preferExisting ? 'hybridTagger.skipExistingTip' : 'hybridTagger.skipExistingRequiresReuse')} style={{ display: 'flex', alignItems: 'center', minHeight: 34 }}>
+                <Checkbox checked={skipExisting} onChange={setSkipExisting} disabled={processing || !preferExisting} size={14} label={t('hybridTagger.skipExisting')} />
+              </span>
             </div>
           </div>
         </div>

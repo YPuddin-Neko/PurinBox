@@ -178,6 +178,60 @@ class PixaiTests(unittest.TestCase):
         }, tags, {})
         self.assertEqual(path.read_text(), "trigger, solo, existing, new")
 
+    def test_hybrid_outputs_use_private_extensions_for_all_formats(self):
+        image = self.root / "image.png"
+        tags = [{"name": "solo", "category": "general"}]
+        for extension, simplified in [("txt", False), ("json", False), ("json", True)]:
+            with self.subTest(extension=extension, simplified=simplified):
+                output = self.root / f"image.png.purin-local-{extension}"
+                result = tagger._write_outputs(str(image), [.9], {
+                    "output_format": extension, "json_simplified": simplified,
+                    "tag_output_path": str(output),
+                }, tags, {})
+                self.assertEqual(result["image_path"], str(image))
+                self.assertEqual(result["tag_count"], 1)
+                self.assertTrue(output.exists())
+                self.assertFalse(image.with_suffix("." + extension).exists())
+                self.assertNotIn(output.suffix, [".txt", ".json"])
+                if extension == "json":
+                    self.assertEqual("ai_output" in json.loads(output.read_text()), not simplified)
+
+    def test_hybrid_txt_conversion_uses_private_json_for_both_layouts(self):
+        vocabulary = self.root / "tags.csv"
+        vocabulary.write_text("id,name,category\n0,solo,0\n1,blue_hair,0\n")
+        for simplified in [False, True]:
+            with self.subTest(simplified=simplified):
+                folder = self.root / str(simplified)
+                (folder / "nested").mkdir(parents=True)
+                (folder / "Fail").mkdir()
+                images = [folder / "a.png", folder / "nested/a.png"]
+                for image in images + [folder / "Fail/a.png"]:
+                    image.write_bytes(b"image")
+                    image.with_suffix(".txt").write_text("solo, blue hair")
+                original_json = '{"ai_output":{"tags":["old tag"],"nl":"keep me"}}'
+                existing = folder / "existing.png"
+                existing.write_bytes(b"image")
+                existing.with_suffix(".txt").write_text("do not use")
+                existing.with_suffix(".json").write_text(original_json)
+                args = ["tagger_inference.py", "--convert", "--input", str(folder),
+                        "--tags-path", str(vocabulary), "--recursive", "--intermediate"]
+                if simplified:
+                    args.append("--simplified")
+                summary = []
+                with patch.object(sys, "argv", args), patch.object(tagger, "progress"), \
+                     patch.object(tagger, "done", side_effect=lambda **fields: summary.append(fields)):
+                    tagger.run_convert_mode()
+                self.assertEqual(summary, [{"converted": 2, "skipped": 1, "failed": 0, "total": 3}])
+                for image in images:
+                    output = Path(str(image) + ".purin-local-json")
+                    data = json.loads(output.read_text())
+                    self.assertEqual("ai_output" in data, not simplified)
+                    self.assertIn("blue hair", output.read_text())
+                    self.assertFalse(image.with_suffix(".json").exists())
+                    self.assertEqual(image.with_suffix(".txt").read_text(), "solo, blue hair")
+                self.assertFalse((folder / "Fail/a.png.purin-local-json").exists())
+                self.assertEqual(existing.with_suffix(".json").read_text(), original_json)
+
 
 class ProtocolTests(unittest.TestCase):
     def run_protocol(self, commands, session, module=tagger, tags=None, provider_calls=None):

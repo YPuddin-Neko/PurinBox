@@ -51,7 +51,8 @@ use commands::tag_sort::{cancel_tag_sorting, start_tag_sorting};
 use commands::tagger::llm_tagger::{cancel_llm_tagging, fetch_llm_models, start_llm_tagging};
 use commands::tagger::{
     cancel_tagging, convert_tags_to_json, detect_onnx_model_info, force_cancel_tagging,
-    get_tagger_models, import_local_tagger_model, remove_custom_tagger_model, start_tagging,
+    get_tagger_models, import_local_tagger_model, prepare_hybrid_tags, remove_custom_tagger_model,
+    start_tagging,
 };
 use commands::thumbnail::get_image_thumbnail;
 use commands::translator::{
@@ -110,6 +111,7 @@ pub fn run() {
             cancel_tagging,
             force_cancel_tagging,
             convert_tags_to_json,
+            prepare_hybrid_tags,
             reset_python_env,
             deploy_python_env,
             get_python_env_info,

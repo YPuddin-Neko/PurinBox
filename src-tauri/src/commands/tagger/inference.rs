@@ -137,12 +137,40 @@ pub(super) fn emit_summary<R: tauri::Runtime>(
 
 fn should_skip(path: &Path, options: &TaggerOptions) -> bool {
     options.existing_tags_action == "skip"
-        && if options.output_format == "json" {
+        && if options.hybrid_mode {
+            super::hybrid::has_labels(path)
+        } else if options.output_format == "json" {
             path.with_extension("json").exists()
         } else {
             path.with_extension("txt").exists()
                 || (options.also_skip_json && path.with_extension("json").exists())
         }
+}
+
+pub(super) fn all_skipped(options: &TaggerOptions) -> Result<Option<ProcessResult>, String> {
+    let files =
+        collect_image_files_with_recursive(Path::new(&options.input_path), options.recursive)?;
+    if files.is_empty() {
+        return Err("输入目录中没有找到图片文件".into());
+    }
+    Ok(files
+        .iter()
+        .all(|path| should_skip(path, options))
+        .then(|| ProcessResult {
+            total: files.len() as u32,
+            success_count: files.len() as u32,
+            ..Default::default()
+        }))
+}
+
+fn clear_pending_drafts(files: &[PathBuf], options: &TaggerOptions) -> Result<(), String> {
+    if options.hybrid_mode {
+        // 先清掉本轮待重打的旧中间文件，避免推理失败后 VLM 读到上次结果。
+        for path in files.iter().filter(|path| !should_skip(path, options)) {
+            super::hybrid::clear_drafts(path)?;
+        }
+    }
+    Ok(())
 }
 
 // 所有提前返回路径都必须回收已登记的子进程。
@@ -185,6 +213,7 @@ fn run_tagging_process<R: tauri::Runtime>(
         return Ok(result);
     }
 
+    clear_pending_drafts(&files, options)?;
     let mut cmd = Command::new(python);
     cmd.arg(script)
         .stdin(Stdio::piped())
@@ -317,6 +346,10 @@ fn run_tagging_process<R: tauri::Runtime>(
             .map(|path| {
                 let mut value = base_cmd.clone();
                 value["image_path"] = serde_json::json!(path.to_string_lossy());
+                if options.hybrid_mode {
+                    value["tag_output_path"] =
+                        serde_json::json!(super::hybrid::draft_path(path, &options.output_format));
+                }
                 value
             })
             .collect();
@@ -492,6 +525,58 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_skip_checks_both_formats_and_ignores_intermediates() {
+        let temp = TempDir::new("hybrid_skip");
+        let path = temp.join("image.png");
+        std::fs::write(&path, "fixture").unwrap();
+        for format in ["txt", "json"] {
+            let mut opts = options(&temp);
+            opts.hybrid_mode = true;
+            opts.output_format = format.into();
+            let draft = super::super::hybrid::draft_path(&path, format);
+            std::fs::write(&draft, "stale").unwrap();
+            assert!(!should_skip(&path, &opts));
+            assert!(all_skipped(&opts).unwrap().is_none());
+            clear_pending_drafts(&[path.clone()], &opts).unwrap();
+            assert!(!draft.exists());
+            for existing in ["txt", "json"] {
+                std::fs::write(path.with_extension(existing), "existing").unwrap();
+                for action in ["skip", "overwrite"] {
+                    opts.existing_tags_action = action.into();
+                    assert_eq!(should_skip(&path, &opts), action == "skip");
+                    assert_eq!(all_skipped(&opts).unwrap().is_some(), action == "skip");
+                }
+                assert!(!should_skip(&path, &opts));
+                std::fs::remove_file(path.with_extension(existing)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn hybrid_scan_respects_single_image_recursion_and_duplicate_names() {
+        let temp = TempDir::new("hybrid_recursive");
+        std::fs::create_dir(temp.join("nested")).unwrap();
+        let first = temp.join("a.png");
+        let second = temp.join("nested/a.png");
+        for path in [&first, &second] {
+            std::fs::write(path, "image").unwrap();
+        }
+        std::fs::write(first.with_extension("txt"), "existing").unwrap();
+        let mut opts = options(&temp);
+        opts.hybrid_mode = true;
+        opts.existing_tags_action = "skip".into();
+        assert_eq!(all_skipped(&opts).unwrap().unwrap().total, 1);
+        opts.recursive = true;
+        assert!(all_skipped(&opts).unwrap().is_none());
+        assert_ne!(
+            super::super::hybrid::draft_path(&first, "txt"),
+            super::super::hybrid::draft_path(&second, "txt")
+        );
+        opts.input_path = first.to_string_lossy().into_owned();
+        assert_eq!(all_skipped(&opts).unwrap().unwrap().total, 1);
+    }
+
+    #[test]
     fn protocol_results_skip_and_cancellation_are_accounted_by_path() {
         let _lock = super::super::TAGGER_TEST_LOCK.lock().unwrap();
         let temp = TempDir::new("tagger_protocol");
@@ -515,7 +600,16 @@ for line in sys.stdin:
         if mode == 'cancel_infer':
             emit(type='log', message='cancel_now')
             time.sleep(30)
-        if mode == 'skip':
+        if mode == 'hybrid':
+            from pathlib import Path
+            assert len(images) == 1, images
+            item = images[0]
+            target = Path(item['tag_output_path'])
+            assert str(target) == item['image_path'] + '.purin-local-' + item['output_format']
+            assert not target.exists(), 'stale intermediate was not cleared'
+            target.write_text('fresh tags')
+            emit(type='result', image_path=item['image_path'], tag_count=2)
+        elif mode == 'skip':
             assert len(images) == 1, images
             emit(type='result', image_path=images[0]['image_path'], tag_count=2)
         else:
@@ -533,7 +627,7 @@ for line in sys.stdin:
             "python3".into()
         };
         let mut model = super::super::models::get_builtin_models().remove(0);
-        for mode in ["reordered", "skip", "cancel_load", "cancel_infer"] {
+        for mode in ["reordered", "skip", "hybrid", "cancel_load", "cancel_infer"] {
             let input = temp.join(mode);
             std::fs::create_dir_all(&input).unwrap();
             for name in ["a.png", "b.png", "c.png"] {
@@ -545,6 +639,17 @@ for line in sys.stdin:
                 opts.existing_tags_action = "skip".into();
                 std::fs::write(input.join("a.txt"), "saved").unwrap();
                 std::fs::write(input.join("b.txt"), "saved").unwrap();
+            }
+            if mode == "hybrid" {
+                opts.hybrid_mode = true;
+                opts.existing_tags_action = "skip".into();
+                std::fs::write(input.join("a.txt"), "saved").unwrap();
+                std::fs::write(input.join("b.json"), "saved").unwrap();
+                std::fs::write(
+                    super::super::hybrid::draft_path(&input.join("c.png"), "txt"),
+                    "stale",
+                )
+                .unwrap();
             }
             reset_tagging_cancel();
             let app = tauri::test::mock_app();
@@ -568,6 +673,26 @@ for line in sys.stdin:
                     assert!(input.join("Fail/c.png").exists());
                 }
                 "skip" => assert_eq!((result.success_count, result.fail_count), (3, 0)),
+                "hybrid" => {
+                    assert_eq!((result.success_count, result.fail_count), (3, 0));
+                    assert_eq!(
+                        std::fs::read_to_string(input.join("a.txt")).unwrap(),
+                        "saved"
+                    );
+                    assert_eq!(
+                        std::fs::read_to_string(input.join("b.json")).unwrap(),
+                        "saved"
+                    );
+                    assert!(!input.join("c.txt").exists());
+                    assert_eq!(
+                        std::fs::read_to_string(super::super::hybrid::draft_path(
+                            &input.join("c.png"),
+                            "txt"
+                        ))
+                        .unwrap(),
+                        "fresh tags"
+                    );
+                }
                 _ => {
                     assert_eq!((result.success_count, result.fail_count), (0, 0));
                     assert!(!input.join("Fail").exists());

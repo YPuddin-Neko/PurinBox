@@ -55,6 +55,12 @@ pub struct TagRefineOptions {
     /// 不指望模型遵守"不要增删"的嘱咐
     #[serde(default)]
     pub preserve_tags: bool,
+    #[serde(default)]
+    pub hybrid_mode: bool,
+    #[serde(default)]
+    pub skip_existing_labels: bool,
+    #[serde(default)]
+    pub prefer_existing_tags: bool,
 }
 
 fn default_file_format() -> String {
@@ -791,14 +797,30 @@ async fn process_single_file(
         .to_string();
     let parent = img_path.parent().unwrap_or(Path::new("."));
 
+    let skip_existing =
+        options.hybrid_mode && options.prefer_existing_tags && options.skip_existing_labels;
+    if skip_existing && super::tagger::hybrid::has_labels(img_path) {
+        return FileResult::Skipped {
+            filename,
+            reason: "已有标签文件".into(),
+        };
+    }
+
     // 查找对应的标签文件（txt 或 json）
     let is_json = options.file_format == "json";
     let tag_ext = if is_json { "json" } else { "txt" };
-    let mut tag_path = parent.join(format!("{}.{}", stem, tag_ext));
+    let mut tag_path = if options.hybrid_mode {
+        super::tagger::hybrid::source_path(img_path, tag_ext)
+    } else {
+        parent.join(format!("{}.{}", stem, tag_ext))
+    };
     // txt 模式回退：没有 .txt 但有 .json 时直接读 JSON——字段结构带着语义
     // 喂给 VLM 比先摊平转换信息更全（输出是扁平 txt，写盘时反正要摊平）
-    let mut json_fallback = false;
-    if !tag_path.exists() && !is_json {
+    let mut json_fallback = !is_json
+        && tag_path
+            .extension()
+            .is_some_and(|ext| ext == "json" || ext == "purin-local-json");
+    if !options.hybrid_mode && !tag_path.exists() && !is_json {
         let jp = parent.join(format!("{}.json", stem));
         if jp.exists() {
             tag_path = jp;
@@ -808,7 +830,11 @@ async fn process_single_file(
     if !tag_path.exists() {
         return FileResult::Skipped {
             filename,
-            reason: format!("无对应 .{} 标签文件", tag_ext),
+            reason: if options.hybrid_mode {
+                "无可用的本地标签".into()
+            } else {
+                format!("无对应 .{} 标签文件", tag_ext)
+            },
         };
     }
 
@@ -990,12 +1016,25 @@ async fn process_single_file(
         }
     };
 
-    match std::fs::write(&output_path, &output_content) {
-        Ok(_) => done,
-        Err(e) => FileResult::Error {
+    let written = if skip_existing {
+        super::tagger::hybrid::write_final(img_path, &output_path, &output_content)
+    } else {
+        std::fs::write(&output_path, &output_content)
+            .map(|_| true)
+            .map_err(|e| format!("写入失败: {}", e))
+    };
+    match written {
+        Ok(true) => {
+            if options.hybrid_mode {
+                let _ = std::fs::remove_file(&tag_path);
+            }
+            done
+        }
+        Ok(false) => FileResult::Skipped {
             filename,
-            message: format!("写入失败: {}", e),
+            reason: "已有标签文件".into(),
         },
+        Err(message) => FileResult::Error { filename, message },
     }
 }
 
@@ -1712,6 +1751,9 @@ mod e2e_tests {
             caption_mode: false,
             trigger_word: String::new(),
             preserve_tags: false,
+            hybrid_mode: false,
+            skip_existing_labels: false,
+            prefer_existing_tags: false,
         }
     }
 
@@ -1731,6 +1773,282 @@ mod e2e_tests {
         "ai_output": {"count": "1girl", "appearance": "long hair, blue eyes",
                       "tags": ["smile"], "environment": [], "nl": "keep me"}
     }"#;
+
+    #[tokio::test]
+    async fn hybrid_intermediate_labels_reach_vlm_and_only_success_is_published() {
+        use crate::commands::tagger::hybrid::{draft_path, has_labels};
+        for (format, local) in [
+            ("txt", "1girl, smile"),
+            ("json", FIXTURE_JSON),
+            (
+                "json",
+                r#"{"count":"1girl","appearance":[],"tags":["smile"],"environment":[],"nl":""}"#,
+            ),
+        ] {
+            let (root, img) = setup_dir("hybrid_refine_success");
+            let source = draft_path(&img, format);
+            std::fs::write(&source, local).unwrap();
+            assert!(!has_labels(&img));
+            let server = serve_chat_reply(Some("COUNT: 1girl\nAPPEARANCE: long hair\nTAGS: smile\nENVIRONMENT:\nNL: A smiling girl."), "stop");
+            let mut options = make_options(server.url.clone());
+            options.input_path = root.to_string_lossy().into_owned();
+            options.file_format = format.into();
+            options.hybrid_mode = true;
+            options.prefer_existing_tags = true;
+            options.skip_existing_labels = true;
+            let result = process_single_file(
+                &client(),
+                &img,
+                &root,
+                &root,
+                &options,
+                &RequestThrottle::new(-1),
+            )
+            .await;
+            assert!(matches!(result, FileResult::Success { .. }), "{result:?}");
+            let written = std::fs::read_to_string(img.with_extension(format)).unwrap();
+            assert!(written.contains("smile"));
+            assert!(!source.exists());
+            assert!(has_labels(&img));
+            let request = server
+                .requests
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            assert!(request.json()["messages"][0]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("smile"));
+            if format == "json" {
+                let value: serde_json::Value = serde_json::from_str(&written).unwrap();
+                assert_eq!(
+                    value.get("ai_output").is_some(),
+                    local.contains("ai_output")
+                );
+            }
+            options.api_endpoint = "http://127.0.0.1:1".into();
+            let retry = process_single_file(
+                &client(),
+                &img,
+                &root,
+                &root,
+                &options,
+                &RequestThrottle::new(-1),
+            )
+            .await;
+            assert!(matches!(retry, FileResult::Skipped { .. }), "{retry:?}");
+            assert_eq!(
+                std::fs::read_to_string(img.with_extension(format)).unwrap(),
+                written
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hybrid_failed_refinement_leaves_no_final_label_and_can_retry() {
+        use crate::commands::tagger::hybrid::{draft_path, has_labels};
+        for (format, local) in [
+            ("txt", "1girl, smile"),
+            ("json", FIXTURE_JSON),
+            ("json", r#"{"count":"1girl","tags":["smile"]}"#),
+        ] {
+            let (root, img) = setup_dir("hybrid_refine_failed");
+            let source = draft_path(&img, format);
+            std::fs::write(&source, local).unwrap();
+            let server = serve_chat_reply(None, "stop");
+            let mut options = make_options(server.url.clone());
+            options.input_path = root.to_string_lossy().into_owned();
+            options.file_format = format.into();
+            options.hybrid_mode = true;
+            options.prefer_existing_tags = true;
+            options.skip_existing_labels = true;
+            let result = process_single_file(
+                &client(),
+                &img,
+                &root,
+                &root,
+                &options,
+                &RequestThrottle::new(-1),
+            )
+            .await;
+            assert!(matches!(result, FileResult::Error { .. }), "{result:?}");
+            assert!(!has_labels(&img));
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), local);
+            let retry_server = serve_chat_reply(Some("COUNT: 1girl\nTAGS: smile"), "stop");
+            options.api_endpoint = retry_server.url.clone();
+            let retry = process_single_file(
+                &client(),
+                &img,
+                &root,
+                &root,
+                &options,
+                &RequestThrottle::new(-1),
+            )
+            .await;
+            assert!(matches!(retry, FileResult::Success { .. }), "{retry:?}");
+            assert!(has_labels(&img));
+            assert!(!source.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn hybrid_does_not_call_vlm_for_late_labels_or_missing_local_output() {
+        use crate::commands::tagger::hybrid::draft_path;
+        for format in ["txt", "json"] {
+            for existing in ["txt", "json"] {
+                let (root, img) = setup_dir("hybrid_late_labels");
+                let mut options = make_options("http://127.0.0.1:1".into());
+                options.input_path = root.to_string_lossy().into_owned();
+                options.hybrid_mode = true;
+                options.skip_existing_labels = true;
+                options.prefer_existing_tags = true;
+                options.file_format = format.into();
+                let missing = process_single_file(
+                    &client(),
+                    &img,
+                    &root,
+                    &root,
+                    &options,
+                    &RequestThrottle::new(-1),
+                )
+                .await;
+                assert!(matches!(missing, FileResult::Skipped { .. }), "{missing:?}");
+                std::fs::write(draft_path(&img, format), "local tags").unwrap();
+                std::fs::write(img.with_extension(existing), "external").unwrap();
+                let result = process_single_file(
+                    &client(),
+                    &img,
+                    &root,
+                    &root,
+                    &options,
+                    &RequestThrottle::new(-1),
+                )
+                .await;
+                assert!(matches!(result, FileResult::Skipped { .. }), "{result:?}");
+                assert_eq!(
+                    std::fs::read_to_string(img.with_extension(existing)).unwrap(),
+                    "external"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hybrid_reuse_and_regeneration_follow_local_option() {
+        use crate::commands::tagger::hybrid::draft_path;
+        for (format, old, draft) in [
+            ("txt", "1girl, old tag", "1girl, fresh tag"),
+            (
+                "json",
+                r#"{"ai_output":{"count":"1girl","tags":["old tag"]}}"#,
+                r#"{"ai_output":{"count":"1girl","tags":["fresh tag"]}}"#,
+            ),
+            (
+                "json",
+                r#"{"count":"1girl","tags":["old tag"]}"#,
+                r#"{"count":"1girl","tags":["fresh tag"]}"#,
+            ),
+        ] {
+            for (prefer_existing, skip_existing) in [(true, false), (false, false), (false, true)] {
+                let (root, img) = setup_dir("hybrid_compat");
+                std::fs::write(img.with_extension(format), old).unwrap();
+                let source = draft_path(&img, format);
+                if prefer_existing {
+                    let _lock = crate::commands::tagger::TAGGER_TEST_LOCK.lock().unwrap();
+                    crate::commands::tagger::inference::reset_tagging_cancel();
+                    let prepared =
+                        crate::commands::tagger::hybrid::prepare_sources(&root, false, format)
+                            .unwrap();
+                    assert_eq!(prepared.copied, 1);
+                    assert_eq!(
+                        std::fs::read_to_string(img.with_extension(format)).unwrap(),
+                        old
+                    );
+                } else {
+                    std::fs::write(&source, draft).unwrap();
+                }
+                let server = serve_chat_reply(Some("COUNT: 1girl\nTAGS: refined tag"), "stop");
+                let mut options = make_options(server.url.clone());
+                options.hybrid_mode = true;
+                options.prefer_existing_tags = prefer_existing;
+                options.skip_existing_labels = skip_existing;
+                options.file_format = format.into();
+                let result = process_single_file(
+                    &client(),
+                    &img,
+                    &root,
+                    &root,
+                    &options,
+                    &RequestThrottle::new(-1),
+                )
+                .await;
+                assert!(matches!(result, FileResult::Success { .. }), "{result:?}");
+                let request = server
+                    .requests
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .json();
+                let text = request["messages"][0]["content"][0]["text"]
+                    .as_str()
+                    .unwrap();
+                assert!(
+                    text.contains(if prefer_existing {
+                        "old tag"
+                    } else {
+                        "fresh tag"
+                    }),
+                    "{text}"
+                );
+                assert!(
+                    !text.contains(if prefer_existing {
+                        "fresh tag"
+                    } else {
+                        "old tag"
+                    }),
+                    "{text}"
+                );
+                assert!(std::fs::read_to_string(img.with_extension(format))
+                    .unwrap()
+                    .contains("refined tag"));
+                assert!(!source.exists());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hybrid_json_source_can_be_reused_for_txt_output() {
+        use crate::commands::tagger::hybrid::{draft_path, prepare_sources};
+        for original in [FIXTURE_JSON, r#"{"count":"1girl","tags":["smile"]}"#] {
+            let (root, img) = setup_dir("hybrid_json_to_txt");
+            std::fs::write(img.with_extension("json"), original).unwrap();
+            {
+                let _lock = crate::commands::tagger::TAGGER_TEST_LOCK.lock().unwrap();
+                crate::commands::tagger::inference::reset_tagging_cancel();
+                assert_eq!(prepare_sources(&root, false, "txt").unwrap().copied, 1);
+            }
+            let server = serve_chat_reply(Some("COUNT: 1girl\nTAGS: smile"), "stop");
+            let mut options = make_options(server.url.clone());
+            options.hybrid_mode = true;
+            options.prefer_existing_tags = true;
+            let result = process_single_file(
+                &client(),
+                &img,
+                &root,
+                &root,
+                &options,
+                &RequestThrottle::new(-1),
+            )
+            .await;
+            assert!(matches!(result, FileResult::Success { .. }), "{result:?}");
+            assert!(std::fs::read_to_string(img.with_extension("txt"))
+                .unwrap()
+                .contains("smile"));
+            assert_eq!(
+                std::fs::read_to_string(img.with_extension("json")).unwrap(),
+                original
+            );
+            assert!(!draft_path(&img, "json").exists());
+        }
+    }
 
     #[tokio::test]
     async fn txt_mode_json_fallback_end_to_end() {

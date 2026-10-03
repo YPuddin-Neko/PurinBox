@@ -22,7 +22,7 @@ AI Tagger 推理脚本 - 由 Tauri 后端调用
 一次性模式（处理完即退出）:
 - --detect <model_path>: 输出一行 {"type": "model_info", "input_size", "input_format", "input_shape"}，
   失败时写 stderr 并以退出码 1 结束
-- --convert --input <目录或图片> --tags-path <词表> [--simplified] [--recursive]:
+- --convert --input <目录或图片> --tags-path <词表> [--simplified] [--recursive] [--intermediate]:
   txt → JSON，输出 progress / log 行，最后一行 {"type": "done", "converted", "skipped", "failed", "total"}；
   参数错误时输出 {"type": "error", "message": "..."}
 """
@@ -484,6 +484,7 @@ def run_convert_mode():
     parser.add_argument("--tags-path", default=None)
     parser.add_argument("--simplified", action="store_true")
     parser.add_argument("--recursive", action="store_true")
+    parser.add_argument("--intermediate", action="store_true")
     args = parser.parse_args()
 
     if not args.tags_path:
@@ -506,6 +507,11 @@ def run_convert_mode():
     else:
         images = sorted(f for f in root.iterdir() if f.is_file() and f.suffix.lower() in exts)
 
+    if args.intermediate and root.is_dir():
+        artifact_names = {"fail", "warn", "_errors", "_warnings"}
+        images = [img for img in images if not any(
+            part.lower() in artifact_names for part in img.relative_to(root).parts[:-1])]
+
     total = len(images)
     converted = 0
     skipped = 0
@@ -527,7 +533,8 @@ def run_convert_mode():
                     cat = cat_by_name.get(_normalize_tag_key(plain), "general")
                     selected.append((plain, cat))
                 data = _build_simplified_json(selected) if args.simplified else _build_structured_json(selected)
-                _write_json_atomic(json_path, data)
+                output = Path(str(img) + ".purin-local-json") if args.intermediate else json_path
+                _write_json_atomic(output, data)
                 converted += 1
             except Exception as e:
                 failed += 1
@@ -596,7 +603,7 @@ def _write_outputs(image_path, probs, opts, tags, category_thresholds):
     reply = {"image_path": image_path, "tag_count": 0, "skipped": True}
     if opts.get("output_format", "txt") == "json":
         simplified = opts.get("json_simplified", False)
-        path = Path(image_path).with_suffix(".json")
+        path = Path(opts["tag_output_path"]) if opts.get("tag_output_path") else Path(image_path).with_suffix(".json")
         data = _build_simplified_json(selected_tags) if simplified else _build_structured_json(selected_tags)
         merging = action in ("prepend", "append") and path.exists()
         try:
@@ -613,7 +620,7 @@ def _write_outputs(image_path, probs, opts, tags, category_thresholds):
             log(f"⚠ JSON 合并失败，跳过写入以保护原文件 [{path.name}]: {err}")
             return reply
     else:
-        path = Path(image_path).with_suffix(".txt")
+        path = Path(opts["tag_output_path"]) if opts.get("tag_output_path") else Path(image_path).with_suffix(".txt")
         if action in ("prepend", "append") and path.exists():
             try:
                 existing = _split_tags(_read_tag_text(path))

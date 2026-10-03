@@ -264,6 +264,8 @@ export interface TaggerOptions {
   existing_tags_action?: ExistingTagsAction;
   /** txt 输出且 skip 时，同名 .json 也算已有标签 */
   also_skip_json?: boolean;
+  /** 辅助打标：本地标签写入专用中间文件 */
+  hybrid_mode?: boolean;
   /** 默认 1 */
   batch_size?: number;
   recursive?: boolean;
@@ -276,6 +278,10 @@ export interface ConvertTagsOptions {
   model_id: string;
   json_simplified?: boolean;
   recursive?: boolean;
+}
+
+export interface PrepareHybridTagsOptions extends ConvertTagsOptions {
+  file_format: TagFileFormat;
 }
 
 /** tagger/llm_tagger.rs → start_llm_tagging */
@@ -334,6 +340,9 @@ export interface TagRefineOptions {
   trigger_word?: string;
   /** 仅 JSON：只重新归类，标签集合保持不变 */
   preserve_tags?: boolean;
+  hybrid_mode?: boolean;
+  skip_existing_labels?: boolean;
+  prefer_existing_tags?: boolean;
 }
 
 /** tag_sort.rs → start_tag_sorting（间隔与并发没有 serde 默认值，必填） */
@@ -394,6 +403,7 @@ export interface OptionsCommandMap {
   execute_rename: RenameOptions;
   start_tagging: TaggerOptions;
   convert_tags_to_json: ConvertTagsOptions;
+  prepare_hybrid_tags: PrepareHybridTagsOptions;
   start_llm_tagging: LlmTaggerOptions;
   start_tag_refining: TagRefineOptions;
   start_tag_sorting: TagSortOptions;
