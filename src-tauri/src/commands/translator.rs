@@ -957,24 +957,23 @@ impl ParsedTranslationCsv {
     }
 }
 
-/// 校验表头并逐行检查列数与语言；不触碰数据库。
-///
-/// 一条记录只占一行：标签和译文都不含换行（翻译结果按行拆分后才入库，导出也就没有跨行字段）。
-/// 引号个数为奇数的行引号不成对，整行跳过——按 CSV 规则读的话，没闭合的引号会把后面的行
-/// 都吞进同一个字段
+/// 校验逻辑记录；坏引号从下一物理行恢复，不触碰数据库。
 fn parse_translation_csv(content: &str) -> Result<ParsedTranslationCsv, String> {
     const VALID_LANGS: [&str; 3] = ["zh-CN", "ja", "ko"];
     // 应用自身导出带 UTF-8 BOM，比较表头前先剥掉，保证导出文件可直接再导入
     let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
-    let content = content.replace("\r\n", "\n").replace('\r', "\n");
-    // 空白行跳过、不计数，但行号按物理行算
-    let mut lines = content
-        .split('\n')
-        .zip(1u64..)
-        .filter(|(line, _)| !line.trim().is_empty());
-
-    let Some((header, _)) = lines.next() else {
-        return Err("CSV 文件为空".to_string());
+    let mut remaining = content;
+    let mut number = 1;
+    let header = loop {
+        if remaining.is_empty() {
+            return Err("CSV 文件为空".to_string());
+        }
+        let (line, rest) = remaining.split_at(csv_physical_line_end(remaining));
+        remaining = rest;
+        number += 1;
+        if !line.trim().is_empty() {
+            break line;
+        }
     };
     let header = csv_fields(&normalize_csv_quote_spacing(header)).join(",");
     if header.to_lowercase().replace(' ', "") != "tag,translated,lang" {
@@ -985,16 +984,34 @@ fn parse_translation_csv(content: &str) -> Result<ParsedTranslationCsv, String> 
     }
 
     let mut out = ParsedTranslationCsv::default();
-    for (line, number) in lines {
-        if line.matches('"').count() % 2 == 1 {
-            out.skip(Some(format!("第 {} 行: 引号不成对，已跳过该行", number)));
+    while !remaining.is_empty() {
+        let start_line = number;
+        let boundary = csv_record_end(remaining);
+        let end = boundary.unwrap_or_else(|| csv_physical_line_end(remaining));
+        let (record, rest) = remaining.split_at(end);
+        remaining = rest;
+        number += record
+            .bytes()
+            .enumerate()
+            .filter(|&(i, b)| {
+                b == b'\r' || (b == b'\n' && (i == 0 || record.as_bytes()[i - 1] != b'\r'))
+            })
+            .count();
+        if record.trim().is_empty() {
             continue;
         }
-        let fields = csv_fields(&normalize_csv_quote_spacing(line));
+        if boundary.is_none() {
+            out.skip(Some(format!(
+                "第 {} 行: 引号不成对，已跳过该行",
+                start_line
+            )));
+            continue;
+        }
+        let fields = csv_fields(&normalize_csv_quote_spacing(record));
         if fields.len() < 3 {
             out.skip(Some(format!(
                 "第 {} 行: 列数不足 ({}列，需要3列)",
-                number,
+                start_line,
                 fields.len()
             )));
             continue;
@@ -1012,7 +1029,7 @@ fn parse_translation_csv(content: &str) -> Result<ParsedTranslationCsv, String> 
         if !VALID_LANGS.contains(&lang) {
             out.skip(Some(format!(
                 "第 {} 行: 不支持的语言 '{}'（支持: zh-CN, ja, ko）",
-                number, lang
+                start_line, lang
             )));
             continue;
         }
@@ -1023,7 +1040,48 @@ fn parse_translation_csv(content: &str) -> Result<ParsedTranslationCsv, String> 
     Ok(out)
 }
 
-/// 按 CSV 规则拆一行：引号内的逗号、转义的双引号
+fn csv_physical_line_end(text: &str) -> usize {
+    text.bytes()
+        .position(|b| matches!(b, b'\r' | b'\n'))
+        .map_or(text.len(), |i| {
+            i + if text.as_bytes().get(i..i + 2) == Some(b"\r\n") {
+                2
+            } else {
+                1
+            }
+        })
+}
+
+/// 仅识别记录边界和坏引号，字段解码仍交给 csv crate。
+/// 不在引号内遇到换行时截断；未闭合或位置错误时让调用方按物理行恢复。
+fn csv_record_end(text: &str) -> Option<usize> {
+    #[derive(PartialEq)]
+    enum State {
+        Start,
+        Unquoted,
+        Quoted,
+        Closed,
+    }
+    let mut state = State::Start;
+    for (i, b) in text.bytes().enumerate() {
+        if state != State::Quoted && matches!(b, b'\r' | b'\n') {
+            return Some(i + csv_physical_line_end(&text[i..]));
+        }
+        state = match (state, b) {
+            (State::Quoted, b'"') => State::Closed,
+            (State::Quoted, _) | (State::Closed, b'"') => State::Quoted,
+            (State::Start, b' ' | b'\t') => State::Start,
+            (State::Start, b'"') => State::Quoted,
+            (State::Closed, b' ' | b'\t') => State::Closed,
+            (_, b',') => State::Start,
+            (State::Closed, _) | (State::Unquoted, b'"') => return None,
+            _ => State::Unquoted,
+        };
+    }
+    (state != State::Quoted).then_some(text.len())
+}
+
+/// 按 CSV 规则解码记录中的逗号、转义引号和字段内换行。
 fn csv_fields(line: &str) -> Vec<String> {
     csv::ReaderBuilder::new()
         .has_headers(false)
@@ -1293,8 +1351,7 @@ mod tests {
         assert_eq!(parsed.errors, vec!["第 5 行: 列数不足 (1列，需要3列)"]);
     }
 
-    /// 引号不成对的行整行跳过，后面的合法行照常导入——即使后面的行里又有成对的引号，
-    /// 也不会和坏行拼成一条记录
+    /// 坏引号后恢复正常记录；合法跨行字段仍按一条记录导入。
     #[test]
     fn import_csv_skips_unclosed_quote_line_and_keeps_later_rows() {
         let content = concat!(
@@ -1315,16 +1372,15 @@ mod tests {
                 ("b", "ok", "zh-CN"),
                 ("c", "x", "ko"),
                 ("d", "quoted, text", "ja"),
+                ("e\nf", "split", "ko"),
                 ("g", "ok3", "ja"),
             ])
         );
-        assert_eq!(parsed.skipped, 4);
+        assert_eq!(parsed.skipped, 2);
         assert_eq!(
             parsed.errors,
             [
                 "第 2 行: 引号不成对，已跳过该行",
-                "第 6 行: 引号不成对，已跳过该行",
-                "第 7 行: 引号不成对，已跳过该行",
                 "第 8 行: 引号不成对，已跳过该行",
             ]
         );
@@ -1397,5 +1453,73 @@ mod tests {
         let parsed = parse_translation_csv(&text).unwrap();
         assert_eq!(parsed.rows, data);
         assert_eq!(parsed.skipped, 0);
+    }
+
+    #[test]
+    fn exported_multiline_csv_imports_back_unchanged() {
+        let data = rows(&[
+            ("line\nbreak", "译文\n第二行", "zh-CN"),
+            ("crlf", "first\r\n\r\nlast, \"quoted\"", "ja"),
+            ("cr", "first\rlast", "ko"),
+            ("literal", "one\nb,ok,ja\nthree", "ja"),
+            ("trailing", "normal", "ko"),
+        ]);
+        let text = String::from_utf8(translations_to_csv(&data).unwrap()).unwrap();
+        let parsed = parse_translation_csv(&text).unwrap();
+        assert_eq!(parsed.rows, data);
+        assert_eq!(parsed.skipped, 0);
+        assert!(parsed.errors.is_empty());
+    }
+
+    #[test]
+    fn csv_writer_roundtrip_preserves_combinations_of_special_characters() {
+        let fragments = ["中", ",", "\"", "\n", "\r", "\r\n", "\n\n", " ", "\t"];
+        let mut data = Vec::new();
+        for a in fragments {
+            for b in fragments {
+                for c in fragments {
+                    data.push((
+                        format!("tag{a}{b}{c}end"),
+                        format!("text{c}{b}{a}end"),
+                        "ja".into(),
+                    ));
+                }
+            }
+        }
+        let text = String::from_utf8(translations_to_csv(&data).unwrap()).unwrap();
+        let parsed = parse_translation_csv(&text).unwrap();
+        assert_eq!(parsed.rows, data);
+        assert_eq!(parsed.skipped, 0);
+    }
+
+    #[test]
+    fn multiline_csv_keeps_line_numbers_and_recovers_after_bad_quotes() {
+        let content = concat!(
+            "tag,translated,lang\r\n",
+            "first, \"one\r\n\r\ntwo\",ja\r\n",
+            "bad,\"unclosed,ja\r\n",
+            "ok,normal,ko\r\n",
+            "next,\"three\r\nfour\",zh-CN\r\n",
+            "short\r\n",
+            "last,\"unfinished",
+        );
+        let parsed = parse_translation_csv(content).unwrap();
+        assert_eq!(
+            parsed.rows,
+            rows(&[
+                ("first", "one\r\n\r\ntwo", "ja"),
+                ("ok", "normal", "ko"),
+                ("next", "three\r\nfour", "zh-CN"),
+            ])
+        );
+        assert_eq!(parsed.skipped, 3);
+        assert_eq!(
+            parsed.errors,
+            [
+                "第 5 行: 引号不成对，已跳过该行",
+                "第 9 行: 列数不足 (1列，需要3列)",
+                "第 10 行: 引号不成对，已跳过该行",
+            ]
+        );
     }
 }
