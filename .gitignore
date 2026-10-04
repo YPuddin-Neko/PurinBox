@@ -49,3 +49,6 @@ __pycache__/
 
 # API config (contains encoded API keys, generated at runtime)
 config/
+
+# Local code review notes
+/CODE_REVIEW.md
