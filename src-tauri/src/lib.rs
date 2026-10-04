@@ -50,9 +50,8 @@ use commands::tag_refine::{cancel_tag_refining, start_tag_refining};
 use commands::tag_sort::{cancel_tag_sorting, start_tag_sorting};
 use commands::tagger::llm_tagger::{cancel_llm_tagging, fetch_llm_models, start_llm_tagging};
 use commands::tagger::{
-    cancel_tagging, convert_tags_to_json, detect_onnx_model_info, force_cancel_tagging,
-    get_tagger_models, import_local_tagger_model, prepare_hybrid_tags, remove_custom_tagger_model,
-    start_tagging,
+    cancel_tagging, detect_onnx_model_info, force_cancel_tagging, get_tagger_models,
+    import_local_tagger_model, prepare_hybrid_tags, remove_custom_tagger_model, start_tagging,
 };
 use commands::thumbnail::get_image_thumbnail;
 use commands::translator::{
@@ -110,7 +109,6 @@ pub fn run() {
             start_tagging,
             cancel_tagging,
             force_cancel_tagging,
-            convert_tags_to_json,
             prepare_hybrid_tags,
             reset_python_env,
             deploy_python_env,
@@ -203,6 +201,13 @@ pub fn run() {
                     .allow_directory(commands::thumbnail::thumb_cache_dir(), true);
             }
 
+            // Linux 发行包把 Python 脚本装在资源目录，只按 exe 位置推算找不到
+            {
+                use tauri::Manager;
+                if let Ok(dir) = app.path().resource_dir() {
+                    commands::python_proc::set_resource_dir(dir);
+                }
+            }
 
             // Windows: 禁用 WebView2 的默认右键菜单（前端已有自定义右键菜单）
             #[cfg(target_os = "windows")]

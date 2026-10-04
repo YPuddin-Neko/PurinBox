@@ -18,13 +18,12 @@ use super::image_flip::flip_images;
 use super::image_scale::scale_images;
 use super::perspective::perspective_transform;
 use super::resolution_filter::filter_by_resolution;
+use super::test_support::TempDir;
 use super::workflow::cleanup_workflow_temp;
 
 #[tokio::test]
 async fn workflow_secrets_never_leave_legacy_load_or_save() {
-    let root =
-        std::env::temp_dir().join(format!("purinbox_workflow_secrets_{}", std::process::id()));
-    std::fs::create_dir_all(&root).unwrap();
+    let root = TempDir::new("workflow_secrets");
     let legacy = root.join("legacy.purin");
     let saved = root.join("saved.purin");
     let original = json!({"nodes":[{"data":{"type":"llm-tagger","params":{"api_key":"test-only-secret", "model_name":"test-model"}}}], "edges":[]}).to_string();
@@ -40,12 +39,11 @@ async fn workflow_secrets_never_leave_legacy_load_or_save() {
         .await
         .unwrap();
     assert!(!std::fs::read_to_string(saved).unwrap().contains("api_key"));
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn workflow_output_copies_actual_images_and_sidecars() {
-    let root = std::env::temp_dir().join(format!("purinbox_workflow_copy_{}", std::process::id()));
+    let root = TempDir::new("workflow_copy");
     let input = root.join("input");
     let output = input.join("output");
     std::fs::create_dir_all(input.join("nested")).unwrap();
@@ -93,13 +91,11 @@ async fn workflow_output_copies_actual_images_and_sidecars() {
         .unwrap(),
         0
     );
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn workflow_sidecars_keep_existing_and_match_relative_paths() {
-    let root =
-        std::env::temp_dir().join(format!("purinbox_workflow_sidecars_{}", std::process::id()));
+    let root = TempDir::new("workflow_sidecars");
     let input = root.join("input");
     let output = root.join("output");
     for dir in [&input, &output] {
@@ -128,14 +124,11 @@ async fn workflow_sidecars_keep_existing_and_match_relative_paths() {
         std::fs::read(output.join("nested/image.json")).unwrap(),
         b"json"
     );
-    cleanup(&root);
 }
 
 /// 生成测试图集：5 张不同尺寸/格式（含 1 张 JPG 与 1 张带透明通道）
-fn make_dataset(tag: &str) -> (PathBuf, PathBuf) {
-    let root =
-        std::env::temp_dir().join(format!("purinbox_wf_nodes_{}_{}", tag, std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+fn make_dataset(tag: &str) -> (TempDir, PathBuf) {
+    let root = TempDir::new(&format!("wf_nodes_{}", tag));
     let input = root.join("input");
     std::fs::create_dir_all(&input).unwrap();
     image::RgbImage::from_pixel(512, 512, image::Rgb([200, 60, 60]))
@@ -173,10 +166,6 @@ fn assert_formats_kept(input: &Path, out: &Path) {
     }
 }
 
-fn cleanup(root: &Path) {
-    let _ = std::fs::remove_dir_all(root);
-}
-
 /// 纯 Rust 图像节点用例：input_path / output_path / recursive 这几个公共字段由宏注入，
 /// `{ … }` 里写该节点自己的字段。断言无失败且 5 张图全部输出；
 /// 可选的 `|input, out| …` 追加该节点自己的断言。
@@ -206,7 +195,6 @@ macro_rules! image_node_test {
                 let ($input, $out) = (input.as_path(), out.as_path());
                 $check;
             })?
-            cleanup(&root);
         }
     };
 }
@@ -254,6 +242,37 @@ image_node_test!(node_blur_noise, "blur-noise", "模糊/噪点", blur_noise_imag
     "noise_strength": 5,
 }, |input, out| assert_formats_kept(input, out));
 
+// 节点默认 0/0：不改像素，原样复制不重新编码
+image_node_test!(node_blur_noise_defaults, "blur-noise-zero", "模糊/噪点", blur_noise_images, {
+    "blur_radius": 0,
+    "noise_strength": 0,
+}, |input, out| {
+    for entry in std::fs::read_dir(input).unwrap().flatten() {
+        assert_eq!(
+            std::fs::read(entry.path()).unwrap(),
+            std::fs::read(out.join(entry.file_name())).unwrap(),
+            "{}",
+            entry.path().display()
+        );
+    }
+});
+
+// 原图已是目标尺寸的 cover 裁切原样复制
+image_node_test!(node_crop_cover_same_size, "crop-cover", "裁切", crop_images, {
+    "mode": "cover",
+    "crop_anchor": "center",
+    "target_width": 512,
+    "target_height": 512,
+    "aspect_ratio": 1.0,
+    "crop_top": 0, "crop_bottom": 0, "crop_left": 0, "crop_right": 0,
+}, |input, out| {
+    assert_eq!(
+        std::fs::read(input.join("a_512.png")).unwrap(),
+        std::fs::read(out.join("a_512.png")).unwrap()
+    );
+    assert_formats_kept(input, out);
+});
+
 image_node_test!(node_perspective, "perspective", "透视变换", perspective_transform, {
     "intensity": 0.1,
 }, |input, out| assert_formats_kept(input, out));
@@ -286,13 +305,12 @@ async fn node_filter() {
         hit
     );
     assert_eq!(file_count(&input), 5, "copy 模式不应动原目录");
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn node_rename() {
     let app = tauri::test::mock_app();
-    let (root, input) = make_dataset("rename");
+    let (_root, input) = make_dataset("rename");
     // 添加同名标签文件，覆盖 rename_tags 联动。
     std::fs::write(input.join("a_512.txt"), "1girl, solo").unwrap();
 
@@ -324,13 +342,12 @@ async fn node_rename() {
         "标签文件应联动重命名，实际: {:?}",
         names
     );
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn node_bucket_assign() {
     let app = tauri::test::mock_app();
-    let (root, input) = make_dataset("bucket");
+    let (_root, input) = make_dataset("bucket");
 
     let opts = serde_json::from_value(json!({
         "input_path": input.to_string_lossy(),
@@ -347,13 +364,11 @@ async fn node_bucket_assign() {
     assert!(r.bucket_count > 0, "应至少产生一个桶");
     let sum: u32 = r.buckets.iter().map(|b| b.image_count).sum();
     assert_eq!(sum, 5, "各桶图片数之和应等于总数");
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn node_cleanup_workflow_temp() {
-    let root = std::env::temp_dir().join(format!("purinbox_wf_cleanup_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = TempDir::new("wf_cleanup");
     let step_dir = root.join(".workflow_temp").join("step_1_scale");
     std::fs::create_dir_all(&step_dir).unwrap();
     std::fs::write(step_dir.join("residual.png"), vec![0u8; 2048]).unwrap();
@@ -367,7 +382,6 @@ async fn node_cleanup_workflow_temp() {
     cleanup_workflow_temp(root.to_string_lossy().to_string())
         .await
         .unwrap();
-    cleanup(&root);
 }
 
 /// AI 节点仅校验参数形状（运行依赖模型/Python/网络，不在单测执行）。

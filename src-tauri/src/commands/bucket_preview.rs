@@ -1,82 +1,15 @@
-use super::ProgressEvent;
+use super::batch::{BatchCounts, BatchJob, RunEvents};
+use super::{unique_destination, NameSuffix, ProgressEvent};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Emitter;
 
-/// 分析与推荐各自独立的取消标志（两者可分别取消，互不影响）
-static ANALYZE_JOB: super::batch::BatchJob = super::batch::BatchJob::new("分桶分析");
-static RECOMMEND_CANCEL: AtomicBool = AtomicBool::new(false);
+/// 分析与推荐各自独立：可以分别取消，互不影响
+static ANALYZE_JOB: BatchJob = BatchJob::new("分桶分析");
+static RECOMMEND_JOB: BatchJob = BatchJob::new("分桶参数推荐");
 
-#[cfg(test)]
-mod scan_tests {
-    use super::*;
-
-    #[test]
-    fn all_bucket_modes_keep_repeats_order_errors_and_progress() {
-        let root = super::super::image_io::test_dir("buckets");
-        let nested = root.join("3_subject");
-        std::fs::create_dir_all(&nested).unwrap();
-        image::RgbImage::new(64, 32)
-            .save(root.join("a.png"))
-            .unwrap();
-        image::RgbImage::new(32, 64)
-            .save(nested.join("b.png"))
-            .unwrap();
-        std::fs::write(root.join("bad.png"), b"bad image").unwrap();
-        for mode in ["legacy", "nearest_only", "diffusion_pipe"] {
-            for recursive in [false, true] {
-                let options: BucketOptions = serde_json::from_value(serde_json::json!({
-                    "input_path": root.to_string_lossy(), "res_width": 64, "res_height": 64,
-                    "steps": 16, "no_upscale": true, "min_bucket_reso": 16,
-                    "bucket_mode": mode, "recursive": recursive, "batch_size": 2, "drop_last": true
-                }))
-                .unwrap();
-                let app = tauri::test::mock_app();
-                let events = super::super::batch::capture_events(app.handle(), "bucket-progress");
-                let analysis = analyze_buckets_sync(app.handle().clone(), options).unwrap();
-                assert_eq!(analysis.total_images, if recursive { 2 } else { 1 });
-                assert_eq!(analysis.total_count, if recursive { 4 } else { 1 });
-                assert_eq!(analysis.skipped.len(), 1);
-                assert_eq!(analysis.skipped[0].0, "bad.png");
-                assert_eq!(
-                    analysis.ar_error_metric,
-                    if mode == "diffusion_pipe" {
-                        "log"
-                    } else {
-                        "linear"
-                    }
-                );
-                let events = events.lock().unwrap();
-                assert_eq!(events.len(), 3);
-                assert_eq!(events[0]["status"], "info");
-                assert_eq!(events[1]["current"], if recursive { 3 } else { 2 });
-                assert_eq!(events[2]["status"], "done");
-                for bucket in &analysis.buckets {
-                    assert!(bucket.bucket_width.is_multiple_of(16));
-                    assert!(bucket.bucket_height.is_multiple_of(16));
-                    for image in &bucket.images {
-                        assert_eq!(image.repeats, if image.name == "b.png" { 3 } else { 1 });
-                    }
-                }
-            }
-        }
-        let files = collect_supported_image_files(&root, true).unwrap();
-        let mut sorted = files.clone();
-        sorted.sort();
-        assert_eq!(files, sorted);
-        assert!(scan_bucket_images(&files, &AtomicBool::new(true), |_, _| {}).is_err());
-        let recommendation = recommend_bucket_params_sync(BucketRecommendOptions {
-            input_path: root.to_string_lossy().into_owned(),
-            recursive: Some(true),
-        })
-        .unwrap();
-        let json = serde_json::to_value(recommendation).unwrap();
-        assert_eq!(json.as_object().unwrap().len(), 5);
-        assert!(!json["candidates"].as_array().unwrap().is_empty());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}
+const EVENT: &str = "bucket-progress";
+const EXPORT_EVENT: &str = "bucket-export-progress";
 
 /// 取消正在进行的分桶分析
 #[tauri::command]
@@ -87,7 +20,7 @@ pub fn cancel_bucket_analysis() {
 /// 取消正在进行的分桶参数推荐
 #[tauri::command]
 pub fn cancel_bucket_recommend() {
-    RECOMMEND_CANCEL.store(true, Ordering::SeqCst);
+    RECOMMEND_JOB.cancel();
 }
 
 /// 分桶分析参数
@@ -499,13 +432,15 @@ pub async fn analyze_buckets<R: tauri::Runtime>(
     options: BucketOptions,
 ) -> Result<BucketAnalysis, String> {
     ANALYZE_JOB
-        .run(move || analyze_buckets_sync(app, options))
+        .run(move || analyze_buckets_sync(&app, options, ANALYZE_JOB.cancel_flag()))
         .await
 }
 
+/// 取消时发带 `cancelled` 的终态 done，返回「已取消」
 fn analyze_buckets_sync<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
+    app: &tauri::AppHandle<R>,
     options: BucketOptions,
+    cancel: &AtomicBool,
 ) -> Result<BucketAnalysis, String> {
     let input_path = std::path::PathBuf::from(&options.input_path);
     if !input_path.is_dir() {
@@ -529,8 +464,8 @@ fn analyze_buckets_sync<R: tauri::Runtime>(
     let image_files = collect_supported_image_files(&input_path, recursive)?;
     let file_count = image_files.len() as u32;
 
-    let _ = app.emit(
-        "bucket-progress",
+    let run = RunEvents::begin(app, EVENT);
+    run.emit(
         ProgressEvent::new("info", format!("正在扫描 {} 张图片...", file_count)).at(0, file_count),
     );
 
@@ -544,11 +479,20 @@ fn analyze_buckets_sync<R: tauri::Runtime>(
     } else {
         Vec::new()
     };
-    let scan = scan_bucket_images(&image_files, ANALYZE_JOB.cancel_flag(), |current, total| {
-        super::ProgressEvent::new("processing", format!("已分析 {}/{}", current, total))
-            .at(current, total)
-            .emit(&app, "bucket-progress");
-    })?;
+    let scan = scan_bucket_images(&image_files, cancel, |current, total| {
+        run.emit(
+            ProgressEvent::new("processing", format!("已分析 {}/{}", current, total))
+                .at(current, total),
+        );
+    });
+    if scan.cancelled {
+        return run.finish_cancelled(&BatchCounts {
+            success: scan.images.len() as u32,
+            failed: scan.skipped.len() as u32,
+            total: file_count,
+            ..Default::default()
+        });
+    }
     let predefined_resos = if bucket_mode == "nearest_only" {
         let sizes: Vec<_> = scan
             .images
@@ -581,7 +525,7 @@ fn analyze_buckets_sync<R: tauri::Runtime>(
         bucket_map.entry(size).or_default().push(image);
     }
     build_analysis_result(
-        &app,
+        &run,
         bucket_map,
         scan.skipped,
         file_count,
@@ -595,24 +539,25 @@ fn analyze_buckets_sync<R: tauri::Runtime>(
     )
 }
 
+#[derive(Default)]
 struct BucketScan {
     images: Vec<BucketImageInfo>,
     skipped: Vec<(String, String)>,
+    /// 中途取消：只含取消前已读完的那些
+    cancelled: bool,
 }
 
 fn scan_bucket_images(
     files: &[PathBuf],
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(u32, u32),
-) -> Result<BucketScan, String> {
-    let mut scan = BucketScan {
-        images: Vec::new(),
-        skipped: Vec::new(),
-    };
+) -> BucketScan {
+    let mut scan = BucketScan::default();
     let total = files.len() as u32;
     for (index, path) in files.iter().enumerate() {
         if cancel.load(Ordering::SeqCst) {
-            return Err("已取消".to_string());
+            scan.cancelled = true;
+            return scan;
         }
         let name = super::file_name_lossy(path);
         match super::image_io::read_dimensions(path) {
@@ -634,7 +579,7 @@ fn scan_bucket_images(
             on_progress(current, total);
         }
     }
-    Ok(scan)
+    scan
 }
 
 /// 一组 diffusion-pipe 参数下各尺寸桶的 count（含 repeats）与平均 log AR 误差，与 batch size 无关
@@ -673,14 +618,15 @@ fn assign_diffusion_pipe_buckets(
 pub async fn recommend_bucket_params(
     options: BucketRecommendOptions,
 ) -> Result<BucketParamRecommendation, String> {
-    RECOMMEND_CANCEL.store(false, Ordering::SeqCst);
-    tokio::task::spawn_blocking(move || recommend_bucket_params_sync(options))
+    RECOMMEND_JOB
+        .run(move || recommend_bucket_params_sync(options, RECOMMEND_JOB.cancel_flag()))
         .await
-        .map_err(|e| format!("参数推荐任务执行失败: {}", e))?
 }
 
+/// 取消时返回「已取消」
 fn recommend_bucket_params_sync(
     options: BucketRecommendOptions,
+    cancel: &AtomicBool,
 ) -> Result<BucketParamRecommendation, String> {
     let input_path = PathBuf::from(&options.input_path);
     if !input_path.is_dir() {
@@ -690,7 +636,11 @@ fn recommend_bucket_params_sync(
     let recursive = options.recursive.unwrap_or(false);
     let image_files = collect_supported_image_files(&input_path, recursive)?;
 
-    let mut samples = scan_bucket_images(&image_files, &RECOMMEND_CANCEL, |_, _| {})?.images;
+    let scan = scan_bucket_images(&image_files, cancel, |_, _| {});
+    if scan.cancelled {
+        return Err("已取消".to_string());
+    }
+    let mut samples = scan.images;
     samples.retain(|image| image.orig_width > 0 && image.orig_height > 0);
 
     if samples.is_empty() {
@@ -783,7 +733,7 @@ fn recommend_bucket_params_sync(
         let side_delta_penalty = side.abs_diff(median_side) as f64 / median_side.max(1) as f64;
         for steps in [32u32, 64u32] {
             for (min_ar, max_ar, count, ar_buckets) in &ar_bucket_sets {
-                if RECOMMEND_CANCEL.load(Ordering::SeqCst) {
+                if cancel.load(Ordering::SeqCst) {
                     return Err("已取消".to_string());
                 }
                 // 分桶结果与 batch size 无关，每组参数只分一次桶
@@ -882,7 +832,7 @@ fn recommend_bucket_params_sync(
 
 /// 构建分桶分析结果
 fn build_analysis_result<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+    run: &RunEvents<'_, R>,
     bucket_map: std::collections::BTreeMap<(u32, u32), Vec<BucketImageInfo>>,
     skipped: Vec<(String, String)>,
     file_count: u32,
@@ -951,21 +901,22 @@ fn build_analysis_result<R: tauri::Runtime>(
         0.0
     };
 
-    let _ = app.emit(
-        "bucket-progress",
-        ProgressEvent::new(
-            "done",
-            format!(
-                "分析完成: {} 张图片 → {} 个桶, 总 count {}, 有效 count {}, AR误差 {:.10}",
-                total_images,
-                buckets.len(),
-                total_count,
-                effective_count,
-                mean_ar_error
-            ),
+    let counts = BatchCounts {
+        success: total_images,
+        failed: skipped.len() as u32,
+        total: file_count,
+        ..Default::default()
+    };
+    run.finish(&counts, false, |_| {
+        format!(
+            "分析完成: {} 张图片 → {} 个桶, 总 count {}, 有效 count {}, AR误差 {:.10}",
+            total_images,
+            buckets.len(),
+            total_count,
+            effective_count,
+            mean_ar_error
         )
-        .at(file_count, file_count),
-    );
+    });
 
     Ok(BucketAnalysis {
         total_images,
@@ -1011,23 +962,24 @@ fn dropped_images_for_bucket(bucket: &BucketGroup) -> Vec<&BucketImageInfo> {
 ///
 /// 大量文件复制是同步 IO，放入 spawn_blocking 避免占用 tokio worker。
 #[tauri::command]
-pub async fn export_buckets(
-    app: tauri::AppHandle,
+pub async fn export_buckets<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     analysis: BucketAnalysis,
     output_path: String,
 ) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || export_buckets_sync(app, analysis, output_path))
+    tokio::task::spawn_blocking(move || export_buckets_sync(&app, analysis, output_path))
         .await
         .map_err(|e| format!("导出任务执行失败: {}", e))?
 }
 
-fn export_buckets_sync(
-    app: tauri::AppHandle,
+fn export_buckets_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     analysis: BucketAnalysis,
     output_path: String,
 ) -> Result<String, String> {
     let out_dir = Path::new(&output_path);
     std::fs::create_dir_all(out_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
+    let run = RunEvents::begin(app, EXPORT_EVENT);
 
     let dropped_per_bucket: Vec<Vec<&BucketImageInfo>> = analysis
         .buckets
@@ -1045,8 +997,7 @@ fn export_buckets_sync(
     let mut completed_ops = 0u32;
     let emit_progress = |done: u32| {
         if done.is_multiple_of(20) || done == total_copy_ops {
-            let _ = app.emit(
-                "bucket-export-progress",
+            run.emit(
                 ProgressEvent::new(
                     if done == total_copy_ops {
                         "done"
@@ -1070,7 +1021,7 @@ fn export_buckets_sync(
 
         for img in &bucket.images {
             let src = Path::new(&img.path);
-            let dst = super::unique_copy_destination(&bucket_dir, &img.name);
+            let dst = unique_destination(&bucket_dir, &img.name, NameSuffix::Counter, Path::exists);
 
             std::fs::copy(src, &dst).map_err(|e| format!("复制文件失败 {}: {}", img.name, e))?;
 
@@ -1100,7 +1051,12 @@ fn export_buckets_sync(
 
             for img in dropped_items {
                 let src = Path::new(&img.path);
-                let dst = super::unique_copy_destination(&dropped_bucket_dir, &img.name);
+                let dst = unique_destination(
+                    &dropped_bucket_dir,
+                    &img.name,
+                    NameSuffix::Counter,
+                    Path::exists,
+                );
                 std::fs::copy(src, &dst)
                     .map_err(|e| format!("复制丢弃素材失败 {}: {}", img.name, e))?;
 
@@ -1121,5 +1077,166 @@ fn export_buckets_sync(
             "导出完成: {} 张图片已复制到 {} 个桶",
             copied, analysis.bucket_count
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::batch::{capture_events, capture_raw_events};
+    use crate::commands::test_support::TempDir;
+
+    fn dataset(tag: &str) -> TempDir {
+        let root = TempDir::new(tag);
+        let nested = root.join("3_subject");
+        std::fs::create_dir_all(&nested).unwrap();
+        image::RgbImage::new(64, 32)
+            .save(root.join("a.png"))
+            .unwrap();
+        image::RgbImage::new(32, 64)
+            .save(nested.join("b.png"))
+            .unwrap();
+        std::fs::write(root.join("bad.png"), b"bad image").unwrap();
+        root
+    }
+
+    fn bucket_options(root: &Path, mode: &str, recursive: bool) -> BucketOptions {
+        serde_json::from_value(serde_json::json!({
+            "input_path": root.to_string_lossy(), "res_width": 64, "res_height": 64,
+            "steps": 16, "no_upscale": true, "min_bucket_reso": 16,
+            "bucket_mode": mode, "recursive": recursive, "batch_size": 2, "drop_last": true
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn all_bucket_modes_keep_repeats_order_errors_and_progress() {
+        let root = dataset("buckets");
+        for mode in ["legacy", "nearest_only", "diffusion_pipe"] {
+            for recursive in [false, true] {
+                let app = tauri::test::mock_app();
+                let events = capture_events(app.handle(), EVENT);
+                let analysis = analyze_buckets_sync(
+                    app.handle(),
+                    bucket_options(&root, mode, recursive),
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+                assert_eq!(analysis.total_images, if recursive { 2 } else { 1 });
+                assert_eq!(analysis.total_count, if recursive { 4 } else { 1 });
+                assert_eq!(analysis.skipped.len(), 1);
+                assert_eq!(analysis.skipped[0].0, "bad.png");
+                assert_eq!(
+                    analysis.ar_error_metric,
+                    if mode == "diffusion_pipe" {
+                        "log"
+                    } else {
+                        "linear"
+                    }
+                );
+                let events = events.lock().unwrap();
+                assert_eq!(events.len(), 3);
+                assert_eq!(events[0]["status"], "info");
+                assert_eq!(events[1]["current"], if recursive { 3 } else { 2 });
+                assert_eq!(events[2]["status"], "done");
+                for bucket in &analysis.buckets {
+                    assert!(bucket.bucket_width.is_multiple_of(16));
+                    assert!(bucket.bucket_height.is_multiple_of(16));
+                    for image in &bucket.images {
+                        assert_eq!(image.repeats, if image.name == "b.png" { 3 } else { 1 });
+                    }
+                }
+            }
+        }
+        let files = collect_supported_image_files(&root, true).unwrap();
+        let mut sorted = files.clone();
+        sorted.sort();
+        assert_eq!(files, sorted);
+        let recommendation = recommend_bucket_params_sync(
+            BucketRecommendOptions {
+                input_path: root.to_string_lossy().into_owned(),
+                recursive: Some(true),
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let json = serde_json::to_value(recommendation).unwrap();
+        assert_eq!(json.as_object().unwrap().len(), 5);
+        assert!(!json["candidates"].as_array().unwrap().is_empty());
+    }
+
+    /// 取消：分析发带 cancelled 的终态 done 并返回「已取消」；推荐返回「已取消」
+    #[test]
+    fn cancelled_analysis_and_recommendation() {
+        let root = dataset("buckets_cancel");
+        let app = tauri::test::mock_app();
+        let events = capture_raw_events(app.handle(), EVENT);
+        let err = analyze_buckets_sync(
+            app.handle(),
+            bucket_options(&root, "legacy", true),
+            &AtomicBool::new(true),
+        )
+        .unwrap_err();
+        assert_eq!(err, "已取消");
+        let events = events.lock().unwrap();
+        let done = events.last().unwrap();
+        assert_eq!(done["cancelled"], true);
+        assert_eq!(done["message"], "已取消: 已处理 0/3, 成功 0, 失败 0");
+        assert!(events.iter().all(|e| e["run_id"] == done["run_id"]));
+
+        let scan = scan_bucket_images(
+            &collect_supported_image_files(&root, true).unwrap(),
+            &AtomicBool::new(true),
+            |_, _| {},
+        );
+        assert!(scan.cancelled && scan.images.is_empty());
+        let err = recommend_bucket_params_sync(
+            BucketRecommendOptions {
+                input_path: root.to_string_lossy().into_owned(),
+                recursive: Some(true),
+            },
+            &AtomicBool::new(true),
+        )
+        .unwrap_err();
+        assert_eq!(err, "已取消");
+    }
+
+    /// 导出：同名图片追加序号不覆盖，最后一条进度是 done 并带这一轮的运行 ID
+    #[test]
+    fn export_copies_into_bucket_folders_without_overwriting() {
+        let root = dataset("buckets_export");
+        let app = tauri::test::mock_app();
+        let analysis = analyze_buckets_sync(
+            app.handle(),
+            bucket_options(&root, "legacy", true),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let mut analysis = analysis;
+        // 两张同名图落进同一个桶
+        let duplicate = analysis.buckets[0].images[0].clone();
+        analysis.buckets[0].images.push(duplicate.clone());
+        analysis.buckets[0].image_count += 1;
+        let output = root.join("export");
+        let log = capture_raw_events(app.handle(), EXPORT_EVENT);
+        let summary = export_buckets_sync(
+            app.handle(),
+            analysis.clone(),
+            output.to_string_lossy().into(),
+        )
+        .unwrap();
+        assert!(summary.starts_with("导出完成: 3 张图片"), "{}", summary);
+        let bucket = &analysis.buckets[0];
+        let folder = output.join(format!(
+            "Bucket {} - {}x{} (count {})",
+            bucket.index, bucket.bucket_width, bucket.bucket_height, bucket.total_count
+        ));
+        let stem = duplicate.name.trim_end_matches(".png");
+        assert!(folder.join(&duplicate.name).is_file());
+        assert!(folder.join(format!("{}_1.png", stem)).is_file());
+        let events = log.lock().unwrap();
+        let last = events.last().unwrap();
+        assert_eq!(last["status"], "done");
+        assert!(last["run_id"].as_u64().is_some());
     }
 }

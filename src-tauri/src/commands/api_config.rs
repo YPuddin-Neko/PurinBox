@@ -109,12 +109,12 @@ pub fn save_api_config(
         api_key_encoded: String::new(),
     };
 
-    save_json_config(CONFIG_FILE, &config, "配置")
+    save_json_config(CONFIG_FILE, &config, "写入配置失败")
 }
 
 #[tauri::command]
 pub fn load_api_config() -> Result<ApiConfigResponse, String> {
-    let config: ApiConfig = load_json_config(CONFIG_FILE, "配置")?;
+    let config: ApiConfig = load_json_config(CONFIG_FILE, "读取配置失败", "解析配置失败")?;
 
     let mut decoded_keys: HashMap<String, String> = config
         .api_keys

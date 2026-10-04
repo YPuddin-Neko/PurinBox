@@ -83,12 +83,8 @@ fn get_image_thumbnail_sync(path: &str, max_edge: u32) -> Result<String, String>
 
     fs::create_dir_all(&dir).map_err(|e| format!("创建缩略图缓存目录失败: {}", e))?;
 
-    let img = image::ImageReader::open(&src)
-        .map_err(|e| format!("打开图片失败 {}: {}", path, e))?
-        .with_guessed_format()
-        .map_err(|e| format!("识别图片格式失败 {}: {}", path, e))?
-        .decode()
-        .map_err(|e| format!("解码图片失败 {}: {}", path, e))?;
+    // 保留默认的 512 MiB 内存上限：超大图不为一张预览申请几个 GB
+    let img = super::image_io::decode_image(&src).map_err(|e| format!("{} ({})", e, path))?;
 
     let thumb = img.thumbnail(max_edge, max_edge);
     let has_alpha = thumb.color().has_alpha();

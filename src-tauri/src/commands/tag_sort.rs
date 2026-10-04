@@ -6,10 +6,12 @@ use std::sync::Arc;
 
 use super::llm_batch::{self, ItemOutcome};
 use super::llm_client::{
-    self, fmt_elapsed, pick_tag_line, reject_refusal, summarize_tags, ChatMessage, ChatParams,
-    RequestThrottle,
+    self, fmt_elapsed, pick_tag_line, summarize_tags, ChatMessage, ChatParams, RequestThrottle,
 };
-use super::{ProcessResult, ProgressEvent};
+use super::tag_text::{join_tags, split_tags};
+use super::{ProblemArchive, ProcessResult, ProgressEvent};
+
+const EVENT: &str = "tag-sort-progress";
 
 static TAG_SORT_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -89,36 +91,41 @@ pub async fn start_tag_sorting(
     let _busy = super::BusyGuard::acquire(&SORT_RUNNING, "标签排序")?;
 
     TAG_SORT_CANCELLED.store(false, Ordering::SeqCst);
+    let client = llm_client::llm_http_client()?;
+    sort_dataset(&app, options, client).await
+}
 
-    let input_dir_path = PathBuf::from(&options.input_path);
-    let input_dir = input_dir_path.as_path();
-    let output_dir_path = PathBuf::from(&options.output_path);
+/// 排序输入目录里的全部标签文件：开始新一轮运行，逐个请求 LLM 写出结果，
+/// 收尾时归集问题文件并发唯一的终态 done
+async fn sort_dataset<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    options: TagSortOptions,
+    client: reqwest::Client,
+) -> Result<ProcessResult, String> {
+    super::begin_run(EVENT);
+    let input_dir = PathBuf::from(&options.input_path);
+    let output_dir = PathBuf::from(&options.output_path);
 
-    let files = collect_txt_files(input_dir)?;
+    let files = collect_txt_files(&input_dir)?;
     let total = files.len() as u32;
-
     if total == 0 {
         return Err("输入目录中没有找到 .txt 标签文件".to_string());
     }
-
-    std::fs::create_dir_all(&output_dir_path).map_err(|e| format!("创建输出目录失败: {}", e))?;
-
-    let client = llm_client::llm_http_client()?;
+    std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
     let concurrency = std::cmp::max(1, options.concurrency) as usize;
-
     ProgressEvent::new(
         "info",
         format!("找到 {} 个标签文件，{} 线程开始排序...", total, concurrency),
     )
     .at(0, total)
-    .emit(&app, "tag-sort-progress");
+    .emit(app, EVENT);
 
     let throttle = Arc::new(RequestThrottle::new(options.request_interval_ms));
-    let output_dir = output_dir_path.clone();
+    let work_output_dir = output_dir.clone();
     let outcome = llm_batch::run_file_batch(
-        &app,
-        "tag-sort-progress",
+        app,
+        EVENT,
         &files,
         concurrency,
         &TAG_SORT_CANCELLED,
@@ -126,7 +133,7 @@ pub async fn start_tag_sorting(
             let (client, options, output_dir, throttle) = (
                 client.clone(),
                 options.clone(),
-                output_dir.clone(),
+                work_output_dir.clone(),
                 throttle.clone(),
             );
             async move {
@@ -137,15 +144,11 @@ pub async fn start_tag_sorting(
         },
     )
     .await;
-    let extra =
-        llm_batch::archive_problem_files(input_dir, &output_dir_path, false, &outcome, false);
-    Ok(llm_batch::finish_batch(
-        &app,
-        "tag-sort-progress",
+    Ok(outcome.finish(
+        app,
+        EVENT,
         "标签排序完成",
-        total,
-        outcome,
-        &extra,
+        &ProblemArchive::new(&input_dir, &output_dir, false),
     ))
 }
 
@@ -159,30 +162,17 @@ impl FileResult {
                 changed,
                 warnings,
                 elapsed_ms,
-            } => {
-                let warning = !warnings.is_empty();
-                let warning_text = if warning {
-                    format!(" ⚠ {}", warnings.join("; "))
-                } else {
-                    String::new()
-                };
-                ItemOutcome::Done {
-                    message: format!(
-                        "[完成] {} | 原TAG数 {} → 排序后TAG数 {} | {}{}{}",
-                        filename,
-                        original_count,
-                        sorted_count,
-                        fmt_elapsed(elapsed_ms),
-                        warning_text,
-                        if !changed && !warning {
-                            " (顺序未变)"
-                        } else {
-                            ""
-                        },
-                    ),
-                    warning,
-                }
-            }
+            } => ItemOutcome::completed(
+                format!(
+                    "[完成] {} | 原TAG数 {} → 排序后TAG数 {} | {}",
+                    filename,
+                    original_count,
+                    sorted_count,
+                    fmt_elapsed(elapsed_ms)
+                ),
+                &warnings,
+                (!changed).then_some(" (顺序未变)"),
+            ),
             Self::Skipped { filename } => ItemOutcome::Done {
                 message: format!("[跳过] {} (空文件)", filename),
                 warning: false,
@@ -190,6 +180,15 @@ impl FileResult {
             Self::Error { filename, message } => ItemOutcome::Failed { filename, message },
         }
     }
+}
+
+/// `tags` 里不在 `other` 中的标签，按出现顺序去重
+fn tags_absent_from<'a>(tags: &'a [String], other: &HashSet<&str>) -> Vec<&'a str> {
+    let mut seen = HashSet::new();
+    tags.iter()
+        .map(String::as_str)
+        .filter(|tag| !other.contains(tag) && seen.insert(*tag))
+        .collect()
 }
 
 async fn process_single_file(
@@ -200,14 +199,10 @@ async fn process_single_file(
     throttle: &RequestThrottle,
 ) -> FileResult {
     let start = std::time::Instant::now();
-    let filename = file_path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
+    let filename = super::file_name_lossy(file_path);
 
-    let content = match std::fs::read_to_string(file_path) {
-        Ok(c) => c.trim().to_string(),
+    let original_tags = match std::fs::read_to_string(file_path) {
+        Ok(content) => split_tags(&content),
         Err(e) => {
             return FileResult::Error {
                 filename,
@@ -215,61 +210,62 @@ async fn process_single_file(
             }
         }
     };
-
-    if content.is_empty() {
-        return FileResult::Skipped { filename };
-    }
-
-    let original_tags: Vec<String> = content
-        .split(',')
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
-
     if original_tags.is_empty() {
         return FileResult::Skipped { filename };
     }
 
-    match sort_tags_with_llm(client, &original_tags, options, throttle).await {
-        Ok(sorted_tags) => {
-            let elapsed_ms = start.elapsed().as_millis();
-            let original_count = original_tags.len();
-            let sorted_count = sorted_tags.len();
-            let changed = sorted_tags != original_tags;
-            let mut warnings: Vec<String> = Vec::new();
+    let sorted_tags = match sort_tags_with_llm(client, &original_tags, options, throttle).await {
+        Ok(tags) => tags,
+        Err(message) => return FileResult::Error { filename, message },
+    };
+    let elapsed_ms = start.elapsed().as_millis();
+    let original_set: HashSet<&str> = original_tags.iter().map(String::as_str).collect();
+    let sorted_set: HashSet<&str> = sorted_tags.iter().map(String::as_str).collect();
+    let missing = tags_absent_from(&original_tags, &sorted_set);
+    let added = tags_absent_from(&sorted_tags, &original_set);
 
-            let orig_set: HashSet<&str> = original_tags.iter().map(|s| s.as_str()).collect();
-            let sort_set: HashSet<&str> = sorted_tags.iter().map(|s| s.as_str()).collect();
-            let missing: Vec<&str> = orig_set.difference(&sort_set).copied().collect();
-            let added: Vec<&str> = sort_set.difference(&orig_set).copied().collect();
-
-            if original_count != sorted_count {
-                warnings.push(format!("数量变化: {}→{}", original_count, sorted_count));
-            }
-            warnings.extend(summarize_tags("缺失", &missing));
-            warnings.extend(summarize_tags("新增", &added));
-
-            let output_path = output_dir.join(&filename);
-            let output_content = sorted_tags.join(", ");
-            match std::fs::write(&output_path, &output_content) {
-                Ok(_) => FileResult::Success {
-                    filename,
-                    original_count,
-                    sorted_count,
-                    changed,
-                    warnings,
-                    elapsed_ms,
-                },
-                Err(e) => FileResult::Error {
-                    filename,
-                    message: format!("写入失败: {}", e),
-                },
-            }
-        }
-        Err(e) => FileResult::Error {
+    // 排序只调整顺序：原标签缺了一半以上，回复多半是没认出来的拒绝语或答非所问，写盘会丢掉原标签
+    if missing.len() * 2 > original_set.len() {
+        let excerpt: String = sorted_tags.join(", ").chars().take(80).collect();
+        return FileResult::Error {
             filename,
-            message: e,
-        },
+            message: format!(
+                "排序结果缺少 {}/{} 个原标签，已丢弃: {}",
+                missing.len(),
+                original_set.len(),
+                excerpt
+            ),
+        };
+    }
+
+    let mut warnings = Vec::new();
+    if original_tags.len() != sorted_tags.len() {
+        warnings.push(format!(
+            "数量变化: {}→{}",
+            original_tags.len(),
+            sorted_tags.len()
+        ));
+    }
+    warnings.extend(summarize_tags("缺失", &missing));
+    warnings.extend(summarize_tags("新增", &added));
+
+    // 就地排序时输出就是原文件：先写临时文件再替换，写入中途失败也不会截断原标签
+    let output_path = output_dir.join(&filename);
+    if let Err(e) =
+        super::config_paths::write_file_atomic(&output_path, join_tags(&sorted_tags).as_bytes())
+    {
+        return FileResult::Error {
+            filename,
+            message: format!("写入失败: {}", e),
+        };
+    }
+    FileResult::Success {
+        filename,
+        original_count: original_tags.len(),
+        sorted_count: sorted_tags.len(),
+        changed: sorted_tags != original_tags,
+        warnings,
+        elapsed_ms,
     }
 }
 
@@ -305,25 +301,14 @@ async fn sort_tags_with_llm(
         throttle,
         &TAG_SORT_CANCELLED,
     )
-    .await?;
-
-    // 截断的回复是残缺的标签列表，写盘会把没排到的标签全部丢掉
-    if reply.is_truncated() {
-        return Err("回复超出了服务商的输出长度上限，已丢弃".to_string());
-    }
-    // 拒绝语（"I'm sorry, I can't…"）会被当成标签拆开写盘
-    reject_refusal(&reply.text, "该标签文件")?;
-
-    let sorted_tags: Vec<String> = pick_tag_line(&reply.text)
-        .split(',')
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
-
+    .await;
+    let sorted_tags = split_tags(pick_tag_line(llm_client::accept_reply(
+        &reply,
+        "该标签文件",
+    )?));
     if sorted_tags.is_empty() {
         return Err("AI 返回的排序结果为空".to_string());
     }
-
     Ok(sorted_tags)
 }
 
@@ -331,7 +316,9 @@ async fn sort_tags_with_llm(
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
-    use crate::commands::llm_client::test_support::{client, serve_chat_reply, TempDir};
+    use crate::commands::batch::capture_raw_events;
+    use crate::commands::llm_client::test_support::{client, serve_chat_reply};
+    use crate::commands::test_support::TempDir;
 
     fn options(endpoint: String) -> TagSortOptions {
         TagSortOptions {
@@ -482,6 +469,97 @@ mod e2e_tests {
             other => panic!("拒绝语应判失败: {other:?}"),
         }
         assert_eq!(written, None, "拒绝时不应写出文件");
+    }
+
+    /// 排序是重排：缺了一半以上的原标签就判失败不写盘，正好一半仍按警告写出
+    #[tokio::test]
+    async fn more_than_half_missing_is_discarded() {
+        for (reply, written_ok) in [
+            // 3 个原标签缺 2 个
+            ("1girl", false),
+            // 换成了别的语言，原标签全缺
+            ("微笑, 女孩, 单人", false),
+            ("smile, 1girl", true),
+        ] {
+            let (result, written) = run(Some(reply), "stop", "half").await;
+            if written_ok {
+                assert_eq!(written.as_deref(), Some(reply));
+                assert!(
+                    matches!(result, FileResult::Success { .. }),
+                    "{reply}: {result:?}"
+                );
+                continue;
+            }
+            match &result {
+                FileResult::Error { message, .. } => {
+                    assert!(message.starts_with("排序结果缺少"), "{message}");
+                    assert!(message.ends_with(reply), "{message}");
+                }
+                other => panic!("{reply}: 应判失败 {other:?}"),
+            }
+            assert_eq!(written, None);
+        }
+    }
+
+    /// 以前没认出来的拒绝语：就地排序时原文件一字不改，原样复制进 Fail/，计为失败
+    #[tokio::test]
+    async fn unrecognized_refusals_never_touch_the_original_file() {
+        const ORIGINAL: &str = "smile, 1girl, solo";
+        for refusal in [
+            "I'm sorry, but I can't, as an AI model, sort these tags.",
+            "I'm not able to help with sorting these tags.",
+            "I apologize, but I won't be able to help with that request.",
+        ] {
+            let dir = TempDir::new("sort_refusal_in_place");
+            std::fs::write(dir.join("a.txt"), ORIGINAL).unwrap();
+            let server = serve_chat_reply(Some(refusal), "stop");
+            let app = tauri::test::mock_app();
+            let events = capture_raw_events(app.handle(), EVENT);
+            let mut opts = options(server.url.clone());
+            opts.input_path = dir.to_string_lossy().into_owned();
+            opts.output_path = opts.input_path.clone();
+            let before = crate::commands::begin_run("tag-sort-test-marker");
+            let result = sort_dataset(app.handle(), opts, client()).await.unwrap();
+
+            assert_eq!(
+                (result.success_count, result.fail_count, result.total),
+                (0, 1, 1),
+                "{refusal}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+                ORIGINAL
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join("Fail/a.txt")).unwrap(),
+                ORIGINAL
+            );
+            let events = events.lock().unwrap();
+            let run_id = events[0]["run_id"].as_u64().unwrap();
+            assert!(run_id > before);
+            assert!(events.iter().all(|e| e["run_id"] == run_id), "{events:?}");
+            let summary: Vec<(&str, &str)> = events
+                .iter()
+                .map(|e| {
+                    (
+                        e["status"].as_str().unwrap(),
+                        e["message"].as_str().unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(summary.len(), 4, "{summary:?}");
+            assert_eq!(summary[0], ("info", "找到 1 个标签文件，1 线程开始排序..."));
+            assert_eq!(summary[1].0, "error");
+            assert!(
+                summary[1]
+                    .1
+                    .starts_with("[错误] a.txt: 排序结果缺少 3/3 个原标签，已丢弃"),
+                "{}",
+                summary[1].1
+            );
+            assert_eq!(summary[2], ("info", "已将 1 个失败文件复制到 Fail/ 文件夹"));
+            assert_eq!(summary[3], ("done", "标签排序完成: 成功 0, 失败 1, 共 1"));
+        }
     }
 
     #[tokio::test]

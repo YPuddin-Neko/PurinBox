@@ -116,13 +116,14 @@ fn carry_tag_sidecars_sync(
         }
         let input_root = super::dir_of(input);
         let mut copied = 0;
+        // 输出节点交付这一轮的最终产物：同名图片和标签直接覆盖，与其他功能写输出目录一致。
+        // 下面补标签的分支用在中间步骤之间，输出目录里已有的标签是这一步自己写的、比输入侧新，所以跳过
         for file in files {
             let dest = super::same_name_output(&input_root, &file, output, recursive)?;
             std::fs::copy(&file, &dest)
                 .map_err(|e| format!("复制图片失败 ({}): {}", file.display(), e))?;
             copied += 1;
-            for ext in super::TAG_SIDECAR_EXTS {
-                let sidecar = file.with_extension(ext);
+            for (ext, sidecar) in super::tag_sidecars(&file) {
                 if sidecar.is_file() {
                     std::fs::copy(&sidecar, dest.with_extension(ext))
                         .map_err(|e| format!("复制标签失败 ({}): {}", sidecar.display(), e))?;
@@ -162,8 +163,7 @@ fn carry_tag_sidecars_sync(
     for img in images {
         // 输出图片相对输出根的位置，映射回输入根找同名标签
         let rel = img.strip_prefix(output).unwrap_or(&img);
-        for ext in super::TAG_SIDECAR_EXTS {
-            let rel_sc = rel.with_extension(ext);
+        for (ext, rel_sc) in super::tag_sidecars(rel) {
             if !avail.contains(&rel_sc) {
                 continue;
             }

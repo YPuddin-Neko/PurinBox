@@ -2,8 +2,8 @@
 //!
 //! 只有一种协议：POST `{endpoint}/chat/completions`，Bearer 鉴权，取第一个 choice。
 //! 审核拒绝（finish_reason 为 content_filter / safety）一律是错误；截断（finish_reason ==
-//! "length"）能不能接受由调用方决定——标签列表被截断就是残缺的，写盘会丢标签。
-//! 这里还放着几个功能共用的回复处理与日志小工具（拒绝语判定、取标签行、耗时与增删摘要）。
+//! "length"）和拒绝语由 `accept_reply` 统一判定——标签列表被截断就是残缺的，写盘会丢标签。
+//! 这里还放着几个功能共用的回复处理与日志小工具（取标签行、耗时与增删摘要）。
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// 发给 VLM 的图片最长边，`image_data_url` 收到 0 时用它
-pub(crate) const DEFAULT_IMAGE_MAX_SIDE: u32 = 1024;
+const DEFAULT_IMAGE_MAX_SIDE: u32 = 1024;
 
 /// 节流等待期间检查取消标志的间隔
 const THROTTLE_POLL: Duration = Duration::from_millis(200);
@@ -25,7 +25,7 @@ pub(crate) fn llm_http_client() -> Result<reqwest::Client, String> {
 }
 
 /// 拼接 `{endpoint}/{path}`；endpoint 末尾有没有 `/` 都行
-pub(crate) fn api_url(endpoint: &str, path: &str) -> String {
+fn api_url(endpoint: &str, path: &str) -> String {
     if endpoint.ends_with('/') {
         format!("{}{}", endpoint, path)
     } else {
@@ -78,6 +78,8 @@ pub(crate) struct ChatReply {
     /// 去掉首尾空白的回复正文，一定非空。content 为空时取 reasoning_content（Qwen3 等思维模型）
     pub text: String,
     pub finish_reason: Option<String>,
+    /// 请求里发送的 max_tokens，没发送时为 None。截断时据此区分「用户设的上限太小」和服务商自身的上限
+    pub max_tokens: Option<u32>,
 }
 
 impl ChatReply {
@@ -108,8 +110,6 @@ impl std::fmt::Display for ChatError {
         }
     }
 }
-
-impl std::error::Error for ChatError {}
 
 impl From<ChatError> for String {
     fn from(e: ChatError) -> String {
@@ -186,10 +186,26 @@ struct ChatChoice {
 
 #[derive(Deserialize)]
 struct ChatChoiceMessage {
+    /// 一般是字符串；部分兼容端点返回分段数组 `[{"type": "text", "text": …}, …]`
     #[serde(default)]
-    content: Option<String>,
+    content: Option<serde_json::Value>,
     #[serde(default)]
     reasoning_content: Option<String>,
+}
+
+/// content 的正文：字符串原样取；分段数组拼接其中 type 为 text（或没写 type）的段，跳过思考等其他段
+fn content_text(content: Option<serde_json::Value>) -> Option<String> {
+    match content? {
+        serde_json::Value::String(text) => Some(text),
+        serde_json::Value::Array(parts) => Some(
+            parts
+                .iter()
+                .filter(|part| part.get("type").is_none_or(|kind| kind == "text"))
+                .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 /// 发一次 Chat Completions 请求。
@@ -198,8 +214,8 @@ struct ChatChoiceMessage {
 /// 非 2xx 带上响应体报错 → 取第一个 choice → 审核拒绝返回 `ContentFilter` →
 /// content 为空时取 reasoning_content，两者都为空报错。
 ///
-/// 请求发出后不再观察取消：要中途放弃，调用方用 `select!` 包住整个单项任务（各批任务现在就是这样做的）。
-/// 截断不在这里判定，见 `ChatReply::is_truncated`；拒绝语（"I'm sorry…"）也不在这里判定，见 `reject_refusal`。
+/// 请求发出后不再观察取消：要中途放弃，调用方用 `select!` 包住整个单项任务（`llm_batch` 即如此）。
+/// 截断和拒绝语（"I'm sorry…"）不在这里判定，调用方用 `accept_reply` 校验结果。
 pub(crate) async fn chat_completion(
     client: &reqwest::Client,
     params: &ChatParams<'_>,
@@ -211,10 +227,11 @@ pub(crate) async fn chat_completion(
         return Err(ChatError::Cancelled);
     }
 
+    let max_tokens = (params.max_tokens > 0).then_some(params.max_tokens as u32);
     let body = ChatRequest {
         model: params.model,
         messages,
-        max_tokens: (params.max_tokens > 0).then_some(params.max_tokens as u32),
+        max_tokens,
         temperature: params.temperature,
         top_p: (params.top_p > 0.0 && params.top_p <= 1.0).then_some(params.top_p),
     };
@@ -252,8 +269,8 @@ pub(crate) async fn chat_completion(
     }
 
     let non_empty = |s: Option<String>| s.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-    let text =
-        non_empty(choice.message.content).or_else(|| non_empty(choice.message.reasoning_content));
+    let text = non_empty(content_text(choice.message.content))
+        .or_else(|| non_empty(choice.message.reasoning_content));
     let Some(text) = text else {
         // 思维模型把输出上限用在推理上时，正文和 reasoning_content 可能都是空的
         let message = if choice.finish_reason.as_deref() == Some("length") {
@@ -267,6 +284,7 @@ pub(crate) async fn chat_completion(
     Ok(ChatReply {
         text,
         finish_reason: choice.finish_reason,
+        max_tokens,
     })
 }
 
@@ -314,7 +332,7 @@ pub(crate) async fn list_models(
 /// 按文件内容识别格式（扩展名写错的图也能读）；最长边超过 max_side 时等比缩到 max_side
 /// （0 按 `DEFAULT_IMAGE_MAX_SIDE`）；透明图按白底拍平——JPEG 不接受 alpha，直接丢掉会让透明区变成脏色。
 /// 阻塞函数：解码、缩放、编码都是 CPU 密集操作，异步代码里用 `load_image_data_url`。
-pub(crate) fn image_data_url(path: &Path, max_side: u32) -> Result<String, String> {
+fn image_data_url(path: &Path, max_side: u32) -> Result<String, String> {
     let max_side = if max_side > 0 {
         max_side
     } else {
@@ -364,10 +382,86 @@ pub(crate) fn vision_user_content(text: &str, data_url: &str, detail: &str) -> s
     ])
 }
 
+/// 校验 `chat_completion` 的结果并取出回复正文。错误文案以 `subject`（如 "该图片"、"该标签文件"）为主语：
+/// - 内容审核拦截：「LLM 内容安全审核拒绝了{subject}」；
+/// - 截断（finish_reason == "length"）：正文残缺，写盘会丢内容，报错丢弃；
+///   请求设置了 max_tokens 时提示调大它，否则是服务商自身的输出上限；
+/// - 拒绝语：见 `reject_refusal`；
+/// - 其余错误原样转成文本（取消为「已取消」）。
+///
+/// 用法：`let reply = chat_completion(..).await; let text = accept_reply(&reply, "该图片")?;`
+pub(crate) fn accept_reply<'a>(
+    reply: &'a Result<ChatReply, ChatError>,
+    subject: &str,
+) -> Result<&'a str, String> {
+    let text = accept_reply_unscreened(reply, subject)?;
+    reject_refusal(text, subject)?;
+    Ok(text)
+}
+
+/// 同 `accept_reply`，但不对整段回复做拒绝语判定：按段解析的回复（标签细化的标记格式）里，
+/// 自然语言段的正常句子也可能含拒绝措辞，由调用方逐段调用 `reject_refusal`。
+pub(crate) fn accept_reply_unscreened<'a>(
+    reply: &'a Result<ChatReply, ChatError>,
+    subject: &str,
+) -> Result<&'a str, String> {
+    let reply = reply.as_ref().map_err(|error| match error {
+        ChatError::ContentFilter => format!("LLM 内容安全审核拒绝了{}", subject),
+        other => other.to_string(),
+    })?;
+    if reply.is_truncated() {
+        return Err(match reply.max_tokens {
+            Some(limit) => format!(
+                "回复达到 max_tokens 上限（{}）被截断，已丢弃，请调大 max_tokens",
+                limit
+            ),
+            None => "回复超出了服务商的输出长度上限，已丢弃".to_string(),
+        });
+    }
+    Ok(&reply.text)
+}
+
+/// 模型因内容安全审核拒绝时的典型措辞（小写匹配）
+const REFUSAL_MARKERS: [&str; 18] = [
+    "i'm sorry",
+    "i am sorry",
+    "i cannot",
+    "i can't",
+    "i'm unable",
+    "i am unable",
+    "unable to assist",
+    "cannot assist",
+    "can't assist",
+    "cannot help",
+    "can't help",
+    "cannot provide",
+    "can't provide",
+    "against my",
+    "content policy",
+    "抱歉",
+    "无法处理",
+    "不能提供",
+];
+
+/// 判断整段回复是不是"模型拒绝了"（NSFW 触发安全审核等）。
+///
+/// 用逗号数量区分标签列表和短拒绝语，减少包含拒绝词的正常标签列表被误判。
+fn looks_like_refusal(content: &str) -> bool {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.matches(',').count() >= 3 || trimmed.matches('，').count() >= 3 {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    REFUSAL_MARKERS.iter().any(|m| lower.contains(m))
+}
+
 /// 像是模型拒绝了（疑似内容安全审核）就返回带摘录的错误：
 /// "LLM 拒绝处理{subject}（疑似内容安全审核）: {前 80 字}"。subject 例如 "该图片"、"该标签文件"
 pub(crate) fn reject_refusal(text: &str, subject: &str) -> Result<(), String> {
-    if super::looks_like_refusal(text) {
+    if looks_like_refusal(text) {
         let excerpt: String = text.trim().chars().take(80).collect();
         return Err(format!(
             "LLM 拒绝处理{}（疑似内容安全审核）: {}",
@@ -415,8 +509,7 @@ pub(crate) fn summarize_tags(label: &str, tags: &[&str]) -> Option<String> {
 /// 返回的 `TestServer` 由测试持有，drop 时关闭；`url` 已是 OpenAI 兼容基址（`…/v1`）
 #[cfg(test)]
 pub(crate) mod test_support {
-    pub(crate) use crate::commands::http_download::test_support::TempDir;
-    use crate::commands::http_download::test_support::{serve_once, write_response, TestServer};
+    use crate::commands::test_support::{serve_once, write_response, TestServer};
 
     /// 直连本地 mock 的客户端：不读应用的代理配置，也不吃系统代理环境变量
     pub(crate) fn client() -> reqwest::Client {
@@ -453,8 +546,9 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::*;
+    use super::test_support::{client, serve_chat_reply, serve_json, serve_status};
     use super::*;
+    use crate::commands::test_support::TempDir;
     use serde_json::json;
 
     const WAIT: Duration = Duration::from_secs(5);
@@ -498,7 +592,8 @@ mod tests {
             reply,
             ChatReply {
                 text: "1girl, solo".into(),
-                finish_reason: Some("stop".into())
+                finish_reason: Some("stop".into()),
+                max_tokens: None,
             }
         );
         assert!(!reply.is_truncated());
@@ -544,6 +639,28 @@ mod tests {
         assert_eq!(req.header("authorization"), None);
         assert_eq!(req.json()["max_tokens"], 512);
         assert_eq!(req.json()["top_p"], 0.9);
+    }
+
+    /// 兼容端点把 content 拆成分段数组时，拼接文本段，跳过思考段
+    #[tokio::test]
+    async fn content_parts_are_joined() {
+        let server = serve_json(json!({"choices": [{
+            "message": {"content": [
+                {"type": "thinking", "text": "hidden"},
+                {"type": "text", "text": " 1girl, "},
+                {"text": "solo "},
+                {"type": "image_url", "image_url": {"url": "x"}}
+            ]},
+            "finish_reason": "stop"
+        }]}));
+        assert_eq!(ask(&server.url).await.unwrap().text, "1girl, solo");
+
+        // 只有非文本段时按空内容处理，退回 reasoning_content
+        let server = serve_json(json!({"choices": [{
+            "message": {"content": [{"type": "thinking", "text": "x"}], "reasoning_content": "fallback"},
+            "finish_reason": "stop"
+        }]}));
+        assert_eq!(ask(&server.url).await.unwrap().text, "fallback");
     }
 
     #[tokio::test]
@@ -756,6 +873,92 @@ mod tests {
                 content
             }
         );
+    }
+
+    fn reply(text: &str, finish_reason: &str, max_tokens: Option<u32>) -> ChatReply {
+        ChatReply {
+            text: text.into(),
+            finish_reason: Some(finish_reason.into()),
+            max_tokens,
+        }
+    }
+
+    #[test]
+    fn accept_reply_maps_filter_truncation_and_refusal() {
+        let ok = Ok(reply("1girl, solo", "stop", Some(256)));
+        assert_eq!(accept_reply(&ok, "该图片"), Ok("1girl, solo"));
+        assert_eq!(accept_reply_unscreened(&ok, "该图片"), Ok("1girl, solo"));
+
+        assert_eq!(
+            accept_reply(&Err(ChatError::ContentFilter), "该标签文件"),
+            Err("LLM 内容安全审核拒绝了该标签文件".to_string())
+        );
+        assert_eq!(
+            accept_reply(&Err(ChatError::Cancelled), "该图片"),
+            Err("已取消".to_string())
+        );
+        assert_eq!(
+            accept_reply(&Err(ChatError::Other("API 错误 (500)".into())), "该图片"),
+            Err("API 错误 (500)".to_string())
+        );
+
+        assert_eq!(
+            accept_reply(&Ok(reply("1girl, so", "length", Some(64))), "该图片"),
+            Err("回复达到 max_tokens 上限（64）被截断，已丢弃，请调大 max_tokens".to_string())
+        );
+        assert_eq!(
+            accept_reply_unscreened(&Ok(reply("1girl, so", "length", None)), "该图片"),
+            Err("回复超出了服务商的输出长度上限，已丢弃".to_string())
+        );
+
+        let refusal = Ok(reply("I'm sorry, I can't help with that.", "stop", None));
+        assert_eq!(
+            accept_reply(&refusal, "该图片"),
+            Err(
+                "LLM 拒绝处理该图片（疑似内容安全审核）: I'm sorry, I can't help with that.".into()
+            )
+        );
+        // 分段解析的调用方自己逐段判定拒绝语
+        assert_eq!(
+            accept_reply_unscreened(&refusal, "该图片"),
+            Ok("I'm sorry, I can't help with that.")
+        );
+    }
+
+    #[tokio::test]
+    async fn reply_records_the_max_tokens_it_sent() {
+        let server = serve_chat_reply(Some("1girl, so"), "length");
+        let p = ChatParams {
+            max_tokens: 32,
+            ..params(&server.url)
+        };
+        let result = chat_completion(
+            &client(),
+            &p,
+            &[ChatMessage::user("hi")],
+            &RequestThrottle::new(-1),
+            &NOT_CANCELLED,
+        )
+        .await;
+        assert_eq!(result.as_ref().unwrap().max_tokens, Some(32));
+        assert!(accept_reply(&result, "该图片")
+            .unwrap_err()
+            .contains("max_tokens 上限（32）"));
+    }
+
+    #[test]
+    fn refusal_detection_counts_commas() {
+        assert!(!looks_like_refusal(""));
+        assert!(!looks_like_refusal("   "));
+        assert!(looks_like_refusal("抱歉，我无法处理这张图片"));
+        assert!(looks_like_refusal(
+            "  Sorry, but I CANNOT describe this image. "
+        ));
+        // 3 个以上逗号按标签列表放行（中英文逗号分别计数）
+        assert!(!looks_like_refusal("smile, i can't, solo, 1girl"));
+        assert!(!looks_like_refusal("微笑，抱歉，单人，女孩"));
+        assert!(looks_like_refusal("微笑, 抱歉，单人, 女孩"));
+        assert!(!looks_like_refusal("1girl, solo"));
     }
 
     #[test]

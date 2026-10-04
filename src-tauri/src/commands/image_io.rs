@@ -4,8 +4,10 @@ use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::codecs::tiff::TiffEncoder;
 use image::codecs::webp::WebPEncoder;
-use image::{DynamicImage, ImageDecoder, ImageEncoder, ImageFormat, ImageReader};
-use std::io::Cursor;
+use image::{
+    DynamicImage, ImageBuffer, ImageDecoder, ImageEncoder, ImageFormat, ImageReader, Pixel,
+};
+use std::io::{Cursor, Read};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -18,14 +20,120 @@ pub(crate) fn read_dimensions(path: &Path) -> image::ImageResult<(u32, u32)> {
         .into_dimensions()
 }
 
-pub(crate) fn probe_has_alpha_channel(path: &Path) -> Result<bool, String> {
-    let reader = ImageReader::open(path).map_err(|e| format!("无法打开图片: {}", e))?;
-    let decoder = reader
+/// 按文件头的魔数识别实际编码格式，不看扩展名；读不到或识别不出时为 None
+pub(crate) fn sniff_format(path: &Path) -> Option<ImageFormat> {
+    let mut head = Vec::with_capacity(64);
+    std::fs::File::open(path)
+        .ok()?
+        .take(64)
+        .read_to_end(&mut head)
+        .ok()?;
+    image::guess_format(&head).ok()
+}
+
+/// 按内容识别格式（识别不出时按扩展名）并解码，供缩略图、指纹和格式转换使用。
+/// 保留 image 库默认的 512 MiB 上限：解码前按整张图的字节数预留，超限直接报错，
+/// 不会为一张预览图先申请几个 GB。按源格式写回的处理用 `load_image`，它不做整图预留
+pub(crate) fn decode_image(path: &Path) -> Result<DynamicImage, String> {
+    ImageReader::open(path)
+        .map_err(|e| format!("无法打开图片: {}", e))?
+        .with_guessed_format()
+        .map_err(|e| format!("无法识别图片格式: {}", e))?
+        .decode()
+        .map_err(|e| format!("无法解码图片: {}", e))
+}
+
+/// 逐像素运算的通道类型（u8 / u16 / f32）：运算在 f64 上做，写回时整数通道四舍五入并钳位到取值范围，
+/// 浮点通道原样写回
+pub(crate) trait Channel: image::Primitive + Into<f64> {
+    fn from_f64(value: f64) -> Self;
+}
+
+impl Channel for u8 {
+    fn from_f64(value: f64) -> Self {
+        value.round().clamp(0.0, 255.0) as u8
+    }
+}
+
+impl Channel for u16 {
+    fn from_f64(value: f64) -> Self {
+        value.round().clamp(0.0, 65535.0) as u16
+    }
+}
+
+impl Channel for f32 {
+    fn from_f64(value: f64) -> Self {
+        value as f32
+    }
+}
+
+/// 不改变像素类型的逐像素处理，由 [`map_pixels`] 按图片自身的像素类型实例化
+pub(crate) trait PixelMap {
+    fn map<P>(&self, img: ImageBuffer<P, Vec<P::Subpixel>>) -> ImageBuffer<P, Vec<P::Subpixel>>
+    where
+        P: Pixel,
+        P::Subpixel: Channel;
+}
+
+/// 按图片自身的颜色类型和位深处理：灰度仍是灰度，没有 alpha 的不会多出 alpha，16 位、浮点不降位深
+pub(crate) fn map_pixels(img: DynamicImage, op: &impl PixelMap) -> DynamicImage {
+    use DynamicImage as D;
+    match img {
+        D::ImageLuma8(b) => D::ImageLuma8(op.map(b)),
+        D::ImageLumaA8(b) => D::ImageLumaA8(op.map(b)),
+        D::ImageRgb8(b) => D::ImageRgb8(op.map(b)),
+        D::ImageRgba8(b) => D::ImageRgba8(op.map(b)),
+        D::ImageLuma16(b) => D::ImageLuma16(op.map(b)),
+        D::ImageLumaA16(b) => D::ImageLumaA16(op.map(b)),
+        D::ImageRgb16(b) => D::ImageRgb16(op.map(b)),
+        D::ImageRgba16(b) => D::ImageRgba16(op.map(b)),
+        D::ImageRgb32F(b) => D::ImageRgb32F(op.map(b)),
+        D::ImageRgba32F(b) => D::ImageRgba32F(op.map(b)),
+        other => D::ImageRgba32F(op.map(other.into_rgba32f())),
+    }
+}
+
+/// 转成 RGBA，位深不低于源图：16 位（含 16 位灰度）→ Rgba16，32 位浮点 → Rgba32F，其余 → Rgba8
+pub(crate) fn into_rgba_keeping_depth(img: DynamicImage) -> DynamicImage {
+    use image::ColorType as C;
+    match img.color() {
+        C::L16 | C::La16 | C::Rgb16 | C::Rgba16 => DynamicImage::ImageRgba16(img.into_rgba16()),
+        C::Rgb32F | C::Rgba32F => DynamicImage::ImageRgba32F(img.into_rgba32f()),
+        _ => DynamicImage::ImageRgba8(img.into_rgba8()),
+    }
+}
+
+/// 文件头里的颜色信息（`probe_header` 的结果）
+#[derive(Debug)]
+pub(crate) struct ImageHeader {
+    pub color: image::ColorType,
+    pub has_icc: bool,
+}
+
+impl ImageHeader {
+    /// 每个通道超过 8 位（16 位整数或 32 位浮点）
+    pub(crate) fn high_bit_depth(&self) -> bool {
+        self.color.bytes_per_pixel() > self.color.channel_count()
+    }
+}
+
+/// 按内容识别格式（识别不出时按扩展名）后读文件头，不解码像素。
+/// JPEG 的解码器一建好就把整个文件读进内存：只关心某几种格式时先用 `sniff_format` 筛掉别的
+pub(crate) fn probe_header(path: &Path) -> Result<ImageHeader, String> {
+    let mut decoder = ImageReader::open(path)
+        .map_err(|e| format!("无法打开图片: {}", e))?
         .with_guessed_format()
         .map_err(|e| format!("无法识别图片格式: {}", e))?
         .into_decoder()
         .map_err(|e| format!("无法解码图片: {}", e))?;
-    Ok(decoder.color_type().has_alpha())
+    Ok(ImageHeader {
+        color: decoder.color_type(),
+        has_icc: decoder.icc_profile().ok().flatten().is_some(),
+    })
+}
+
+pub(crate) fn probe_has_alpha_channel(path: &Path) -> Result<bool, String> {
+    probe_header(path).map(|header| header.color.has_alpha())
 }
 
 pub(crate) fn flatten_preserving_depth(img: DynamicImage, bg: [u8; 3]) -> DynamicImage {
@@ -260,19 +368,7 @@ fn jpeg_quality_for(tables: &JpegTables, color: bool) -> u8 {
         .map_or(100, |i| (i as u8 + 1).max(JPEG_MIN_QUALITY))
 }
 
-#[cfg(test)]
-pub(crate) fn test_dir(label: &str) -> std::path::PathBuf {
-    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let root = std::env::temp_dir().join(format!(
-        "purin_imageops_{}_{}_{}",
-        label,
-        std::process::id(),
-        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&root).unwrap();
-    root
-}
-
+/// 测试用：写一张文件头完好、像素数据损坏的 32x32 PNG——只读尺寸能成功，解码像素会失败
 #[cfg(test)]
 pub(crate) fn write_broken_pixels(path: &Path) {
     image::RgbImage::new(32, 32).save(path).unwrap();
@@ -287,27 +383,204 @@ pub(crate) fn write_broken_pixels(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::test_support::TempDir;
     use image::GenericImageView;
-    use std::path::PathBuf;
 
     #[test]
     fn dimensions_follow_content_not_extension() {
-        let root = test_dir("dimensions");
+        let root = TempDir::new("image_io_dimensions");
         let path = root.join("webp.png");
         image::RgbImage::new(17, 23)
             .save_with_format(&path, ImageFormat::WebP)
             .unwrap();
         assert_eq!(read_dimensions(&path).unwrap(), (17, 23));
         assert!(!probe_has_alpha_channel(&path).unwrap());
-        std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("purinbox_image_io_{}_{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    #[test]
+    fn header_reports_color_depth_and_icc() {
+        let root = TempDir::new("image_io_header");
+        let deep = root.join("deep.png");
+        DynamicImage::ImageRgb16(ImageBuffer::new(4, 4))
+            .save(&deep)
+            .unwrap();
+        let header = probe_header(&deep).unwrap();
+        assert_eq!(header.color, image::ColorType::Rgb16);
+        assert!(header.high_bit_depth() && !header.has_icc);
+        let gray = root.join("gray16.png");
+        DynamicImage::ImageLuma16(ImageBuffer::new(4, 4))
+            .save(&gray)
+            .unwrap();
+        assert!(probe_header(&gray).unwrap().high_bit_depth());
+
+        let with_icc = root.join("icc.png");
+        let mut buf = Cursor::new(Vec::new());
+        let mut encoder = PngEncoder::new(&mut buf);
+        encoder.set_icc_profile(fake_icc(b"RGB ")).unwrap();
+        noisy_rgb(4, 4).write_with_encoder(encoder).unwrap();
+        std::fs::write(&with_icc, buf.into_inner()).unwrap();
+        let header = probe_header(&with_icc).unwrap();
+        assert!(header.has_icc && !header.high_bit_depth());
+
+        // 按内容而不是扩展名选解码器
+        let jpeg_named_png = root.join("photo.png");
+        noisy_rgb(4, 4)
+            .save_with_format(&jpeg_named_png, ImageFormat::Jpeg)
+            .unwrap();
+        assert_eq!(
+            probe_header(&jpeg_named_png).unwrap().color,
+            image::ColorType::Rgb8
+        );
+
+        let text = root.join("broken.png");
+        std::fs::write(&text, b"plain text").unwrap();
+        assert!(probe_header(&text).unwrap_err().starts_with("无法解码图片"));
+        assert!(probe_header(&root.join("missing.png"))
+            .unwrap_err()
+            .starts_with("无法打开图片"));
+    }
+
+    #[test]
+    fn sniff_format_reads_magic_bytes_only() {
+        let root = TempDir::new("image_io_sniff");
+        let jpeg_named_png = root.join("photo.png");
+        noisy_rgb(8, 8)
+            .save_with_format(&jpeg_named_png, ImageFormat::Jpeg)
+            .unwrap();
+        assert_eq!(sniff_format(&jpeg_named_png), Some(ImageFormat::Jpeg));
+        let webp = root.join("a.webp");
+        noisy_rgb(8, 8).save(&webp).unwrap();
+        assert_eq!(sniff_format(&webp), Some(ImageFormat::WebP));
+        // 扩展名不能代替内容
+        let text = root.join("fake.jpg");
+        std::fs::write(&text, b"plain text").unwrap();
+        assert_eq!(sniff_format(&text), None);
+        assert_eq!(sniff_format(&root.join("missing.png")), None);
+    }
+
+    /// 只写 PNG 文件头声明的尺寸，像素数据为空
+    fn png_header_only(path: &Path, width: u32, height: u32) {
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            out.extend((data.len() as u32).to_be_bytes());
+            out.extend(kind);
+            out.extend(data);
+            let mut crc = flate2::Crc::new();
+            crc.update(kind);
+            crc.update(data);
+            out.extend(crc.sum().to_be_bytes());
+        }
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut ihdr = Vec::new();
+        ihdr.extend(width.to_be_bytes());
+        ihdr.extend(height.to_be_bytes());
+        ihdr.extend([8, 6, 0, 0, 0]);
+        chunk(&mut bytes, b"IHDR", &ihdr);
+        chunk(&mut bytes, b"IDAT", &[]);
+        chunk(&mut bytes, b"IEND", &[]);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// 缩略图、指纹走的解码要先按整张图预留内存：声明 20000x20000 RGBA（约 1.5 GB）的图在分配前就被拒绝
+    #[test]
+    fn decode_image_keeps_the_default_memory_limit() {
+        let root = TempDir::new("image_io_decode_limit");
+        let huge = root.join("huge.png");
+        png_header_only(&huge, 20_000, 20_000);
+        assert_eq!(read_dimensions(&huge).unwrap(), (20_000, 20_000));
+        let err = decode_image(&huge).unwrap_err();
+        assert!(err.contains("limit"), "{}", err);
+
+        let jpeg_named_png = root.join("a.png");
+        noisy_rgb(9, 7)
+            .save_with_format(&jpeg_named_png, ImageFormat::Jpeg)
+            .unwrap();
+        assert_eq!(decode_image(&jpeg_named_png).unwrap().dimensions(), (9, 7));
+        let text = root.join("b.png");
+        std::fs::write(&text, b"plain text").unwrap();
+        assert!(decode_image(&text).unwrap_err().starts_with("无法解码图片"));
+    }
+
+    #[test]
+    fn channels_round_and_clamp_integers_but_keep_floats() {
+        assert_eq!(u8::from_f64(254.6), 255);
+        assert_eq!(u8::from_f64(300.0), 255);
+        assert_eq!(u8::from_f64(-3.0), 0);
+        assert_eq!(u16::from_f64(1000.49), 1000);
+        assert_eq!(u16::from_f64(70000.0), 65535);
+        assert_eq!(f32::from_f64(1.25), 1.25);
+        assert_eq!(f32::from_f64(-0.5), -0.5);
+    }
+
+    /// 每个通道加 1（整数通道钳位），用来检查 map_pixels 不改变像素类型
+    struct AddOne;
+
+    impl PixelMap for AddOne {
+        fn map<P>(
+            &self,
+            mut img: ImageBuffer<P, Vec<P::Subpixel>>,
+        ) -> ImageBuffer<P, Vec<P::Subpixel>>
+        where
+            P: Pixel,
+            P::Subpixel: Channel,
+        {
+            for pixel in img.pixels_mut() {
+                for c in pixel.channels_mut() {
+                    *c = P::Subpixel::from_f64((*c).into() + 1.0);
+                }
+            }
+            img
+        }
+    }
+
+    #[test]
+    fn map_pixels_keeps_color_type_and_depth() {
+        let images = [
+            DynamicImage::ImageLuma8(image::GrayImage::from_pixel(2, 2, image::Luma([255]))),
+            DynamicImage::ImageLumaA8(image::GrayAlphaImage::new(2, 2)),
+            DynamicImage::ImageRgb8(image::RgbImage::new(2, 2)),
+            DynamicImage::ImageRgba8(image::RgbaImage::new(2, 2)),
+            DynamicImage::ImageLuma16(ImageBuffer::new(2, 2)),
+            DynamicImage::ImageLumaA16(ImageBuffer::new(2, 2)),
+            DynamicImage::ImageRgb16(ImageBuffer::new(2, 2)),
+            DynamicImage::ImageRgba16(ImageBuffer::new(2, 2)),
+            DynamicImage::ImageRgb32F(ImageBuffer::new(2, 2)),
+            DynamicImage::ImageRgba32F(ImageBuffer::new(2, 2)),
+        ];
+        for img in images {
+            let color = img.color();
+            let mapped = map_pixels(img, &AddOne);
+            assert_eq!(mapped.color(), color);
+        }
+        let luma = map_pixels(
+            DynamicImage::ImageLuma8(image::GrayImage::from_pixel(1, 1, image::Luma([255]))),
+            &AddOne,
+        );
+        assert_eq!(luma.to_luma8().get_pixel(0, 0).0, [255]);
+        let float = map_pixels(DynamicImage::ImageRgb32F(ImageBuffer::new(1, 1)), &AddOne);
+        assert_eq!(float.to_rgb32f().get_pixel(0, 0).0, [1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn rgba_conversion_keeps_depth() {
+        use image::ColorType as C;
+        for (img, expected) in [
+            (DynamicImage::ImageLuma16(ImageBuffer::new(1, 1)), C::Rgba16),
+            (DynamicImage::ImageRgb16(ImageBuffer::new(1, 1)), C::Rgba16),
+            (
+                DynamicImage::ImageRgb32F(ImageBuffer::new(1, 1)),
+                C::Rgba32F,
+            ),
+            (
+                DynamicImage::ImageLuma8(image::GrayImage::new(1, 1)),
+                C::Rgba8,
+            ),
+            (
+                DynamicImage::ImageRgb8(image::RgbImage::new(1, 1)),
+                C::Rgba8,
+            ),
+        ] {
+            assert_eq!(into_rgba_keeping_depth(img).color(), expected);
+        }
     }
 
     fn noisy_rgb(w: u32, h: u32) -> DynamicImage {
@@ -351,7 +624,7 @@ mod tests {
 
     #[test]
     fn saved_jpeg_keeps_source_quantization() {
-        let dir = temp_dir("jpeg");
+        let dir = TempDir::new("image_io_jpeg");
         let src = dir.join("src.jpg");
         std::fs::write(&src, jpeg_bytes(&noisy_rgb(64, 64), 98)).unwrap();
 
@@ -363,12 +636,11 @@ mod tests {
             parse_dqt(&std::fs::read(&out).unwrap()),
             parse_dqt(&std::fs::read(&src).unwrap())
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn keeps_actual_format_when_extension_differs() {
-        let dir = temp_dir("mismatch");
+        let dir = TempDir::new("image_io_mismatch");
         let src = dir.join("png_inside.jpg");
         noisy_rgb(32, 32)
             .save_with_format(&src, ImageFormat::Png)
@@ -385,12 +657,11 @@ mod tests {
             image::load_from_memory(&bytes).unwrap().dimensions(),
             (16, 16)
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn webp_is_rewritten_lossless() {
-        let dir = temp_dir("webp");
+        let dir = TempDir::new("image_io_webp");
         let src = dir.join("a.webp");
         let img = noisy_rgb(24, 24);
         img.save(&src).unwrap();
@@ -400,12 +671,11 @@ mod tests {
         save_like_source(decoded, &out, &info).unwrap();
 
         assert_eq!(image::open(&out).unwrap().to_rgb8(), img.to_rgb8());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn icc_profile_round_trips_only_when_color_space_matches() {
-        let dir = temp_dir("icc");
+        let dir = TempDir::new("image_io_icc");
         let src = dir.join("a.png");
         let img = noisy_rgb(8, 8);
         let mut buf = Cursor::new(Vec::new());
@@ -426,12 +696,11 @@ mod tests {
         let gray = dir.join("gray.png");
         save_like_source(DynamicImage::ImageLuma8(decoded.to_luma8()), &gray, &info).unwrap();
         assert_eq!(probe_image(&gray).unwrap().icc_profile, None);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn transparent_pixels_flatten_to_white_for_jpeg() {
-        let dir = temp_dir("alpha_jpeg");
+        let dir = TempDir::new("image_io_alpha_jpeg");
         let src = dir.join("a.jpg");
         std::fs::write(&src, jpeg_bytes(&noisy_rgb(8, 8), 95)).unwrap();
         let info = probe_image(&src).unwrap();
@@ -445,6 +714,5 @@ mod tests {
         save_like_source(rgba, &out, &info).unwrap();
         let px = image::open(&out).unwrap().to_rgb8().get_pixel(4, 4).0;
         assert!(px.iter().all(|&c| c > 240), "{:?}", px);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

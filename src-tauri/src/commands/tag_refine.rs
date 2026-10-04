@@ -1,16 +1,24 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use super::llm_batch::{self, ItemOutcome};
 use super::llm_client::{
-    self, fmt_elapsed, pick_tag_line, reject_refusal, summarize_tags, ChatError, ChatMessage,
-    ChatParams, RequestThrottle,
+    self, fmt_elapsed, pick_tag_line, reject_refusal, summarize_tags, ChatMessage, ChatParams,
+    RequestThrottle,
 };
-use super::{ProcessResult, ProgressEvent};
+use super::tag_manager::is_full_json;
+use super::tag_text::{field_tags, split_tags};
+use super::tagger::hybrid;
+use super::{ProblemArchive, ProcessResult, ProgressEvent};
 use crate::commands::{collect_image_files_with_recursive_excluding, output_path_for_input};
+
+const EVENT: &str = "tag-refine-progress";
+
+/// 辅助打标里本地标签为空的图片的错误
+const EMPTY_LOCAL_LABELS: &str = "本地标签为空，已跳过 VLM 打标";
 
 static TAG_REFINE_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -55,12 +63,13 @@ pub struct TagRefineOptions {
     /// 不指望模型遵守"不要增删"的嘱咐
     #[serde(default)]
     pub preserve_tags: bool,
+    /// 辅助打标的调优阶段：标签从本地打标的草稿读（见 `hybrid::source_path`），
+    /// 草稿读过之后无论成败都删除
     #[serde(default)]
     pub hybrid_mode: bool,
+    /// 仅辅助打标：不覆盖已有的 txt/json 标签文件，调优期间才出现的也不覆盖
     #[serde(default)]
     pub skip_existing_labels: bool,
-    #[serde(default)]
-    pub prefer_existing_tags: bool,
 }
 
 fn default_file_format() -> String {
@@ -115,23 +124,32 @@ pub async fn start_tag_refining(
     options: TagRefineOptions,
 ) -> Result<ProcessResult, String> {
     // 互斥：全局取消标志不允许并发运行（辅助打标与精修页并发会互吞取消）
-    static REFINE_RUNNING: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
+    static REFINE_RUNNING: AtomicBool = AtomicBool::new(false);
     let _busy = crate::commands::BusyGuard::acquire(&REFINE_RUNNING, "标签精修")?;
 
     TAG_REFINE_CANCELLED.store(false, Ordering::SeqCst);
+    let client = llm_client::llm_http_client()?;
+    refine_dataset(&app, options, client).await
+}
 
-    let input_dir = Path::new(&options.input_path);
-    let input_dir_path = input_dir.to_path_buf();
+/// 细化输入里的全部图片：开始新一轮运行，逐张请求 VLM 写回标签，
+/// 收尾时归集问题文件并发唯一的终态 done
+async fn refine_dataset<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    options: TagRefineOptions,
+    client: reqwest::Client,
+) -> Result<ProcessResult, String> {
+    super::begin_run(EVENT);
+    let input_dir = PathBuf::from(&options.input_path);
     // 输入可以是单张图片，辅助打标又固定把输入路径当输出路径传进来。
     // 不取所在目录的话，下面的 create_dir_all 会试图创建一个与图片同名的目录
-    let output_dir_path = crate::commands::dir_of(Path::new(&options.output_path));
+    let output_dir = crate::commands::dir_of(Path::new(&options.output_path));
 
     // 失败/警告图副本落在 Fail、Warn 里，收集侧已统一剪枝，不会被当成新图
     let files = collect_image_files_with_recursive_excluding(
-        input_dir,
+        &input_dir,
         options.recursive,
-        Some(&output_dir_path),
+        Some(&output_dir),
     )?;
     let total = files.len() as u32;
 
@@ -139,9 +157,7 @@ pub async fn start_tag_refining(
         return Err("输入目录中没有找到图片文件".to_string());
     }
 
-    std::fs::create_dir_all(&output_dir_path).map_err(|e| format!("创建输出目录失败: {}", e))?;
-
-    let client = llm_client::llm_http_client()?;
+    std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
     let concurrency = std::cmp::max(1, options.concurrency) as usize;
 
@@ -150,15 +166,15 @@ pub async fn start_tag_refining(
         format!("找到 {} 张图片，{} 线程开始标签细化...", total, concurrency),
     )
     .at(0, total)
-    .emit(&app, "tag-refine-progress");
+    .emit(app, EVENT);
 
-    let recursive = options.recursive;
+    let (recursive, hybrid_mode) = (options.recursive, options.hybrid_mode);
     let throttle = Arc::new(RequestThrottle::new(options.request_interval_ms));
-    let input_root = input_dir_path.clone();
-    let output_dir = output_dir_path.clone();
+    let input_root = input_dir.clone();
+    let work_output_dir = output_dir.clone();
     let outcome = llm_batch::run_file_batch(
-        &app,
-        "tag-refine-progress",
+        app,
+        EVENT,
         &files,
         concurrency,
         &TAG_REFINE_CANCELLED,
@@ -167,7 +183,7 @@ pub async fn start_tag_refining(
                 client.clone(),
                 options.clone(),
                 input_root.clone(),
-                output_dir.clone(),
+                work_output_dir.clone(),
                 throttle.clone(),
             );
             async move {
@@ -186,33 +202,41 @@ pub async fn start_tag_refining(
     )
     .await;
 
+    if hybrid_mode {
+        clear_batch_drafts(app, &files);
+    }
+
     // 单图输入需比较图片所在目录；就地精修不复制警告图片，失败图片仍归集。
-    let input_cmp_dir = crate::commands::dir_of(&input_dir_path);
+    let input_cmp_dir = crate::commands::dir_of(&input_dir);
     let same_io_dir = match (
-        std::fs::canonicalize(&output_dir_path),
+        std::fs::canonicalize(&output_dir),
         std::fs::canonicalize(&input_cmp_dir),
     ) {
         (Ok(a), Ok(b)) => a == b,
         _ => {
-            crate::commands::path_key_ci(&output_dir_path)
+            crate::commands::path_key_ci(&output_dir)
                 == crate::commands::path_key_ci(&input_cmp_dir)
         }
     };
-    let extra = llm_batch::archive_problem_files(
-        &input_dir_path,
-        &output_dir_path,
-        recursive,
-        &outcome,
-        same_io_dir,
-    );
-    Ok(llm_batch::finish_batch(
-        &app,
-        "tag-refine-progress",
-        "标签细化完成",
-        total,
-        outcome,
-        &extra,
-    ))
+    let archive =
+        ProblemArchive::new(&input_dir, &output_dir, recursive).skip_warnings(same_io_dir);
+    Ok(outcome.finish(app, EVENT, "标签细化完成", &archive))
+}
+
+/// 辅助打标收尾：本批每张图的草稿都删除，取消后没轮到的图也删（下次运行会重新准备草稿）；
+/// 删不掉的汇总成一条警告
+fn clear_batch_drafts<R: tauri::Runtime>(app: &tauri::AppHandle<R>, images: &[PathBuf]) {
+    let errors: Vec<String> = images
+        .iter()
+        .filter_map(|image| hybrid::clear_drafts(image).err())
+        .collect();
+    if let Some(first) = errors.first() {
+        ProgressEvent::new(
+            "warning",
+            format!("{}（共 {} 张图片）", first, errors.len()),
+        )
+        .emit(app, EVENT);
+    }
 }
 
 impl FileResult {
@@ -225,30 +249,17 @@ impl FileResult {
                 changed,
                 warnings,
                 elapsed_ms,
-            } => {
-                let warning = !warnings.is_empty();
-                let warning_text = if warning {
-                    format!(" ⚠ {}", warnings.join("; "))
-                } else {
-                    String::new()
-                };
-                ItemOutcome::Done {
-                    message: format!(
-                        "[完成] {} | 原TAG {} → 细化后 {} | {}{}{}",
-                        filename,
-                        original_count,
-                        refined_count,
-                        fmt_elapsed(elapsed_ms),
-                        warning_text,
-                        if !changed && !warning {
-                            " (未变化)"
-                        } else {
-                            ""
-                        },
-                    ),
-                    warning,
-                }
-            }
+            } => ItemOutcome::completed(
+                format!(
+                    "[完成] {} | 原TAG {} → 细化后 {} | {}",
+                    filename,
+                    original_count,
+                    refined_count,
+                    fmt_elapsed(elapsed_ms)
+                ),
+                &warnings,
+                (!changed).then_some(" (未变化)"),
+            ),
             Self::Captioned {
                 filename,
                 original_count,
@@ -327,7 +338,7 @@ const SIMPLIFIED_LAYOUT: JsonTagLayout = JsonTagLayout {
 };
 
 fn json_layout(data: &serde_json::Value) -> &'static JsonTagLayout {
-    if super::tag_manager::is_full_json(data) {
+    if is_full_json(data) {
         &FULL_LAYOUT
     } else {
         &SIMPLIFIED_LAYOUT
@@ -380,18 +391,11 @@ fn path_is_string_field(layout: &JsonTagLayout, path: &[&str]) -> bool {
     layout.string_fields.contains(&path)
 }
 
-fn field_tags(value: Option<&serde_json::Value>) -> Vec<String> {
-    match value {
-        Some(serde_json::Value::String(text)) => split_tag_line(text),
-        Some(serde_json::Value::Array(values)) => values
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|tag| !tag.is_empty())
-            .map(str::to_owned)
-            .collect(),
-        _ => Vec::new(),
-    }
+/// 沿路径读一个字段的标签（见 `tag_text::field_tags`），字段不存在时为空
+fn path_tags(data: &serde_json::Value, path: &[&str]) -> Vec<String> {
+    json_get_path(data, path)
+        .map(field_tags)
+        .unwrap_or_default()
 }
 
 fn tags_value(as_string: bool, tags: Vec<String>) -> serde_json::Value {
@@ -406,17 +410,16 @@ fn append_tags(data: &mut serde_json::Value, path: &[&str], extra: Vec<String>) 
     if extra.is_empty() {
         return;
     }
-    let existing = json_get_path(data, path);
-    let as_string = existing.is_some_and(serde_json::Value::is_string);
-    let mut tags = field_tags(existing);
+    let as_string = json_get_path(data, path).is_some_and(serde_json::Value::is_string);
+    let mut tags = path_tags(data, path);
     tags.extend(extra);
     json_set_path(data, path, tags_value(as_string, tags));
 }
 
-/// 与提示词渲染共用字段表，兼容逗号串和数组。
+/// 文件里的全部标签（不含 nl），单值字段在前、其余按字段表顺序。
+/// 发给 LLM 的原标签列表和写回后的增删统计都用它
 fn flatten_json_tags(data: &serde_json::Value) -> Vec<String> {
     let layout = json_layout(data);
-    // 保留原来的展开顺序：字符串字段在前，再按字段表展开其余字段。
     layout
         .string_fields
         .iter()
@@ -428,7 +431,7 @@ fn flatten_json_tags(data: &serde_json::Value) -> Vec<String> {
                 .map(|(_, path)| *path)
                 .filter(|path| !path_is_string_field(layout, path)),
         )
-        .flat_map(|path| field_tags(json_get_path(data, path)))
+        .flat_map(|path| path_tags(data, path))
         .collect()
 }
 
@@ -467,7 +470,7 @@ fn render_json_tags_labeled(data: &serde_json::Value) -> String {
          tags=动作/表情/姿势/构图/物品, environment=背景/场景/光影/氛围)",
     );
     for (label, path) in json_layout(data).labeled {
-        let tags = field_tags(json_get_path(data, path));
+        let tags = path_tags(data, path);
         if !tags.is_empty() {
             out.push_str(&format!("\n{}: {}", label, tags.join(", ")));
         }
@@ -488,7 +491,7 @@ fn apply_refined_tags_to_json(data: &mut serde_json::Value, refined: &[String]) 
             if !slot.is_string() && !slot.is_array() {
                 continue;
             }
-            let kept: Vec<String> = field_tags(Some(slot))
+            let kept: Vec<String> = field_tags(slot)
                 .into_iter()
                 .filter(|tag| refined_set.contains(tag.as_str()))
                 .collect();
@@ -568,7 +571,7 @@ fn apply_buckets_to_json(data: &mut serde_json::Value, buckets: &TagBuckets) {
             .position(|bucket| bucket == path)
             .is_some_and(|index| slots[index].is_some());
         if !assigned {
-            used.extend(field_tags(json_get_path(data, path)));
+            used.extend(path_tags(data, path));
         }
     }
     for (index, path) in layout.bucket_paths.iter().enumerate() {
@@ -610,7 +613,7 @@ fn apply_buckets_preserving(data: &mut serde_json::Value, buckets: &TagBuckets) 
     let current: Vec<Vec<String>> = layout
         .bucket_paths
         .iter()
-        .map(|path| field_tags(json_get_path(data, path)))
+        .map(|path| path_tags(data, path))
         .collect();
 
     // 按归属重新分配；LLM 没提到的标签留在原字段
@@ -668,7 +671,7 @@ fn set_json_trigger(data: &mut serde_json::Value, trigger: &str) {
         return;
     }
     let path = json_layout(data).artist_path;
-    let existing = field_tags(json_get_path(data, path));
+    let existing = path_tags(data, path);
     if existing.iter().any(|p| p.eq_ignore_ascii_case(t)) {
         return;
     }
@@ -704,14 +707,6 @@ struct MarkerResponse<'a> {
     rest: Vec<&'a str>,
 }
 
-/// 把 `xxx, yyy` 一行拆成标签列表（空段返回空 Vec，代表"该字段清空"而非"未给出"）
-fn split_tag_line(line: &str) -> Vec<String> {
-    line.split(',')
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect()
-}
-
 /// 解析 LLM 响应中的标记段（大小写不敏感，容忍 markdown 加粗/列表前缀）：
 /// `COUNT:` / `APPEARANCE:` / `ENVIRONMENT:` / `TAGS:` 是标签段，`NL:` 是自然语言段。
 /// 未使用标记格式的旧提示词：全部返回 None，由调用方走旧启发式。
@@ -734,7 +729,8 @@ fn split_marker_response(content: &str) -> MarkerResponse<'_> {
             ("tags:", &mut out.buckets.tags),
         ] {
             if let Some(rest) = strip_ci_prefix(t, prefix) {
-                *slot = Some(split_tag_line(rest.trim_start_matches('*').trim()));
+                // 空段得到空列表，代表"该字段清空"而非"未给出"
+                *slot = Some(split_tags(rest.trim_start_matches('*')));
                 in_nl = false;
                 matched = true;
                 break;
@@ -775,7 +771,8 @@ fn split_marker_response(content: &str) -> MarkerResponse<'_> {
     out
 }
 
-/// 处理单个文件：读取图片 + 对应标签 → LLM 细化
+/// 处理单个文件：读取图片 + 对应标签 → LLM 细化。
+/// 辅助打标时这张图的草稿读过之后无论成败都删除；删不掉的由整批收尾时再清理并报告
 async fn process_single_file(
     client: &reqwest::Client,
     img_path: &Path,
@@ -784,12 +781,24 @@ async fn process_single_file(
     options: &TagRefineOptions,
     throttle: &RequestThrottle,
 ) -> FileResult {
+    let result =
+        refine_single_file(client, img_path, input_root, output_dir, options, throttle).await;
+    if options.hybrid_mode {
+        let _ = hybrid::clear_drafts(img_path);
+    }
+    result
+}
+
+async fn refine_single_file(
+    client: &reqwest::Client,
+    img_path: &Path,
+    input_root: &Path,
+    output_dir: &Path,
+    options: &TagRefineOptions,
+    throttle: &RequestThrottle,
+) -> FileResult {
     let start = std::time::Instant::now();
-    let filename = img_path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
+    let filename = super::file_name_lossy(img_path);
     let stem = img_path
         .file_stem()
         .unwrap_or_default()
@@ -797,9 +806,8 @@ async fn process_single_file(
         .to_string();
     let parent = img_path.parent().unwrap_or(Path::new("."));
 
-    let skip_existing =
-        options.hybrid_mode && options.prefer_existing_tags && options.skip_existing_labels;
-    if skip_existing && super::tagger::hybrid::has_labels(img_path) {
+    let skip_existing = options.hybrid_mode && options.skip_existing_labels;
+    if skip_existing && super::tagger::has_labels(img_path) {
         return FileResult::Skipped {
             filename,
             reason: "已有标签文件".into(),
@@ -810,16 +818,15 @@ async fn process_single_file(
     let is_json = options.file_format == "json";
     let tag_ext = if is_json { "json" } else { "txt" };
     let mut tag_path = if options.hybrid_mode {
-        super::tagger::hybrid::source_path(img_path, tag_ext)
+        hybrid::source_path(img_path, tag_ext)
     } else {
         parent.join(format!("{}.{}", stem, tag_ext))
     };
     // txt 模式回退：没有 .txt 但有 .json 时直接读 JSON——字段结构带着语义
     // 喂给 VLM 比先摊平转换信息更全（输出是扁平 txt，写盘时反正要摊平）
     let mut json_fallback = !is_json
-        && tag_path
-            .extension()
-            .is_some_and(|ext| ext == "json" || ext == "purin-local-json");
+        && (tag_path.extension().is_some_and(|ext| ext == "json")
+            || hybrid::draft_label_format(&tag_path) == Some("json"));
     if !options.hybrid_mode && !tag_path.exists() && !is_json {
         let jp = parent.join(format!("{}.json", stem));
         if jp.exists() {
@@ -848,49 +855,62 @@ async fn process_single_file(
         }
     };
 
-    if tag_content.is_empty() {
-        return FileResult::Skipped {
-            filename,
-            reason: "标签文件为空".to_string(),
-        };
-    }
-
     // json 模式：解析并扁平化标签；txt 模式：逗号拆分。
     // json 回退（txt 模式读到了 .json）：同样解析展开，但不进 json_data——
     // 结果始终写回 .txt，JSON 原文件不动
-    let mut json_data: Option<serde_json::Value> = None;
-    let mut tags_display: Option<String> = None;
-    let original_tags: Vec<String> = if is_json || json_fallback {
-        let parsed: serde_json::Value = match serde_json::from_str(&tag_content) {
-            Ok(v) => v,
+    let reads_json = is_json || json_fallback;
+    let parsed = if reads_json && !tag_content.is_empty() {
+        match serde_json::from_str::<serde_json::Value>(&tag_content) {
+            Ok(v) => Some(v),
             Err(e) => {
                 return FileResult::Error {
                     filename,
                     message: format!("解析 JSON 标签失败: {}", e),
                 }
             }
-        };
-        let tags = flatten_json_tags(&parsed);
-        if is_json {
-            json_data = Some(parsed);
-        } else {
-            tags_display = Some(render_json_tags_labeled(&parsed));
         }
-        tags
     } else {
-        tag_content
-            .split(',')
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .collect()
+        None
+    };
+    let original_tags: Vec<String> = match &parsed {
+        Some(data) => flatten_json_tags(data),
+        None if reads_json => Vec::new(),
+        None => split_tags(&tag_content),
+    };
+    let output_path = || {
+        output_path_for_input(
+            input_root,
+            img_path,
+            output_dir,
+            &format!("{}.{}", stem, tag_ext),
+            options.recursive,
+        )
     };
 
     if original_tags.is_empty() {
-        return FileResult::Skipped {
+        if !options.hybrid_mode {
+            return FileResult::Skipped {
+                filename,
+                reason: if tag_content.is_empty() {
+                    "标签文件为空"
+                } else {
+                    "无有效标签"
+                }
+                .to_string(),
+            };
+        }
+        // 正常的本地打标不会一个标签都没有：按出错处理，不请求 VLM、不写标签文件
+        return FileResult::Error {
             filename,
-            reason: "无有效标签".to_string(),
+            message: EMPTY_LOCAL_LABELS.into(),
         };
     }
+
+    let tags_display = parsed
+        .as_ref()
+        .filter(|_| json_fallback)
+        .map(render_json_tags_labeled);
+    let json_data = parsed.filter(|_| is_json);
 
     // 调用 LLM 细化（tags_display：JSON 回退时带字段标签的展示文本）
     let output = match refine_tags_with_llm(
@@ -913,14 +933,7 @@ async fn process_single_file(
     };
     let elapsed_ms = start.elapsed().as_millis();
     let original_count = original_tags.len();
-    let output_name = format!("{}.{}", stem, tag_ext);
-    let output_path = match output_path_for_input(
-        input_root,
-        img_path,
-        output_dir,
-        &output_name,
-        options.recursive,
-    ) {
+    let output_path = match output_path() {
         Ok(path) => path,
         Err(e) => {
             return FileResult::Error {
@@ -1016,26 +1029,30 @@ async fn process_single_file(
         }
     };
 
-    let written = if skip_existing {
-        super::tagger::hybrid::write_final(img_path, &output_path, &output_content)
-    } else {
-        std::fs::write(&output_path, &output_content)
-            .map(|_| true)
-            .map_err(|e| format!("写入失败: {}", e))
-    };
-    match written {
-        Ok(true) => {
-            if options.hybrid_mode {
-                let _ = std::fs::remove_file(&tag_path);
-            }
-            done
-        }
+    match write_label(img_path, &output_path, &output_content, skip_existing) {
+        Ok(true) => done,
         Ok(false) => FileResult::Skipped {
             filename,
             reason: "已有标签文件".into(),
         },
         Err(message) => FileResult::Error { filename, message },
     }
+}
+
+/// 写出正式标签。`keep_existing` 时（辅助打标跳过已有标签）不覆盖调优期间出现的标签文件，
+/// 返回 Ok(false)；否则先写临时文件再替换，就地写回时写入中途失败也不会截断原标签
+fn write_label(
+    image: &Path,
+    output: &Path,
+    content: &str,
+    keep_existing: bool,
+) -> Result<bool, String> {
+    if keep_existing {
+        return hybrid::write_final(image, output, content);
+    }
+    super::config_paths::write_file_atomic(output, content.as_bytes())
+        .map(|()| true)
+        .map_err(|e| format!("写入失败: {}", e))
 }
 
 /// 调用多模态 LLM 进行标签细化（发送图片 + 已有标签）。
@@ -1085,23 +1102,17 @@ async fn refine_tags_with_llm(
         throttle,
         &TAG_REFINE_CANCELLED,
     )
-    .await
-    .map_err(|error| match error {
-        ChatError::ContentFilter => "LLM 内容安全审核拒绝了该图片，标签未改动".to_string(),
-        error => String::from(error),
-    })?;
-    if reply.is_truncated() {
-        return Err("回复超出了服务商的输出长度上限，已丢弃".to_string());
-    }
-    let final_content = reply.text;
+    .await;
 
     // 自然语言打标：回复整段就是标签文件内容，不进标签解析
     if options.caption_mode {
-        reject_refusal(&final_content, "该图片")?;
-        return Ok(RefineOutput::Caption(final_content));
+        let caption = llm_client::accept_reply(&reply, "该图片")?;
+        return Ok(RefineOutput::Caption(caption.to_string()));
     }
 
-    let (tags, nl, buckets) = parse_refine_response(&final_content, tags)?;
+    // 拒绝语由 parse_refine_response 按段判定：标记格式的 NL 段里，正常句子也可能含拒绝措辞
+    let content = llm_client::accept_reply_unscreened(&reply, "该图片")?;
+    let (tags, nl, buckets) = parse_refine_response(content, tags)?;
     Ok(RefineOutput::Tags { tags, nl, buckets })
 }
 
@@ -1136,7 +1147,7 @@ fn parse_refine_response(
         if marker.buckets.tags.is_some() || marker.buckets.has_field_assignment() {
             marker.buckets.all_tags()
         } else {
-            split_tag_line(pick_tag_line(&marker.rest.join("\n")))
+            split_tags(pick_tag_line(&marker.rest.join("\n")))
         };
 
     // 只回了 NL: 一段（"仅补 nl 描述"这类提示词）：标签原样保留，不是失败
@@ -1727,10 +1738,8 @@ mod marker_tests {
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
-    use crate::commands::llm_client::test_support::{
-        client, serve_chat_reply, serve_json, TempDir,
-    };
-    use std::path::PathBuf;
+    use crate::commands::llm_client::test_support::{client, serve_chat_reply, serve_json};
+    use crate::commands::test_support::TempDir;
 
     fn make_options(endpoint: String) -> TagRefineOptions {
         TagRefineOptions {
@@ -1753,7 +1762,6 @@ mod e2e_tests {
             preserve_tags: false,
             hybrid_mode: false,
             skip_existing_labels: false,
-            prefer_existing_tags: false,
         }
     }
 
@@ -1776,7 +1784,7 @@ mod e2e_tests {
 
     #[tokio::test]
     async fn hybrid_intermediate_labels_reach_vlm_and_only_success_is_published() {
-        use crate::commands::tagger::hybrid::{draft_path, has_labels};
+        use crate::commands::tagger::{has_labels, hybrid::draft_path};
         for (format, local) in [
             ("txt", "1girl, smile"),
             ("json", FIXTURE_JSON),
@@ -1794,7 +1802,6 @@ mod e2e_tests {
             options.input_path = root.to_string_lossy().into_owned();
             options.file_format = format.into();
             options.hybrid_mode = true;
-            options.prefer_existing_tags = true;
             options.skip_existing_labels = true;
             let result = process_single_file(
                 &client(),
@@ -1843,9 +1850,10 @@ mod e2e_tests {
         }
     }
 
+    /// 调优失败：不写正式标签，读过的草稿照样删除；下次运行重新准备草稿后可以再调优
     #[tokio::test]
-    async fn hybrid_failed_refinement_leaves_no_final_label_and_can_retry() {
-        use crate::commands::tagger::hybrid::{draft_path, has_labels};
+    async fn hybrid_failed_refinement_removes_draft_and_writes_no_label() {
+        use crate::commands::tagger::{has_labels, hybrid::draft_path};
         for (format, local) in [
             ("txt", "1girl, smile"),
             ("json", FIXTURE_JSON),
@@ -1859,7 +1867,6 @@ mod e2e_tests {
             options.input_path = root.to_string_lossy().into_owned();
             options.file_format = format.into();
             options.hybrid_mode = true;
-            options.prefer_existing_tags = true;
             options.skip_existing_labels = true;
             let result = process_single_file(
                 &client(),
@@ -1872,7 +1879,9 @@ mod e2e_tests {
             .await;
             assert!(matches!(result, FileResult::Error { .. }), "{result:?}");
             assert!(!has_labels(&img));
-            assert_eq!(std::fs::read_to_string(&source).unwrap(), local);
+            assert!(!source.exists(), "失败时草稿也要删除");
+
+            std::fs::write(&source, local).unwrap();
             let retry_server = serve_chat_reply(Some("COUNT: 1girl\nTAGS: smile"), "stop");
             options.api_endpoint = retry_server.url.clone();
             let retry = process_single_file(
@@ -1900,7 +1909,6 @@ mod e2e_tests {
                 options.input_path = root.to_string_lossy().into_owned();
                 options.hybrid_mode = true;
                 options.skip_existing_labels = true;
-                options.prefer_existing_tags = true;
                 options.file_format = format.into();
                 let missing = process_single_file(
                     &client(),
@@ -1928,6 +1936,7 @@ mod e2e_tests {
                     std::fs::read_to_string(img.with_extension(existing)).unwrap(),
                     "external"
                 );
+                assert!(!draft_path(&img, format).exists());
             }
         }
     }
@@ -1948,7 +1957,9 @@ mod e2e_tests {
                 r#"{"count":"1girl","tags":["fresh tag"]}"#,
             ),
         ] {
-            for (prefer_existing, skip_existing) in [(true, false), (false, false), (false, true)] {
+            // 前端只在复用已有标签时才可能要求跳过（skip_existing_labels = 复用 && 跳过），
+            // 这里覆盖不跳过时的复用与重新生成
+            for prefer_existing in [true, false] {
                 let (root, img) = setup_dir("hybrid_compat");
                 std::fs::write(img.with_extension(format), old).unwrap();
                 let source = draft_path(&img, format);
@@ -1969,8 +1980,6 @@ mod e2e_tests {
                 let server = serve_chat_reply(Some("COUNT: 1girl\nTAGS: refined tag"), "stop");
                 let mut options = make_options(server.url.clone());
                 options.hybrid_mode = true;
-                options.prefer_existing_tags = prefer_existing;
-                options.skip_existing_labels = skip_existing;
                 options.file_format = format.into();
                 let result = process_single_file(
                     &client(),
@@ -2028,7 +2037,6 @@ mod e2e_tests {
             let server = serve_chat_reply(Some("COUNT: 1girl\nTAGS: smile"), "stop");
             let mut options = make_options(server.url.clone());
             options.hybrid_mode = true;
-            options.prefer_existing_tags = true;
             let result = process_single_file(
                 &client(),
                 &img,
@@ -2047,7 +2055,223 @@ mod e2e_tests {
                 original
             );
             assert!(!draft_path(&img, "json").exists());
+            // JSON 草稿按字段结构读取，带字段名发给 VLM
+            let request = server
+                .requests
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .json();
+            let text = request["messages"][0]["content"][0]["text"]
+                .as_str()
+                .unwrap();
+            assert!(text.contains("count: 1girl"), "{text}");
         }
+    }
+
+    const EMPTY_FULL: &str = r#"{"fixed":{"quality":"","series":"","artist":""},"character":{"name":"","variant":""},"from_path":{"appearance":[]},"ai_output":{"count":"","appearance":[],"tags":[],"environment":[],"nl":""}}"#;
+    const EMPTY_SIMPLE: &str = r#"{"quality":"","series":"","artist":"","character":"","count":"","appearance":[],"tags":[],"environment":[],"nl":""}"#;
+
+    /// 辅助打标里本地标签为空按出错处理：不请求 VLM，不写标签文件，已有的标签原样保留，草稿删除
+    #[tokio::test]
+    async fn hybrid_empty_local_labels_fail_without_requesting_vlm() {
+        use crate::commands::tagger::hybrid::draft_path;
+        // (输出格式, 草稿格式, 草稿内容, 自然语言模式, 触发词, 已有标签)
+        let cases = [
+            ("txt", "txt", "", false, "", None),
+            ("txt", "txt", " , ，\n", false, "trigger", None),
+            (
+                "txt",
+                "json",
+                r#"{"ai_output":{"nl":"x"}}"#,
+                false,
+                "",
+                None,
+            ),
+            ("txt", "txt", "", true, "trigger", None),
+            ("txt", "txt", "", true, "", Some("a hand-written caption")),
+            ("txt", "txt", "", false, "", Some("1girl, solo")),
+            ("json", "json", "", false, "", None),
+            ("json", "json", EMPTY_FULL, false, "", None),
+            ("json", "json", EMPTY_SIMPLE, false, "trigger", None),
+            (
+                "json",
+                "json",
+                EMPTY_FULL,
+                false,
+                "",
+                Some(r#"{"ai_output":{"nl":"keep"}}"#),
+            ),
+        ];
+        for (format, draft_format, draft, caption, trigger, existing) in cases {
+            let (root, img) = setup_dir("hybrid_empty_local");
+            let draft_file = draft_path(&img, draft_format);
+            std::fs::write(&draft_file, draft).unwrap();
+            let label = img.with_extension(format);
+            if let Some(existing) = existing {
+                std::fs::write(&label, existing).unwrap();
+            }
+            // 端口 1 没人应答：一旦请求 VLM，报的就是连接错误
+            let mut options = make_options("http://127.0.0.1:1".into());
+            options.hybrid_mode = true;
+            options.file_format = format.into();
+            options.caption_mode = caption;
+            options.trigger_word = trigger.into();
+            let result = process_single_file(
+                &client(),
+                &img,
+                &root,
+                &root,
+                &options,
+                &RequestThrottle::new(-1),
+            )
+            .await;
+            let case = format!("{format} {draft:?} caption={caption} existing={existing:?}");
+            match result {
+                FileResult::Error { message, .. } => {
+                    assert_eq!(message, EMPTY_LOCAL_LABELS, "{case}")
+                }
+                other => panic!("{case}: {other:?}"),
+            }
+            match existing {
+                Some(existing) => {
+                    assert_eq!(std::fs::read_to_string(&label).unwrap(), existing, "{case}")
+                }
+                None => assert!(!label.exists(), "{case}"),
+            }
+            assert!(!draft_file.exists(), "{case}");
+        }
+    }
+
+    /// 只补缺（跳过已有标签）时，调优期间出现的标签文件让这张图照常跳过，不报空标签错误、不写文件
+    #[tokio::test]
+    async fn hybrid_skip_existing_wins_over_empty_local_labels() {
+        use crate::commands::tagger::hybrid::draft_path;
+        let (root, img) = setup_dir("hybrid_empty_late");
+        std::fs::write(draft_path(&img, "txt"), "").unwrap();
+        std::fs::write(img.with_extension("json"), "external").unwrap();
+        let mut options = make_options("http://127.0.0.1:1".into());
+        options.hybrid_mode = true;
+        options.skip_existing_labels = true;
+        let result = process_single_file(
+            &client(),
+            &img,
+            &root,
+            &root,
+            &options,
+            &RequestThrottle::new(-1),
+        )
+        .await;
+        assert!(matches!(result, FileResult::Skipped { .. }), "{result:?}");
+        assert!(!img.with_extension("txt").exists());
+        assert!(!draft_path(&img, "txt").exists());
+    }
+
+    /// 标签细化页（非辅助打标）遇到空标签文件仍是跳过，不写任何东西
+    #[tokio::test]
+    async fn empty_label_files_are_skipped_outside_hybrid_mode() {
+        for (content, reason) in [("", "标签文件为空"), (" , ", "无有效标签")] {
+            let (root, img) = setup_dir("refine_empty_txt");
+            std::fs::write(root.join("a.txt"), content).unwrap();
+            let options = make_options("http://127.0.0.1:1".into());
+            let result = process_single_file(
+                &client(),
+                &img,
+                &root,
+                &root,
+                &options,
+                &RequestThrottle::new(-1),
+            )
+            .await;
+            match result {
+                FileResult::Skipped { reason: got, .. } => assert_eq!(got, reason),
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(
+                std::fs::read_to_string(root.join("a.txt")).unwrap(),
+                content
+            );
+        }
+    }
+
+    /// 整批就地调优：同一轮运行 ID、逐条事件、收尾说明和 done；本批的草稿全部清掉
+    #[tokio::test]
+    async fn hybrid_batch_reports_one_run_and_clears_drafts() {
+        use crate::commands::batch::capture_raw_events;
+        use crate::commands::tagger::hybrid::draft_path;
+        let root = TempDir::new("hybrid_refine_batch");
+        for name in ["a.png", "b.png"] {
+            image::RgbImage::from_pixel(8, 8, image::Rgb([10, 20, 30]))
+                .save(root.join(name))
+                .unwrap();
+        }
+        std::fs::write(draft_path(&root.join("a.png"), "txt"), "").unwrap();
+        let app = tauri::test::mock_app();
+        let events = capture_raw_events(app.handle(), EVENT);
+        let mut options = make_options("http://127.0.0.1:1".into());
+        options.input_path = root.to_string_lossy().into_owned();
+        options.output_path = options.input_path.clone();
+        options.hybrid_mode = true;
+        let before = crate::commands::begin_run("tag-refine-test-marker");
+        let result = refine_dataset(app.handle(), options, client())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            (result.success_count, result.fail_count, result.total),
+            (1, 1, 2)
+        );
+        assert!(!root.join("a.txt").exists());
+        assert!(root.join("Fail/a.png").is_file());
+        assert!(!root.join("b.txt").exists());
+        assert!(!draft_path(&root.join("a.png"), "txt").exists());
+        let events = events.lock().unwrap();
+        let run_id = events[0]["run_id"].as_u64().unwrap();
+        assert!(run_id > before);
+        assert!(events.iter().all(|e| e["run_id"] == run_id), "{events:?}");
+        let summary: Vec<(&str, &str)> = events
+            .iter()
+            .map(|e| {
+                (
+                    e["status"].as_str().unwrap(),
+                    e["message"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("info", "找到 2 张图片，1 线程开始标签细化..."),
+                ("error", "[错误] a.png: 本地标签为空，已跳过 VLM 打标"),
+                ("success", "[跳过] b.png (无可用的本地标签)"),
+                ("info", "已将 1 个失败文件复制到 Fail/ 文件夹"),
+                ("done", "标签细化完成: 成功 1, 失败 1, 共 2"),
+            ]
+        );
+    }
+
+    /// 收尾清理：删掉本批所有草稿，删不掉的汇总成一条警告
+    #[test]
+    fn batch_draft_cleanup_reports_leftovers() {
+        use crate::commands::batch::capture_events;
+        use crate::commands::tagger::hybrid::draft_path;
+        let root = TempDir::new("hybrid_draft_sweep");
+        let (a, b) = (root.join("a.png"), root.join("b.png"));
+        std::fs::write(draft_path(&a, "txt"), "x").unwrap();
+        std::fs::write(draft_path(&a, "json"), "{}").unwrap();
+        // 草稿位置是个目录：删除必然失败
+        std::fs::create_dir(draft_path(&b, "txt")).unwrap();
+        let app = tauri::test::mock_app();
+        let events = capture_events(app.handle(), EVENT);
+        clear_batch_drafts(app.handle(), &[a.clone(), b.clone(), root.join("c.png")]);
+        assert!(!draft_path(&a, "txt").exists() && !draft_path(&a, "json").exists());
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["status"], "warning");
+        let message = events[0]["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("清理中间标签失败") && message.ends_with("（共 1 张图片）"),
+            "{message}"
+        );
     }
 
     #[tokio::test]

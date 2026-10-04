@@ -251,7 +251,6 @@ pub fn add_local_model(
     tags_path: String,
     input_size: u32,
 ) -> Result<String, String> {
-    // 生成 ID
     let id = format!(
         "custom-{}",
         std::time::SystemTime::now()
@@ -265,18 +264,16 @@ pub fn add_local_model(
         return Err(format!("名称 '{}' 已存在", name));
     }
 
-    // 将文件复制到模型目录
     let model_dir = super::get_model_dir(&id);
     if !model_dir.exists() {
         std::fs::create_dir_all(&model_dir).map_err(|e| format!("创建目录失败: {}", e))?;
     }
 
-    // 复制 model.onnx
     let src_model = std::path::Path::new(&model_path);
     let dest_model = model_dir.join("model.onnx");
     std::fs::copy(src_model, &dest_model).map_err(|e| format!("复制模型文件失败: {}", e))?;
 
-    // 复制标签文件（保留原始扩展名）
+    // 标签文件保留原始扩展名：加载时按扩展名区分 CSV 与 JSON 词表
     let src_tags = std::path::Path::new(&tags_path);
     let tags_ext = src_tags
         .extension()

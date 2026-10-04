@@ -2,19 +2,19 @@
 
 stdout 只写协议行：每行一个 JSON 对象，UTF-8 编码。诊断信息写 stderr。
 入口脚本由 Rust 以 `python 脚本.py` 启动，脚本所在目录就是 sys.path[0]，
-所以模块顶层可以直接 import 本模块。
+同目录的本模块和 cuda_dll_helper 等都可以直接 import。
 """
 import io
 import json
 import os
 import sys
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# 在途临时文件的标记，由 Rust 按每轮任务设置：子进程被强制结束后，Rust 按它找到写了一半的临时文件并删除
+TEMP_TAG_ENV = "PURIN_TEMP_TAG"
 
 
 def bootstrap():
-    """入口脚本在 import onnxruntime / torch 之前调用：同目录模块优先导入，并注册 Windows 的 CUDA DLL 目录"""
-    sys.path.insert(0, SCRIPT_DIR)
+    """入口脚本在 import onnxruntime / torch 之前调用：注册 Windows 的 CUDA DLL 目录"""
     from cuda_dll_helper import register_cuda_dlls
     register_cuda_dlls()
 
@@ -38,6 +38,11 @@ def log_i18n(key, params=None):
     if params:
         data["i18n_params"] = params
     emit(data)
+
+
+def ready(**fields):
+    """常驻脚本初始化完成、可以接收命令"""
+    emit({"type": "ready", **fields})
 
 
 def error(message, **fields):
@@ -101,12 +106,19 @@ def read_text_compat(path):
     return None
 
 
+def temp_path(out_path):
+    """写 out_path 期间用的临时文件 `<out_path>.<标记>.tmp`。
+    标记取环境变量 PURIN_TEMP_TAG，没有设置时为 purin-<进程号>"""
+    tag = os.environ.get(TEMP_TAG_ENV) or f"purin-{os.getpid()}"
+    return f"{out_path}.{tag}.tmp"
+
+
 def replace_atomically(out_path, write):
-    """write(tmp) 先写到 <out_path>.tmp，再原子替换为 out_path；出错时删掉临时文件后重新抛出。
+    """write(tmp) 先写到临时文件（见 temp_path），再原子替换为 out_path；出错时删掉临时文件后重新抛出。
 
     进程在写盘中途被杀时，正名下要么是旧文件要么是完整的新文件，不会是半截文件。
     """
-    tmp = f"{out_path}.tmp"
+    tmp = temp_path(out_path)
     try:
         write(tmp)
         os.replace(tmp, out_path)

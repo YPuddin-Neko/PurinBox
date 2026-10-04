@@ -11,30 +11,34 @@ AI Tagger 推理脚本 - 由 Tauri 后端调用
   append_tags / append_position / json_append_field / replace_underscore / output_format /
   json_simplified / escape_parentheses / sort_by / existing_tags_action
   已有标签的 skip 判断由 Rust 在发送前完成
-- 输入: {"cmd": "tag_batch", "images": [{"image_path": "...", <打标选项>}, ...]}
+- 输入: {"cmd": "tag_batch", "images": [{"image_path": "...", "tag_output_path": "...", <打标选项>}, ...]}
+  tag_output_path 是标签的写入位置，由 Rust 决定（普通打标是图片旁的同名 .txt / .json，辅助打标是草稿文件）；
   每张图回一条 result 或 error（带 image_path）
 - 输入: {"cmd": "quit"}
-- 输出: {"type": "ready"}
+- 输出: {"type": "ready"}；init 失败时改回一条不带 image_path 的 error
 - 输出: {"type": "result", "image_path": "...", "tag_count": 10}，跳过写入时另带 "skipped": true
 - 输出: {"type": "error", "message": "..."}，能确定图片时另带 "image_path"
 - 输出: {"type": "log", "message": "..."}，可带 "i18n_key" / "i18n_params"
 
 一次性模式（处理完即退出）:
-- --detect <model_path>: 输出一行 {"type": "model_info", "input_size", "input_format", "input_shape"}，
-  失败时写 stderr 并以退出码 1 结束
-- --convert --input <目录或图片> --tags-path <词表> [--simplified] [--recursive] [--intermediate]:
-  txt → JSON，输出 progress / log 行，最后一行 {"type": "done", "converted", "skipped", "failed", "total"}；
-  参数错误时输出 {"type": "error", "message": "..."}
+- --detect <model_path>: 输出一行 {"type": "model_info", "input_size", "input_shape"}，
+  失败时把原因写到 stderr 并以退出码 1 结束
+- --convert --manifest <清单> --tags-path <词表> [--simplified]: 把已有 txt 标签转换成 JSON 草稿。
+  清单由 Rust 写出：[{"image_path", "source_path", "output_path"}, ...]，source_path 是 txt 标签，
+  output_path 是草稿文件。读好词表和清单后输出 {"type": "ready"}，之后每项回一条 result（带 tag_count）
+  或 error（带 image_path），最后一行 {"type": "done", "converted", "failed", "total"}；
+  词表或清单读不了时只输出一条不带 image_path 的 error
 """
 
 import sys
 import json
 import csv
+import itertools
 import traceback
 import numpy as np
 from pathlib import Path
 
-from purin_proto import (bootstrap, done, emit, error, log, log_i18n, progress, read_text_compat,
+from purin_proto import (bootstrap, done, emit, error, log, log_i18n, read_text_compat, ready,
                          result, utf8_stdin, write_text_atomic)
 
 def _pad_square(image, fill):
@@ -57,9 +61,10 @@ def _to_nchw(image, bgr=False):
 
 def preprocess_image(image_path, target_size, input_format, preprocess_mode="auto"):
     from PIL import Image
+    from image_save import to_8bit
 
     with Image.open(image_path) as source:
-        image = source.copy()
+        image = to_8bit(source.copy())
     if image.mode not in ["RGB", "RGBA"]:
         image = image.convert("RGBA") if "transparency" in image.info else image.convert("RGB")
     if image.mode == "RGBA":
@@ -97,20 +102,25 @@ def load_tags_csv(csv_path):
 
     按表头名取列而不是固定位置：SmilingWolf 系是 tag_id,name,category,count，
     PixAI(deepghs 导出)是 id,tag_id,name,category,count,ips——列位置不同。
+    第一行没有 name / category 表头时按旧格式 tag_id,name,category[,count] 取列；
+    这一行的 category 列是数字就是第一条标签，否则是认不出的表头。
     """
     tags = []
     category_map = {9: "rating", 0: "general", 4: "character", 1: "artist", 3: "copyright", 5: "meta", 6: "quality", 7: "model"}
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.reader(f)
-        header = [h.strip().lower() for h in next(reader)]
-        try:
+        first = next(reader, None)
+        header = [h.strip().lower() for h in first or []]
+        if "name" in header and "category" in header:
             name_idx = header.index("name")
             cat_idx = header.index("category")
-        except ValueError:
-            # 无表头时使用旧格式的 tag_id,name,category[,count] 列顺序。
-            name_idx, cat_idx = 1, 2
-        count_idx = header.index("count") if "count" in header else None
-        for row in reader:
+            count_idx = header.index("count") if "count" in header else None
+            rows = reader
+        else:
+            name_idx, cat_idx, count_idx = 1, 2, 3
+            is_data = first is not None and len(first) > cat_idx and first[cat_idx].strip().isdigit()
+            rows = itertools.chain([first], reader) if is_data else reader
+        for row in rows:
             if len(row) > max(name_idx, cat_idx):
                 name = row[name_idx]
                 cat_id = int(row[cat_idx])
@@ -451,9 +461,21 @@ def _sigmoid(x):
     return 1 / (1 + np.exp(-np.clip(x, -30, 30)))
 
 
+def _existing_json_simplified(data, default):
+    """已有 JSON 标签是不是简化格式。判定与 tag_manager::is_full_json 一致：四个段名任一对应对象即完整格式；
+    一个已知键都没有（空对象、只有自定义字段）时按所选输出格式。不是对象时抛错，调用方据此保护原文件"""
+    if not isinstance(data, dict):
+        raise ValueError("已有 JSON 标签不是对象")
+    if any(isinstance(data.get(key), dict) for key in ("ai_output", "fixed", "from_path", "character")):
+        return False
+    if any(key in data for key in _SIMPLIFIED_JSON_KEYS):
+        return True
+    return default
+
+
 def _fill_json(existing, new):
     """JSON 合并（existing_tags_action 为 append 或 prepend 时共用，两者效果相同）：
-    保留已有字段，仅补充缺失字段，并对列表字段（含下一层）合并去重。"""
+    保留已有字段，仅补充缺失字段，并对列表字段（含下一层）合并去重。两者须是同一种布局。"""
     merged = existing.copy()
     for k, v in new.items():
         if k not in merged:
@@ -472,76 +494,47 @@ def _fill_json(existing, new):
 
 
 def run_convert_mode():
-    """--convert 一次性模式：txt → JSON 标签格式转换。
+    """--convert 一次性模式：按 Rust 写的清单把已有 txt 标签转换成 JSON 草稿。
 
-    按模型词表分类，仅加载词表（CSV/JSON），不加载 ONNX/onnxruntime，速度很快。
+    哪些图片要转换、草稿写到哪里都由 Rust 决定。只加载词表（CSV/JSON），不加载 onnxruntime。
     LLM 调优新增的、不在词表中的标签按 general 处理（再走外观/环境关键词细分）。
     """
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--convert", action="store_true")
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--tags-path", default=None)
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--tags-path", required=True)
     parser.add_argument("--simplified", action="store_true")
-    parser.add_argument("--recursive", action="store_true")
-    parser.add_argument("--intermediate", action="store_true")
     args = parser.parse_args()
 
-    if not args.tags_path:
-        error("txt → JSON 转换需要 --tags-path 指定模型词表")
+    try:
+        category_of = {_normalize_tag_key(d["name"]): d["category"] for d in load_tags(args.tags_path)}
+        with open(args.manifest, "r", encoding="utf-8") as stream:
+            items = json.load(stream)
+    except Exception as e:
+        error(f"读取词表或转换清单失败: {e}")
         return
-    cat_by_name = {}
-    for d in load_tags(args.tags_path):
-        cat_by_name[_normalize_tag_key(d["name"])] = d["category"]
+    ready()
 
-    exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".gif"}
-    root = Path(args.input)
-    # 输入允许是单张图片：各页的输入选择器都支持"文件夹 / 单张图片"两种
-    if root.is_file():
-        images = [root] if root.suffix.lower() in exts else []
-    elif not root.is_dir():
-        error(f"输入路径不存在: {args.input}")
-        return
-    elif args.recursive:
-        images = sorted(f for f in root.rglob("*") if f.is_file() and f.suffix.lower() in exts)
-    else:
-        images = sorted(f for f in root.iterdir() if f.is_file() and f.suffix.lower() in exts)
-
-    if args.intermediate and root.is_dir():
-        artifact_names = {"fail", "warn", "_errors", "_warnings"}
-        images = [img for img in images if not any(
-            part.lower() in artifact_names for part in img.relative_to(root).parts[:-1])]
-
-    total = len(images)
     converted = 0
-    skipped = 0
     failed = 0
-    for i, img in enumerate(images):
-        txt = img.parent / f"{img.stem}.txt"
-        json_path = img.parent / f"{img.stem}.json"
-        if not txt.exists():
-            skipped += 1
-        elif json_path.exists():
-            # 已有 JSON 就不拿 txt 盖掉：那份 JSON 可能已经有正确的字段归属和 nl
-            skipped += 1
-        else:
-            try:
-                raw = _read_tag_text(txt)
-                selected = []
-                for t in _split_tags(raw.replace("\n", ",")):
-                    plain = t.replace("\\(", "(").replace("\\)", ")")
-                    cat = cat_by_name.get(_normalize_tag_key(plain), "general")
-                    selected.append((plain, cat))
-                data = _build_simplified_json(selected) if args.simplified else _build_structured_json(selected)
-                output = Path(str(img) + ".purin-local-json") if args.intermediate else json_path
-                _write_json_atomic(output, data)
-                converted += 1
-            except Exception as e:
-                failed += 1
-                log(f"转换失败 {img.name}: {e}")
-        progress(i + 1, total, img.name)
+    for item in items:
+        image_path = item.get("image_path", "")
+        try:
+            selected = []
+            for t in _split_tags(_read_tag_text(item["source_path"]).replace("\n", ",")):
+                plain = t.replace("\\(", "(").replace("\\)", ")")
+                selected.append((plain, category_of.get(_normalize_tag_key(plain), "general")))
+            data = _build_simplified_json(selected) if args.simplified else _build_structured_json(selected)
+            _write_json_atomic(Path(item["output_path"]), data)
+        except Exception as e:
+            failed += 1
+            error(f"转换失败: {e}", image_path=image_path)
+            continue
+        converted += 1
+        result(image_path=image_path, tag_count=len(selected))
 
-    done(converted=converted, skipped=skipped, failed=failed, total=total)
+    done(converted=converted, failed=failed, total=len(items))
 
 
 def _write_json_atomic(path, obj):
@@ -561,6 +554,9 @@ _JSON_APPEND_FIELD_MAP = {
 }
 # 存储为逗号串的字段（builder / tag_manager 约定）；不在此表的为数组字段
 _JSON_APPEND_STRING_KEYS = {"quality", "series", "artist", "name", "count"}
+# 简化格式的 9 个顶层键
+_SIMPLIFIED_JSON_KEYS = ("quality", "series", "artist", "character", "count",
+                         "appearance", "tags", "environment", "nl")
 
 
 def _merge_append_tags_json(data, append_list, simplified, position, field="tags"):
@@ -600,16 +596,22 @@ def _write_outputs(image_path, probs, opts, tags, category_thresholds):
     append_list = _split_tags(opts.get("append_tags", ""))
     append_position = opts.get("append_position", "append")
     action = opts.get("existing_tags_action", "overwrite")
+    path = Path(opts["tag_output_path"])
+    # 空文件不算已有标签（与 Rust 的 has_label 一致），按新文件写
+    merging = action in ("prepend", "append") and path.is_file() and path.stat().st_size > 0
     reply = {"image_path": image_path, "tag_count": 0, "skipped": True}
     if opts.get("output_format", "txt") == "json":
         simplified = opts.get("json_simplified", False)
-        path = Path(opts["tag_output_path"]) if opts.get("tag_output_path") else Path(image_path).with_suffix(".json")
-        data = _build_simplified_json(selected_tags) if simplified else _build_structured_json(selected_tags)
-        merging = action in ("prepend", "append") and path.exists()
         try:
+            existing = None
             if merging:
                 with open(path, "r", encoding="utf-8") as stream:
-                    data = _fill_json(json.load(stream), data)
+                    existing = json.load(stream)
+                # 按已有文件的布局合并：两种布局混在一个文件里，编辑器打不开
+                simplified = _existing_json_simplified(existing, simplified)
+            data = _build_simplified_json(selected_tags) if simplified else _build_structured_json(selected_tags)
+            if existing is not None:
+                data = _fill_json(existing, data)
             if append_list:
                 data = _merge_append_tags_json(
                     data, append_list, simplified, append_position, opts.get("json_append_field", "tags"))
@@ -620,8 +622,7 @@ def _write_outputs(image_path, probs, opts, tags, category_thresholds):
             log(f"⚠ JSON 合并失败，跳过写入以保护原文件 [{path.name}]: {err}")
             return reply
     else:
-        path = Path(opts["tag_output_path"]) if opts.get("tag_output_path") else Path(image_path).with_suffix(".txt")
-        if action in ("prepend", "append") and path.exists():
+        if merging:
             try:
                 existing = _split_tags(_read_tag_text(path))
                 selected_flat = _place(selected_flat, existing, "prepend" if action == "append" else "append")
@@ -650,15 +651,15 @@ def run_detect_mode():
         )
         inp = sess.get_inputs()[0]
         shape = [int(d) if isinstance(d, int) else -1 for d in inp.shape]
-        fmt, size = _input_layout(inp.shape)
+        _, size = _input_layout(inp.shape)
         emit({
             "type": "model_info",
             "input_size": size,
-            "input_format": fmt,
             "input_shape": shape,
         })
     except Exception as e:
-        sys.stderr.write(f"模型检测失败: {e}\n")
+        # Rust 侧会加上「模型检测失败」前缀
+        sys.stderr.write(f"{e}\n")
         sys.exit(1)
 
 
@@ -713,6 +714,8 @@ def main():
 
         try:
             if cmd["cmd"] == "init":
+                # 加载完才换上新会话：中途失败时不留下半初始化的状态
+                session = None
                 model_path = cmd["model_path"]
                 tags_path = cmd["tags_path"]
                 use_gpu = cmd.get("use_gpu", False)
@@ -722,7 +725,6 @@ def main():
                 # 先加载词表：词表损坏时立刻报错，不必等模型加载完
                 tags = load_tags(tags_path)
 
-                # === ONNX Runtime 后端 ===
                 # 统一流程：探测环境（显卡型号 / CUDA / cuDNN）+ 输出日志 + 决定 providers
                 cuda_options = None
                 if cmd.get("conservative_cuda", False):
@@ -737,19 +739,18 @@ def main():
                     use_gpu=use_gpu,
                     cuda_options=cuda_options,
                 )
-                session = create_session_with_cpu_fallback(
+                loaded = create_session_with_cpu_fallback(
                     model_path, providers, quiet_session_options(ort), _log_gpu_fallback)
 
-                # 检测输入格式
-                input_name = session.get_inputs()[0].name
-                input_format, detected_size = detect_model_format(session)
+                input_name = loaded.get_inputs()[0].name
+                input_format, detected_size = detect_model_format(loaded)
 
                 # 输出节点选择与 sigmoid 判定。
                 # 默认沿用旧启发式（NCHW = logits 需要 sigmoid，CL Tagger 如此）；
                 # output_kind 显式指定时按名称选节点：
                 #   probability → 优先 prediction 节点，不做 sigmoid
                 #   logits      → 优先 logits 节点，做 sigmoid
-                output_names = [o.name for o in session.get_outputs()]
+                output_names = [o.name for o in loaded.get_outputs()]
                 output_index = 0
                 apply_sigmoid = input_format == "NCHW"
                 output_kind = cmd.get("output_kind", "auto")
@@ -762,16 +763,16 @@ def main():
                         output_index = output_names.index("logits")
                     apply_sigmoid = True
 
-                # input_size
                 override_size = cmd.get("input_size", 0)
                 if override_size and override_size > 0:
                     input_size = override_size
                 else:
                     input_size = detected_size if detected_size > 0 else 448
 
+                session = loaded
                 log(f"✓ 模型已就绪 ({len(tags)} 标签, {input_size}x{input_size})")
 
-                emit({"type": "ready"})
+                ready()
 
             elif cmd["cmd"] == "tag_batch":
                 if session is None:
@@ -783,7 +784,6 @@ def main():
                     error("tag_batch: images 为空")
                     continue
 
-                # 批量预处理
                 batch_data = []
                 valid_indices = []  # 预处理成功的索引
                 for idx, img_cmd in enumerate(images):
@@ -830,7 +830,6 @@ def main():
                             all_probs.append(None)
                             error(f"推理失败: {e2}", image_path=img_path)
 
-                # 逐张处理结果
                 for batch_idx, orig_idx in enumerate(valid_indices):
                     img_cmd = images[orig_idx]
                     image_path = img_cmd.get("image_path", "")
@@ -852,12 +851,10 @@ def main():
                 error(f"未知命令: {cmd['cmd']}")
 
         except Exception as e:
-            err_payload = {"type": "error", "message": f"{traceback.format_exc()}"}
-            # 无法定位到单张图片的批次错误由 Rust 终止当前批次。
-            img_p = cmd.get("image_path", "") if isinstance(cmd, dict) else ""
-            if img_p:
-                err_payload["image_path"] = img_p
-            emit(err_payload)
+            # 定位不到单张图片的错误（init 失败、批次级错误）：协议里只回一句原因，
+            # 完整 traceback 写到 stderr，Rust 会把它显示在日志里
+            traceback.print_exc()
+            error(f"{type(e).__name__}: {e}")
 
 if __name__ == "__main__":
     main()

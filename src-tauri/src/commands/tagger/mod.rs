@@ -5,11 +5,13 @@ pub mod llm_tagger;
 pub mod models;
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use tauri::Emitter;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use super::python_proc::{self, PythonCommand, PYTHON_SILENCE_LIMIT};
 use super::{ProcessResult, ProgressEvent};
 use crate::commands::python_env;
+use inference::{Tally, EVENT};
 
 /// 打标选项
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,10 +44,6 @@ pub struct TaggerOptions {
     pub sort_by: String,
     #[serde(default = "default_existing_tags_action")]
     pub existing_tags_action: String,
-    /// txt 输出 + skip 时，同名 .json 也算"已有标签"（辅助打标：
-    /// 调优阶段会直接读 JSON 的字段结构，这里不能让模型重打一份 txt 盖掉选择）
-    #[serde(default)]
-    pub also_skip_json: bool,
     #[serde(default = "default_batch_size")]
     pub batch_size: u32,
     /// 是否递归扫描子文件夹
@@ -98,8 +96,22 @@ pub struct TaggerModelInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OnnxModelInfo {
     pub input_size: u32,
-    pub input_format: String,
     pub input_shape: Vec<i64>,
+}
+
+/// 文件名不是有效 UTF-8 的图片发不进 Python 的 JSON 协议，直接记为失败
+pub(crate) const NON_UTF8_NAME: &str = "文件名不是有效的 UTF-8";
+
+/// 图片旁有没有 `format`（"txt" / "json"）格式的标签：同名标签文件存在且不是空文件。
+/// 「已有标签」只按这一条判断——打标跳过已有标签、辅助打标复用已有标签、VLM 打标跳过已有标签都用它。
+pub(crate) fn has_label(image: &Path, format: &str) -> bool {
+    std::fs::metadata(image.with_extension(format))
+        .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+}
+
+/// 图片旁有没有任一格式（txt / json）的标签
+pub(crate) fn has_labels(image: &Path) -> bool {
+    has_label(image, "txt") || has_label(image, "json")
 }
 
 /// 获取模型存储根目录
@@ -167,19 +179,22 @@ fn detect_supported_categories(tags_path: &std::path::Path) -> Vec<String> {
                 (9, "rating"),
             ];
             // CSV 格式 (WD Tagger)。按表头名取列：SmilingWolf 系是 tag_id,name,category,...，
-            // PixAI(deepghs 导出)是 id,tag_id,name,category,...——列位置不同
-            if let Ok(mut reader) = csv::Reader::from_path(tags_path) {
-                let cat_idx = reader.headers().ok().and_then(|h| {
-                    h.iter()
+            // PixAI(deepghs 导出)是 id,tag_id,name,category,...——列位置不同。
+            // 第一行没有 category 表头时按旧格式 tag_id,name,category 取列，这一行本身也是标签
+            if let Ok(mut reader) = csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_path(tags_path)
+            {
+                let mut records = reader.records().flatten();
+                let first = records.next();
+                let header_idx = first.as_ref().and_then(|row| {
+                    row.iter()
                         .position(|c| c.trim().eq_ignore_ascii_case("category"))
                 });
-                for result in reader.records().flatten() {
-                    let cell = match cat_idx {
-                        Some(i) => result.get(i),
-                        // 无表头时使用旧格式的 tag_id,name,category 列顺序。
-                        None => result.get(2),
-                    };
-                    if let Some(Ok(cat_id)) = cell.map(|c| c.trim().parse::<i32>()) {
+                let cat_idx = header_idx.unwrap_or(2);
+                let first_row = first.filter(|_| header_idx.is_none());
+                for record in first_row.into_iter().chain(records) {
+                    if let Some(Ok(cat_id)) = record.get(cat_idx).map(|c| c.trim().parse::<i32>()) {
                         for (id, name) in &cat_map {
                             if cat_id == *id {
                                 cats.insert(name.to_string());
@@ -311,7 +326,7 @@ pub async fn get_tagger_models() -> Result<Vec<TaggerModelInfo>, String> {
     Ok(result)
 }
 
-/// 自动检测 ONNX 模型的输入尺寸和通道格式
+/// 自动检测 ONNX 模型的输入尺寸
 #[tauri::command]
 pub async fn detect_onnx_model_info(model_path: String) -> Result<OnnxModelInfo, String> {
     tokio::task::spawn_blocking(move || inference::detect_model_info(&model_path))
@@ -351,11 +366,18 @@ pub fn force_cancel_tagging() {
     cancel_tagging();
 }
 
-// 打标和转换共用子进程槽及取消标志，必须共用同一把互斥锁。
+// 打标和准备阶段共用子进程槽及取消标志，必须共用同一把互斥锁。
 static TAGGING_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
 pub(crate) static TAGGER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 拿到打标互斥锁之后的共同开头：复位取消、丢掉本功能排队中的环境部署取消、开始新一轮事件
+fn begin_tagging_run() {
+    inference::reset_tagging_cancel();
+    python_env::clear_pending_cancel("tagger");
+    super::begin_run(EVENT);
+}
 
 /// 开始打标
 #[tauri::command]
@@ -364,8 +386,7 @@ pub async fn start_tagging(
     options: TaggerOptions,
 ) -> Result<ProcessResult, String> {
     let _busy = crate::commands::BusyGuard::acquire(&TAGGING_RUNNING, "打标")?;
-
-    inference::reset_tagging_cancel();
+    begin_tagging_run();
 
     if options.hybrid_mode {
         let scan_options = options.clone();
@@ -373,7 +394,7 @@ pub async fn start_tagging(
             .await
             .map_err(|e| format!("读取图片失败: {}", e))??;
         if let Some(result) = skipped {
-            inference::emit_summary(
+            inference::finish_tagging(
                 &app,
                 &result,
                 result.total,
@@ -386,7 +407,7 @@ pub async fn start_tagging(
     let prepared = prepare_tagger(&app, &options.model_id, options.use_gpu).await;
     if inference::is_tagging_cancelled() {
         let result = ProcessResult::default();
-        inference::emit_summary(&app, &result, 0, true);
+        inference::finish_tagging(&app, &result, 0, true);
         return Ok(result);
     }
     let (python, model_def, model_dir) = prepared?;
@@ -425,10 +446,8 @@ async fn ensure_model_files(
     model: &models::ModelDefinition,
 ) -> Result<PathBuf, String> {
     if !model.is_downloaded() {
-        let _ = app.emit(
-            "tagger-progress",
-            ProgressEvent::new("info", format!("模型 {} 未下载，开始下载...", model.name)),
-        );
+        ProgressEvent::new("info", format!("模型 {} 未下载，开始下载...", model.name))
+            .emit(app, EVENT);
         download::download_model(app, model).await?;
         if inference::is_tagging_cancelled() {
             return Err("已取消".into());
@@ -437,24 +456,15 @@ async fn ensure_model_files(
     Ok(get_model_dir(&model.id))
 }
 
-// ═══════════════ txt → JSON 标签格式转换 ═══════════════
+// ═══════════════ 辅助打标：准备已有标签 ═══════════════
 
-/// txt → JSON 标签转换选项（辅助打标流水线在 JSON 输出 + 优先使用已有标签时的第一步）
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct ConvertTagsOptions {
-    pub input_path: String,
-    /// 提供标签分类的词表来源模型（须已下载）
-    pub model_id: String,
-    #[serde(default)]
-    pub json_simplified: bool,
-    #[serde(default)]
-    pub recursive: bool,
-}
-
+/// 辅助打标「优先使用已有标签」时的第一步，见 `prepare_hybrid_tags`
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct PrepareHybridTagsOptions {
     pub input_path: String,
+    /// 提供标签分类词表的模型：JSON 输出时把已有 txt 标签按它的词表分类（缺文件时先下载）
     pub model_id: String,
+    /// 输出格式："txt" | "json"
     pub file_format: String,
     #[serde(default)]
     pub json_simplified: bool,
@@ -462,353 +472,574 @@ pub struct PrepareHybridTagsOptions {
     pub recursive: bool,
 }
 
+/// 准备已有标签：清掉残留草稿，已有标签复制成草稿；JSON 输出且只有 txt 标签的图片按模型词表
+/// 转换成 JSON 草稿（`tagger_inference.py --convert`，只加载词表，不加载 ONNX）。
+///
+/// 转换失败的图片计入失败并复制进 Fail/，其余照常完成；转换进程中途异常退出时，
+/// 没转换的图片也计为失败，并返回 Err。
 #[tauri::command]
 pub async fn prepare_hybrid_tags(
     app: tauri::AppHandle,
     options: PrepareHybridTagsOptions,
 ) -> Result<ProcessResult, String> {
     let _busy = crate::commands::BusyGuard::acquire(&TAGGING_RUNNING, "打标")?;
-    inference::reset_tagging_cancel();
+    begin_tagging_run();
+
     let scan = options.clone();
     let prepared = tokio::task::spawn_blocking(move || {
         hybrid::prepare_sources(
-            std::path::Path::new(&scan.input_path),
+            Path::new(&scan.input_path),
             scan.recursive,
             &scan.file_format,
         )
     })
     .await
     .map_err(|e| format!("准备已有标签失败: {}", e))??;
-    if prepared.needs_json_conversion {
-        let mut result = convert_prepared_tags(
-            app,
-            ConvertTagsOptions {
-                input_path: options.input_path,
-                model_id: options.model_id,
-                json_simplified: options.json_simplified,
-                recursive: options.recursive,
-            },
-            true,
-        )
-        .await?;
-        result.success_count += prepared.copied;
-        return Ok(result);
-    }
-    ProgressEvent::new(
-        "done",
-        format!(
-            "已有标签准备完成: {} 个复用，{} 个无标签",
-            prepared.copied,
-            prepared.total - prepared.copied
-        ),
-    )
-    .at(prepared.total, prepared.total)
-    .emit(&app, "tagger-progress");
-    Ok(ProcessResult {
-        total: prepared.total,
-        success_count: prepared.copied,
-        ..Default::default()
-    })
-}
 
-/// 将图片旁的 .txt 标签按模型词表分类后转换为 JSON。
-/// 复用 Python 端的分类与 JSON 构建逻辑（--convert 模式，不加载 ONNX，速度快）。
-#[tauri::command]
-pub async fn convert_tags_to_json(
-    app: tauri::AppHandle,
-    options: ConvertTagsOptions,
-) -> Result<ProcessResult, String> {
-    let _busy = crate::commands::BusyGuard::acquire(&TAGGING_RUNNING, "打标")?;
-    // 与打标共用取消标志：拿到锁后才能复位
-    inference::reset_tagging_cancel();
-
-    convert_prepared_tags(app, options, false).await
-}
-
-async fn convert_prepared_tags(
-    app: tauri::AppHandle,
-    options: ConvertTagsOptions,
-    intermediate: bool,
-) -> Result<ProcessResult, String> {
-    let prepared = prepare_tagger(&app, &options.model_id, false).await;
-    if inference::is_tagging_cancelled() {
-        let result = ProcessResult::default();
-        inference::emit_summary(&app, &result, 0, true);
-        return Ok(result);
-    }
-    let (python, model_def, model_dir) = prepared?;
-    let tags_path = model_dir.join(model_def.tags_basename());
-    if !tags_path.exists() {
-        return Err(format!("模型词表下载后仍不存在: {}", tags_path.display()));
+    let mut converter = None;
+    if !prepared.to_convert.is_empty() && !inference::is_tagging_cancelled() {
+        let tools = prepare_tagger(&app, &options.model_id, false).await;
+        if !inference::is_tagging_cancelled() {
+            let (python, model, dir) = tools?;
+            let tags_path = dir.join(model.tags_basename());
+            if !tags_path.exists() {
+                return Err(format!("模型词表下载后仍不存在: {}", tags_path.display()));
+            }
+            converter = Some(Converter {
+                python,
+                script: python_proc::find_script("tagger_inference.py")?,
+                tags_path,
+                silence: PYTHON_SILENCE_LIMIT,
+            });
+        }
     }
     tokio::task::spawn_blocking(move || {
-        run_convert_tags(&app, &options, &python, &tags_path, intermediate)
+        complete_preparation(&app, &options, prepared, converter.as_ref())
     })
     .await
-    .map_err(|e| format!("转换任务执行失败: {}", e))?
+    .map_err(|e| format!("准备已有标签失败: {}", e))?
 }
 
-fn run_convert_tags<R: tauri::Runtime>(
+/// txt → JSON 草稿转换用的解释器、脚本和词表
+struct Converter {
+    python: String,
+    script: PathBuf,
+    tags_path: PathBuf,
+    /// 超过这么久收不到转换进程的消息就判定它卡死
+    silence: Duration,
+}
+
+/// 扫描之后的部分：转换、失败文件复制进 Fail/、终态 done。
+/// `converter` 只在有图片要转换且没有取消时给出
+fn complete_preparation<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    options: &ConvertTagsOptions,
-    python: &str,
-    tags_path: &std::path::Path,
-    intermediate: bool,
+    options: &PrepareHybridTagsOptions,
+    prepared: hybrid::Preparation,
+    converter: Option<&Converter>,
 ) -> Result<ProcessResult, String> {
-    use crate::commands::python_proc::{ProtocolReader, Recv, PYTHON_SILENCE_LIMIT};
-
-    let mut args: Vec<String> = vec![
-        "--convert".into(),
-        "--input".into(),
-        options.input_path.clone(),
-        "--tags-path".into(),
-        tags_path.to_string_lossy().into_owned(),
-    ];
-    if options.json_simplified {
-        args.push("--simplified".into());
+    let input = Path::new(&options.input_path);
+    let mut tally = Tally::new(app, prepared.total);
+    tally.counts.success = prepared.copied;
+    tally.counts.skipped = prepared.unlabeled;
+    for (image, reason) in &prepared.failed {
+        tally.fail(image, reason);
     }
-    if options.recursive {
-        args.push("--recursive".into());
+    let mut converted = 0;
+    if let Some(converter) = converter.filter(|_| !inference::is_tagging_cancelled()) {
+        match run_convert_tags(
+            &mut tally,
+            converter,
+            options.json_simplified,
+            &prepared.to_convert,
+        ) {
+            Ok(count) => converted = count,
+            Err(abort) if abort.started => {
+                return Err(tally.abort(
+                    input,
+                    options.recursive,
+                    &abort.reason,
+                    &abort.unprocessed,
+                ))
+            }
+            Err(abort) => return Err(tally.give_up(input, options.recursive, abort.reason)),
+        }
     }
-    if intermediate {
-        args.push("--intermediate".into());
+    let cancelled = inference::is_tagging_cancelled();
+    let copied = prepared.copied;
+    Ok(tally.finish(input, options.recursive, cancelled, |counts| {
+        let mut parts = vec![format!("{} 个复用", copied)];
+        if converted > 0 {
+            parts.push(format!("{} 个转换", converted));
+        }
+        parts.push(format!("{} 个无标签", counts.skipped));
+        if counts.failed > 0 {
+            parts.push(format!("{} 个失败", counts.failed));
+        }
+        format!("已有标签准备完成: {}", parts.join("，"))
+    }))
+}
+
+/// 转换没能正常结束（脚本报错、进程异常退出、无响应、协议出错）
+struct ConvertAbort {
+    reason: String,
+    /// 脚本已读好词表和清单、开始逐张转换
+    started: bool,
+    /// 没有转换结果的图片
+    unprocessed: Vec<PathBuf>,
+}
+
+/// 把 `images` 旁的 .txt 标签转换成 JSON 草稿（`hybrid::draft_path(image, "json")`），返回成功数。
+/// 每张转换完发一条 processing，转换失败的计入 `tally` 的失败；被取消时返回已转换的数量。
+fn run_convert_tags<R: tauri::Runtime>(
+    tally: &mut Tally<'_, R>,
+    converter: &Converter,
+    simplified: bool,
+    images: &[PathBuf],
+) -> Result<u32, ConvertAbort> {
+    let mut items = Vec::new();
+    let mut pending = Vec::new();
+    for image in images {
+        let source = image.with_extension("txt");
+        let output = hybrid::draft_path(image, "json");
+        match (image.to_str(), source.to_str(), output.to_str()) {
+            (Some(image_path), Some(source_path), Some(output_path)) => {
+                items.push(serde_json::json!({
+                    "image_path": image_path,
+                    "source_path": source_path,
+                    "output_path": output_path,
+                }));
+                pending.push(image);
+            }
+            _ => tally.fail(image, NON_UTF8_NAME),
+        }
     }
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    let manifest =
+        python_proc::ManifestFile::write("purinbox-tagger-convert", &items).map_err(|reason| {
+            ConvertAbort {
+                reason,
+                started: false,
+                unprocessed: Vec::new(),
+            }
+        })?;
 
-    let script = crate::commands::python_proc::find_script("tagger_inference.py")?;
-
-    let mut cmd = std::process::Command::new(python);
-    cmd.arg(script.to_string_lossy().as_ref())
-        .args(&args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .env("PYTHONUNBUFFERED", "1")
-        .env("PYTHONIOENCODING", "utf-8");
-    crate::commands::python_proc::configure_python_command(&mut cmd, false);
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("启动转换进程失败: {}", e))?;
-    let stdout = child.stdout.take().ok_or("无法获取转换进程输出")?;
-    // stderr 必须另起线程并发读走：piped 之后不读，缓冲区一满 Python 就阻塞在写日志上。
-    // 只留尾部几行：Python 的关键异常信息在最后，整段 traceback 灌进错误提示没法看
-    const STDERR_TAIL_LINES: usize = 4;
-    let stderr_reader = child.stderr.take().map(|se| {
-        std::thread::spawn(move || {
-            let mut tail = std::collections::VecDeque::with_capacity(STDERR_TAIL_LINES);
-            crate::commands::python_proc::for_each_stderr_line(se, |l| {
-                if tail.len() == STDERR_TAIL_LINES {
-                    tail.pop_front();
+    let mut command = PythonCommand::new(&converter.python)
+        .arg(&converter.script)
+        .arg("--convert")
+        .arg("--manifest")
+        .arg(manifest.path())
+        .arg("--tags-path")
+        .arg(&converter.tags_path);
+    if simplified {
+        command = command.arg("--simplified");
+    }
+    let mut started = false;
+    let mut finished = false;
+    let mut converted = 0;
+    let exit = python_proc::run_json_lines_script_with(
+        command,
+        Some(converter.silence),
+        &inference::PYTHON_PROCESS,
+        &inference::TAGGING_CANCELLED,
+        |_| {},
+        |msg| {
+            match msg["type"].as_str().unwrap_or("") {
+                "ready" => started = true,
+                "log" => tally.log(&msg),
+                kind @ ("result" | "error") => {
+                    let Some(path) = msg["image_path"].as_str() else {
+                        return Err(msg["message"]
+                            .as_str()
+                            .unwrap_or("转换脚本出错")
+                            .to_string());
+                    };
+                    let Some(index) = pending.iter().position(|p| p.to_str() == Some(path)) else {
+                        return Err(format!("Python 返回了无法对应的结果: {}", path));
+                    };
+                    let image = pending.remove(index);
+                    if kind == "result" {
+                        converted += 1;
+                        let name = crate::commands::file_name_lossy(image);
+                        tally.succeed(image, "processing", format!("正在转换JSON: {}", name));
+                    } else {
+                        tally.fail(image, msg["message"].as_str().unwrap_or("转换失败"));
+                    }
                 }
-                tail.push_back(l);
-            });
-            tail
-        })
-    });
-    // 登记到全局句柄，取消时 kill_python_process 才杀得到它
-    inference::register_python_process(child);
-    let _guard = inference::ProcessGuard;
-
-    let reader = ProtocolReader::spawn(stdout);
-    let mut result = ProcessResult::default();
-    let mut skipped = 0u32;
-    let mut current = 0u32;
-    let mut got_done = false;
-    let mut failure = None;
-    loop {
-        let received = reader.recv(PYTHON_SILENCE_LIMIT);
-        if inference::is_tagging_cancelled() {
-            break;
-        }
-        let msg = match received {
-            Recv::Msg(msg) => msg,
-            Recv::Closed => break,
-            Recv::TimedOut => {
-                failure = Some(format!(
-                    "Python 超过 {} 秒无响应，已终止转换进程",
-                    PYTHON_SILENCE_LIMIT.as_secs()
-                ));
-                inference::kill_python_process();
-                break;
+                "done" => finished = true,
+                _ => {}
             }
-        };
-        match msg["type"].as_str().unwrap_or("") {
-            "progress" => {
-                current = msg["current"].as_u64().unwrap_or(0) as u32;
-                result.total = msg["total"].as_u64().unwrap_or(0) as u32;
-                let filename = msg["filename"].as_str().unwrap_or("");
-                ProgressEvent::new("processing", format!("正在转换JSON: {}", filename))
-                    .at(current, result.total)
-                    .file(filename)
-                    .emit(app, "tagger-progress");
-            }
-            "log" => {
-                let mut progress = ProgressEvent::python_log(&msg, 0, result.total);
-                progress.status = "warning".into();
-                progress.emit(app, "tagger-progress");
-            }
-            "done" => {
-                result.success_count = msg["converted"].as_u64().unwrap_or(0) as u32;
-                result.fail_count = msg["failed"].as_u64().unwrap_or(0) as u32;
-                result.total = msg["total"].as_u64().unwrap_or(0) as u32;
-                skipped = msg["skipped"].as_u64().unwrap_or(0) as u32;
-                got_done = true;
-            }
-            "error" => {
-                failure = Some(msg["message"].as_str().unwrap_or("转换失败").to_string());
-                inference::kill_python_process();
-                break;
-            }
-            _ => {}
-        }
-    }
-    let status = inference::take_python_process()
-        .map(|mut c| c.wait().map_err(|e| format!("等待转换进程失败: {}", e)))
-        .transpose()?;
-    let stderr_tail = stderr_reader
-        .and_then(|h| h.join().ok())
-        .map(|tail| Vec::from(tail).join(" | "))
-        .unwrap_or_default();
+            Ok(())
+        },
+    );
     if inference::is_tagging_cancelled() {
-        ProgressEvent::new(
-            "done",
-            format!("已取消: 已完成 {}/{}", current, result.total),
-        )
-        .at(current, result.total)
-        .emit(app, "tagger-progress");
-        return Ok(result);
+        return Ok(converted);
     }
-    if let Some(message) = failure {
-        return Err(message);
-    }
-    if !got_done || status.is_none_or(|s| !s.success()) {
-        return Err(if stderr_tail.is_empty() {
-            "转换进程异常退出".into()
-        } else {
-            format!("转换进程异常退出: {}", stderr_tail)
-        });
-    }
-    ProgressEvent::new(
-        "done",
-        format!(
-            "JSON转换完成：{} 个转换，{} 个跳过，{} 个失败",
-            result.success_count, skipped, result.fail_count
+    let reason = match exit {
+        Err(reason) => reason,
+        Ok(exit) if exit.cancelled => return Ok(converted),
+        Ok(exit) if exit.timed_out => format!(
+            "Python 超过 {} 秒无响应，已终止转换进程",
+            converter.silence.as_secs()
         ),
-    )
-    .at(result.total, result.total)
-    .emit(app, "tagger-progress");
-    Ok(result)
+        Ok(exit) if !finished || exit.code != Some(0) => {
+            if exit.stderr_tail.is_empty() {
+                "转换进程异常退出".to_string()
+            } else {
+                format!("转换进程异常退出: {}", exit.stderr_tail)
+            }
+        }
+        Ok(_) => {
+            for image in pending {
+                tally.fail(image, "转换进程没有返回这张图的结果");
+            }
+            return Ok(converted);
+        }
+    };
+    Err(ConvertAbort {
+        reason,
+        started,
+        unprocessed: pending.into_iter().cloned().collect(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commands::batch::capture_events;
-    use crate::commands::http_download::test_support::TempDir;
+    use crate::commands::test_support::{test_python, TempDir};
+    use serde_json::{json, Value};
     use tauri::Listener;
 
-    #[test]
-    fn hybrid_conversion_protocol_preserves_txt_and_writes_private_json() {
-        let _lock = TAGGER_TEST_LOCK.lock().unwrap();
-        let temp = TempDir::new("hybrid_convert_protocol");
-        let tags = temp.join("tags.csv");
-        std::fs::write(&tags, "id,name,category\n0,solo,0\n").unwrap();
-        let python =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../env/python/venv/bin/python3");
-        let python = if python.exists() {
-            python.to_string_lossy().into_owned()
-        } else {
-            "python3".into()
+    fn converter(root: &Path, script: Option<&str>) -> Converter {
+        let tags_path = root.join("tags.csv");
+        std::fs::write(&tags_path, "id,name,category\n0,solo,0\n1,blue_hair,0\n").unwrap();
+        let script = match script {
+            Some(source) => {
+                let path = root.join("fake_convert.py");
+                std::fs::write(&path, source).unwrap();
+                path
+            }
+            None => python_proc::find_script("tagger_inference.py").unwrap(),
         };
+        Converter {
+            python: test_python(),
+            script,
+            tags_path,
+            silence: Duration::from_secs(30),
+        }
+    }
+
+    fn options(input: &Path, file_format: &str, simplified: bool) -> PrepareHybridTagsOptions {
+        PrepareHybridTagsOptions {
+            input_path: input.to_string_lossy().into_owned(),
+            model_id: "mock".into(),
+            file_format: file_format.into(),
+            json_simplified: simplified,
+            recursive: true,
+        }
+    }
+
+    fn prepare(
+        options: &PrepareHybridTagsOptions,
+        converter: Option<&Converter>,
+    ) -> (Result<ProcessResult, String>, Vec<Value>) {
+        let app = tauri::test::mock_app();
+        let events = capture_events(app.handle(), EVENT);
+        let prepared = hybrid::prepare_sources(
+            Path::new(&options.input_path),
+            options.recursive,
+            &options.file_format,
+        )
+        .unwrap();
+        let result = complete_preparation(app.handle(), options, prepared, converter);
+        let events = events.lock().unwrap().clone();
+        (result, events)
+    }
+
+    fn terminal(events: &[Value]) -> Vec<&Value> {
+        events.iter().filter(|e| e["status"] == "done").collect()
+    }
+
+    #[test]
+    fn has_label_needs_a_non_empty_file_of_that_format() {
+        let root = TempDir::new("tagger_has_label");
+        let image = root.join("a.png");
+        assert!(!has_label(&image, "txt"));
+        std::fs::write(image.with_extension("txt"), "").unwrap();
+        assert!(!has_label(&image, "txt"));
+        std::fs::write(image.with_extension("txt"), b"\xc4\xe3\xba\xc3").unwrap();
+        assert!(has_label(&image, "txt"));
+        assert!(!has_label(&image, "json"));
+        std::fs::create_dir(image.with_extension("json")).unwrap();
+        assert!(!has_label(&image, "json"));
+    }
+
+    #[test]
+    fn headerless_csv_vocabulary_keeps_its_first_row() {
+        let root = TempDir::new("tagger_csv_categories");
+        let path = root.join("tags.csv");
+        for (content, expected) in [
+            ("0,a,4\n1,b,0\n", vec!["character", "general"]),
+            ("tag_id,name,category\n0,a,4\n", vec!["character"]),
+            ("id,tag_id,name,category,count\n0,0,a,9,1\n", vec!["rating"]),
+        ] {
+            std::fs::write(&path, content).unwrap();
+            assert_eq!(detect_supported_categories(&path), expected, "{content}");
+        }
+    }
+
+    /// 复用、转换、无标签、转换失败各算一类；失败的图进 Fail/，原 txt 不动，JSON 草稿两种布局都对
+    #[test]
+    fn preparation_converts_txt_into_json_drafts_and_reports_failures() {
+        let _lock = TAGGER_TEST_LOCK.lock().unwrap();
         for simplified in [false, true] {
-            let input = temp.join(simplified.to_string());
-            std::fs::create_dir(&input).unwrap();
-            let image = input.join("a.png");
-            std::fs::write(&image, "image").unwrap();
-            std::fs::write(image.with_extension("txt"), "solo").unwrap();
-            std::fs::write(hybrid::draft_path(&image, "json"), "stale").unwrap();
             inference::reset_tagging_cancel();
-            let prepared = hybrid::prepare_sources(&input, false, "json").unwrap();
-            assert!(prepared.needs_json_conversion);
-            assert!(!hybrid::draft_path(&image, "json").exists());
-            let app = tauri::test::mock_app();
-            let opts = ConvertTagsOptions {
-                input_path: input.to_string_lossy().into_owned(),
-                model_id: "mock".into(),
-                json_simplified: simplified,
-                recursive: false,
-            };
-            let result = run_convert_tags(app.handle(), &opts, &python, &tags, true).unwrap();
-            assert_eq!((result.success_count, result.fail_count), (1, 0));
-            let data: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(hybrid::draft_path(&image, "json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(data.get("ai_output").is_some(), !simplified);
-            assert!(!image.with_extension("json").exists());
+            let temp = TempDir::new("hybrid_prepare_convert");
+            let input = temp.join("dataset");
+            std::fs::create_dir_all(input.join("nested")).unwrap();
+            std::fs::create_dir_all(input.join("Fail")).unwrap();
+            for name in [
+                "a.png",
+                "reuse.png",
+                "none.png",
+                "bad.png",
+                "nested/deep.png",
+                "Fail/x.png",
+            ] {
+                std::fs::write(input.join(name), "image").unwrap();
+            }
+            for name in ["a.txt", "nested/deep.txt", "Fail/x.txt"] {
+                std::fs::write(input.join(name), "solo, blue hair").unwrap();
+            }
+            std::fs::write(input.join("reuse.json"), r#"{"ai_output":{"nl":"keep"}}"#).unwrap();
+            std::fs::write(input.join("bad.txt"), b"\xff\xfe\xff").unwrap();
+            std::fs::write(hybrid::draft_path(&input.join("a.png"), "json"), "stale").unwrap();
+            std::fs::write(input.join("old.png.purin-local-json"), "orphan").unwrap();
+
+            let options = options(&input, "json", simplified);
+            let converter = converter(&temp, None);
+            let (result, events) = prepare(&options, Some(&converter));
+            let result = result.unwrap();
             assert_eq!(
-                std::fs::read_to_string(image.with_extension("txt")).unwrap(),
-                "solo"
+                (result.success_count, result.fail_count, result.total),
+                (3, 1, 5),
+                "{events:?}"
             );
+            assert!(
+                result.errors[0].starts_with("bad.png: 转换失败"),
+                "{:?}",
+                result.errors
+            );
+            assert!(input.join("Fail/bad.png").exists());
+            assert!(!input.join("Fail/a.png").exists());
+            assert!(!input.join("old.png.purin-local-json").exists());
+            for image in ["a.png", "nested/deep.png"] {
+                let image = input.join(image);
+                let draft: Value = serde_json::from_str(
+                    &std::fs::read_to_string(hybrid::draft_path(&image, "json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(draft.get("ai_output").is_some(), !simplified);
+                assert!(draft.to_string().contains("blue hair"));
+                assert!(!image.with_extension("json").exists());
+                assert_eq!(
+                    std::fs::read_to_string(image.with_extension("txt")).unwrap(),
+                    "solo, blue hair"
+                );
+            }
+            assert!(!hybrid::draft_path(&input.join("bad.png"), "json").exists());
+            assert!(!hybrid::draft_path(&input.join("Fail/x.png"), "json").exists());
+            assert_eq!(
+                std::fs::read_to_string(hybrid::draft_path(&input.join("reuse.png"), "json"))
+                    .unwrap(),
+                r#"{"ai_output":{"nl":"keep"}}"#
+            );
+            let errors: Vec<_> = events.iter().filter(|e| e["status"] == "error").collect();
+            assert_eq!(errors.len(), 1);
+            assert_eq!(errors[0]["filename"], "bad.png");
+            let done = terminal(&events);
+            assert_eq!(done.len(), 1);
+            assert_eq!(
+                done[0]["message"],
+                "已有标签准备完成: 1 个复用，2 个转换，1 个无标签，1 个失败"
+            );
+            assert_eq!(
+                (done[0]["current"].as_u64(), done[0]["total"].as_u64()),
+                (Some(5), Some(5))
+            );
+            assert!(inference::PYTHON_PROCESS.lock().unwrap().is_none());
         }
     }
 
     #[test]
-    fn conversion_reads_protocol_and_cancels_with_one_done_event() {
+    fn preparation_without_conversion_needs_no_python() {
         let _lock = TAGGER_TEST_LOCK.lock().unwrap();
-        let temp = TempDir::new("tagger_convert");
-        let tags = temp.join("tags.csv");
-        std::fs::write(&tags, "id,name,category\n0,solo,0\n").unwrap();
-        let python =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../env/python/venv/bin/python3");
-        let python = if python.exists() {
-            python.to_string_lossy().into_owned()
-        } else {
-            "python3".into()
-        };
-        for cancel in [false, true] {
-            let input = temp.join(if cancel { "cancel" } else { "complete" });
-            std::fs::create_dir_all(&input).unwrap();
-            for i in 0..10 {
-                std::fs::write(input.join(format!("{i}.png")), "fixture").unwrap();
+        inference::reset_tagging_cancel();
+        let input = TempDir::new("hybrid_prepare_txt");
+        for name in ["a.png", "b.png"] {
+            std::fs::write(input.join(name), "image").unwrap();
+        }
+        std::fs::write(input.join("a.txt"), "solo").unwrap();
+        let (result, events) = prepare(&options(&input, "txt", false), None);
+        let result = result.unwrap();
+        assert_eq!(
+            (result.success_count, result.fail_count, result.total),
+            (1, 0, 2)
+        );
+        assert_eq!(
+            terminal(&events)[0]["message"],
+            "已有标签准备完成: 1 个复用，1 个无标签"
+        );
+    }
+
+    /// 准备阶段被取消：恰好一条带 cancelled 的终态 done，命令照常返回
+    #[test]
+    fn cancelled_preparation_reports_one_cancelled_done() {
+        let _lock = TAGGER_TEST_LOCK.lock().unwrap();
+        let input = TempDir::new("hybrid_prepare_cancelled");
+        for name in ["a.png", "b.png"] {
+            std::fs::write(input.join(name), "image").unwrap();
+            std::fs::write(input.join(name).with_extension("txt"), "solo").unwrap();
+        }
+        inference::cancel_tagging();
+        let (result, events) = prepare(&options(&input, "json", false), None);
+        inference::reset_tagging_cancel();
+        assert_eq!(result.unwrap().total, 2);
+        assert_eq!(
+            events,
+            [
+                json!({"current": 0, "total": 2, "filename": "", "status": "done",
+                    "message": "已取消: 已处理 0/2, 成功 0, 失败 0", "cancelled": true})
+            ]
+        );
+    }
+
+    #[test]
+    fn conversion_cancelled_midway_keeps_finished_drafts() {
+        let _lock = TAGGER_TEST_LOCK.lock().unwrap();
+        inference::reset_tagging_cancel();
+        let temp = TempDir::new("hybrid_convert_cancel");
+        let input = temp.join("dataset");
+        std::fs::create_dir(&input).unwrap();
+        for i in 0..3 {
+            std::fs::write(input.join(format!("{i}.png")), "image").unwrap();
+            std::fs::write(input.join(format!("{i}.txt")), "solo").unwrap();
+        }
+        let script = r#"
+import json, sys, time
+items = json.load(open(sys.argv[sys.argv.index('--manifest') + 1], encoding='utf-8'))
+print(json.dumps({'type': 'ready'}), flush=True)
+open(items[0]['output_path'], 'w').write('{}')
+print(json.dumps({'type': 'result', 'image_path': items[0]['image_path'], 'tag_count': 1}), flush=True)
+time.sleep(30)
+"#;
+        let converter = converter(&temp, Some(script));
+        let app = tauri::test::mock_app();
+        let events = capture_events(app.handle(), EVENT);
+        app.listen_any(EVENT, |event| {
+            let value: Value = serde_json::from_str(event.payload()).unwrap();
+            if value["status"] == "processing" {
+                inference::cancel_tagging();
+            }
+        });
+        let options = options(&input, "json", false);
+        let prepared = hybrid::prepare_sources(&input, true, "json").unwrap();
+        let started = std::time::Instant::now();
+        let result = complete_preparation(app.handle(), &options, prepared, Some(&converter));
+        inference::reset_tagging_cancel();
+        assert!(started.elapsed() < Duration::from_secs(15));
+        let result = result.unwrap();
+        assert_eq!((result.success_count, result.fail_count), (1, 0));
+        assert!(!input.join("Fail").exists());
+        let events = events.lock().unwrap();
+        let done = terminal(&events);
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0]["cancelled"], true);
+        assert_eq!(done[0]["message"], "已取消: 已处理 1/3, 成功 1, 失败 0");
+    }
+
+    /// 转换进程中途异常（退出、无响应、结果对不上）：没转换的图计为失败、进 Fail/，返回 Err，不发 done；
+    /// 还没读好词表就失败时直接报原因，不归集
+    #[test]
+    fn interrupted_conversion_fails_the_rest() {
+        let _lock = TAGGER_TEST_LOCK.lock().unwrap();
+        let head = r#"
+import json, sys, time
+items = json.load(open(sys.argv[sys.argv.index('--manifest') + 1], encoding='utf-8'))
+def emit(**v): print(json.dumps(v), flush=True)
+"#;
+        let first = "emit(type='ready'); emit(type='result', image_path=items[0]['image_path'], tag_count=1)\n";
+        for (case, body, expected) in [
+            ("exit", format!("{first}sys.stderr.write('MemoryError\\n'); sys.exit(1)"), "转换进程异常退出: MemoryError，2 张未处理"),
+            ("silent", format!("{first}time.sleep(30)"), "Python 超过 3 秒无响应"),
+            ("mismatch", format!("{first}emit(type='result', image_path='elsewhere.png', tag_count=1); time.sleep(30)"), "Python 返回了无法对应的结果: elsewhere.png，2 张未处理"),
+            ("vocabulary", "emit(type='error', message='读取词表或转换清单失败: broken')".to_string(), "读取词表或转换清单失败: broken"),
+        ] {
+            inference::reset_tagging_cancel();
+            let temp = TempDir::new("hybrid_convert_abort");
+            let input = temp.join("dataset");
+            std::fs::create_dir(&input).unwrap();
+            for i in 0..3 {
+                std::fs::write(input.join(format!("{i}.png")), "image").unwrap();
                 std::fs::write(input.join(format!("{i}.txt")), "solo").unwrap();
             }
-            let app = tauri::test::mock_app();
-            let events = capture_events(app.handle(), "tagger-progress");
-            if cancel {
-                app.listen_any("tagger-progress", |event| {
-                    let value: serde_json::Value = serde_json::from_str(event.payload()).unwrap();
-                    if value["status"] == "processing" {
-                        inference::cancel_tagging();
-                    }
-                });
-            }
-            inference::reset_tagging_cancel();
-            let opts = ConvertTagsOptions {
-                input_path: input.to_string_lossy().into_owned(),
-                model_id: "mock".into(),
-                json_simplified: false,
-                recursive: false,
-            };
-            let result = run_convert_tags(app.handle(), &opts, &python, &tags, false).unwrap();
-            let events = events.lock().unwrap();
-            let done: Vec<_> = events.iter().filter(|e| e["status"] == "done").collect();
-            assert_eq!(done.len(), 1);
-            if cancel {
-                assert!(done[0]["message"].as_str().unwrap().starts_with("已取消"));
-                assert!(!events.iter().any(|e| e["status"] == "error"));
+            let mut converter = converter(&temp, Some(&format!("{head}{body}")));
+            converter.silence = Duration::from_secs(3);
+            let started = std::time::Instant::now();
+            let (result, events) = prepare(&options(&input, "json", false), Some(&converter));
+            assert!(started.elapsed() < Duration::from_secs(15), "{case}");
+            let error = result.unwrap_err();
+            assert!(error.contains(expected), "{case}: {error}");
+            assert!(terminal(&events).is_empty(), "{case}: {events:?}");
+            if case == "vocabulary" {
+                assert!(!input.join("Fail").exists(), "{case}");
             } else {
-                assert_eq!(
-                    (result.success_count, result.fail_count, result.total),
-                    (10, 0, 10)
-                );
-                let output: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(input.join("0.json")).unwrap()).unwrap();
-                assert_eq!(output["ai_output"]["count"], "solo");
-                assert_eq!(output["ai_output"]["tags"], serde_json::json!([]));
+                assert!(error.ends_with("成功 1, 失败 2, 共 3"), "{case}: {error}");
+                assert!(!input.join("Fail/0.png").exists(), "{case}");
+                assert!(input.join("Fail/1.png").exists(), "{case}");
+                assert!(input.join("Fail/2.png").exists(), "{case}");
             }
-            assert!(inference::take_python_process().is_none());
+            assert!(inference::PYTHON_PROCESS.lock().unwrap().is_none());
         }
+    }
+
+    /// 非 UTF-8 文件名放不进清单：直接记失败，其余照常转换。
+    /// 路径不必真的存在（APFS 等文件系统不接受这种文件名），它不会被读
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_names_fail_without_reaching_the_converter() {
+        use std::os::unix::ffi::OsStrExt;
+        let _lock = TAGGER_TEST_LOCK.lock().unwrap();
         inference::reset_tagging_cancel();
+        let temp = TempDir::new("hybrid_convert_non_utf8");
+        let good = temp.join("good.png");
+        std::fs::write(&good, "image").unwrap();
+        std::fs::write(good.with_extension("txt"), "solo").unwrap();
+        let odd = temp.join(std::ffi::OsStr::from_bytes(b"bad\xff.png"));
+        let app = tauri::test::mock_app();
+        let events = capture_events(app.handle(), EVENT);
+        let mut tally = Tally::new(app.handle(), 2);
+        let converted = run_convert_tags(
+            &mut tally,
+            &converter(&temp, None),
+            false,
+            &[odd.clone(), good.clone()],
+        )
+        .unwrap_or_else(|abort| panic!("{}", abort.reason));
+        assert_eq!(converted, 1);
+        let result = tally.finish(&temp, false, false, |c| c.summary("完成"));
+        assert_eq!((result.success_count, result.fail_count), (1, 1));
+        assert_eq!(
+            result.errors,
+            [format!(
+                "{}: {}",
+                crate::commands::file_name_lossy(&odd),
+                NON_UTF8_NAME
+            )]
+        );
+        assert!(hybrid::draft_path(&good, "json").exists());
+        assert_eq!(terminal(&events.lock().unwrap()).len(), 1);
     }
 }

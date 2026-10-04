@@ -12,60 +12,26 @@ use super::batch::{BatchJob, FileBatch, FileOutcome};
 
 static JOB: BatchJob = BatchJob::new("缩放");
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn skipped_modes_copy_without_pixel_decode_and_keep_messages() {
-        let root = super::super::image_io::test_dir("scale_header");
-        let path = root.join("broken.png");
-        super::super::image_io::write_broken_pixels(&path);
-        let output = root.join("out");
-        std::fs::create_dir_all(&output).unwrap();
-        let mut options = ScaleOptions {
-            input_path: root.to_string_lossy().into_owned(),
-            output_path: output.to_string_lossy().into_owned(),
-            mode: "both".into(),
-            target_width: 32,
-            target_height: 32,
-            down_target_width: 32,
-            down_target_height: 32,
-            recursive: false,
-        };
-        for (mode, message) in [
-            ("upscale", "无需上采样"),
-            ("downscale", "无需下采样"),
-            ("both", "已在目标范围内"),
-        ] {
-            options.mode = mode.into();
-            assert_eq!(
-                process_scale(&path, &root, &output, &options).unwrap(),
-                format!("[跳过] broken.png (32x32, {})", message)
-            );
-            assert_eq!(
-                std::fs::read(&path).unwrap(),
-                std::fs::read(output.join("broken.png")).unwrap()
-            );
-        }
-        options.mode = "invalid".into();
-        assert_eq!(
-            scale_images_sync(tauri::test::mock_app().handle(), &options).unwrap_err(),
-            "无效的缩放模式"
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
+/// 缩放方向，JSON 取值为小写名称
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScaleMode {
+    /// 小于目标尺寸的放大
+    Upscale,
+    /// 大于目标尺寸的缩小
+    Downscale,
+    /// 先放大不足的、再缩小超出的（缩小目标见 `down_target_*`）
+    Both,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScaleOptions {
     pub input_path: String,
     pub output_path: String,
-    /// "upscale" | "downscale" | "both"
-    pub mode: String,
+    pub mode: ScaleMode,
     pub target_width: u32,
     pub target_height: u32,
-    /// 下采样目标（mode="both" 时使用）
+    /// 下采样目标（`Both` 时使用，0 表示沿用 `target_*`）
     #[serde(default)]
     pub down_target_width: u32,
     #[serde(default)]
@@ -91,21 +57,18 @@ fn scale_images_sync<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     options: &ScaleOptions,
 ) -> Result<ProcessResult, String> {
-    if !matches!(options.mode.as_str(), "upscale" | "downscale" | "both") {
-        return Err("无效的缩放模式".to_string());
-    }
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
     std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
     let files =
         collect_image_files_with_recursive_excluding(input, options.recursive, Some(output_dir))?;
-    Ok(
-        FileBatch::new(app, "scale-progress", JOB.cancel_flag()).run(
+    Ok(FileBatch::new(app, "scale-progress", JOB.cancel_flag())
+        .archive_failures(input, output_dir, options.recursive)
+        .run(
             &files,
             |item| process_scale(item.path, input, output_dir, options).map(FileOutcome::done),
             |c| c.summary("处理完成"),
-        ),
-    )
+        ))
 }
 
 /// Area-based proportional scaling (preserves aspect ratio, rounds to nearest multiple of 64)
@@ -131,10 +94,11 @@ fn process_scale(
         read_dimensions(file_path).map_err(|e| format!("无法读取图片尺寸: {}", e))?;
     let filename = file_name_lossy(file_path);
     let output_path = same_name_output(input_root, file_path, output_dir, options.recursive)?;
-    let up = (options.mode != "downscale").then_some((options.target_width, options.target_height));
-    let down = match options.mode.as_str() {
-        "downscale" => Some((options.target_width, options.target_height)),
-        "both" => Some((
+    let up = (options.mode != ScaleMode::Downscale)
+        .then_some((options.target_width, options.target_height));
+    let down = match options.mode {
+        ScaleMode::Downscale => Some((options.target_width, options.target_height)),
+        ScaleMode::Both => Some((
             if options.down_target_width > 0 {
                 options.down_target_width
             } else {
@@ -146,16 +110,16 @@ fn process_scale(
                 options.target_height
             },
         )),
-        _ => None,
+        ScaleMode::Upscale => None,
     };
     let needs_up = up.is_some_and(|(w, h)| orig_w < w || orig_h < h);
     let needs_down = down.is_some_and(|(w, h)| orig_w > w || orig_h > h);
     if !needs_up && !needs_down {
         crate::commands::copy_file_safe(file_path, &output_path)?;
-        let reason = match options.mode.as_str() {
-            "upscale" => "无需上采样",
-            "downscale" => "无需下采样",
-            _ => "已在目标范围内",
+        let reason = match options.mode {
+            ScaleMode::Upscale => "无需上采样",
+            ScaleMode::Downscale => "无需下采样",
+            ScaleMode::Both => "已在目标范围内",
         };
         return Ok(format!(
             "[跳过] {} ({}x{}, {})",
@@ -175,23 +139,99 @@ fn process_scale(
     }
     let (final_w, final_h) = current.dimensions();
     save_like_source(current, &output_path, &source)?;
-    Ok(if options.mode == "both" {
-        format!(
+    Ok(match options.mode {
+        ScaleMode::Both => format!(
             "[缩放] {} ({}) → {}x{}",
             filename,
             steps.join(" → "),
             final_w,
             final_h
-        )
-    } else {
-        let label = if options.mode == "upscale" {
-            "上采样"
-        } else {
-            "下采样"
-        };
-        format!(
-            "[{}] {} ({}x{} → {}x{})",
-            label, filename, orig_w, orig_h, final_w, final_h
-        )
+        ),
+        ScaleMode::Upscale | ScaleMode::Downscale => {
+            let label = if options.mode == ScaleMode::Upscale {
+                "上采样"
+            } else {
+                "下采样"
+            };
+            format!(
+                "[{}] {} ({}x{} → {}x{})",
+                label, filename, orig_w, orig_h, final_w, final_h
+            )
+        }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::test_support::TempDir;
+    use serde_json::json;
+
+    fn scale_options(input: &Path, output: &Path, mode: ScaleMode, size: u32) -> ScaleOptions {
+        ScaleOptions {
+            input_path: input.to_string_lossy().into_owned(),
+            output_path: output.to_string_lossy().into_owned(),
+            mode,
+            target_width: size,
+            target_height: size,
+            down_target_width: size,
+            down_target_height: size,
+            recursive: false,
+        }
+    }
+
+    #[test]
+    fn skipped_modes_copy_without_pixel_decode_and_keep_messages() {
+        let root = TempDir::new("scale_header");
+        let path = root.join("broken.png");
+        super::super::image_io::write_broken_pixels(&path);
+        let output = root.join("out");
+        std::fs::create_dir_all(&output).unwrap();
+        for (mode, message) in [
+            (ScaleMode::Upscale, "无需上采样"),
+            (ScaleMode::Downscale, "无需下采样"),
+            (ScaleMode::Both, "已在目标范围内"),
+        ] {
+            let options = scale_options(&root, &output, mode, 32);
+            assert_eq!(
+                process_scale(&path, &root, &output, &options).unwrap(),
+                format!("[跳过] broken.png (32x32, {})", message)
+            );
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                std::fs::read(output.join("broken.png")).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn modes_use_the_frontend_string_values() {
+        for mode in ["upscale", "downscale", "both"] {
+            let parsed: ScaleMode = serde_json::from_value(json!(mode)).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), mode);
+        }
+        assert!(serde_json::from_value::<ScaleMode>(json!("invalid")).is_err());
+    }
+
+    #[test]
+    fn failed_files_are_archived_into_output_fail() {
+        let root = TempDir::new("scale_fail");
+        let (input, output) = (root.join("in"), root.join("out"));
+        std::fs::create_dir_all(&input).unwrap();
+        image::RgbImage::new(16, 16)
+            .save(input.join("small.png"))
+            .unwrap();
+        std::fs::write(input.join("bad.png"), b"not an image").unwrap();
+        let options = scale_options(&input, &output, ScaleMode::Upscale, 64);
+        let result = scale_images_sync(tauri::test::mock_app().handle(), &options).unwrap();
+        assert_eq!((result.success_count, result.fail_count), (1, 1));
+        assert_eq!(
+            image::open(output.join("small.png")).unwrap().dimensions(),
+            (64, 64)
+        );
+        assert_eq!(
+            std::fs::read(output.join("Fail/bad.png")).unwrap(),
+            b"not an image"
+        );
+    }
 }

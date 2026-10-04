@@ -1,8 +1,14 @@
+use image::{ImageBuffer, Pixel};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use super::image_io::{load_image, save_like_source};
-use super::{collect_image_files_with_recursive_excluding, same_name_output, ProcessResult};
+use super::image_io::{
+    into_rgba_keeping_depth, load_image, map_pixels, save_like_source, Channel, PixelMap,
+};
+use super::{
+    collect_image_files_with_recursive_excluding, dir_of, same_name_output, same_path,
+    ProcessResult,
+};
 
 use super::batch::{BatchJob, FileBatch, FileOutcome};
 
@@ -44,11 +50,16 @@ fn perspective_sync<R: tauri::Runtime>(
         ));
     }
     std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
+    // 数据增强不能原地替换源图：输出目录就是输入所在目录时，每张图都会写回自己
+    if same_path(&dir_of(input), output_dir) {
+        return Err("输出目录与输入目录相同，请更换输出目录".to_string());
+    }
     let files =
         collect_image_files_with_recursive_excluding(input, options.recursive, Some(output_dir))?;
     Ok(
         FileBatch::new(app, "perspective-progress", JOB.cancel_flag())
             .error_prefix("[失败] ")
+            .archive_failures(input, output_dir, options.recursive)
             .run(
                 &files,
                 |item| {
@@ -102,23 +113,9 @@ fn process_perspective(
     // 计算 3x3 透视变换矩阵 (dst→src)
     let mat = compute_perspective_matrix(&dst_corners, &SRC_CORNERS);
 
-    let out = match img.color() {
-        image::ColorType::L16
-        | image::ColorType::La16
-        | image::ColorType::Rgb16
-        | image::ColorType::Rgba16 => {
-            DynamicImage::ImageRgba16(warp_rgba(&img.to_rgba16(), &mat, true))
-        }
-        image::ColorType::Rgb32F | image::ColorType::Rgba32F => {
-            DynamicImage::ImageRgba32F(warp_rgba(&img.to_rgba32f(), &mat, false))
-        }
-        _ => DynamicImage::ImageRgba8(warp_rgba(&img.to_rgba8(), &mat, true)),
-    };
+    // 越界区域要透明，先转成带 alpha 的同位深图再变换
+    let out = map_pixels(into_rgba_keeping_depth(img), &Warp(mat));
     let output_path = same_name_output(input_root, file_path, output_dir, options.recursive)?;
-    // 数据增强不能原地替换源图。
-    if crate::commands::path_key_ci(&output_path) == crate::commands::path_key_ci(file_path) {
-        return Err("输出与输入为同一文件，已跳过（请更换输出目录）".to_string());
-    }
     // JPEG/BMP 不保留透明边界，越界区域采用黑边。
     let out = if matches!(
         source.format,
@@ -131,45 +128,46 @@ fn process_perspective(
     save_like_source(out, &output_path, &source)
 }
 
-fn warp_rgba<T: image::Primitive>(
-    rgba: &image::ImageBuffer<image::Rgba<T>, Vec<T>>,
-    mat: &[f64; 9],
-    quantize: bool,
-) -> image::ImageBuffer<image::Rgba<T>, Vec<T>>
-where
-    f64: From<T>,
-    image::Rgba<T>: image::Pixel<Subpixel = T>,
-{
-    let (w, h) = rgba.dimensions();
-    let (fw, fh) = (w as f64, h as f64);
+/// 按 3x3 透视矩阵（目标归一化坐标 → 源归一化坐标）逆映射重采样
+struct Warp([f64; 9]);
 
-    let mut out = image::ImageBuffer::new(w, h);
-    for py in 0..h {
-        for px in 0..w {
-            let nx = px as f64 / fw;
-            let ny = py as f64 / fh;
+impl PixelMap for Warp {
+    fn map<P>(&self, src: ImageBuffer<P, Vec<P::Subpixel>>) -> ImageBuffer<P, Vec<P::Subpixel>>
+    where
+        P: Pixel,
+        P::Subpixel: Channel,
+    {
+        let mat = &self.0;
+        let (w, h) = src.dimensions();
+        let (fw, fh) = (w as f64, h as f64);
 
-            // 应用透视变换得到源坐标
-            let denom = mat[6] * nx + mat[7] * ny + mat[8];
-            if denom.abs() < 1e-10 {
-                continue;
+        let mut out = ImageBuffer::new(w, h);
+        for py in 0..h {
+            for px in 0..w {
+                let nx = px as f64 / fw;
+                let ny = py as f64 / fh;
+
+                // 应用透视变换得到源坐标
+                let denom = mat[6] * nx + mat[7] * ny + mat[8];
+                if denom.abs() < 1e-10 {
+                    continue;
+                }
+                let sx = (mat[0] * nx + mat[1] * ny + mat[2]) / denom;
+                let sy = (mat[3] * nx + mat[4] * ny + mat[5]) / denom;
+
+                let src_x = sx * fw;
+                let src_y = sy * fh;
+
+                // 双线性插值
+                if src_x >= 0.0 && src_x < fw - 1.0 && src_y >= 0.0 && src_y < fh - 1.0 {
+                    out.put_pixel(px, py, bilinear_sample(&src, src_x, src_y));
+                }
+                // 超出范围的像素保持透明/黑色
             }
-            let sx = (mat[0] * nx + mat[1] * ny + mat[2]) / denom;
-            let sy = (mat[3] * nx + mat[4] * ny + mat[5]) / denom;
-
-            let src_x = sx * fw;
-            let src_y = sy * fh;
-
-            // 双线性插值
-            if src_x >= 0.0 && src_x < fw - 1.0 && src_y >= 0.0 && src_y < fh - 1.0 {
-                let pixel = bilinear_sample(rgba, src_x, src_y, w, h, quantize);
-                out.put_pixel(px, py, pixel);
-            }
-            // 超出范围的像素保持透明/黑色
         }
-    }
 
-    out
+        out
+    }
 }
 
 /// 由完整路径算出的确定性伪随机种子：同一路径种子不变，换目录后种子随之改变
@@ -179,18 +177,12 @@ pub(super) fn path_seed(path: &Path) -> u64 {
         .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64))
 }
 
-fn bilinear_sample<T: image::Primitive>(
-    img: &image::ImageBuffer<image::Rgba<T>, Vec<T>>,
-    x: f64,
-    y: f64,
-    w: u32,
-    h: u32,
-    quantize: bool,
-) -> image::Rgba<T>
+fn bilinear_sample<P>(img: &ImageBuffer<P, Vec<P::Subpixel>>, x: f64, y: f64) -> P
 where
-    f64: From<T>,
-    image::Rgba<T>: image::Pixel<Subpixel = T>,
+    P: Pixel,
+    P::Subpixel: Channel,
 {
+    let (w, h) = img.dimensions();
     let x0 = x.floor() as u32;
     let y0 = y.floor() as u32;
     let x1 = (x0 + 1).min(w - 1);
@@ -198,30 +190,21 @@ where
     let fx = x - x0 as f64;
     let fy = y - y0 as f64;
 
-    let p00 = img.get_pixel(x0, y0);
-    let p10 = img.get_pixel(x1, y0);
-    let p01 = img.get_pixel(x0, y1);
-    let p11 = img.get_pixel(x1, y1);
-
-    let lerp = |a: T, b: T, c: T, d: T| -> T {
-        let v = f64::from(a) * (1.0 - fx) * (1.0 - fy)
-            + f64::from(b) * fx * (1.0 - fy)
-            + f64::from(c) * (1.0 - fx) * fy
-            + f64::from(d) * fx * fy;
-        let v = if quantize {
-            v.round().clamp(0.0, T::DEFAULT_MAX_VALUE.into())
-        } else {
-            v
-        };
-        T::from(v).unwrap()
-    };
-
-    image::Rgba([
-        lerp(p00[0], p10[0], p01[0], p11[0]),
-        lerp(p00[1], p10[1], p01[1], p11[1]),
-        lerp(p00[2], p10[2], p01[2], p11[2]),
-        lerp(p00[3], p10[3], p01[3], p11[3]),
-    ])
+    let corners = [
+        (img.get_pixel(x0, y0), (1.0 - fx) * (1.0 - fy)),
+        (img.get_pixel(x1, y0), fx * (1.0 - fy)),
+        (img.get_pixel(x0, y1), (1.0 - fx) * fy),
+        (img.get_pixel(x1, y1), fx * fy),
+    ];
+    let mut out = *corners[0].0;
+    for (c, channel) in out.channels_mut().iter_mut().enumerate() {
+        let value: f64 = corners
+            .iter()
+            .map(|(p, weight)| p.channels()[c].into() * weight)
+            .sum();
+        *channel = P::Subpixel::from_f64(value);
+    }
+    out
 }
 
 /// 计算 3x3 透视变换矩阵，将 src 四点映射到 dst 四点
@@ -271,10 +254,11 @@ fn compute_perspective_matrix(src: &[(f64, f64); 4], dst: &[(f64, f64); 4]) -> [
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::test_support::TempDir;
 
     #[test]
     fn perspective_preserves_16bit_pixels() {
-        let root = super::super::image_io::test_dir("perspective16");
+        let root = TempDir::new("perspective16");
         let output = root.join("out");
         std::fs::create_dir_all(&output).unwrap();
         for ext in ["png", "tiff"] {
@@ -297,7 +281,56 @@ mod tests {
         let pixels = image::ImageBuffer::from_fn(2, 2, |x, y| {
             image::Rgba([1001u16 + (x + y * 2) as u16 * 1000, 0, 0, 65535])
         });
-        assert_eq!(bilinear_sample(&pixels, 0.5, 0.5, 2, 2, true)[0], 2501);
-        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(bilinear_sample(&pixels, 0.5, 0.5)[0], 2501);
+        let floats =
+            image::ImageBuffer::from_fn(2, 2, |x, _| image::Rgba([x as f32, 0.25, 0.0, 1.0]));
+        assert_eq!(
+            bilinear_sample(&floats, 0.25, 0.0),
+            image::Rgba([0.25, 0.25, 0.0, 1.0])
+        );
+    }
+
+    fn options(input: &Path, output: &Path) -> PerspectiveOptions {
+        PerspectiveOptions {
+            input_path: input.to_string_lossy().into_owned(),
+            output_path: output.to_string_lossy().into_owned(),
+            intensity: 0.1,
+            recursive: true,
+        }
+    }
+
+    /// 输出目录就是输入目录（单张图片时是它所在的目录）：开始前报一次错，不碰源图
+    #[test]
+    fn same_output_dir_is_rejected_before_processing() {
+        let root = TempDir::new("perspective_same_dir");
+        let source = root.join("a.png");
+        image::RgbImage::from_pixel(8, 8, image::Rgb([9, 9, 9]))
+            .save(&source)
+            .unwrap();
+        let before = std::fs::read(&source).unwrap();
+        let app = tauri::test::mock_app();
+        let log = super::super::batch::capture_events(app.handle(), "perspective-progress");
+        for input in [root.to_path_buf(), source.clone()] {
+            let err = perspective_sync(app.handle(), &options(&input, &root)).unwrap_err();
+            assert_eq!(err, "输出目录与输入目录相同，请更换输出目录");
+        }
+        assert!(log.lock().unwrap().is_empty());
+        assert_eq!(std::fs::read(&source).unwrap(), before);
+    }
+
+    #[test]
+    fn failed_files_are_archived_into_output_fail() {
+        let root = TempDir::new("perspective_fail");
+        let (input, output) = (root.join("in"), root.join("out"));
+        std::fs::create_dir_all(&input).unwrap();
+        image::RgbImage::from_pixel(8, 8, image::Rgb([9, 9, 9]))
+            .save(input.join("ok.png"))
+            .unwrap();
+        std::fs::write(input.join("bad.png"), b"not an image").unwrap();
+        let result =
+            perspective_sync(tauri::test::mock_app().handle(), &options(&input, &output)).unwrap();
+        assert_eq!((result.success_count, result.fail_count), (1, 1));
+        assert!(output.join("ok.png").is_file());
+        assert!(output.join("Fail/bad.png").is_file());
     }
 }

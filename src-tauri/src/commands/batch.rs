@@ -1,15 +1,17 @@
-//! 纯 Rust 逐文件批处理的公共骨架。
+//! 批处理的公共骨架。
 //!
 //! - [`BatchJob`]：命令级互斥闸 + 取消标志，并把同步任务放进阻塞线程池执行；
-//! - [`FileBatch`]：逐文件发 processing / success / error 事件并计数，
-//!   结束时恰好发一次终态 done：取消标志已置位发"已取消"，否则发汇总。
+//! - [`FileBatch`]：纯 Rust 逐文件处理，发 processing / success / error 事件并计数，
+//!   结束时按需把失败文件归集进 Fail/，再恰好发一次终态 done；
+//! - [`terminal_event`] / [`finish_run`]：自己驱动循环的命令（打标、美学、超分、人物裁切、
+//!   聚类等）用的终态 done，与 `FileBatch`、`llm_batch` 的取消文案一致。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Runtime};
 
-use super::{file_name_lossy, BusyGuard, ProcessResult, ProgressEvent};
+use super::{file_name_lossy, BusyGuard, ProblemArchive, ProcessResult, ProgressEvent};
 
 /// 一个批处理命令的全局状态，声明成 `static JOB: BatchJob = BatchJob::new("翻转");`
 pub(crate) struct BatchJob {
@@ -59,11 +61,10 @@ enum OutcomeKind {
     Skipped,
 }
 
-/// 单个文件处理成功后的结果：决定怎么计数，以及发什么 status 和 message
+/// 单个文件处理成功后的结果：决定怎么计数，以及 success 事件的 message
 #[derive(Debug)]
 pub(crate) struct FileOutcome {
     kind: OutcomeKind,
-    status: &'static str,
     message: String,
 }
 
@@ -83,16 +84,9 @@ impl FileOutcome {
         Self::new(OutcomeKind::Skipped, message)
     }
 
-    /// 改发别的 status；三种结果默认都发 "success"
-    pub(crate) fn with_status(mut self, status: &'static str) -> Self {
-        self.status = status;
-        self
-    }
-
     fn new(kind: OutcomeKind, message: impl Into<String>) -> Self {
         Self {
             kind,
-            status: "success",
             message: message.into(),
         }
     }
@@ -118,6 +112,114 @@ impl BatchCounts {
             label, self.success, self.failed, self.total
         )
     }
+
+    /// 已经处理完的数量（成功、跳过、失败都算）
+    pub(crate) fn processed(&self) -> u32 {
+        self.success + self.skipped + self.failed
+    }
+
+    /// 取消时的终态文案（全应用统一）："已取消: 已处理 {processed}/{total}, 成功 {success}, 失败 {failed}"
+    pub(crate) fn cancelled_summary(&self) -> String {
+        format!(
+            "已取消: 已处理 {}/{}, 成功 {}, 失败 {}",
+            self.processed(),
+            self.total,
+            self.success,
+            self.failed
+        )
+    }
+}
+
+/// 按 `ProcessResult` 计数（success_count 里已含的跳过不再单独计）
+impl From<&ProcessResult> for BatchCounts {
+    fn from(result: &ProcessResult) -> Self {
+        Self {
+            success: result.success_count,
+            failed: result.fail_count,
+            total: result.total,
+            ..Default::default()
+        }
+    }
+}
+
+/// 一轮任务的终态 done（filename 为空，尚未发出）：
+/// - `cancelled`：`counts.cancelled_summary()`，current 为已处理数，带 `cancelled: true`；
+/// - 否则：`summary(counts)`，current 为 total。
+pub(crate) fn terminal_event(
+    counts: &BatchCounts,
+    cancelled: bool,
+    summary: impl FnOnce(&BatchCounts) -> String,
+) -> ProgressEvent {
+    if cancelled {
+        cancelled_terminal_event(counts)
+    } else {
+        ProgressEvent::new("done", summary(counts)).at(counts.total, counts.total)
+    }
+}
+
+fn cancelled_terminal_event(counts: &BatchCounts) -> ProgressEvent {
+    ProgressEvent::new("done", counts.cancelled_summary())
+        .at(counts.processed(), counts.total)
+        .cancelled()
+}
+
+/// 发出一轮任务唯一的终态 done（见 [`terminal_event`]），给自己驱动循环的命令用；
+/// `FileBatch::run` 与 `llm_batch::BatchOutcome::finish` 已包含这一步。
+///
+/// 用法：`finish_run(&app, EVENT, &BatchCounts::from(&result), cancelled, |c| c.summary("美学评分完成"))`
+pub(crate) fn finish_run<R: Runtime>(
+    app: &AppHandle<R>,
+    event: &str,
+    counts: &BatchCounts,
+    cancelled: bool,
+    summary: impl FnOnce(&BatchCounts) -> String,
+) {
+    terminal_event(counts, cancelled, summary).emit(app, event);
+}
+
+/// 自己驱动循环的任务命令的一轮：开始时 `begin_run`，之后发的事件都显式带上这一轮的运行 ID。
+/// 同一通道上另一轮紧接着开始时（没有互斥锁的命令、并行的测试），这一轮余下的事件仍带自己的 ID，
+/// 不会被前端当成新一轮的事件
+pub(crate) struct RunEvents<'a, R: Runtime> {
+    app: &'a AppHandle<R>,
+    event: &'a str,
+    run_id: u64,
+}
+
+impl<'a, R: Runtime> RunEvents<'a, R> {
+    pub(crate) fn begin(app: &'a AppHandle<R>, event: &'a str) -> Self {
+        Self {
+            app,
+            event,
+            run_id: super::begin_run(event),
+        }
+    }
+
+    /// 交给 `FileBatch::in_run`
+    pub(crate) fn run_id(&self) -> u64 {
+        self.run_id
+    }
+
+    pub(crate) fn emit(&self, progress: ProgressEvent) {
+        progress.for_run(self.run_id).emit(self.app, self.event);
+    }
+
+    /// 发这一轮唯一的终态 done（见 [`terminal_event`]）
+    pub(crate) fn finish(
+        &self,
+        counts: &BatchCounts,
+        cancelled: bool,
+        summary: impl FnOnce(&BatchCounts) -> String,
+    ) {
+        self.emit(terminal_event(counts, cancelled, summary));
+    }
+
+    /// 用户取消时收尾：发这一轮唯一的终态 done（统一取消文案，带 `cancelled: true`），
+    /// 返回命令要交给前端的 `Err("已取消")`（取消的 Err 文本以「已取消」开头，前端据此识别）
+    pub(crate) fn finish_cancelled<T>(&self, counts: &BatchCounts) -> Result<T, String> {
+        self.emit(cancelled_terminal_event(counts));
+        Err("已取消".to_string())
+    }
 }
 
 /// 传给逐文件闭包的当前文件
@@ -127,16 +229,18 @@ pub(crate) struct BatchItem<'a, R: Runtime> {
     pub name: &'a str,
     current: u32,
     total: u32,
+    run_id: u64,
     app: &'a AppHandle<R>,
     event: &'a str,
 }
 
 impl<R: Runtime> BatchItem<'_, R> {
-    /// 以当前文件的 current/total/filename 额外发一条事件
-    pub(crate) fn emit(&self, status: &str, message: impl Into<String>) {
+    /// 以当前文件的 current/total/filename 发一条事件
+    fn emit(&self, status: &str, message: impl Into<String>) {
         ProgressEvent::new(status, message)
             .at(self.current, self.total)
             .file(self.name)
+            .for_run(self.run_id)
             .emit(self.app, self.event);
     }
 }
@@ -146,31 +250,40 @@ pub(crate) struct FileBatch<'a, R: Runtime> {
     app: &'a AppHandle<R>,
     event: &'a str,
     cancel: &'a AtomicBool,
-    processing: Option<&'a str>,
     error_prefix: &'a str,
+    run_id: Option<u64>,
+    archive: Option<ProblemArchive<'a>>,
 }
 
 impl<'a, R: Runtime> FileBatch<'a, R> {
-    /// 默认：每个文件先发 processing "正在处理: {文件名}"，失败事件不加前缀
+    /// 默认：失败事件不加前缀，失败文件不归集
     pub(crate) fn new(app: &'a AppHandle<R>, event: &'a str, cancel: &'a AtomicBool) -> Self {
         Self {
             app,
             event,
             cancel,
-            processing: Some("正在处理"),
             error_prefix: "",
+            run_id: None,
+            archive: None,
         }
     }
 
-    /// processing 事件发 "{verb}: {文件名}"
-    pub(crate) fn processing(mut self, verb: &'a str) -> Self {
-        self.processing = Some(verb);
+    /// 命令在 `run` 之前已经 `begin_run` 并发过事件（如"开始筛选…"）时传入那一轮的 ID，
+    /// `run` 沿用它而不另起一轮
+    pub(crate) fn in_run(mut self, run_id: u64) -> Self {
+        self.run_id = Some(run_id);
         self
     }
 
-    /// 不自动发 processing；需要时在闭包里用 `item.emit("processing", …)` 自己发
-    pub(crate) fn no_processing(mut self) -> Self {
-        self.processing = None;
+    /// 结束时把失败的文件复制进 `<output_root>/Fail/`（递归时保留相对 `input_root` 的子目录），
+    /// 并在 done 之前发一条事件（见 `ProblemArchive::archive`）。取消时已经失败的文件照样归集
+    pub(crate) fn archive_failures(
+        mut self,
+        input_root: &'a Path,
+        output_root: &'a Path,
+        recursive: bool,
+    ) -> Self {
+        self.archive = Some(ProblemArchive::new(input_root, output_root, recursive));
         self
     }
 
@@ -180,26 +293,28 @@ impl<'a, R: Runtime> FileBatch<'a, R> {
         self
     }
 
-    /// 逐个处理 `files`，事件依次为（current 从 1 起，filename 为文件名）：
-    /// - processing（可配置或关闭）、闭包里 `item.emit` 发的事件；
-    /// - `Ok(outcome)` → outcome 的 status 和 message；
+    /// 逐个处理 `files`。没有 `in_run` 时先 `begin_run(event)` 开始新一轮，本轮事件都带这个运行 ID。
+    /// 每个文件的事件依次为（current 从 1 起，filename 为文件名）：
+    /// - processing "正在处理: {文件名}"；
+    /// - `Ok(outcome)` → success，message 为 outcome 的；
     /// - `Err(e)` → error "{error_prefix}{文件名}: {e}"，errors 记 "{文件名}: {e}"。
     ///
-    /// 每个文件开始前检查取消标志，置位就停。结束时恰好发一次 done（filename 为空）：
-    /// 取消标志已置位（包括处理最后一张时才点取消）发"已取消: 已处理 {n}, 共 {total}"，
-    /// current 为 n；否则发 `summary(&counts)`，current 为 total。
+    /// 每个文件开始前检查取消标志，置位就停。结束时先按 `archive_failures` 归集失败文件，
+    /// 再恰好发一次 done（见 [`terminal_event`]）：取消标志已置位（包括处理最后一张时才点取消）
+    /// 发统一的取消文案并带 `cancelled: true`，否则发 `summary(&counts)`。
     pub(crate) fn run<F, S>(self, files: &[PathBuf], mut process: F, summary: S) -> ProcessResult
     where
         F: FnMut(&BatchItem<'_, R>) -> Result<FileOutcome, String>,
         S: FnOnce(&BatchCounts) -> String,
     {
+        let run_id = self.run_id.unwrap_or_else(|| super::begin_run(self.event));
         let total = files.len() as u32;
         let mut counts = BatchCounts {
             total,
             ..Default::default()
         };
         let mut errors = Vec::new();
-        let mut processed = 0u32;
+        let mut failed_files = Vec::new();
 
         for path in files {
             if self.cancel.load(Ordering::SeqCst) {
@@ -209,14 +324,13 @@ impl<'a, R: Runtime> FileBatch<'a, R> {
             let item = BatchItem {
                 path,
                 name: &name,
-                current: processed + 1,
+                current: counts.processed() + 1,
                 total,
+                run_id,
                 app: self.app,
                 event: self.event,
             };
-            if let Some(verb) = self.processing {
-                item.emit("processing", format!("{}: {}", verb, name));
-            }
+            item.emit("processing", format!("正在处理: {}", name));
             match process(&item) {
                 Ok(outcome) => {
                     match outcome.kind {
@@ -227,28 +341,26 @@ impl<'a, R: Runtime> FileBatch<'a, R> {
                         }
                         OutcomeKind::Skipped => counts.skipped += 1,
                     }
-                    item.emit(outcome.status, outcome.message);
+                    item.emit("success", outcome.message);
                 }
                 Err(e) => {
                     counts.failed += 1;
                     let err_msg = format!("{}: {}", name, e);
                     item.emit("error", format!("{}{}", self.error_prefix, err_msg));
                     errors.push(err_msg);
+                    failed_files.push(path.clone());
                 }
             }
-            processed += 1;
         }
 
-        let done = if self.cancel.load(Ordering::SeqCst) {
-            ProgressEvent::new(
-                "done",
-                format!("已取消: 已处理 {}, 共 {}", processed, total),
-            )
-            .at(processed, total)
-        } else {
-            ProgressEvent::new("done", summary(&counts)).at(total, total)
-        };
-        done.emit(self.app, self.event);
+        if let Some(archive) = &self.archive {
+            for progress in archive.archive(&failed_files, &[]) {
+                progress.for_run(run_id).emit(self.app, self.event);
+            }
+        }
+        terminal_event(&counts, self.cancel.load(Ordering::SeqCst), summary)
+            .for_run(run_id)
+            .emit(self.app, self.event);
 
         ProcessResult {
             success_count: counts.success,
@@ -259,19 +371,42 @@ impl<'a, R: Runtime> FileBatch<'a, R> {
     }
 }
 
-/// 测试用：收集 `app` 上 `event` 的事件 payload
+/// 测试用：收集 `app` 上 `event` 的事件 payload，去掉 run_id——它全局递增、取值随测试执行顺序变化，
+/// 去掉后才能按内容比对。要检查 run_id 时用 [`capture_raw_events`]
 #[cfg(test)]
 pub(crate) fn capture_events<R: Runtime>(
     app: &AppHandle<R>,
     event: &str,
 ) -> std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
+    capture(app, event, true)
+}
+
+/// 测试用：原样收集 `app` 上 `event` 的事件 payload（含 run_id）
+#[cfg(test)]
+pub(crate) fn capture_raw_events<R: Runtime>(
+    app: &AppHandle<R>,
+    event: &str,
+) -> std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
+    capture(app, event, false)
+}
+
+#[cfg(test)]
+fn capture<R: Runtime>(
+    app: &AppHandle<R>,
+    event: &str,
+    strip_run_id: bool,
+) -> std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
     use tauri::Listener;
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = events.clone();
     app.listen_any(event, move |e| {
-        sink.lock()
-            .unwrap()
-            .push(serde_json::from_str(e.payload()).unwrap());
+        let mut payload: serde_json::Value = serde_json::from_str(e.payload()).unwrap();
+        if strip_run_id {
+            if let Some(fields) = payload.as_object_mut() {
+                fields.shift_remove("run_id");
+            }
+        }
+        sink.lock().unwrap().push(payload);
     });
     events
 }
@@ -279,6 +414,7 @@ pub(crate) fn capture_events<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::test_support::TempDir;
     use serde_json::{json, Value};
     use std::cell::Cell;
 
@@ -296,6 +432,12 @@ mod tests {
             "status": status,
             "message": message,
         })
+    }
+
+    fn cancelled_done(current: u32, total: u32, message: &str) -> Value {
+        let mut done = ev(current, total, "", "done", message);
+        done["cancelled"] = json!(true);
+        done
     }
 
     fn done_count(events: &[Value]) -> usize {
@@ -368,25 +510,23 @@ mod tests {
         let log = capture_events(app.handle(), EVENT);
         let cancel = AtomicBool::new(false);
 
-        let r = FileBatch::new(app.handle(), EVENT, &cancel)
-            .processing("正在检测")
-            .run(
-                &files(&["a.png", "b.png", "c.png", "d.png"]),
-                |item| {
-                    Ok(match item.name {
-                        "a.png" => FileOutcome::done("转换"),
-                        "b.png" => FileOutcome::unchanged("原样复制"),
-                        "c.png" => FileOutcome::skipped("不匹配"),
-                        _ => FileOutcome::unchanged("同格式复制").with_status("skipped"),
-                    })
-                },
-                |c| {
-                    format!(
-                        "成功 {} 原样 {} 跳过 {} 失败 {} 共 {}",
-                        c.success, c.unchanged, c.skipped, c.failed, c.total
-                    )
-                },
-            );
+        let r = FileBatch::new(app.handle(), EVENT, &cancel).run(
+            &files(&["a.png", "b.png", "c.png", "d.png"]),
+            |item| {
+                Ok(match item.name {
+                    "a.png" => FileOutcome::done("转换"),
+                    "b.png" => FileOutcome::unchanged("原样复制"),
+                    "c.png" => FileOutcome::skipped("不匹配"),
+                    _ => FileOutcome::unchanged("同格式复制"),
+                })
+            },
+            |c| {
+                format!(
+                    "成功 {} 原样 {} 跳过 {} 失败 {} 共 {}",
+                    c.success, c.unchanged, c.skipped, c.failed, c.total
+                )
+            },
+        );
 
         let events = log.lock().unwrap();
         let outcomes: Vec<_> = events
@@ -405,47 +545,15 @@ mod tests {
                 ("success", "转换"),
                 ("success", "原样复制"),
                 ("success", "不匹配"),
-                ("skipped", "同格式复制"),
+                ("success", "同格式复制"),
                 ("done", "成功 3 原样 2 跳过 1 失败 0 共 4"),
             ]
         );
         assert_eq!(
             events[0],
-            ev(1, 4, "a.png", "processing", "正在检测: a.png")
+            ev(1, 4, "a.png", "processing", "正在处理: a.png")
         );
         assert_eq!((r.success_count, r.fail_count, r.total), (3, 0, 4));
-    }
-
-    #[test]
-    fn manual_processing_events() {
-        let app = tauri::test::mock_app();
-        let log = capture_events(app.handle(), EVENT);
-        let cancel = AtomicBool::new(false);
-
-        FileBatch::new(app.handle(), EVENT, &cancel)
-            .no_processing()
-            .error_prefix("[错误] ")
-            .run(
-                &files(&["a.jpg", "b.png"]),
-                |item| {
-                    if item.name.ends_with(".png") {
-                        return Ok(FileOutcome::unchanged("已是 png").with_status("skipped"));
-                    }
-                    item.emit("processing", format!("正在转换: {}", item.name));
-                    Ok(FileOutcome::done("已转换"))
-                },
-                |c| c.summary("转换完成"),
-            );
-
-        assert_eq!(
-            *log.lock().unwrap(),
-            vec![
-                ev(1, 2, "a.jpg", "processing", "正在转换: a.jpg"),
-                ev(1, 2, "a.jpg", "success", "已转换"),
-                ev(2, 2, "b.png", "skipped", "已是 png"),
-                ev(2, 2, "", "done", "转换完成: 成功 2, 失败 0, 共 2"),
-            ]
-        );
     }
 
     #[test]
@@ -468,12 +576,15 @@ mod tests {
         let events = log.lock().unwrap();
         assert_eq!(events.len(), 5);
         assert_eq!(events[3], ev(2, 4, "b.png", "success", "ok"));
-        assert_eq!(events[4], ev(2, 4, "", "done", "已取消: 已处理 2, 共 4"));
+        assert_eq!(
+            events[4],
+            cancelled_done(2, 4, "已取消: 已处理 2/4, 成功 2, 失败 0")
+        );
         assert_eq!(done_count(&events), 1);
         assert_eq!((r.success_count, r.fail_count, r.total), (2, 0, 4));
     }
 
-    /// 处理最后一张时点取消：原先这里一条 done 都不发，任务面板会一直停在运行中
+    /// 处理最后一张时点取消也要有终态，否则任务面板会一直停在运行中
     #[test]
     fn cancel_during_last_file_still_ends_with_one_done() {
         let app = tauri::test::mock_app();
@@ -498,7 +609,7 @@ mod tests {
         let events = log.lock().unwrap();
         assert_eq!(
             events.last().unwrap(),
-            &ev(3, 3, "", "done", "已取消: 已处理 3, 共 3")
+            &cancelled_done(3, 3, "已取消: 已处理 3/3, 成功 3, 失败 0")
         );
         assert_eq!(done_count(&events), 1);
         assert!(!summary_called.get());
@@ -523,7 +634,7 @@ mod tests {
 
         assert_eq!(
             *log.lock().unwrap(),
-            vec![ev(0, 2, "", "done", "已取消: 已处理 0, 共 2")]
+            vec![cancelled_done(0, 2, "已取消: 已处理 0/2, 成功 0, 失败 0")]
         );
         assert!(!called.get());
         assert_eq!((r.success_count, r.fail_count, r.total), (0, 0, 2));
@@ -560,5 +671,330 @@ mod tests {
 
         let failed = JOB.run(|| Err::<(), _>("输入路径无效".to_string())).await;
         assert_eq!(failed, Err("输入路径无效".to_string()));
+    }
+
+    fn run_ids(events: &[Value]) -> Vec<Option<u64>> {
+        events.iter().map(|e| e["run_id"].as_u64()).collect()
+    }
+
+    /// 每轮开始新的运行 ID，本轮全部事件（含逐文件、done）都带它；下一轮的 ID 更大
+    #[test]
+    fn each_run_stamps_all_its_events_with_a_new_id() {
+        const RUN_EVENT: &str = "batch-test-run-ids";
+        let app = tauri::test::mock_app();
+        let log = capture_raw_events(app.handle(), RUN_EVENT);
+        let cancel = AtomicBool::new(false);
+        let batch = || {
+            FileBatch::new(app.handle(), RUN_EVENT, &cancel).run(
+                &files(&["a.png", "b.png"]),
+                |item| {
+                    if item.name == "b.png" {
+                        Err("bad".to_string())
+                    } else {
+                        Ok(FileOutcome::done("ok"))
+                    }
+                },
+                |c| c.summary("处理完成"),
+            )
+        };
+        batch();
+        let first = run_ids(&log.lock().unwrap());
+        assert_eq!(first.len(), 5);
+        let id = first[0].expect("事件应带 run_id");
+        assert!(first.iter().all(|r| *r == Some(id)), "{first:?}");
+
+        log.lock().unwrap().clear();
+        batch();
+        let second = run_ids(&log.lock().unwrap());
+        let next = second[0].unwrap();
+        assert!(next > id);
+        assert!(second.iter().all(|r| *r == Some(next)));
+    }
+
+    /// 命令先 begin_run 再发"开始…"事件时，FileBatch 沿用那一轮，不另起
+    #[test]
+    fn in_run_reuses_the_commands_run() {
+        const RUN_EVENT: &str = "batch-test-in-run";
+        let app = tauri::test::mock_app();
+        let log = capture_raw_events(app.handle(), RUN_EVENT);
+        let cancel = AtomicBool::new(false);
+
+        let run_id = super::super::begin_run(RUN_EVENT);
+        ProgressEvent::new("processing", "开始处理").emit(app.handle(), RUN_EVENT);
+        FileBatch::new(app.handle(), RUN_EVENT, &cancel)
+            .in_run(run_id)
+            .run(
+                &files(&["a.png"]),
+                |_| Ok(FileOutcome::done("ok")),
+                |c| c.summary("完成"),
+            );
+        // 之后通道上的事件仍属于这一轮
+        ProgressEvent::new("info", "收尾").emit(app.handle(), RUN_EVENT);
+
+        let events = log.lock().unwrap();
+        assert_eq!(events.len(), 5);
+        assert!(run_ids(&events).iter().all(|r| *r == Some(run_id)));
+    }
+
+    #[test]
+    fn failures_are_archived_into_output_fail_before_done() {
+        let root = TempDir::new("batch_archive");
+        let (input, output) = (root.join("in"), root.join("out"));
+        std::fs::create_dir_all(input.join("sub")).unwrap();
+        for rel in ["a.png", "sub/b.png", "c.png"] {
+            std::fs::write(input.join(rel), rel).unwrap();
+        }
+        let app = tauri::test::mock_app();
+        let log = capture_events(app.handle(), EVENT);
+        let cancel = AtomicBool::new(false);
+
+        let batch_files = vec![
+            input.join("a.png"),
+            input.join("sub/b.png"),
+            input.join("c.png"),
+        ];
+        let r = FileBatch::new(app.handle(), EVENT, &cancel)
+            .archive_failures(&input, &output, true)
+            .run(
+                &batch_files,
+                |item| {
+                    if item.name == "a.png" {
+                        Ok(FileOutcome::done("ok"))
+                    } else {
+                        Err("坏图".to_string())
+                    }
+                },
+                |c| c.summary("处理完成"),
+            );
+
+        assert_eq!(r.fail_count, 2);
+        assert_eq!(
+            std::fs::read_to_string(output.join("Fail/sub/b.png")).unwrap(),
+            "sub/b.png"
+        );
+        assert!(output.join("Fail/c.png").is_file());
+        assert!(!output.join("Fail/a.png").exists());
+        assert!(!input.join("Fail").exists());
+        let events = log.lock().unwrap();
+        let tail: Vec<_> = events[events.len() - 2..].to_vec();
+        assert_eq!(
+            tail,
+            vec![
+                ev(0, 0, "", "info", "已将 2 个失败文件复制到 Fail/ 文件夹"),
+                ev(3, 3, "", "done", "处理完成: 成功 1, 失败 2, 共 3"),
+            ]
+        );
+    }
+
+    /// 取消前已经失败的文件照样归集；没有失败时不发归集事件
+    #[test]
+    fn cancelled_run_still_archives_earlier_failures() {
+        let root = TempDir::new("batch_archive_cancel");
+        for name in ["a.png", "b.png", "c.png"] {
+            std::fs::write(root.join(name), name).unwrap();
+        }
+        let app = tauri::test::mock_app();
+        let log = capture_events(app.handle(), EVENT);
+        let cancel = AtomicBool::new(false);
+
+        let batch_files: Vec<_> = ["a.png", "b.png", "c.png"]
+            .iter()
+            .map(|n| root.join(n))
+            .collect();
+        FileBatch::new(app.handle(), EVENT, &cancel)
+            .archive_failures(&root, &root, false)
+            .run(
+                &batch_files,
+                |item| {
+                    if item.name == "b.png" {
+                        cancel.store(true, Ordering::SeqCst);
+                        return Ok(FileOutcome::skipped("跳过"));
+                    }
+                    Err("坏图".to_string())
+                },
+                |c| c.summary("处理完成"),
+            );
+
+        assert!(root.join("Fail/a.png").is_file());
+        assert!(!root.join("Fail/b.png").exists() && !root.join("Fail/c.png").exists());
+        let events = log.lock().unwrap();
+        assert_eq!(
+            events[events.len() - 2..],
+            [
+                ev(0, 0, "", "info", "已将 1 个失败文件复制到 Fail/ 文件夹"),
+                cancelled_done(2, 3, "已取消: 已处理 2/3, 成功 0, 失败 1"),
+            ]
+        );
+
+        let app = tauri::test::mock_app();
+        let log = capture_events(app.handle(), EVENT);
+        let cancel = AtomicBool::new(false);
+        FileBatch::new(app.handle(), EVENT, &cancel)
+            .archive_failures(
+                Path::new("/nonexistent/in"),
+                Path::new("/nonexistent/out"),
+                false,
+            )
+            .run(
+                &files(&["a.png"]),
+                |_| Ok(FileOutcome::done("ok")),
+                |c| c.summary("完成"),
+            );
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                ev(1, 1, "a.png", "processing", "正在处理: a.png"),
+                ev(1, 1, "a.png", "success", "ok"),
+                ev(1, 1, "", "done", "完成: 成功 1, 失败 0, 共 1"),
+            ]
+        );
+    }
+
+    #[test]
+    fn terminal_event_for_finished_and_cancelled_runs() {
+        let result = ProcessResult {
+            success_count: 3,
+            fail_count: 1,
+            total: 10,
+            errors: vec![],
+        };
+        let counts = BatchCounts::from(&result);
+        assert_eq!(
+            (counts.processed(), counts.skipped, counts.unchanged),
+            (4, 0, 0)
+        );
+
+        let done = terminal_event(&counts, false, |c| c.summary("美学评分完成"));
+        assert_eq!(
+            (
+                done.status.as_str(),
+                done.current,
+                done.total,
+                done.cancelled
+            ),
+            ("done", 10, 10, false)
+        );
+        assert_eq!(done.message, "美学评分完成: 成功 3, 失败 1, 共 10");
+
+        let summary_called = Cell::new(false);
+        let cancelled = terminal_event(&counts, true, |c| {
+            summary_called.set(true);
+            c.summary("美学评分完成")
+        });
+        assert!(!summary_called.get());
+        assert_eq!(
+            (cancelled.current, cancelled.total, cancelled.cancelled),
+            (4, 10, true)
+        );
+        assert_eq!(cancelled.message, "已取消: 已处理 4/10, 成功 3, 失败 1");
+
+        // 跳过数计入"已处理"
+        let with_skips = BatchCounts {
+            success: 2,
+            skipped: 3,
+            failed: 1,
+            total: 9,
+            ..Default::default()
+        };
+        assert_eq!(
+            with_skips.cancelled_summary(),
+            "已取消: 已处理 6/9, 成功 2, 失败 1"
+        );
+    }
+
+    /// 同一通道上后一轮开始后，前一轮余下的事件和终态仍带自己的 ID
+    #[test]
+    fn run_events_keep_their_own_id_when_runs_overlap() {
+        const RUN_EVENT: &str = "batch-test-run-events";
+        let app = tauri::test::mock_app();
+        let log = capture_raw_events(app.handle(), RUN_EVENT);
+        let first = RunEvents::begin(app.handle(), RUN_EVENT);
+        first.emit(ProgressEvent::new("processing", "first"));
+        let second = RunEvents::begin(app.handle(), RUN_EVENT);
+        first.finish(
+            &BatchCounts {
+                success: 1,
+                total: 1,
+                ..Default::default()
+            },
+            false,
+            |c| c.summary("完成"),
+        );
+        second.emit(ProgressEvent::new("processing", "second"));
+
+        assert!(second.run_id() > first.run_id());
+        assert_eq!(
+            run_ids(&log.lock().unwrap()),
+            [
+                Some(first.run_id()),
+                Some(first.run_id()),
+                Some(second.run_id())
+            ]
+        );
+        assert_eq!(
+            log.lock().unwrap()[1]["message"],
+            "完成: 成功 1, 失败 0, 共 1"
+        );
+    }
+
+    /// 取消收尾：恰好一条带本轮 ID 与 cancelled 的 done，Err 以「已取消」开头
+    #[test]
+    fn finish_cancelled_emits_one_cancelled_done_and_returns_err() {
+        const RUN_EVENT: &str = "batch-test-finish-cancelled";
+        let app = tauri::test::mock_app();
+        let log = capture_raw_events(app.handle(), RUN_EVENT);
+        let run = RunEvents::begin(app.handle(), RUN_EVENT);
+        let counts = BatchCounts {
+            success: 2,
+            skipped: 1,
+            failed: 1,
+            total: 6,
+            ..Default::default()
+        };
+
+        let result: Result<u32, String> = run.finish_cancelled(&counts);
+
+        assert_eq!(result, Err("已取消".to_string()));
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![json!({
+                "current": 4, "total": 6, "filename": "", "status": "done",
+                "message": "已取消: 已处理 4/6, 成功 2, 失败 1",
+                "run_id": run.run_id(), "cancelled": true,
+            })]
+        );
+    }
+
+    #[test]
+    fn finish_run_emits_one_done_with_the_current_run_id() {
+        const RUN_EVENT: &str = "batch-test-finish-run";
+        let app = tauri::test::mock_app();
+        let log = capture_raw_events(app.handle(), RUN_EVENT);
+        let counts = BatchCounts {
+            success: 1,
+            total: 2,
+            ..Default::default()
+        };
+
+        // 通道从没开始过任何一轮：不带 run_id
+        finish_run(app.handle(), RUN_EVENT, &counts, false, |c| {
+            c.summary("完成")
+        });
+        let run_id = super::super::begin_run(RUN_EVENT);
+        finish_run(app.handle(), RUN_EVENT, &counts, true, |c| {
+            c.summary("完成")
+        });
+
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                ev(2, 2, "", "done", "完成: 成功 1, 失败 0, 共 2"),
+                json!({
+                    "current": 1, "total": 2, "filename": "", "status": "done",
+                    "message": "已取消: 已处理 1/2, 成功 1, 失败 0",
+                    "run_id": run_id, "cancelled": true,
+                }),
+            ]
+        );
     }
 }

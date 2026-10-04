@@ -5,14 +5,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Emitter;
 
+use super::batch::{BatchCounts, BatchJob, RunEvents};
 use super::{
-    collect_image_files_with_recursive, collect_image_files_with_recursive_excluding, ProgressEvent,
+    collect_image_files_with_recursive, collect_image_files_with_recursive_excluding, same_path,
+    unique_destination, NameSuffix, ProgressEvent,
 };
 
-static CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
-static AGGREGATE_CANCEL: AtomicBool = AtomicBool::new(false);
+static ANALYZE_JOB: BatchJob = BatchJob::new("分辨率分析");
+static AGGREGATE_JOB: BatchJob = BatchJob::new("分辨率聚合导出");
+
+const EVENT: &str = "resolution-analyze-progress";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolutionAnalyzeOptions {
@@ -89,23 +92,20 @@ fn aspect_label_for(w: u32, h: u32) -> String {
 }
 
 #[tauri::command]
-pub async fn analyze_resolutions(
-    app: tauri::AppHandle,
+pub async fn analyze_resolutions<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: ResolutionAnalyzeOptions,
 ) -> Result<ResolutionAnalyzeResult, String> {
-    CANCEL_FLAG.store(false, Ordering::SeqCst);
-    tokio::task::spawn_blocking(move || analyze_sync(&app, &options))
-        .await
-        .map_err(|e| format!("任务执行失败: {}", e))?
+    ANALYZE_JOB.run(move || analyze_sync(&app, &options)).await
 }
 
 #[tauri::command]
 pub fn cancel_resolution_analyze() {
-    CANCEL_FLAG.store(true, Ordering::SeqCst);
+    ANALYZE_JOB.cancel();
 }
 
-fn analyze_sync(
-    app: &tauri::AppHandle,
+fn analyze_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     options: &ResolutionAnalyzeOptions,
 ) -> Result<ResolutionAnalyzeResult, String> {
     let input = Path::new(&options.input_path);
@@ -117,43 +117,43 @@ fn analyze_sync(
     if files.is_empty() {
         return Err("未找到图片文件".into());
     }
-    let total = files.len() as u32;
 
     analyze_files(
         &files,
         options.rare_threshold,
-        |current, status, message, filename| {
-            let _ = app.emit(
-                "resolution-analyze-progress",
-                ProgressEvent::new(status, message)
-                    .at(current, total)
-                    .file(filename),
-            );
-        },
+        ANALYZE_JOB.cancel_flag(),
+        &RunEvents::begin(app, EVENT),
     )
 }
 
-/// 分析核心：与 Tauri 解耦，便于单元测试。
-/// `emit(current, status, message, filename)` 用于上报进度。
-fn analyze_files<F>(
+/// 统计分辨率分布并逐图上报进度。取消时发带 `cancelled` 的终态 done，返回「已取消」
+fn analyze_files<R: tauri::Runtime>(
     files: &[PathBuf],
     rare_threshold: u32,
-    mut emit: F,
-) -> Result<ResolutionAnalyzeResult, String>
-where
-    F: FnMut(u32, &str, String, String),
-{
+    cancel: &AtomicBool,
+    run: &RunEvents<'_, R>,
+) -> Result<ResolutionAnalyzeResult, String> {
     let total = files.len() as u32;
+    let emit = |current: u32, status: &str, message: String, filename: String| {
+        run.emit(
+            ProgressEvent::new(status, message)
+                .at(current, total)
+                .file(filename),
+        );
+    };
 
     let mut dist: HashMap<(u32, u32), Vec<String>> = HashMap::new();
     let mut failed_files: Vec<String> = Vec::new();
     let (mut min_w, mut max_w, mut min_h, mut max_h) = (u32::MAX, 0u32, u32::MAX, 0u32);
 
     for (i, path) in files.iter().enumerate() {
-        if CANCEL_FLAG.load(Ordering::SeqCst) {
-            // 终态事件收尾全局任务面板，否则任务停留在"运行中"
-            emit(i as u32, "done", "分析已取消".to_string(), String::new());
-            return Err("已取消".into());
+        if cancel.load(Ordering::SeqCst) {
+            return run.finish_cancelled(&BatchCounts {
+                success: i as u32 - failed_files.len() as u32,
+                failed: failed_files.len() as u32,
+                total,
+                ..Default::default()
+            });
         }
 
         let fname = path
@@ -231,15 +231,18 @@ where
 
     let distinct_count = groups.len() as u32;
 
-    emit(
+    let counts = BatchCounts {
+        success: valid_total,
+        failed: failed_files.len() as u32,
         total,
-        "done",
+        ..Default::default()
+    };
+    run.finish(&counts, false, |_| {
         format!(
             "分析完成：{} 张图片，{} 种分辨率",
             valid_total, distinct_count
-        ),
-        String::new(),
-    );
+        )
+    });
 
     Ok(ResolutionAnalyzeResult {
         total_images: valid_total,
@@ -275,7 +278,7 @@ pub struct ResolutionAggregateOptions {
 
 #[tauri::command]
 pub fn cancel_resolution_aggregate() {
-    AGGREGATE_CANCEL.store(true, Ordering::SeqCst);
+    AGGREGATE_JOB.cancel();
 }
 
 /// 按聚合计划把图片复制到以目标分辨率命名的文件夹。
@@ -283,19 +286,20 @@ pub fn cancel_resolution_aggregate() {
 /// 分析结果为控制体积只保留稀有分组的文件路径，因此导出时重新扫描目录、
 /// 逐图读取尺寸（仅解析文件头，开销小）后按计划归组。
 #[tauri::command]
-pub async fn export_resolution_aggregation(
-    app: tauri::AppHandle,
+pub async fn export_resolution_aggregation<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: ResolutionAggregateOptions,
 ) -> Result<String, String> {
-    AGGREGATE_CANCEL.store(false, Ordering::SeqCst);
-    tokio::task::spawn_blocking(move || aggregate_sync(&app, &options))
+    AGGREGATE_JOB
+        .run(move || aggregate_sync(&app, &options, AGGREGATE_JOB.cancel_flag()))
         .await
-        .map_err(|e| format!("聚合导出任务执行失败: {}", e))?
 }
 
-fn aggregate_sync(
-    app: &tauri::AppHandle,
+/// 取消时发带 `cancelled` 的终态 done，返回以「已取消」开头的错误（带已复制数）
+fn aggregate_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     options: &ResolutionAggregateOptions,
+    cancel: &AtomicBool,
 ) -> Result<String, String> {
     let input = Path::new(&options.input_path);
     if !input.is_dir() {
@@ -310,14 +314,7 @@ fn aggregate_sync(
 
     // 输出目录==输入目录时，收集排除逻辑会整体失效（excluded != input 不成立），
     // 上次导出的产物会被再次归组，每次重导出文件数近似翻倍，直接拒绝
-    let same_dir = match (
-        std::fs::canonicalize(input),
-        std::fs::canonicalize(out_root),
-    ) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => input == out_root,
-    };
-    if same_dir {
+    if same_path(input, out_root) {
         return Err(
             "输出目录不能与输入目录相同：导出产物会在下次导出/分析时被当作输入重复归组".into(),
         );
@@ -355,25 +352,30 @@ fn aggregate_sync(
         return Err("未找到图片文件".into());
     }
     let total = files.len() as u32;
+    let run = RunEvents::begin(app, EVENT);
 
     let emit = |current: u32, status: &str, message: String| {
-        let _ = app.emit(
-            "resolution-analyze-progress",
-            ProgressEvent::new(status, message).at(current, total),
-        );
+        run.emit(ProgressEvent::new(status, message).at(current, total));
     };
 
     let mut copied = 0u32;
     let mut unmatched = 0u32;
     let mut failed: Vec<String> = Vec::new();
     let mut used_folders: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let counts = |copied: u32, unmatched: u32, failed: usize| BatchCounts {
+        success: copied,
+        skipped: unmatched,
+        failed: failed as u32,
+        total,
+        ..Default::default()
+    };
 
     for (i, path) in files.iter().enumerate() {
-        if AGGREGATE_CANCEL.load(Ordering::SeqCst) {
-            // 必须发终态事件，否则全局任务面板会永远停在"运行中"
-            emit(i as u32, "done", "聚合导出已取消".to_string());
+        if cancel.load(Ordering::SeqCst) {
             // 汇总信息放进错误消息（前端 catch 统一记录，避免与事件日志重复）
-            return Err(format!("已取消，已复制 {} 个文件", copied));
+            return run
+                .finish_cancelled(&counts(copied, unmatched, failed.len()))
+                .map_err(|e| format!("{}，已复制 {} 个文件", e, copied));
         }
 
         match super::image_io::read_dimensions(path) {
@@ -392,7 +394,8 @@ fn aggregate_sync(
                         .file_name()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| format!("image_{}", i));
-                    let dst = super::unique_copy_destination(&dir, &filename);
+                    let dst =
+                        unique_destination(&dir, &filename, NameSuffix::Counter, Path::exists);
                     match std::fs::copy(path, &dst) {
                         Ok(_) => copied += 1,
                         Err(e) => failed.push(format!("{}: {}", path.display(), e)),
@@ -431,13 +434,17 @@ fn aggregate_sync(
         },
     );
     // 详细汇总由命令返回值带回前端记录日志；done 事件负责把全局任务面板收尾
-    emit(total, "done", "聚合导出完成".to_string());
+    run.finish(&counts(copied, unmatched, failed.len()), false, |_| {
+        "聚合导出完成".to_string()
+    });
     Ok(summary)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::batch::capture_raw_events;
+    use crate::commands::test_support::TempDir;
 
     fn write_png(dir: &Path, name: &str, w: u32, h: u32) -> PathBuf {
         let p = dir.join(name);
@@ -445,17 +452,19 @@ mod tests {
         p
     }
 
-    fn tmpdir(tag: &str) -> PathBuf {
-        let d =
-            std::env::temp_dir().join(format!("purinbox_res_test_{}_{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn analyze(files: &[PathBuf], rare_threshold: u32) -> Result<ResolutionAnalyzeResult, String> {
+        let app = tauri::test::mock_app();
+        analyze_files(
+            files,
+            rare_threshold,
+            &AtomicBool::new(false),
+            &RunEvents::begin(app.handle(), EVENT),
+        )
     }
 
     #[test]
     fn groups_sorted_by_count_and_marks_rare() {
-        let d = tmpdir("sort");
+        let d = TempDir::new("res_sort");
         let mut files = Vec::new();
         // 3 张 100x100，1 张 50x50
         for i in 0..3 {
@@ -463,7 +472,7 @@ mod tests {
         }
         files.push(write_png(&d, "b.png", 50, 50));
 
-        let r = analyze_files(&files, 1, |_, _, _, _| {}).unwrap();
+        let r = analyze(&files, 1).unwrap();
 
         assert_eq!(r.total_images, 4);
         assert_eq!(r.distinct_count, 2);
@@ -477,43 +486,117 @@ mod tests {
         assert_eq!(r.groups[1].files.len(), 1);
         // 百分比
         assert!((r.groups[0].percent - 75.0).abs() < 1e-6);
-        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
     fn reports_min_max_extents() {
-        let d = tmpdir("extent");
+        let d = TempDir::new("res_extent");
         let files = vec![
             write_png(&d, "a.png", 100, 400),
             write_png(&d, "b.png", 300, 200),
         ];
-        let r = analyze_files(&files, 0, |_, _, _, _| {}).unwrap();
+        let r = analyze(&files, 0).unwrap();
         assert_eq!((r.min_width, r.max_width), (100, 300));
         assert_eq!((r.min_height, r.max_height), (200, 400));
-        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
     fn unreadable_files_counted_not_fatal() {
-        let d = tmpdir("bad");
+        let d = TempDir::new("res_bad");
         let good = write_png(&d, "good.png", 64, 64);
         let bad = d.join("broken.png");
         std::fs::write(&bad, b"this is not an image").unwrap();
 
-        let r = analyze_files(&[good, bad], 10, |_, _, _, _| {}).unwrap();
+        let r = analyze(&[good, bad], 10).unwrap();
         assert_eq!(r.total_images, 1, "坏文件不应计入有效总数");
         assert_eq!(r.failed_count, 1);
         assert_eq!(r.groups.len(), 1);
-        std::fs::remove_dir_all(&d).ok();
     }
 
     #[test]
     fn all_unreadable_is_error() {
-        let d = tmpdir("allbad");
+        let d = TempDir::new("res_allbad");
         let bad = d.join("x.png");
         std::fs::write(&bad, b"nope").unwrap();
-        assert!(analyze_files(&[bad], 10, |_, _, _, _| {}).is_err());
-        std::fs::remove_dir_all(&d).ok();
+        assert!(analyze(&[bad], 10).is_err());
+    }
+
+    /// 取消：终态 done 带 cancelled、用统一取消文案，返回「已取消」；正常完成的 done 不带
+    #[test]
+    fn cancelled_analysis_ends_with_a_cancelled_done() {
+        let d = TempDir::new("res_cancel");
+        let files = vec![write_png(&d, "a.png", 8, 8)];
+        let app = tauri::test::mock_app();
+        let log = capture_raw_events(app.handle(), EVENT);
+        let run = RunEvents::begin(app.handle(), EVENT);
+        let err = analyze_files(&files, 10, &AtomicBool::new(true), &run).unwrap_err();
+        assert_eq!(err, "已取消");
+        let done = log.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(done["cancelled"], true);
+        assert_eq!(done["message"], "已取消: 已处理 0/1, 成功 0, 失败 0");
+        assert_eq!(done["run_id"], run.run_id());
+
+        let run = RunEvents::begin(app.handle(), EVENT);
+        analyze_files(&files, 10, &AtomicBool::new(false), &run).unwrap();
+        let done = log.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(done["message"], "分析完成：1 张图片，1 种分辨率");
+        assert!(done.get("cancelled").is_none());
+    }
+
+    /// 聚合导出：同名文件追加序号不覆盖；取消时 done 带 cancelled
+    #[test]
+    fn aggregation_copies_without_overwriting_and_reports_cancel() {
+        let root = TempDir::new("res_aggregate");
+        let (input, output) = (root.join("in"), root.join("out"));
+        std::fs::create_dir_all(input.join("sub")).unwrap();
+        write_png(&input, "a.png", 8, 8);
+        write_png(&input.join("sub"), "a.png", 8, 8);
+        let options = ResolutionAggregateOptions {
+            input_path: input.to_string_lossy().into_owned(),
+            recursive: true,
+            output_path: output.to_string_lossy().into_owned(),
+            plan: vec![AggregatePlanEntry {
+                folder: "8x8".into(),
+                resolutions: vec![(8, 8)],
+            }],
+        };
+        let app = tauri::test::mock_app();
+        let log = capture_raw_events(app.handle(), EVENT);
+        let summary = aggregate_sync(app.handle(), &options, &AtomicBool::new(false)).unwrap();
+        assert_eq!(summary, "聚合导出完成：2 个文件 → 1 个文件夹");
+        assert!(output.join("8x8/a.png").is_file() && output.join("8x8/a_1.png").is_file());
+
+        let err = aggregate_sync(app.handle(), &options, &AtomicBool::new(true)).unwrap_err();
+        assert_eq!(err, "已取消，已复制 0 个文件");
+        let done = log.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(done["cancelled"], true);
+        assert_eq!(done["message"], "已取消: 已处理 0/2, 成功 0, 失败 0");
+    }
+
+    /// 输出目录就是输入目录（含 `in/.`、只差大小写的写法）：开始前拒绝，不复制、不发事件
+    #[test]
+    fn aggregation_into_the_input_dir_is_rejected() {
+        let root = TempDir::new("res_aggregate_same");
+        let input = root.join("in");
+        std::fs::create_dir_all(&input).unwrap();
+        write_png(&input, "a.png", 8, 8);
+        let app = tauri::test::mock_app();
+        let log = capture_raw_events(app.handle(), EVENT);
+        for output in [input.clone(), input.join("."), root.join("IN")] {
+            let options = ResolutionAggregateOptions {
+                input_path: input.to_string_lossy().into_owned(),
+                recursive: true,
+                output_path: output.to_string_lossy().into_owned(),
+                plan: vec![AggregatePlanEntry {
+                    folder: "8x8".into(),
+                    resolutions: vec![(8, 8)],
+                }],
+            };
+            let err = aggregate_sync(app.handle(), &options, &AtomicBool::new(false)).unwrap_err();
+            assert!(err.starts_with("输出目录不能与输入目录相同"), "{err}");
+        }
+        assert!(!input.join("8x8").exists());
+        assert!(log.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -4,13 +4,17 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::Emitter;
+
+use super::config_paths::default_tagcache_dir;
 
 /// 翻译缓存数据库路径（可运行时修改）
 static DB_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 const DB_FILE_NAME: &str = "tag_translations.db";
 const CACHE_PATH_CONFIG_FILE: &str = "translation_cache.json";
+const TRANSLATE_PROGRESS_EVENT: &str = "translate-progress";
 
 #[derive(Default, Serialize, Deserialize)]
 struct CachePathConfig {
@@ -29,15 +33,11 @@ const CREATE_TRANSLATIONS_SQL: &str = "CREATE TABLE IF NOT EXISTS translations (
 const UPSERT_TRANSLATION_SQL: &str =
     "INSERT OR REPLACE INTO translations (tag, translated, lang) VALUES (?1, ?2, ?3)";
 
-fn default_cache_dir() -> PathBuf {
-    super::config_paths::default_tagcache_dir()
-}
-
 fn get_db_path() -> PathBuf {
     cached_db_path(&DB_PATH, || {
         let config: CachePathConfig =
             super::config_paths::load_json_config_or_default(CACHE_PATH_CONFIG_FILE);
-        config.directory.unwrap_or_else(default_cache_dir)
+        config.directory.unwrap_or_else(default_tagcache_dir)
     })
 }
 
@@ -142,7 +142,7 @@ pub fn get_cache_path() -> String {
 #[tauri::command]
 pub fn set_cache_path(path: String) -> Result<String, String> {
     let cache_dir = if path.is_empty() {
-        default_cache_dir()
+        default_tagcache_dir()
     } else {
         PathBuf::from(&path)
     };
@@ -158,7 +158,7 @@ pub fn set_cache_path(path: String) -> Result<String, String> {
                 Some(cache_dir.clone())
             },
         },
-        "翻译缓存路径配置",
+        "写入翻译缓存路径配置失败",
     )?;
     *guard = Some(db_path);
     Ok(cache_dir.to_string_lossy().to_string())
@@ -596,6 +596,28 @@ struct ProviderCreds<'a> {
     bing_region: &'a str,
 }
 
+impl<'a> ProviderCreds<'a> {
+    /// 取自翻译命令的参数（顺序同命令参数），没传的按空串
+    fn new(
+        baidu_appid: &'a Option<String>,
+        baidu_key: &'a Option<String>,
+        youdao_key: &'a Option<String>,
+        youdao_secret: &'a Option<String>,
+        bing_key: &'a Option<String>,
+        bing_region: &'a Option<String>,
+    ) -> Self {
+        let text = |value: &'a Option<String>| value.as_deref().unwrap_or("");
+        ProviderCreds {
+            baidu_appid: text(baidu_appid),
+            baidu_key: text(baidu_key),
+            youdao_key: text(youdao_key),
+            youdao_secret: text(youdao_secret),
+            bing_key: text(bing_key),
+            bing_region: text(bing_region),
+        }
+    }
+}
+
 /// 缺凭据时返回 (服务商名, 缺的项)，两处调用各自拼提示文案。
 /// 百度那一项带前导空格，两句文案里中文与 "APP ID" 之间都有这个空格
 fn missing_creds(provider: &str, c: &ProviderCreds) -> Option<(&'static str, &'static str)> {
@@ -669,12 +691,15 @@ pub async fn translate_tags(
     let cached_count = cached.len();
     let total_count = tags.len();
     let mut translated_count = 0;
+    // 三个标签编辑器常驻、共用这一个事件，进度带上本次调用的运行 ID
+    let run_id = super::begin_run(TRANSLATE_PROGRESS_EVENT);
     let emit_progress = |current: usize| {
         let _ = app.emit(
-            "translate-progress",
+            TRANSLATE_PROGRESS_EVENT,
             serde_json::json!({
                 "current": current,
-                "total": total_count
+                "total": total_count,
+                "run_id": run_id,
             }),
         );
     };
@@ -693,19 +718,16 @@ pub async fn translate_tags(
 
         // text 模式用更长超时（长文本翻译可能较慢）
         let timeout_secs = if is_text_mode { 30 } else { 15 };
-        let client = super::proxy_config::build_http_client()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
-            .build()
-            .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
+        let client = super::http_download::api_client(Duration::from_secs(timeout_secs))?;
 
-        let creds = ProviderCreds {
-            baidu_appid: baidu_appid.as_deref().unwrap_or(""),
-            baidu_key: baidu_key.as_deref().unwrap_or(""),
-            youdao_key: youdao_app_key.as_deref().unwrap_or(""),
-            youdao_secret: youdao_app_secret.as_deref().unwrap_or(""),
-            bing_key: bing_key.as_deref().unwrap_or(""),
-            bing_region: bing_region.as_deref().unwrap_or(""),
-        };
+        let creds = ProviderCreds::new(
+            &baidu_appid,
+            &baidu_key,
+            &youdao_app_key,
+            &youdao_app_secret,
+            &bing_key,
+            &bing_region,
+        );
         if let Some((name, what)) = missing_creds(&provider, &creds) {
             return Err(format!(
                 "{}需要配置{}\n请在「设置 → 翻译设置」中填写",
@@ -730,7 +752,7 @@ pub async fn translate_tags(
             .enumerate()
         {
             if i > 0 && matches!(provider.as_str(), "baidu" | "youdao") {
-                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                tokio::time::sleep(Duration::from_millis(1100)).await;
             }
             let lines = translate_via(&client, &provider, &creds, chunk, &target_lang).await?;
 
@@ -828,19 +850,16 @@ pub async fn test_translation(
     bing_key: Option<String>,
     bing_region: Option<String>,
 ) -> Result<String, String> {
-    let client = super::proxy_config::build_http_client()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
+    let client = super::http_download::api_client(Duration::from_secs(10))?;
 
-    let creds = ProviderCreds {
-        baidu_appid: baidu_appid.as_deref().unwrap_or(""),
-        baidu_key: baidu_key.as_deref().unwrap_or(""),
-        youdao_key: youdao_app_key.as_deref().unwrap_or(""),
-        youdao_secret: youdao_app_secret.as_deref().unwrap_or(""),
-        bing_key: bing_key.as_deref().unwrap_or(""),
-        bing_region: bing_region.as_deref().unwrap_or(""),
-    };
+    let creds = ProviderCreds::new(
+        &baidu_appid,
+        &baidu_key,
+        &youdao_app_key,
+        &youdao_app_secret,
+        &bing_key,
+        &bing_region,
+    );
     if let Some((name, what)) = missing_creds(&provider, &creds) {
         return Err(format!("请先填写{}{}", name, what));
     }
@@ -928,19 +947,36 @@ struct ParsedTranslationCsv {
     errors: Vec<String>,
 }
 
-/// 校验表头并逐行检查列数与语言；不触碰数据库
-fn parse_translation_csv(content: &str) -> Result<ParsedTranslationCsv, String> {
-    // 应用自身导出带 UTF-8 BOM，比较表头前先剥掉，保证导出文件可直接再导入
-    let content = normalize_csv_quote_spacing(content.strip_prefix('\u{FEFF}').unwrap_or(content));
-    let mut rdr = csv::ReaderBuilder::new()
-        .flexible(true)
-        .from_reader(content.as_bytes());
-
-    let header = rdr.headers().map_err(|e| e.to_string())?;
-    if header.is_empty() {
-        return Err("CSV 文件为空".to_string());
+impl ParsedTranslationCsv {
+    /// 跳过一行；带原因时记进 errors
+    fn skip(&mut self, error: Option<String>) {
+        self.skipped += 1;
+        if let Some(error) = error.filter(|_| self.errors.len() < 5) {
+            self.errors.push(error);
+        }
     }
-    let header = header.iter().collect::<Vec<_>>().join(",");
+}
+
+/// 校验表头并逐行检查列数与语言；不触碰数据库。
+///
+/// 一条记录只占一行：标签和译文都不含换行（翻译结果按行拆分后才入库，导出也就没有跨行字段）。
+/// 引号个数为奇数的行引号不成对，整行跳过——按 CSV 规则读的话，没闭合的引号会把后面的行
+/// 都吞进同一个字段
+fn parse_translation_csv(content: &str) -> Result<ParsedTranslationCsv, String> {
+    const VALID_LANGS: [&str; 3] = ["zh-CN", "ja", "ko"];
+    // 应用自身导出带 UTF-8 BOM，比较表头前先剥掉，保证导出文件可直接再导入
+    let content = content.strip_prefix('\u{FEFF}').unwrap_or(content);
+    let content = content.replace("\r\n", "\n").replace('\r', "\n");
+    // 空白行跳过、不计数，但行号按物理行算
+    let mut lines = content
+        .split('\n')
+        .zip(1u64..)
+        .filter(|(line, _)| !line.trim().is_empty());
+
+    let Some((header, _)) = lines.next() else {
+        return Err("CSV 文件为空".to_string());
+    };
+    let header = csv_fields(&normalize_csv_quote_spacing(header)).join(",");
     if header.to_lowercase().replace(' ', "") != "tag,translated,lang" {
         return Err(format!(
             "CSV 格式不正确。\n预期表头: tag,translated,lang\n实际表头: {}\n\n请确保 CSV 文件包含三列: tag（原始标签）、translated（翻译结果）、lang（语言代码，如 zh-CN、ja、ko）",
@@ -948,47 +984,36 @@ fn parse_translation_csv(content: &str) -> Result<ParsedTranslationCsv, String> 
         ));
     }
 
-    let valid_langs = ["zh-CN", "ja", "ko"];
     let mut out = ParsedTranslationCsv::default();
-    for record in rdr.records() {
-        let record = record.map_err(|e| e.to_string())?;
-        // 只含空白的行会被读成单个空白字段，按空行跳过、不计数
-        if record.len() == 1 && record[0].trim().is_empty() {
+    for (line, number) in lines {
+        if line.matches('"').count() % 2 == 1 {
+            out.skip(Some(format!("第 {} 行: 引号不成对，已跳过该行", number)));
             continue;
         }
-        let line = record
-            .position()
-            .map_or(0, |pos| record_start_line(content.as_bytes(), pos));
-
-        if record.len() < 3 {
-            out.skipped += 1;
-            if out.errors.len() < 5 {
-                out.errors.push(format!(
-                    "第 {} 行: 列数不足 ({}列，需要3列)",
-                    line,
-                    record.len()
-                ));
-            }
+        let fields = csv_fields(&normalize_csv_quote_spacing(line));
+        if fields.len() < 3 {
+            out.skip(Some(format!(
+                "第 {} 行: 列数不足 ({}列，需要3列)",
+                number,
+                fields.len()
+            )));
             continue;
         }
 
-        let tag = record[0].trim();
-        let translated = record[1].trim();
-        let lang = record[2].trim();
+        let tag = fields[0].trim();
+        let translated = fields[1].trim();
+        let lang = fields[2].trim();
 
         if tag.is_empty() || translated.is_empty() {
-            out.skipped += 1;
+            out.skip(None);
             continue;
         }
 
-        if !valid_langs.contains(&lang) {
-            out.skipped += 1;
-            if out.errors.len() < 5 {
-                out.errors.push(format!(
-                    "第 {} 行: 不支持的语言 '{}'（支持: zh-CN, ja, ko）",
-                    line, lang
-                ));
-            }
+        if !VALID_LANGS.contains(&lang) {
+            out.skip(Some(format!(
+                "第 {} 行: 不支持的语言 '{}'（支持: zh-CN, ja, ko）",
+                number, lang
+            )));
             continue;
         }
 
@@ -996,6 +1021,19 @@ fn parse_translation_csv(content: &str) -> Result<ParsedTranslationCsv, String> 
             .push((tag.to_string(), translated.to_string(), lang.to_string()));
     }
     Ok(out)
+}
+
+/// 按 CSV 规则拆一行：引号内的逗号、转义的双引号
+fn csv_fields(line: &str) -> Vec<String> {
+    csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(line.as_bytes())
+        .records()
+        .next()
+        .and_then(Result::ok)
+        .map(|record| record.iter().map(str::to_string).collect())
+        .unwrap_or_default()
 }
 
 /// 兼容手写 CSV 的字段前空格；只移除字段开头、引号外的空格，不改引号内的字节。
@@ -1037,26 +1075,13 @@ fn normalize_csv_quote_spacing(content: &str) -> String {
     String::from_utf8(result).expect("only ASCII whitespace was removed")
 }
 
-/// 记录所在的物理行号（从 1 起）。csv 给出的位置停在上一条记录的行尾，
-/// 中间被跳过的空行、以及 CRLF 换行里的 `\n` 都还没计入，这里补上
-fn record_start_line(content: &[u8], pos: &csv::Position) -> u64 {
-    let skipped = content
-        .get(pos.byte() as usize..)
-        .unwrap_or_default()
-        .iter()
-        .take_while(|b| matches!(b, b'\r' | b'\n'))
-        .filter(|b| **b == b'\n')
-        .count();
-    pos.line() + skipped as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn cache_directory_is_loaded_once_and_survives_a_fresh_cache() {
-        let dir = super::super::llm_client::test_support::TempDir::new("cache_config");
+        let dir = crate::commands::test_support::TempDir::new("cache_config");
         let config_path = dir.join("translation_cache.json");
         let custom = dir.join("custom");
         let config = CachePathConfig {
@@ -1099,8 +1124,7 @@ mod tests {
         let content = concat!(
             "tag,translated,lang\r\n",
             "smile, \"微笑, 笑\", zh-CN\r\n",
-            "\"a, \"\"inside\"\"\", \t\"line1, \"\" quote\r\n  line2\", ja\r\n",
-            "literal\"quote, plain, ko\r\n",
+            "\"a, \"\"inside\"\"\", \t\"line1, \"\" quote  line2\", ja\r\n",
             "short\r\n",
         );
         let parsed = parse_translation_csv(content).unwrap();
@@ -1108,11 +1132,10 @@ mod tests {
             parsed.rows,
             rows(&[
                 ("smile", "微笑, 笑", "zh-CN"),
-                ("a, \"inside\"", "line1, \" quote\r\n  line2", "ja"),
-                ("literal\"quote", "plain", "ko"),
+                ("a, \"inside\"", "line1, \" quote  line2", "ja"),
             ])
         );
-        assert_eq!(parsed.errors, ["第 6 行: 列数不足 (1列，需要3列)"]);
+        assert_eq!(parsed.errors, ["第 4 行: 列数不足 (1列，需要3列)"]);
         assert_eq!(
             normalize_csv_quote_spacing("\"a,  \"\"b\"\"\""),
             "\"a,  \"\"b\"\"\""
@@ -1146,6 +1169,35 @@ mod tests {
     fn baidu_sign_is_lowercase_md5_hex() {
         assert_eq!(baidu_sign(""), "d41d8cd98f00b204e9800998ecf8427e");
         assert_eq!(baidu_sign("hello"), "5d41402abc4b2a76b9719d911017c592");
+    }
+
+    #[test]
+    fn provider_creds_take_command_arguments_in_order() {
+        let (appid, key, ykey, ysecret, bkey, region) = (
+            Some("id".to_string()),
+            None,
+            Some("yk".to_string()),
+            Some("ys".to_string()),
+            None,
+            Some("eastasia".to_string()),
+        );
+        let creds = ProviderCreds::new(&appid, &key, &ykey, &ysecret, &bkey, &region);
+        assert_eq!(
+            [
+                creds.baidu_appid,
+                creds.baidu_key,
+                creds.youdao_key,
+                creds.youdao_secret,
+                creds.bing_key,
+                creds.bing_region
+            ],
+            ["id", "", "yk", "ys", "", "eastasia"]
+        );
+        assert_eq!(
+            missing_creds("baidu", &creds),
+            Some(("百度翻译", " APP ID 和密钥"))
+        );
+        assert_eq!(missing_creds("youdao", &creds), None);
     }
 
     #[test]
@@ -1184,19 +1236,17 @@ mod tests {
         assert_eq!(missing_creds("bing", &half), None);
     }
 
-    /// 带 BOM 的表头能识别；引号内逗号、转义引号、字段内换行按 CSV 规则解析
+    /// 带 BOM 的表头能识别；引号内逗号、转义引号按 CSV 规则解析
     #[test]
     fn import_csv_parses_bom_and_quoted_fields() {
         let content = "\u{FEFF}tag,translated,lang\n\
                        \"long_hair,braid\",\"他说\"\"好\"\"\",zh-CN\n\
-                       \"multi\nline\",x,ja\n\
                        smile , 微笑 ,ko\n";
         let parsed = parse_translation_csv(content).unwrap();
         assert_eq!(
             parsed.rows,
             rows(&[
                 ("long_hair,braid", "他说\"好\"", "zh-CN"),
-                ("multi\nline", "x", "ja"),
                 ("smile", "微笑", "ko"),
             ])
         );
@@ -1205,11 +1255,12 @@ mod tests {
     }
 
     /// 列数不足、不支持的语言计入跳过并带行号报错，最多 5 条；
-    /// 空字段只计跳过不报错，空白行不计数。行号按物理行算，跨行字段和 CRLF 不会让它错位
+    /// 空字段只计跳过不报错，空白行不计数。行号按物理行算，空白行和 CRLF 不会让它错位
     #[test]
     fn import_csv_reports_line_numbers_and_caps_errors() {
         let content = "tag,translated,lang\r\n\
-                       \"a\r\nb\",x,zh-CN\r\n\
+                       \"a,b\",x,zh-CN\r\n\
+                       \r\n\
                        \r\n\
                        only,two\r\n   \r\n\
                        t,x,fr\r\n\
@@ -1219,7 +1270,7 @@ mod tests {
         let parsed = parse_translation_csv(content).unwrap();
         assert_eq!(
             parsed.rows,
-            rows(&[("a\r\nb", "x", "zh-CN"), ("c", "d", "ja")])
+            rows(&[("a,b", "x", "zh-CN"), ("c", "d", "ja")])
         );
         assert_eq!(parsed.skipped, 7);
         assert_eq!(
@@ -1237,9 +1288,87 @@ mod tests {
     #[test]
     fn import_csv_line_numbers_count_blank_lines() {
         let parsed =
-            parse_translation_csv("tag,translated,lang\n\n\"x\ny\",z,ja\n\nshort\n").unwrap();
-        assert_eq!(parsed.rows, rows(&[("x\ny", "z", "ja")]));
-        assert_eq!(parsed.errors, vec!["第 6 行: 列数不足 (1列，需要3列)"]);
+            parse_translation_csv("tag,translated,lang\n\n\"x,y\",z,ja\n\nshort\n").unwrap();
+        assert_eq!(parsed.rows, rows(&[("x,y", "z", "ja")]));
+        assert_eq!(parsed.errors, vec!["第 5 行: 列数不足 (1列，需要3列)"]);
+    }
+
+    /// 引号不成对的行整行跳过，后面的合法行照常导入——即使后面的行里又有成对的引号，
+    /// 也不会和坏行拼成一条记录
+    #[test]
+    fn import_csv_skips_unclosed_quote_line_and_keeps_later_rows() {
+        let content = concat!(
+            "tag,translated,lang\n",
+            "a,\"broken,ja\n",
+            "b,ok,zh-CN\n",
+            "c,\"x\",ko\n",
+            "d,\"quoted, text\",ja\n",
+            "\"e\n",
+            "f\",split,ko\n",
+            "stray\"quote,x,ja\n",
+            "g,ok3,ja\n",
+        );
+        let parsed = parse_translation_csv(content).unwrap();
+        assert_eq!(
+            parsed.rows,
+            rows(&[
+                ("b", "ok", "zh-CN"),
+                ("c", "x", "ko"),
+                ("d", "quoted, text", "ja"),
+                ("g", "ok3", "ja"),
+            ])
+        );
+        assert_eq!(parsed.skipped, 4);
+        assert_eq!(
+            parsed.errors,
+            [
+                "第 2 行: 引号不成对，已跳过该行",
+                "第 6 行: 引号不成对，已跳过该行",
+                "第 7 行: 引号不成对，已跳过该行",
+                "第 8 行: 引号不成对，已跳过该行",
+            ]
+        );
+    }
+
+    /// 引号一直到文件末尾都没闭合、或连着几行都有问题时，逐行恢复且行号准确
+    #[test]
+    fn import_csv_recovers_from_repeated_unclosed_quotes() {
+        let content = concat!(
+            "tag,translated,lang\r\n",
+            "x,\"one\r\n",
+            "\r\n",
+            "y,\"two\r\n",
+            "z,ok,ja\r\n",
+            "w,\"three\r\n",
+        );
+        let parsed = parse_translation_csv(content).unwrap();
+        assert_eq!(parsed.rows, rows(&[("z", "ok", "ja")]));
+        assert_eq!(parsed.skipped, 3);
+        assert_eq!(
+            parsed.errors,
+            [
+                "第 2 行: 引号不成对，已跳过该行",
+                "第 4 行: 引号不成对，已跳过该行",
+                "第 6 行: 引号不成对，已跳过该行",
+            ]
+        );
+
+        let parsed = parse_translation_csv("tag,translated,lang\nok,fine,ko\nx,\"y").unwrap();
+        assert_eq!(parsed.rows, rows(&[("ok", "fine", "ko")]));
+        assert_eq!(parsed.errors, ["第 3 行: 引号不成对，已跳过该行"]);
+
+        // 只用 \r 换行的文件同样按物理行恢复
+        let parsed =
+            parse_translation_csv("tag,translated,lang\ra,\"broken,ja\rb,ok,zh-CN\rshort\r")
+                .unwrap();
+        assert_eq!(parsed.rows, rows(&[("b", "ok", "zh-CN")]));
+        assert_eq!(
+            parsed.errors,
+            [
+                "第 2 行: 引号不成对，已跳过该行",
+                "第 4 行: 列数不足 (1列，需要3列)",
+            ]
+        );
     }
 
     #[test]
@@ -1255,13 +1384,13 @@ mod tests {
         assert!(parse_translation_csv("Tag, Translated, Lang\n").is_ok());
     }
 
-    /// 导出带 BOM；含逗号、引号、换行和 \r 的字段导出后能原样导回
+    /// 导出带 BOM；含逗号、引号的字段导出后能原样导回
     #[test]
     fn exported_csv_imports_back_unchanged() {
         let data = rows(&[
             ("long_hair", "长发", "zh-CN"),
             ("a,b", "x\"y\"", "ja"),
-            ("line\nbreak", "cr\rhere", "ko"),
+            ("\"quoted\"", "q", "ko"),
         ]);
         let text = String::from_utf8(translations_to_csv(&data).unwrap()).unwrap();
         assert!(text.starts_with("\u{FEFF}tag,translated,lang\n"));

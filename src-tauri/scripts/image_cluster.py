@@ -3,45 +3,18 @@
 依赖: torch, torchvision, scikit-learn, (umap-learn for HDBSCAN)
 """
 
-import argparse, os, sys, shutil, traceback
+import argparse, json, os, sys, shutil, traceback
 import numpy as np
 
-from purin_proto import (bootstrap, done, error, is_under, log, log_i18n, progress,
-                         replace_atomically)
+from image_save import to_8bit
+from purin_proto import bootstrap, done, error, log, log_i18n, progress, replace_atomically
 
-# ── 图片收集 ──────────────────────────────────────
+# ── 待聚类图片 ──────────────────────────────────────
 
-IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.tif'}
-
-def collect_images(path, recursive=False, excluded_dir=None):
-    if os.path.isfile(path):
-        return [path]
-    files = []
-    if recursive:
-        excluded_abs = os.path.abspath(excluded_dir) if excluded_dir else ""
-        for root, dirs, names in os.walk(path):
-            if excluded_abs:
-                dirs[:] = [d for d in dirs if not is_under(os.path.join(root, d), excluded_abs)]
-            for f in names:
-                ext = os.path.splitext(f)[1].lower()
-                if ext in IMAGE_EXTS:
-                    fpath = os.path.join(root, f)
-                    if not is_under(fpath, excluded_abs):
-                        files.append(fpath)
-        return sorted(files)
-    for f in sorted(os.listdir(path)):
-        ext = os.path.splitext(f)[1].lower()
-        fpath = os.path.join(path, f)
-        if ext in IMAGE_EXTS and not is_under(fpath, excluded_dir):
-            files.append(fpath)
-    return files
-
-def relative_parent(input_path, file_path, recursive=False):
-    if recursive and os.path.isdir(input_path):
-        rel = os.path.dirname(os.path.relpath(file_path, input_path))
-        if rel and rel != ".":
-            return rel
-    return ""
+def read_manifest(path):
+    """Rust 收集好的待聚类图片：[[图片路径, 相对输入目录的子目录], ...]，子目录为空串表示在输入目录第一层"""
+    with open(path, "r", encoding="utf-8") as f:
+        return [(entry[0], entry[1]) for entry in json.load(f)]
 
 # ── 设备检测 ──────────────────────────────────────
 
@@ -179,7 +152,7 @@ class FeatureExtractor:
         from PIL import Image
         try:
             # transform 触发实际解码，截断图片的异常必须一并捕获（否则冲到顶层 fatal 整批报废）
-            img = Image.open(img_path).convert("RGB")
+            img = to_8bit(Image.open(img_path)).convert("RGB")
             tensor = self.transform(img).unsqueeze(0).to(self.device)
         except Exception:
             return None
@@ -282,12 +255,28 @@ def cluster_hdbscan(features, min_cluster_size=5):
     labels = hdb.fit_predict(features)
     return labels
 
+
+def cluster_labels(features, algorithm, n_clusters, min_cluster_size):
+    """按所选算法分组。HDBSCAN 在样本数少于最小簇大小时会直接报错、没分出组时没有结果，这两种情况改用 K-Means"""
+    n_samples = len(features)
+    if algorithm == "kmeans":
+        return cluster_kmeans(features, min(n_clusters, n_samples))
+    fallback_k = max(2, min(8, n_samples // 3))
+    if n_samples < min_cluster_size:
+        log(f"⚠ 有效图片 {n_samples} 张，少于最小簇大小 {min_cluster_size}，自动切换 K-Means (k={fallback_k})")
+        return cluster_kmeans(features, fallback_k)
+    labels = cluster_hdbscan(features, min_cluster_size)
+    if not any(l >= 0 for l in labels):
+        log(f"⚠ HDBSCAN 未找到有效分组（可能数据量太少），自动切换 K-Means (k={fallback_k})")
+        labels = cluster_kmeans(features, fallback_k)
+    return labels
+
 # ── 主流程 ──────────────────────────────────────
 
 def main():
     bootstrap()
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True)
+    ap.add_argument("--files", required=True, help="待聚类图片清单（JSON）")
     ap.add_argument("--output", required=True)
     ap.add_argument("--algorithm", default="kmeans", choices=["kmeans", "hdbscan"])
     ap.add_argument("--feature", default="semantic", choices=["style", "semantic", "fusion"])
@@ -299,7 +288,6 @@ def main():
     ap.add_argument("--weight-color", type=float, default=0.0)
     ap.add_argument("--model-dir", default="", help="PyTorch 模型缓存目录")
     ap.add_argument("--map-theme", default="light", choices=["light", "dark"], help="分布图主题")
-    ap.add_argument("--recursive", action="store_true")
     args = ap.parse_args()
 
     # 设置模型缓存目录
@@ -308,13 +296,11 @@ def main():
         os.environ["TORCH_HOME"] = args.model_dir
         log(f"模型缓存目录: {args.model_dir}")
 
-    # 收集图片
-    files = collect_images(args.input, args.recursive, args.output)
-    if not files:
-        error("未找到图片文件")
+    entries = read_manifest(args.files)
+    total = len(entries)
+    if total < 2:
+        error("有效图片不足 2 张，无法聚类")
         sys.exit(1)
-
-    total = len(files)
     log(f"找到 {total} 张图片")
     log(f"算法: {args.algorithm} | 特征: {args.feature}")
 
@@ -334,12 +320,13 @@ def main():
 
     features = []
     valid_files = []
+    valid_dirs = []
     errors = []
     # 总步数（统一口径，从一开始固定，避免中途变化导致前端进度跳变）:
     # 提取 total 步 + 聚类 1 步 + 分布图 1 步 + 复制文件(按 total 估算) 步
     phase_total = total * 2 + 2
 
-    for i, fpath in enumerate(files):
+    for i, (fpath, rel_dir) in enumerate(entries):
         fname = os.path.basename(fpath)
         progress(i + 1, phase_total, fname, "processing", f"[{i+1}/{total}] 提取特征: {fname}")
 
@@ -347,6 +334,7 @@ def main():
         if vec is not None:
             features.append(vec)
             valid_files.append(fpath)
+            valid_dirs.append(rel_dir)
         else:
             message = f"[{i+1}/{total}] ✗ 无法读取: {fname}"
             errors.append(message)
@@ -364,18 +352,7 @@ def main():
     # 聚类
     step += 1
     progress(step, phase_total, "", "processing", "聚类计算中...")
-    if args.algorithm == "kmeans":
-        k = min(args.n_clusters, len(valid_files))
-        labels = cluster_kmeans(features, k)
-    else:
-        labels = cluster_hdbscan(features, args.min_cluster_size)
-
-        # HDBSCAN 失败兜底：0 个有效分组时自动切换 K-Means
-        n_valid_clusters = len([l for l in set(labels) if l >= 0])
-        if n_valid_clusters == 0:
-            fallback_k = max(2, min(8, len(valid_files) // 3))
-            log(f"⚠ HDBSCAN 未找到有效分组（可能数据量太少），自动切换 K-Means (k={fallback_k})")
-            labels = cluster_kmeans(features, fallback_k)
+    labels = cluster_labels(features, args.algorithm, args.n_clusters, max(2, args.min_cluster_size))
 
     # 统计各簇
     unique_labels = sorted(set(labels))
@@ -404,18 +381,17 @@ def main():
 
     success_count = 0
     fail_count = 0
-    for i, (fpath, label) in enumerate(zip(valid_files, labels)):
+    for i, (fpath, rel_dir, label) in enumerate(zip(valid_files, valid_dirs, labels)):
         fname = os.path.basename(fpath)
         folder_name = "noise" if label < 0 else f"cluster_{label}"
         dest_dir = os.path.join(args.output, folder_name)
-        rel_dir = relative_parent(args.input, fpath, args.recursive)
         if rel_dir:
             dest_dir = os.path.join(dest_dir, rel_dir)
-        os.makedirs(dest_dir, exist_ok=True)
         dest_path = os.path.join(dest_dir, fname)
 
         step += 1
         try:
+            os.makedirs(dest_dir, exist_ok=True)
             replace_atomically(dest_path, lambda tmp: shutil.copy2(fpath, tmp))
             success_count += 1
             progress(step, phase_total, fname, "success",
@@ -429,8 +405,7 @@ def main():
 
     # 提取失败也计入最终结果。
     extract_failed = total - len(valid_files)
-    done(message=f"完成: {n_clusters} 个分组, 成功 {success_count}, 失败 {fail_count + extract_failed}, 共 {total}",
-         success_count=success_count, fail_count=fail_count + extract_failed,
+    done(clusters=n_clusters, success_count=success_count, fail_count=fail_count + extract_failed,
          total=total, errors=errors)
 
 
@@ -581,7 +556,7 @@ def generate_distribution_map(features, labels, file_paths, output_dir, theme="l
         color = get_cluster_color(labels[i])
 
         try:
-            img = Image.open(file_paths[i]).convert("RGB")
+            img = to_8bit(Image.open(file_paths[i])).convert("RGB")
             img.thumbnail((thumb_size - border_w * 2, thumb_size - border_w * 2), Image.LANCZOS)
 
             # 创建带边框的缩略图
@@ -655,7 +630,7 @@ def generate_distribution_map(features, labels, file_paths, output_dir, theme="l
     # 保存
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, "cluster_distribution.png")
-    canvas.save(out_path)  # PNG 无 quality 参数
+    replace_atomically(out_path, lambda tmp: canvas.save(tmp, format="PNG"))
     log(f"分布图: {out_path}")
 
 

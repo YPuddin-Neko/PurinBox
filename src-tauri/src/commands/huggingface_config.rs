@@ -15,7 +15,7 @@ pub fn save_huggingface_config(token: String) -> Result<(), String> {
     let config = HuggingFaceConfig {
         token_encoded: b64_encode(token.trim()),
     };
-    save_json_config(CONFIG_FILE, &config, "Hugging Face 配置")
+    save_json_config(CONFIG_FILE, &config, "写入 Hugging Face 配置失败")
 }
 
 #[tauri::command]

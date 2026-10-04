@@ -21,7 +21,7 @@ import traceback
 import numpy as np
 from pathlib import Path
 
-from purin_proto import bootstrap, emit, error, log, log_i18n, replace_atomically, result, utf8_stdin
+from purin_proto import bootstrap, error, log, log_i18n, ready, replace_atomically, result, utf8_stdin
 
 
 def _finite(x, default=0.0):
@@ -70,8 +70,9 @@ def preprocess_image(image_path, target_size, input_format="NCHW"):
     -> (x/255 - 0.5) / 0.5 归一化到 [-1, 1] -> float32
     """
     from PIL import Image
+    from image_save import to_8bit
 
-    image = Image.open(image_path)
+    image = to_8bit(Image.open(image_path))
 
     # 处理透明通道 (白色背景合成)
     if image.mode not in ["RGB", "RGBA"]:
@@ -101,13 +102,15 @@ def softmax(x):
     return e_x / e_x.sum()
 
 
-def cpu_session(model_path):
+def open_session(model_path, providers):
+    """建推理会话；首选的 GPU provider 建不起来时改用 CPU"""
     import onnxruntime as ort
-    from gpu_diagnostics import quiet_session_options
+    from gpu_diagnostics import create_session_with_cpu_fallback, quiet_session_options
     options = quiet_session_options(ort)
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    session = ort.InferenceSession(model_path, options, providers=["CPUExecutionProvider"])
-    return session, session.get_inputs()[0].name
+    return create_session_with_cpu_fallback(
+        model_path, providers, options,
+        lambda provider, e: log(f"GPU 加载失败 ({e})，回退到 CPU"))
 
 
 def classify(logits, labels):
@@ -151,7 +154,7 @@ def main():
     input_size = 448
     input_name = None
     input_format = "NCHW"
-    _model_path_saved = ""
+    model_path = ""
 
     for line in utf8_stdin():
         line = line.strip()
@@ -164,32 +167,23 @@ def main():
             error(f"无法解析命令: {line}")
             continue
 
-        command = cmd.get("cmd", "")
+        command = cmd.get("cmd", "") if isinstance(cmd, dict) else None
 
         if command == "quit":
             break
 
         elif command == "init":
             try:
-                import onnxruntime as ort
-                from gpu_diagnostics import resolve_ort_providers, quiet_session_options
+                from gpu_diagnostics import resolve_ort_providers
 
                 model_path = cmd["model_path"]
-                use_gpu = cmd.get("use_gpu", False)
-                _model_path_saved = model_path
-
                 with open(Path(model_path).parent / "meta.json", "r", encoding="utf-8") as f:
                     meta = json.load(f)
                 labels = meta.get("labels", ["masterpiece", "best", "great", "good", "normal", "low", "worst"])
                 input_size = meta.get("img_size", 448)
 
-                # 选择 provider — 统一流程：探测环境 + 输出日志 + 决定 providers
-                providers = resolve_ort_providers(log_i18n, use_gpu=use_gpu)
-
-                sess_options = quiet_session_options(ort)
-                sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-
-                session = ort.InferenceSession(model_path, sess_options, providers=providers)
+                providers = resolve_ort_providers(log_i18n, use_gpu=cmd.get("use_gpu", False))
+                session = open_session(model_path, providers)
                 input_info = session.get_inputs()[0]
                 input_name = input_info.name
                 input_shape = input_info.shape
@@ -197,10 +191,11 @@ def main():
                 input_format = ("NHWC" if len(input_shape) == 4 and input_shape[1] != 3
                                 and input_shape[3] == 3 else "NCHW")
 
-                emit({"type": "ready"})
+                ready()
 
             except Exception as e:
-                error(f"初始化失败: {traceback.format_exc()}")
+                log(traceback.format_exc())
+                error(f"初始化失败: {e}")
 
         elif command == "score_batch":
             if session is None:
@@ -235,15 +230,18 @@ def main():
                 outputs = session.run(None, {input_name: batch_tensor})
                 all_logits = outputs[0]  # shape: [N, num_labels]
             except Exception as e:
-                # GPU 推理失败，回退 CPU 重试
-                try:
-                    log(f"GPU 批量推理失败，自动回退到 CPU: {type(e).__name__}")
-                    session, input_name = cpu_session(_model_path_saved)
-                    log("已切换到 CPU 模式，重试批量推理")
-                    outputs = session.run(None, {input_name: batch_tensor})
-                    all_logits = outputs[0]
-                except Exception as e2:
-                    log(f"批量推理失败，降级为逐张推理重试: {type(e2).__name__}")
+                failure = e
+                if session.get_providers()[:1] != ["CPUExecutionProvider"]:
+                    try:
+                        log(f"GPU 批量推理失败，自动回退到 CPU: {type(e).__name__}")
+                        session = open_session(model_path, ["CPUExecutionProvider"])
+                        input_name = session.get_inputs()[0].name
+                        log("已切换到 CPU 模式，重试批量推理")
+                        all_logits = session.run(None, {input_name: batch_tensor})[0]
+                    except Exception as e2:
+                        failure = e2
+                if all_logits is None:
+                    log(f"批量推理失败，降级为逐张推理重试: {type(failure).__name__}")
 
             if all_logits is None:
                 # 逐张推理重试，单张失败才对该张报 error

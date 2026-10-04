@@ -60,8 +60,8 @@ fn convert_alpha_sync<R: tauri::Runtime>(
         _ => [255, 255, 255],
     };
     Ok(FileBatch::new(app, "alpha-progress", JOB.cancel_flag())
-        .processing("正在检测")
         .error_prefix("[错误] ")
+        .archive_failures(input, output_dir, options.recursive)
         .run(
             &files,
             |item| {
@@ -115,10 +115,11 @@ fn process_alpha(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::test_support::TempDir;
 
     #[test]
     fn no_alpha_channel_copies_without_pixel_decode() {
-        let root = super::super::image_io::test_dir("alpha_header");
+        let root = TempDir::new("alpha_header");
         let path = root.join("broken.png");
         super::super::image_io::write_broken_pixels(&path);
         let output = root.join("out");
@@ -134,12 +135,11 @@ mod tests {
             std::fs::read(&path).unwrap(),
             std::fs::read(output.join("broken.png")).unwrap()
         );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn flatten_preserves_16bit_values_and_counts_unchanged() {
-        let root = super::super::image_io::test_dir("alpha16");
+        let root = TempDir::new("alpha16");
         let input = root.join("in");
         let output = root.join("out");
         std::fs::create_dir_all(&input).unwrap();
@@ -175,13 +175,11 @@ mod tests {
             std::fs::read(input.join("opaque.png")).unwrap(),
             std::fs::read(output.join("opaque.png")).unwrap()
         );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn keeps_source_name_and_format() {
-        let root = std::env::temp_dir().join(format!("purinbox_alpha_keep_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = TempDir::new("alpha_keep");
         let (input, out) = (root.join("in"), root.join("out"));
         std::fs::create_dir_all(&input).unwrap();
         std::fs::create_dir_all(&out).unwrap();
@@ -206,6 +204,30 @@ mod tests {
         assert!(!img.color().has_alpha());
         assert_eq!(img.to_rgb8().get_pixel(8, 8).0, [255, 255, 255]);
         assert!(!out.join("w.png").exists());
-        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 读不出的文件复制进输出目录的 Fail/，递归时保留子目录
+    #[test]
+    fn failed_files_are_archived_into_output_fail() {
+        let root = TempDir::new("alpha_fail");
+        let (input, output) = (root.join("in"), root.join("out"));
+        std::fs::create_dir_all(input.join("sub")).unwrap();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([1, 2, 3, 4]))
+            .save(input.join("ok.png"))
+            .unwrap();
+        std::fs::write(input.join("sub/bad.png"), b"not an image").unwrap();
+        let options = AlphaConvertOptions {
+            input_path: input.to_string_lossy().into_owned(),
+            output_path: output.to_string_lossy().into_owned(),
+            background: "black".into(),
+            recursive: true,
+        };
+        let result = convert_alpha_sync(tauri::test::mock_app().handle(), &options).unwrap();
+        assert_eq!((result.success_count, result.fail_count), (1, 1));
+        assert_eq!(
+            std::fs::read(output.join("Fail/sub/bad.png")).unwrap(),
+            b"not an image"
+        );
+        assert!(!output.join("Fail/ok.png").exists());
     }
 }

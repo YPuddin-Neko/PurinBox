@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use super::tag_text::{field_tags, join_tags, split_tags};
+
 fn image_display_name(root: &Path, path: &Path, recursive: bool) -> String {
     if recursive {
         if let Ok(relative) = path.strip_prefix(root) {
@@ -48,16 +50,38 @@ fn existing_image(image_path: &str) -> Result<&Path, String> {
     Ok(img)
 }
 
-/// 批量保存：单个失败只打日志、不中断，返回成功数
-fn save_each<T>(items: &[T], mut save: impl FnMut(&T) -> Result<(), String>) -> u32 {
-    let mut saved = 0u32;
+/// 批量保存里没保存成功的一项
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SaveFailure {
+    /// 请求里这一项的图片路径，前端按它找回对应条目
+    pub path: String,
+    pub error: String,
+}
+
+/// 批量保存的结果：前端只清除保存成功的条目的未保存标记，失败项逐条提示
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct SaveAllResult {
+    pub saved: u32,
+    pub failed: Vec<SaveFailure>,
+}
+
+/// 批量保存：逐项保存，单项失败不中断，记下它的图片路径和原因
+fn save_each<T>(
+    items: &[T],
+    path: impl Fn(&T) -> &str,
+    mut save: impl FnMut(&T) -> Result<(), String>,
+) -> SaveAllResult {
+    let mut result = SaveAllResult::default();
     for item in items {
         match save(item) {
-            Ok(()) => saved += 1,
-            Err(e) => eprintln!("{}", e),
+            Ok(()) => result.saved += 1,
+            Err(error) => result.failed.push(SaveFailure {
+                path: path(item).to_string(),
+                error,
+            }),
         }
     }
-    saved
+    result
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,13 +107,7 @@ pub struct SaveTagItem {
 pub fn load_tag_dataset(folder: String, recursive: Option<bool>) -> Result<TagDataset, String> {
     let images = scan_dataset(&folder, recursive, |p, filename| {
         let tags = std::fs::read_to_string(p.with_extension("txt"))
-            .map(|content| {
-                content
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
+            .map(|content| split_tags(&content))
             .unwrap_or_default();
         TagImageItem {
             path: p.to_string_lossy().to_string(),
@@ -129,15 +147,17 @@ pub fn load_caption_dataset(
 /// 保存单个图片的标签到 .txt 文件
 #[tauri::command]
 pub fn save_single_tag_file(image_path: String, tags: Vec<String>) -> Result<(), String> {
-    save_caption_file(image_path, tags.join(", "))
+    save_caption_file(image_path, join_tags(&tags))
 }
 
 /// 批量保存多个图片的标签
 #[tauri::command]
-pub fn save_all_tag_files(items: Vec<SaveTagItem>) -> Result<u32, String> {
-    Ok(save_each(&items, |item| {
-        write_sidecar(Path::new(&item.path), "txt", &item.tags.join(", "))
-    }))
+pub fn save_all_tag_files(items: Vec<SaveTagItem>) -> SaveAllResult {
+    save_each(
+        &items,
+        |item| &item.path,
+        |item| write_sidecar(existing_image(&item.path)?, "txt", &join_tags(&item.tags)),
+    )
 }
 
 /// 保存单个图片的自然语言描述到 .txt 文件
@@ -154,10 +174,12 @@ pub struct SaveCaptionItem {
 
 /// 批量保存多个图片的自然语言描述
 #[tauri::command]
-pub fn save_all_caption_files(items: Vec<SaveCaptionItem>) -> Result<u32, String> {
-    Ok(save_each(&items, |item| {
-        write_sidecar(Path::new(&item.path), "txt", &item.content)
-    }))
+pub fn save_all_caption_files(items: Vec<SaveCaptionItem>) -> SaveAllResult {
+    save_each(
+        &items,
+        |item| &item.path,
+        |item| write_sidecar(existing_image(&item.path)?, "txt", &item.content),
+    )
 }
 
 // ============================================================
@@ -186,9 +208,9 @@ pub struct JsonFixed {
 /// character: 角色信息
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JsonCharacter {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub variant: String,
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -203,37 +225,30 @@ pub struct JsonFromPath {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-/// 自定义反序列化：支持 JSON 数组 ["a","b"] 或逗号字符串 "a, b"
+/// 标签数组字段：收 JSON 数组 ["a","b"] 或逗号串 "a, b"，按 `tag_text::field_tags` 读
+/// （去掉首尾空白、丢弃空项）。null 视为字段为空，不让整个文件解析失败；其他类型报错
 fn deserialize_string_or_array<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de;
-    struct StringOrArray;
-    impl<'de> de::Visitor<'de> for StringOrArray {
-        type Value = Vec<String>;
-        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            f.write_str("a string or array of strings")
-        }
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
-            Ok(v.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect())
-        }
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
-            let mut v = Vec::new();
-            while let Some(s) = seq.next_element::<String>()? {
-                v.push(s);
-            }
-            Ok(v)
-        }
-        // null 字段视为"字段为空"，而不是让整个文件解析失败
-        fn visit_unit<E: de::Error>(self) -> Result<Vec<String>, E> {
-            Ok(Vec::new())
-        }
+    use serde::de::Error;
+    use serde_json::Value;
+    match Value::deserialize(deserializer)? {
+        value @ (Value::String(_) | Value::Array(_) | Value::Null) => Ok(field_tags(&value)),
+        other => Err(D::Error::custom(format!(
+            "标签字段应为字符串或数组: {}",
+            other
+        ))),
     }
-    deserializer.deserialize_any(StringOrArray)
+}
+
+/// null 按默认值读（字符串为空串、段为空段）：别的工具常把空值写成 null，不能因此整份文件解析失败
+fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// ai_output: VLM/Tagger 打标输出
@@ -256,13 +271,13 @@ pub struct JsonAiOutput {
 /// 完整 JSON 标签结构
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JsonTagData {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub fixed: JsonFixed,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub character: JsonCharacter,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub from_path: JsonFromPath,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub ai_output: JsonAiOutput,
     /// 顶层未知字段（如用户自定义 rating 等）随读随写，不因编辑而丢失
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
@@ -340,20 +355,11 @@ pub(crate) fn is_full_json(v: &serde_json::Value) -> bool {
         .any(|key| v.get(key).is_some_and(serde_json::Value::is_object))
 }
 
-#[test]
-fn full_json_requires_structured_fields() {
-    for key in ["ai_output", "fixed", "from_path", "character"] {
-        assert!(!is_full_json(&serde_json::json!({key: "text"})));
-        assert!(!is_full_json(&serde_json::json!({key: null})));
-        assert!(!is_full_json(&serde_json::json!({key: []})));
-        assert!(is_full_json(&serde_json::json!({key: {}})));
-    }
-}
-
 /// 解析简化格式 JSON（扁平结构）转为完整格式
 fn parse_simplified_format(v: &serde_json::Value) -> Option<JsonTagData> {
     let obj = v.as_object()?;
     let text = |key: &str| obj.get(key).and_then(|v| v.as_str()).map(str::to_string);
+    let tags = |key: &str| obj.get(key).map(field_tags).unwrap_or_default();
 
     Some(JsonTagData {
         fixed: JsonFixed {
@@ -369,30 +375,14 @@ fn parse_simplified_format(v: &serde_json::Value) -> Option<JsonTagData> {
         },
         ai_output: JsonAiOutput {
             count: text("count"),
-            appearance: extract_string_array(obj.get("appearance")),
-            tags: extract_string_array(obj.get("tags")),
-            environment: extract_string_array(obj.get("environment")),
+            appearance: tags("appearance"),
+            tags: tags("tags"),
+            environment: tags("environment"),
             nl: text("nl"),
             ..Default::default()
         },
         ..Default::default()
     })
-}
-
-fn extract_string_array(v: Option<&serde_json::Value>) -> Vec<String> {
-    match v {
-        Some(serde_json::Value::Array(arr)) => arr
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect(),
-        // 兼容：值是逗号分隔的字符串而非数组
-        Some(serde_json::Value::String(s)) => s
-            .split(',')
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .collect(),
-        _ => Vec::new(),
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -448,16 +438,530 @@ pub fn save_single_json_file(
 }
 
 #[tauri::command]
-pub fn save_all_json_files(items: Vec<SaveJsonItem>, simplified: bool) -> Result<u32, String> {
-    Ok(save_each(&items, |item| {
-        let content = serialize_json(&item.data, simplified)?;
-        write_sidecar(Path::new(&item.path), "json", &content)
-    }))
+pub fn save_all_json_files(items: Vec<SaveJsonItem>, simplified: bool) -> SaveAllResult {
+    save_each(
+        &items,
+        |item| &item.path,
+        |item| {
+            let content = serialize_json(&item.data, simplified)?;
+            write_sidecar(existing_image(&item.path)?, "json", &content)
+        },
+    )
+}
+
+/// 把 VLM 回复的 JSON 规范成恒定骨架：`simplified` 为 false 时是完整格式
+/// （fixed{quality,series,artist} / character{name,variant} / from_path{appearance} /
+/// ai_output{count,appearance,tags,environment,nl}），为 true 时是 `to_simplified` 的 9 个扁平键。
+///
+/// - 两种格式的回复都能读；同一字段在嵌套段和扁平键里都给了时取嵌套段；
+/// - 标签数组字段收数组或逗号串，单值字段收字符串或数组（多项以 ", " 连接），都去掉空白和空项；
+/// - 画师逐位补 `@`，已带的不重复加；nl 原样保留；
+/// - 不认识的字段原样保留：完整格式留在原来的层级；简化格式没有嵌套层级，
+///   嵌套段里的未知字段提到顶层（不覆盖已有的键）；
+/// - 回复不是 JSON 对象时整段放进 nl（字符串取原文，其他取 JSON 文本）。
+pub(crate) fn normalize_tag_json(value: serde_json::Value, simplified: bool) -> serde_json::Value {
+    use serde_json::{Map, Value};
+
+    const FLAT_KEYS: [&str; 9] = [
+        "quality",
+        "series",
+        "artist",
+        "character",
+        "count",
+        "appearance",
+        "tags",
+        "environment",
+        "nl",
+    ];
+
+    fn tags(value: Option<Value>) -> Vec<String> {
+        value.map(|v| field_tags(&v)).unwrap_or_default()
+    }
+    fn single(value: Option<Value>) -> Option<String> {
+        let text = match value? {
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            other => field_tags(&other).join(", "),
+        };
+        (!text.is_empty()).then_some(text)
+    }
+    fn raw_text(value: Option<Value>) -> Option<String> {
+        match value? {
+            Value::String(text) => Some(text),
+            Value::Null => None,
+            other => Some(other.to_string()),
+        }
+    }
+
+    let mut data = JsonTagData::default();
+    match value {
+        Value::Object(top) => {
+            let (mut fixed, mut character, mut from_path, mut ai) =
+                (Map::new(), Map::new(), Map::new(), Map::new());
+            let mut flat = Map::new();
+            for (key, value) in top {
+                let section = match key.as_str() {
+                    "fixed" => Some(&mut fixed),
+                    "from_path" => Some(&mut from_path),
+                    "ai_output" => Some(&mut ai),
+                    "character" if value.is_object() => Some(&mut character),
+                    _ => None,
+                };
+                match (section, value) {
+                    (Some(section), Value::Object(map)) => *section = map,
+                    // 段名对应的值不是对象：归不了位，留着又会和骨架的同名段冲突
+                    (Some(_), _) => {}
+                    (None, value) if FLAT_KEYS.contains(&key.as_str()) => {
+                        flat.insert(key, value);
+                    }
+                    (None, value) => {
+                        data.extra.insert(key, value);
+                    }
+                }
+            }
+            let mut take = |section: &mut Map<String, Value>, key: &str, flat_key: &str| {
+                section
+                    .shift_remove(key)
+                    .filter(|v| !v.is_null())
+                    .or_else(|| flat.shift_remove(flat_key))
+            };
+            let artists: Vec<String> = tags(take(&mut fixed, "artist", "artist"))
+                .into_iter()
+                .map(|a| {
+                    if a.starts_with('@') {
+                        a
+                    } else {
+                        format!("@{}", a)
+                    }
+                })
+                .collect();
+            data.fixed.artist = (!artists.is_empty()).then(|| artists.join(", "));
+            data.fixed.quality = single(take(&mut fixed, "quality", "quality"));
+            data.fixed.series = single(take(&mut fixed, "series", "series"));
+            data.character.name =
+                single(take(&mut character, "name", "character")).unwrap_or_default();
+            data.character.variant = single(character.shift_remove("variant")).unwrap_or_default();
+            data.from_path.appearance = tags(from_path.shift_remove("appearance"));
+            data.ai_output.count = single(take(&mut ai, "count", "count"));
+            data.ai_output.appearance = tags(take(&mut ai, "appearance", "appearance"));
+            data.ai_output.tags = tags(take(&mut ai, "tags", "tags"));
+            data.ai_output.environment = tags(take(&mut ai, "environment", "environment"));
+            data.ai_output.nl = raw_text(take(&mut ai, "nl", "nl"));
+            data.fixed.extra = fixed;
+            data.character.extra = character;
+            data.from_path.extra = from_path;
+            data.ai_output.extra = ai;
+        }
+        other => data.ai_output.nl = raw_text(Some(other)),
+    }
+
+    if !simplified {
+        return serde_json::to_value(&data).expect("标签结构总能序列化成 JSON");
+    }
+    let mut out = to_simplified(&data);
+    let obj = out.as_object_mut().expect("简化格式是 JSON 对象");
+    let nested = [
+        data.fixed.extra,
+        data.character.extra,
+        data.from_path.extra,
+        data.ai_output.extra,
+    ];
+    for (key, value) in data.extra.into_iter().chain(nested.into_iter().flatten()) {
+        obj.entry(key).or_insert(value);
+    }
+    out
+}
+
+#[cfg(test)]
+mod normalize_tag_json_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn keys(v: &Value) -> Vec<&str> {
+        v.as_object().unwrap().keys().map(String::as_str).collect()
+    }
+
+    const EMPTY_FULL: &str = r#"{"fixed":{"quality":"","series":"","artist":""},"character":{"name":"","variant":""},"from_path":{"appearance":[]},"ai_output":{"count":"","appearance":[],"tags":[],"environment":[],"nl":""}}"#;
+    const EMPTY_SIMPLE: &str = r#"{"quality":"","series":"","artist":"","character":"","count":"","appearance":[],"tags":[],"environment":[],"nl":""}"#;
+
+    /// 完整格式默认提示词只要求 ai_output 一段：其余三段补成空骨架，键序固定
+    #[test]
+    fn partial_full_reply_gets_complete_skeleton() {
+        let reply = json!({"ai_output": {
+            "count": "1girl", "appearance": ["long hair", " blue eyes "],
+            "tags": "smile, standing", "environment": [], "nl": "A girl."
+        }});
+        let out = normalize_tag_json(reply, false);
+        assert_eq!(
+            out,
+            json!({
+                "fixed": {"quality": "", "series": "", "artist": ""},
+                "character": {"name": "", "variant": ""},
+                "from_path": {"appearance": []},
+                "ai_output": {"count": "1girl", "appearance": ["long hair", "blue eyes"],
+                              "tags": ["smile", "standing"], "environment": [], "nl": "A girl."}
+            })
+        );
+        assert_eq!(keys(&out), ["fixed", "character", "from_path", "ai_output"]);
+        assert_eq!(
+            keys(&out["ai_output"]),
+            ["count", "appearance", "tags", "environment", "nl"]
+        );
+        assert!(is_full_json(&out));
+    }
+
+    #[test]
+    fn simplified_reply_keeps_nine_keys_in_order() {
+        let reply = json!({"nl": "desc", "tags": ["smile"], "count": "1girl", "artist": "wlop"});
+        let out = normalize_tag_json(reply, true);
+        assert_eq!(
+            serde_json::to_string(&out).unwrap(),
+            r#"{"quality":"","series":"","artist":"@wlop","character":"","count":"1girl","appearance":[],"tags":["smile"],"environment":[],"nl":"desc"}"#
+        );
+    }
+
+    /// 回复用了另一种格式：扁平键提进嵌套段，嵌套段摊平（from_path.appearance 并入 appearance）
+    #[test]
+    fn converts_between_layouts() {
+        let flat = json!({"quality": "masterpiece", "character": "hatsune miku",
+                          "appearance": "twintails, blue hair", "nl": "Miku."});
+        let full = normalize_tag_json(flat, false);
+        assert_eq!(full["fixed"]["quality"], "masterpiece");
+        assert_eq!(
+            full["character"],
+            json!({"name": "hatsune miku", "variant": ""})
+        );
+        assert_eq!(
+            full["ai_output"]["appearance"],
+            json!(["twintails", "blue hair"])
+        );
+        assert_eq!(full["ai_output"]["nl"], "Miku.");
+
+        let nested = json!({
+            "fixed": {"series": "vocaloid"},
+            "character": {"name": "miku", "variant": "winter"},
+            "from_path": {"appearance": ["twintails"]},
+            "ai_output": {"appearance": ["twintails", "scarf"], "tags": ["smile"]}
+        });
+        let simple = normalize_tag_json(nested, true);
+        assert_eq!(simple["series"], "vocaloid");
+        assert_eq!(simple["character"], "miku");
+        assert_eq!(simple["appearance"], json!(["twintails", "scarf"]));
+        assert_eq!(keys(&simple).len(), 9);
+    }
+
+    #[test]
+    fn single_value_fields_accept_arrays_and_artists_get_one_at() {
+        let reply = json!({
+            "fixed": {"artist": ["wlop", " @sakimichan ", ""], "quality": ["masterpiece", "best quality"]},
+            "ai_output": {"count": ["1girl", "1boy"]}
+        });
+        let out = normalize_tag_json(reply, false);
+        assert_eq!(out["fixed"]["artist"], "@wlop, @sakimichan");
+        assert_eq!(out["fixed"]["quality"], "masterpiece, best quality");
+        assert_eq!(out["ai_output"]["count"], "1girl, 1boy");
+        for (artist, expected) in [
+            (json!("wlop，@ask,  "), "@wlop, @ask"),
+            (json!("@wlop"), "@wlop"),
+            (json!(""), ""),
+            (json!(null), ""),
+        ] {
+            let out = normalize_tag_json(json!({ "artist": artist }), true);
+            assert_eq!(out["artist"], expected);
+        }
+    }
+
+    #[test]
+    fn nl_is_kept_verbatim_and_nested_wins_over_flat() {
+        let nl = "  Line one,\n  line two.  ";
+        let reply = json!({"ai_output": {"nl": nl, "tags": ["a"]}, "tags": ["b"], "nl": "flat"});
+        let out = normalize_tag_json(reply, false);
+        assert_eq!(out["ai_output"]["nl"], nl);
+        assert_eq!(out["ai_output"]["tags"], json!(["a"]));
+        assert!(out.get("tags").is_none() && out.get("nl").is_none());
+        // 嵌套段写了 null 时退回扁平键
+        let out = normalize_tag_json(json!({"ai_output": {"nl": null}, "nl": "flat"}), false);
+        assert_eq!(out["ai_output"]["nl"], "flat");
+    }
+
+    #[test]
+    fn unknown_fields_are_kept() {
+        let reply = json!({
+            "rating": "safe",
+            "fixed": {"quality": "best", "custom_note": "keep"},
+            "character": {"name": "miku", "age": 16},
+            "ai_output": {"tags": ["smile"], "score": 0.9, "quality": "shadowed"},
+            "meta": {"model": "x"}
+        });
+        let full = normalize_tag_json(reply.clone(), false);
+        assert_eq!(full["rating"], "safe");
+        assert_eq!(full["meta"], json!({"model": "x"}));
+        assert_eq!(full["fixed"]["custom_note"], "keep");
+        assert_eq!(full["character"]["age"], 16);
+        assert_eq!(full["ai_output"]["score"], 0.9);
+        assert_eq!(
+            keys(&full),
+            [
+                "fixed",
+                "character",
+                "from_path",
+                "ai_output",
+                "rating",
+                "meta"
+            ]
+        );
+        // 与编辑器的读入结构一致：额外字段进各层的 extra，往返不丢
+        let data: JsonTagData = serde_json::from_value(full.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&data).unwrap(), full);
+
+        let simple = normalize_tag_json(reply, true);
+        assert_eq!(simple["quality"], "best");
+        assert_eq!(simple["rating"], "safe");
+        assert_eq!(simple["custom_note"], "keep");
+        assert_eq!(simple["age"], 16);
+        assert_eq!(simple["score"], 0.9);
+        assert_eq!(&keys(&simple)[..9], &FLAT_KEYS_ORDER);
+    }
+
+    const FLAT_KEYS_ORDER: [&str; 9] = [
+        "quality",
+        "series",
+        "artist",
+        "character",
+        "count",
+        "appearance",
+        "tags",
+        "environment",
+        "nl",
+    ];
+
+    #[test]
+    fn non_object_reply_goes_into_nl() {
+        for (reply, nl) in [
+            (json!("plain description"), "plain description"),
+            (json!(["1girl", "solo"]), r#"["1girl","solo"]"#),
+            (json!(42), "42"),
+            (json!(null), ""),
+        ] {
+            let full = normalize_tag_json(reply.clone(), false);
+            assert_eq!(full["ai_output"]["nl"], nl);
+            let mut expected: Value = serde_json::from_str(EMPTY_FULL).unwrap();
+            expected["ai_output"]["nl"] = json!(nl);
+            assert_eq!(full, expected);
+
+            let simple = normalize_tag_json(reply, true);
+            let mut expected: Value = serde_json::from_str(EMPTY_SIMPLE).unwrap();
+            expected["nl"] = json!(nl);
+            assert_eq!(simple, expected);
+        }
+        assert_eq!(
+            serde_json::to_string(&normalize_tag_json(json!({}), false)).unwrap(),
+            EMPTY_FULL
+        );
+    }
+
+    /// 段名的值类型不对时丢弃，骨架不会被冲掉
+    #[test]
+    fn malformed_sections_do_not_break_the_skeleton() {
+        let out = normalize_tag_json(
+            json!({"fixed": "masterpiece", "ai_output": ["x"], "from_path": null, "tags": "a"}),
+            false,
+        );
+        assert!(out["fixed"].is_object() && out["ai_output"].is_object());
+        assert_eq!(out["ai_output"]["tags"], json!(["a"]));
+        assert_eq!(keys(&out), ["fixed", "character", "from_path", "ai_output"]);
+    }
+
+    #[test]
+    fn normalizing_twice_changes_nothing() {
+        let reply = json!({
+            "fixed": {"artist": "a, @b", "x": 1},
+            "character": "miku",
+            "ai_output": {"tags": "smile, ", "nl": " text "},
+            "extra": [1, 2]
+        });
+        for simplified in [false, true] {
+            let once = normalize_tag_json(reply.clone(), simplified);
+            assert_eq!(normalize_tag_json(once.clone(), simplified), once);
+        }
+    }
+}
+
+#[cfg(test)]
+mod save_tests {
+    use super::*;
+    use crate::commands::test_support::TempDir;
+    use serde_json::json;
+
+    fn image(root: &Path, name: &str) -> String {
+        let path = root.join(name);
+        std::fs::write(&path, b"image").unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// 只有写成功的条目算 saved，失败项带请求里的图片路径和原因
+    #[test]
+    fn save_all_reports_each_failure_with_its_image_path() {
+        let root = TempDir::new("save_all_tags");
+        let ok = image(&root, "ok.png");
+        let blocked = image(&root, "blocked.png");
+        // 标签文件的位置被同名目录占住，写入必然失败
+        std::fs::create_dir(root.join("blocked.txt")).unwrap();
+        let missing = root.join("missing.png").to_string_lossy().into_owned();
+        let item = |path: &str| SaveTagItem {
+            path: path.to_string(),
+            tags: vec![" solo".into(), "".into(), "1girl ".into(), "  ".into()],
+        };
+        let result = save_all_tag_files(vec![item(&ok), item(&blocked), item(&missing)]);
+
+        assert_eq!(result.saved, 1);
+        assert_eq!(
+            std::fs::read_to_string(root.join("ok.txt")).unwrap(),
+            "solo, 1girl"
+        );
+        let failed: Vec<&str> = result.failed.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(failed, [blocked.as_str(), missing.as_str()]);
+        assert!(
+            result.failed[0].error.starts_with("写入失败"),
+            "{:?}",
+            result.failed
+        );
+        assert_eq!(result.failed[1].error, format!("图片不存在: {}", missing));
+        assert!(!root.join("missing.txt").exists());
+
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["saved"], 1);
+        assert_eq!(value["failed"][0]["path"], json!(blocked));
+        assert!(value["failed"][0]["error"].is_string());
+    }
+
+    #[test]
+    fn single_tag_save_trims_and_drops_blank_tags() {
+        let root = TempDir::new("save_single_tags");
+        let img = image(&root, "a.png");
+        save_single_tag_file(img, vec![" solo".into(), " ".into(), "long hair ".into()]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "solo, long hair"
+        );
+    }
+
+    #[test]
+    fn caption_and_json_batches_return_results() {
+        let root = TempDir::new("save_all_other");
+        let img = image(&root, "a.png");
+        let missing = root.join("gone.png").to_string_lossy().into_owned();
+
+        let result = save_all_caption_files(vec![
+            SaveCaptionItem {
+                path: img.clone(),
+                content: " A girl. ".into(),
+            },
+            SaveCaptionItem {
+                path: missing.clone(),
+                content: "x".into(),
+            },
+        ]);
+        assert_eq!(result.saved, 1);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].path, missing);
+        // 自然语言描述原样写入
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            " A girl. "
+        );
+
+        // 前端发来的 JSON：标签数组里的空白和空项在读入时就清掉
+        let items: Vec<SaveJsonItem> = serde_json::from_value(json!([
+            {"path": img, "data": {"ai_output": {"tags": [" smile ", "", "solo"]}}},
+            {"path": missing, "data": {}}
+        ]))
+        .unwrap();
+        let result = save_all_json_files(items, true);
+        assert_eq!(result.saved, 1);
+        assert_eq!(result.failed[0].path, missing);
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("a.json")).unwrap()).unwrap();
+        assert_eq!(written["tags"], json!(["smile", "solo"]));
+    }
 }
 
 #[cfg(test)]
 mod json_extra_tests {
     use super::*;
+
+    #[test]
+    fn full_json_requires_structured_fields() {
+        for key in ["ai_output", "fixed", "from_path", "character"] {
+            assert!(!is_full_json(&serde_json::json!({key: "text"})));
+            assert!(!is_full_json(&serde_json::json!({key: null})));
+            assert!(!is_full_json(&serde_json::json!({key: []})));
+            assert!(is_full_json(&serde_json::json!({key: {}})));
+        }
+    }
+
+    /// 角色名、版本或整段写成 null 时按空值读，整份文件照常加载
+    #[test]
+    fn null_character_name_and_variant_load_as_empty() {
+        let root = crate::commands::test_support::TempDir::new("json_null_character");
+        std::fs::write(root.join("a.png"), b"image").unwrap();
+        std::fs::write(
+            root.join("a.json"),
+            r#"{"fixed": {"quality": null}, "character": {"name": null, "variant": null},
+                "ai_output": {"tags": ["smile"]}}"#,
+        )
+        .unwrap();
+        let dataset = load_json_dataset(root.to_string_lossy().into_owned(), None).unwrap();
+        let item = &dataset.images[0];
+        assert!(item.has_json && !item.parse_failed);
+        assert_eq!(dataset.detected_format, "full");
+        assert_eq!(item.data.character.name, "");
+        assert_eq!(item.data.character.variant, "");
+        assert_eq!(item.data.ai_output.tags, ["smile"]);
+        let out = serde_json::to_value(&item.data).unwrap();
+        assert_eq!(
+            out["character"],
+            serde_json::json!({"name": "", "variant": ""})
+        );
+
+        let data: JsonTagData = serde_json::from_str(
+            r#"{"fixed": null, "character": null, "from_path": null, "ai_output": {"nl": "x"}}"#,
+        )
+        .unwrap();
+        assert_eq!(data.ai_output.nl.as_deref(), Some("x"));
+        assert_eq!(
+            serde_json::to_string(&data).unwrap(),
+            serde_json::to_string(&JsonTagData {
+                ai_output: JsonAiOutput {
+                    nl: Some("x".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .unwrap()
+        );
+    }
+
+    /// 标签数组字段：数组元素去空白、丢空项和非字符串项；null 为空；数字等类型仍判解析失败
+    #[test]
+    fn tag_list_fields_are_read_like_other_tag_fields() {
+        let data: JsonTagData = serde_json::from_str(
+            r#"{"ai_output": {"appearance": [" long hair ", "", 3, "blue eyes"],
+                              "tags": "smile，solo", "environment": null}}"#,
+        )
+        .unwrap();
+        assert_eq!(data.ai_output.appearance, ["long hair", "blue eyes"]);
+        assert_eq!(data.ai_output.tags, ["smile", "solo"]);
+        assert!(data.ai_output.environment.is_empty());
+        assert!(serde_json::from_str::<JsonTagData>(r#"{"ai_output": {"tags": 5}}"#).is_err());
+
+        let simplified = parse_simplified_format(&serde_json::json!({
+            "appearance": [" twintails ", ""], "tags": "a, b"
+        }))
+        .unwrap();
+        assert_eq!(simplified.ai_output.appearance, ["twintails"]);
+        assert_eq!(simplified.ai_output.tags, ["a", "b"]);
+    }
 
     /// schema 外字段必须原样往返：整文件重写不能把用户自定义字段丢掉
     #[test]

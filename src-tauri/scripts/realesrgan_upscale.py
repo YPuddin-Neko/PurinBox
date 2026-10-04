@@ -92,7 +92,7 @@ def create_session(onnx_path, device):
 
 def main():
     bootstrap()
-    from image_save import SourceInfo, save_array_like_source
+    from image_save import SourceInfo, load_array, save_array_like_source
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--files", required=True)
@@ -105,17 +105,10 @@ def main():
 
     with open(args.files, "r", encoding="utf-8") as f:
         files = json.load(f)
-    if not files:
-        error("未找到任何图片")
-        sys.exit(1)
 
     total = len(files)
     log(f"找到 {total} 张图片")
     onnx_path = args.model_path
-
-    if not os.path.exists(onnx_path):
-        error(f"模型文件不存在: {onnx_path}")
-        sys.exit(1)
 
     log("正在加载模型...")
     session, device = create_session(onnx_path, args.device)
@@ -154,11 +147,7 @@ def main():
         progress(i + 1, total, fname, "processing", f"[{i + 1}/{total}] {fname}")
         try:
             source = SourceInfo(fpath)
-
-            # cv2.imread 在 Windows 上不支持 Unicode 路径，用 numpy 中转
-            img = cv2.imdecode(np.fromfile(fpath, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-            if img is None:
-                raise ValueError("无法读取图片")
+            img = load_array(fpath)
 
             is_gray = img.ndim == 2
             if is_gray:
@@ -212,6 +201,7 @@ def main():
             progress(i + 1, total, fname, "success", f"[{i+1}/{total}] ✓ {fname}")
         except Exception as e:
             fail += 1
+            # 写盘走临时文件再替换，失败时目标位置已有的文件不受影响；「已保留原有输出文件」由 Rust 按目标是否存在补上
             message = f"[{i+1}/{total}] ✗ {fname}: {e}"
             errors.append(message)
             progress(i + 1, total, fname, "error", message)

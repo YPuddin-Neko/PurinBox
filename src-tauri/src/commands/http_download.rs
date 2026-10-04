@@ -1,22 +1,25 @@
-//! 流式 HTTP 下载：打标模型、美学/裁切模型、超分引擎与权重、独立版 Python 共用。
+//! HTTP 客户端与流式下载：打标模型、美学/裁切模型、超分引擎与权重、独立版 Python 共用。
 //!
 //! 一次下载的固定流程在 `download_to_file` 里：写 `{dest}.part` → 分块写入、随时检查取消 →
 //! 每 500ms 上报一次进度 → flush → 校验字节数后原子替换为 `dest`；任何失败（含取消）都删除
-//! .part 残件，已有的 `dest` 只在下载完整成功后才被替换。
-//! 事件名、开始/完成文案、错误是否另发 error 事件、取消后的善后由各模块自己决定。
+//! .part 残件，已有的 `dest` 只在下载完整成功后才被替换。多个文件依次下载用 `download_files`。
+//! 事件名、开始/完成文案、取消后的善后由各模块自己决定；下载失败的终态事件用
+//! `DownloadProgress::from_error` 生成。
+//!
+//! 客户端：大文件下载用 `download_client`（只设停滞超时），API 等小请求用 `api_client`（有总时长）。
 
 use futures_util::StreamExt;
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 
 /// 建立连接的超时
-pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// 停滞超时：连续这么久读不到任何数据才算失败。不设总时长上限——
 /// 慢速网络下几百 MB 的模型要下十几分钟，总时长超时会在中途把它掐断
-pub const STALL_TIMEOUT: Duration = Duration::from_secs(120);
+const STALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// 进度上报间隔
 const REPORT_INTERVAL: Duration = Duration::from_millis(500);
 /// 检查取消标志的间隔：服务器停滞不发数据时取消也要及时生效
@@ -75,12 +78,29 @@ impl DownloadProgress {
         self.filename = filename.into();
         self
     }
+
+    /// 下载失败对应的终态事件：被取消（`err` 是 `Cancelled`，或 `cancel` 已置位）时为 cancelled、
+    /// 文案「已取消下载」，否则为 error、文案是 `err` 的 Display。
+    /// 也看 `cancel`：取消与网络错误同时发生时，用户点过取消就不再报失败
+    pub(crate) fn from_error(err: &DownloadError, cancel: &AtomicBool) -> Self {
+        if matches!(err, DownloadError::Cancelled) || cancel.load(Ordering::SeqCst) {
+            Self::cancelled(DownloadError::Cancelled.to_string())
+        } else {
+            Self::error(err.to_string())
+        }
+    }
+
+    /// 换掉文案，例如把 HTTP 401/403 换成具体的处理办法
+    pub(crate) fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = message.into();
+        self
+    }
 }
 
 /// `download_to_file` 的失败原因。Display 即给用户看的文案
 #[derive(Debug)]
 pub enum DownloadError {
-    /// 取消标志置位（.part 已删除）
+    /// 取消标志置位（.part 已删除）。文案以「已取消」开头：前端据此把返回的 Err 认作用户取消
     Cancelled,
     /// 服务器返回非 2xx（尚未写任何文件）
     Status {
@@ -94,7 +114,7 @@ pub enum DownloadError {
 impl std::fmt::Display for DownloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DownloadError::Cancelled => f.write_str("下载已取消"),
+            DownloadError::Cancelled => f.write_str("已取消下载"),
             DownloadError::Status { status, url } => write!(f, "HTTP {}: {}", status, url),
             DownloadError::Other(message) => f.write_str(message),
         }
@@ -114,6 +134,25 @@ pub fn download_client() -> Result<reqwest::Client, String> {
     super::proxy_config::build_http_client()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(STALL_TIMEOUT)
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))
+}
+
+/// API 等小请求用的 HTTP 客户端（GitHub API 与更新检查、翻译服务商、标签库的小请求）：
+/// 应用内代理（与 `download_client` 相同，socks5 由代理解析域名），连接超时 30 秒，
+/// 整个请求（连接、等响应、读完响应体）最长 `timeout`。服务器接受连接后不回包时请求不会一直挂着。
+/// 大文件下载用 `download_client`：总时长限制会把慢速网络下的长下载掐断
+pub(crate) fn api_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    with_api_timeouts(super::proxy_config::build_http_client(), timeout)
+}
+
+fn with_api_timeouts(
+    builder: reqwest::ClientBuilder,
+    timeout: Duration,
+) -> Result<reqwest::Client, String> {
+    builder
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(timeout)
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))
 }
@@ -238,6 +277,104 @@ pub async fn download_to_file(
     }
 }
 
+/// `download_files` 下载的一个文件
+pub(crate) struct DownloadFile {
+    /// 调用方拼好的请求，一般是 `client.get(url)`；需要鉴权时自己加头
+    pub request: reqwest::RequestBuilder,
+    pub dest: PathBuf,
+    /// 进度文案里的名字
+    pub label: String,
+}
+
+impl DownloadFile {
+    pub(crate) fn new(
+        request: reqwest::RequestBuilder,
+        dest: impl Into<PathBuf>,
+        label: impl Into<String>,
+    ) -> Self {
+        DownloadFile {
+            request,
+            dest: dest.into(),
+            label: label.into(),
+        }
+    }
+}
+
+/// `download_files` 的选项，默认全关
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct DownloadFilesOptions {
+    /// 目标已是文件就跳过，只补缺的；跳过时发一条「{label} 已存在，跳过」的进度
+    pub skip_existing: bool,
+    /// 每个文件下完发一条 done「{label} — 下载完成 ✓」：前端每收到 done 记一行日志并收起进度条
+    pub done_each: bool,
+    /// 把进度换算到整体区间 `(起点, 终点)`：n 个文件均分，第 i 个占
+    /// `[起点 + i·份, 起点 + (i+1)·份]`。None 时每个文件各自 0–100
+    pub percent_range: Option<(f32, f32)>,
+}
+
+/// 依次下载多个文件（模型权重、词表、配置），返回实际下载的个数（不含跳过的）。
+///
+/// 进度经 `emit` 发出：每个文件开始时发 `DownloadProgress::starting(label)`，之后转发
+/// `download_to_file` 的进度；跳过和逐个完成见 `DownloadFilesOptions`。
+/// 不发整体完成和失败事件：完成文案各模块不同；失败时调用方用
+/// `DownloadProgress::from_error(&err, cancel)` 发终态。
+///
+/// 每个文件开始前和全部下完后都检查 `cancel`，置位即返回 `Cancelled`。已下完的文件保留，
+/// 配合 `skip_existing` 重试时只补缺的；任一文件失败即停止，后面的不再下载。
+pub(crate) async fn download_files(
+    files: Vec<DownloadFile>,
+    options: DownloadFilesOptions,
+    cancel: &AtomicBool,
+    mut emit: impl FnMut(DownloadProgress),
+) -> Result<usize, DownloadError> {
+    let count = files.len();
+    let mut downloaded = 0;
+    for (index, file) in files.into_iter().enumerate() {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(DownloadError::Cancelled);
+        }
+        let scale = |percent: f32| match options.percent_range {
+            Some((start, end)) => {
+                start + (index as f32 + percent / 100.0) * (end - start) / count as f32
+            }
+            None => percent,
+        };
+        if options.skip_existing && file.dest.is_file() {
+            emit(DownloadProgress::new(
+                "downloading",
+                scale(100.0),
+                format!("{} 已存在，跳过", file.label),
+            ));
+            continue;
+        }
+        let mut starting = DownloadProgress::starting(&file.label);
+        starting.percent = scale(0.0);
+        emit(starting);
+        download_to_file(
+            file.request,
+            &file.dest,
+            &file.label,
+            cancel,
+            |mut progress| {
+                progress.percent = scale(progress.percent);
+                emit(progress);
+            },
+        )
+        .await?;
+        downloaded += 1;
+        if options.done_each {
+            emit(DownloadProgress::done(format!(
+                "{} — 下载完成 ✓",
+                file.label
+            )));
+        }
+    }
+    if cancel.load(Ordering::SeqCst) {
+        return Err(DownloadError::Cancelled);
+    }
+    Ok(downloaded)
+}
+
 fn progress_tick(label: &str, downloaded: u64, total: u64, elapsed: Duration) -> DownloadProgress {
     let secs = elapsed.as_secs_f64();
     let speed_mbps = if secs > 0.0 {
@@ -274,213 +411,11 @@ fn progress_message(label: &str, downloaded: u64, total: u64, speed_mbps: f64) -
     }
 }
 
-/// 测试辅助：一次性本地 HTTP 服务器和临时目录（llm_client、tag_sort 的测试也用）。
-/// 两者都由测试持有，drop 时自行收尾，测试结束（含断言失败）不留后台线程、连接和目录
-#[cfg(test)]
-pub(crate) mod test_support {
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::path::{Path, PathBuf};
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    /// 服务器收到的请求
-    #[derive(Debug, Clone)]
-    pub(crate) struct Request {
-        pub method: String,
-        pub path: String,
-        /// 头名称已转小写
-        pub headers: Vec<(String, String)>,
-        pub body: Vec<u8>,
-    }
-
-    impl Request {
-        pub(crate) fn header(&self, name: &str) -> Option<&str> {
-            let name = name.to_ascii_lowercase();
-            self.headers
-                .iter()
-                .find(|(k, _)| *k == name)
-                .map(|(_, v)| v.as_str())
-        }
-
-        pub(crate) fn json(&self) -> serde_json::Value {
-            serde_json::from_slice(&self.body).expect("请求体应是 JSON")
-        }
-    }
-
-    /// 响应函数拿到的停止信号：测试结束（`TestServer` 被 drop）时触发
-    pub(crate) struct StopSignal(mpsc::Receiver<()>);
-
-    impl StopSignal {
-        /// 挂住连接，直到测试结束或超过 `max`（模拟服务器停滞）
-        pub(crate) fn wait(&self, max: Duration) {
-            let _ = self.0.recv_timeout(max);
-        }
-
-        fn stopped_within(&self, timeout: Duration) -> bool {
-            matches!(
-                self.0.recv_timeout(timeout),
-                Err(mpsc::RecvTimeoutError::Disconnected)
-            )
-        }
-    }
-
-    /// 只接一次连接的本地 HTTP/1.1 服务器，由测试持有。
-    /// drop 时停止等待连接、放开挂住的响应并回收服务线程
-    pub(crate) struct TestServer {
-        /// `http://127.0.0.1:端口`，路径由调用方拼
-        pub url: String,
-        /// 服务器收到的请求
-        pub requests: mpsc::Receiver<Request>,
-        stop: Option<mpsc::Sender<()>>,
-        thread: Option<std::thread::JoinHandle<()>>,
-    }
-
-    impl Drop for TestServer {
-        fn drop(&mut self) {
-            drop(self.stop.take());
-            if let Some(thread) = self.thread.take() {
-                let _ = thread.join();
-            }
-        }
-    }
-
-    /// 在 127.0.0.1 的随机端口起服务器。读完请求后先把它发进 `requests`，再交给 `respond`
-    /// 写响应——可以只写一半就返回（断流），或用 `StopSignal::wait` 挂住（停滞）
-    pub(crate) fn serve_once<F>(respond: F) -> TestServer
-    where
-        F: FnOnce(&mut TcpStream, &Request, &StopSignal) + Send + 'static,
-    {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("绑定本地端口");
-        listener.set_nonblocking(true).expect("设置非阻塞监听");
-        let url = format!("http://{}", listener.local_addr().expect("本地地址"));
-        let (request_tx, requests) = mpsc::channel();
-        let (stop_tx, stop_rx) = mpsc::channel();
-        let thread = std::thread::spawn(move || {
-            let stop = StopSignal(stop_rx);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        if stop.stopped_within(Duration::from_millis(10)) {
-                            return;
-                        }
-                    }
-                    Err(_) => return,
-                }
-            };
-            drop(listener);
-            // macOS 上 accept 出来的连接会继承监听端的非阻塞标志
-            let _ = stream.set_nonblocking(false);
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-            let Some(request) = read_request(&mut stream) else {
-                return;
-            };
-            let _ = request_tx.send(request.clone());
-            respond(&mut stream, &request, &stop);
-        });
-        TestServer {
-            url,
-            requests,
-            stop: Some(stop_tx),
-            thread: Some(thread),
-        }
-    }
-
-    /// 写一个完整的响应（带 Content-Length，写完关闭连接）
-    pub(crate) fn write_response(
-        stream: &mut TcpStream,
-        status: &str,
-        content_type: &str,
-        body: &[u8],
-    ) {
-        let head = format!(
-            "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            status,
-            content_type,
-            body.len()
-        );
-        let _ = stream.write_all(head.as_bytes());
-        let _ = stream.write_all(body);
-        let _ = stream.flush();
-    }
-
-    fn read_request(stream: &mut TcpStream) -> Option<Request> {
-        let mut buf = Vec::new();
-        let mut tmp = [0u8; 8192];
-        let header_end = loop {
-            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                break pos + 4;
-            }
-            let n = stream.read(&mut tmp).ok()?;
-            if n == 0 {
-                return None;
-            }
-            buf.extend_from_slice(&tmp[..n]);
-        };
-        let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
-        let mut lines = head.split("\r\n");
-        let mut request_line = lines.next()?.split_whitespace();
-        let method = request_line.next()?.to_string();
-        let path = request_line.next()?.to_string();
-        let headers: Vec<(String, String)> = lines
-            .filter_map(|line| line.split_once(':'))
-            .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
-            .collect();
-        let content_length = headers
-            .iter()
-            .find(|(k, _)| k == "content-length")
-            .and_then(|(_, v)| v.parse::<usize>().ok())
-            .unwrap_or(0);
-        let mut body = buf[header_end..].to_vec();
-        while body.len() < content_length {
-            let n = stream.read(&mut tmp).ok()?;
-            if n == 0 {
-                break;
-            }
-            body.extend_from_slice(&tmp[..n]);
-        }
-        Some(Request {
-            method,
-            path,
-            headers,
-            body,
-        })
-    }
-
-    /// 系统临时目录下的独占目录，drop 时连同内容删除
-    pub(crate) struct TempDir(PathBuf);
-
-    impl TempDir {
-        pub(crate) fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("purinbox_{}_{}", tag, std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("创建临时目录");
-            TempDir(dir)
-        }
-    }
-
-    impl std::ops::Deref for TempDir {
-        type Target = Path;
-        fn deref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::test_support::{serve_once, write_response, TempDir};
     use super::*;
+    use crate::commands::test_support::{serve_once, write_response, TempDir, TestServer};
     use std::io::Write;
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     fn client() -> reqwest::Client {
@@ -674,7 +609,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, DownloadError::Cancelled));
-        assert_eq!(String::from(err), "下载已取消");
+        assert_eq!(String::from(err), "已取消下载");
         assert!(!dest.exists() && !part_of(&dest).exists());
     }
 
@@ -717,5 +652,249 @@ mod tests {
             huggingface_url("deepghs/anime_aesthetic", "swinv2pv3_v0_448_ls0.2_x/model.onnx"),
             "https://huggingface.co/deepghs/anime_aesthetic/resolve/main/swinv2pv3_v0_448_ls0.2_x/model.onnx"
         );
+    }
+
+    #[test]
+    fn error_events_follow_the_cancel_flag_and_keep_messages() {
+        let idle = AtomicBool::new(false);
+        let cancelled = AtomicBool::new(true);
+        let status = DownloadError::Status {
+            status: reqwest::StatusCode::NOT_FOUND,
+            url: "http://127.0.0.1/a".into(),
+        };
+        assert_eq!(
+            DownloadProgress::from_error(&status, &idle),
+            DownloadProgress::error("HTTP 404 Not Found: http://127.0.0.1/a")
+        );
+        assert_eq!(
+            DownloadProgress::from_error(&DownloadError::Cancelled, &idle),
+            DownloadProgress::cancelled("已取消下载")
+        );
+        // 用户点过取消时，同时发生的网络错误也按取消处理
+        assert_eq!(
+            DownloadProgress::from_error(
+                &DownloadError::Other("下载数据失败: reset".into()),
+                &cancelled
+            ),
+            DownloadProgress::cancelled("已取消下载")
+        );
+        let replaced =
+            DownloadProgress::from_error(&status, &idle).with_message("请先保存 Access Token");
+        assert_eq!(replaced.status, "error");
+        assert_eq!(replaced.message, "请先保存 Access Token");
+    }
+
+    #[tokio::test]
+    async fn api_client_gives_up_on_a_stalled_server() {
+        let server = serve_once(|stream, _, stop| {
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial");
+            let _ = stream.flush();
+            stop.wait(Duration::from_secs(10));
+        });
+        let client = with_api_timeouts(
+            reqwest::Client::builder().no_proxy(),
+            Duration::from_millis(300),
+        )
+        .unwrap();
+        let start = Instant::now();
+        let err = match client.get(&server.url).send().await {
+            Ok(response) => response.text().await.unwrap_err(),
+            Err(e) => e,
+        };
+        assert!(err.is_timeout(), "{err}");
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn api_client_returns_normal_responses() {
+        let server = serve_once(|stream, _, _| {
+            write_response(
+                stream,
+                "200 OK",
+                "application/json",
+                b"{\"tag_name\":\"v1.2.3\"}",
+            )
+        });
+        let client = with_api_timeouts(
+            reqwest::Client::builder().no_proxy(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let json: serde_json::Value = client
+            .get(&server.url)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(json["tag_name"], "v1.2.3");
+    }
+
+    fn serve_bytes(body: &'static [u8]) -> TestServer {
+        serve_once(move |stream, _, _| {
+            write_response(stream, "200 OK", "application/octet-stream", body)
+        })
+    }
+
+    #[tokio::test]
+    async fn files_download_in_order_skip_existing_and_map_progress() {
+        let first = serve_bytes(b"first");
+        let second = serve_bytes(b"second");
+        let dir = TempDir::new("dl_files");
+        std::fs::write(dir.join("a.bin"), b"kept").unwrap();
+        let cancel = AtomicBool::new(false);
+        let mut events = Vec::new();
+        let files = vec![
+            DownloadFile::new(client().get(&first.url), dir.join("a.bin"), "a.bin"),
+            DownloadFile::new(
+                client().get(format!("{}/b", second.url)),
+                dir.join("b.bin"),
+                "b.bin",
+            ),
+        ];
+        let options = DownloadFilesOptions {
+            skip_existing: true,
+            percent_range: Some((30.0, 98.0)),
+            ..Default::default()
+        };
+        let downloaded = download_files(files, options, &cancel, |p| events.push(p))
+            .await
+            .unwrap();
+
+        assert_eq!(downloaded, 1);
+        assert_eq!(std::fs::read(dir.join("a.bin")).unwrap(), b"kept");
+        assert_eq!(std::fs::read(dir.join("b.bin")).unwrap(), b"second");
+        assert_eq!(second.requests.recv().unwrap().path, "/b");
+        assert!(first.requests.try_recv().is_err(), "已存在的文件不该再请求");
+        // 两个文件均分 30–98：第一个占 30–64，第二个占 64–98
+        assert_eq!(
+            events[0],
+            DownloadProgress::new("downloading", 64.0, "a.bin 已存在，跳过")
+        );
+        assert_eq!(
+            events[1],
+            DownloadProgress::new("downloading", 64.0, "正在下载 b.bin")
+        );
+        let last = events.last().unwrap();
+        assert_eq!(last.percent, 98.0);
+        assert!(last.message.starts_with("b.bin — "), "{}", last.message);
+        assert!(events.iter().all(|p| p.status == "downloading"));
+    }
+
+    #[tokio::test]
+    async fn done_each_reports_every_file_with_its_own_progress() {
+        let a = serve_bytes(b"aa");
+        let b = serve_bytes(b"bb");
+        let dir = TempDir::new("dl_files_each");
+        let cancel = AtomicBool::new(false);
+        let mut events = Vec::new();
+        let files = vec![
+            DownloadFile::new(client().get(&a.url), dir.join("a"), "[1/2] A"),
+            DownloadFile::new(client().get(&b.url), dir.join("b"), "[2/2] B"),
+        ];
+        let options = DownloadFilesOptions {
+            done_each: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            download_files(files, options, &cancel, |p| events.push(p))
+                .await
+                .unwrap(),
+            2
+        );
+        let done: Vec<&str> = events
+            .iter()
+            .filter(|p| p.status == "done")
+            .map(|p| p.message.as_str())
+            .collect();
+        assert_eq!(done, ["[1/2] A — 下载完成 ✓", "[2/2] B — 下载完成 ✓"]);
+        let starts: Vec<f32> = events
+            .iter()
+            .filter(|p| p.message.starts_with("正在下载"))
+            .map(|p| p.percent)
+            .collect();
+        assert_eq!(starts, [0.0, 0.0]);
+    }
+
+    #[tokio::test]
+    async fn failure_stops_the_sequence_and_keeps_finished_files() {
+        let a = serve_bytes(b"aa");
+        let missing = serve_once(|stream, _, _| {
+            write_response(stream, "404 Not Found", "text/plain", b"nope")
+        });
+        let never = serve_bytes(b"cc");
+        let dir = TempDir::new("dl_files_fail");
+        let cancel = AtomicBool::new(false);
+        let mut events = Vec::new();
+        let files = vec![
+            DownloadFile::new(client().get(&a.url), dir.join("a"), "a"),
+            DownloadFile::new(client().get(&missing.url), dir.join("b"), "b"),
+            DownloadFile::new(client().get(&never.url), dir.join("c"), "c"),
+        ];
+        let err = download_files(files, DownloadFilesOptions::default(), &cancel, |p| {
+            events.push(p)
+        })
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, DownloadError::Status { .. }), "{err}");
+        assert_eq!(std::fs::read(dir.join("a")).unwrap(), b"aa");
+        assert!(!dir.join("b").exists() && !dir.join("c").exists());
+        assert!(
+            never.requests.try_recv().is_err(),
+            "失败后不再下载后面的文件"
+        );
+        assert!(
+            events.iter().all(|p| p.status == "downloading"),
+            "失败的终态事件由调用方发"
+        );
+        assert_eq!(DownloadProgress::from_error(&err, &cancel).status, "error");
+    }
+
+    #[tokio::test]
+    async fn files_cancelled_before_start_or_after_the_last_one() {
+        let dir = TempDir::new("dl_files_cancel");
+        let cancelled = AtomicBool::new(true);
+        let err = download_files(
+            vec![DownloadFile::new(
+                client().get("http://127.0.0.1:9/never"),
+                dir.join("x"),
+                "x",
+            )],
+            DownloadFilesOptions::default(),
+            &cancelled,
+            |_| panic!("取消后不该再有进度"),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, DownloadError::Cancelled));
+        assert!(!dir.join("x").exists());
+
+        // 最后一个文件下完才取消：文件保留，整体仍按取消返回
+        let server = serve_bytes(b"done");
+        let cancel = AtomicBool::new(false);
+        let options = DownloadFilesOptions {
+            done_each: true,
+            ..Default::default()
+        };
+        let err = download_files(
+            vec![DownloadFile::new(
+                client().get(&server.url),
+                dir.join("y"),
+                "y",
+            )],
+            options,
+            &cancel,
+            |p| {
+                if p.status == "done" {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, DownloadError::Cancelled));
+        assert_eq!(std::fs::read(dir.join("y")).unwrap(), b"done");
     }
 }

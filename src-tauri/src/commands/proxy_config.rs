@@ -62,14 +62,15 @@ pub fn save_proxy_config(
         username,
         password_encoded: b64_encode(&password),
     };
-    save_json_config(CONFIG_FILE, &config, "代理配置")
+    save_json_config(CONFIG_FILE, &config, "写入代理配置失败")
 }
 
 /// 加载代理配置
 #[tauri::command]
 #[allow(clippy::type_complexity)]
 pub fn load_proxy_config() -> Result<(bool, bool, String, String, u16, String, String), String> {
-    let config: ProxyConfig = load_json_config(CONFIG_FILE, "代理配置")?;
+    let config: ProxyConfig =
+        load_json_config(CONFIG_FILE, "读取代理配置失败", "解析代理配置失败")?;
     Ok((
         config.enabled,
         config.llm_proxy,
@@ -134,20 +135,23 @@ fn apply_proxy(builder: reqwest::ClientBuilder, cfg: &ProxyConfig) -> reqwest::C
     }
 }
 
-/// 给需要联网的子进程（pip 等）注入应用内代理环境变量。
+/// 需要联网的子进程（pip 等）要设置的应用内代理环境变量，按当前保存的代理配置生成。
 /// 应用内代理≠系统代理：clash 非系统代理模式下 reqwest 下载都正常，
 /// pip 直连 PyPI 却会失败，表现为"下载都行、装依赖必挂"。
+pub fn pip_proxy_env() -> Vec<(&'static str, String)> {
+    proxy_env_vars(&load_proxy_config_internal())
+}
+
 /// SOCKS5 不注入：pip 需要 pysocks 才认 socks 代理，注入反而让它报缺依赖错误。
-pub fn apply_proxy_env(cmd: &mut std::process::Command) {
-    let cfg = load_proxy_config_internal();
-    if !usable(&cfg) || cfg.proxy_type == "socks5" {
-        return;
+fn proxy_env_vars(cfg: &ProxyConfig) -> Vec<(&'static str, String)> {
+    if !usable(cfg) || cfg.proxy_type == "socks5" {
+        return Vec::new();
     }
-    let url = proxy_url(&cfg, "http", true);
-    cmd.env("HTTP_PROXY", &url)
-        .env("HTTPS_PROXY", &url)
-        .env("http_proxy", &url)
-        .env("https_proxy", &url);
+    let url = proxy_url(cfg, "http", true);
+    ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]
+        .into_iter()
+        .map(|key| (key, url.clone()))
+        .collect()
 }
 
 /// 构建带代理的 reqwest Client（通用：翻译、模型下载等）
@@ -200,13 +204,48 @@ mod proxy_helper_tests {
         config.enabled = false;
         assert!(!usable(&config));
     }
+
+    #[test]
+    fn pip_gets_http_proxy_with_credentials_but_never_socks5() {
+        let mut config = ProxyConfig {
+            enabled: true,
+            username: "user@example".into(),
+            password_encoded: b64_encode("p:a ss"),
+            ..Default::default()
+        };
+        let url = "http://user%40example:p%3Aa%20ss@127.0.0.1:7890".to_string();
+        assert_eq!(
+            proxy_env_vars(&config),
+            [
+                ("HTTP_PROXY", url.clone()),
+                ("HTTPS_PROXY", url.clone()),
+                ("http_proxy", url.clone()),
+                ("https_proxy", url),
+            ]
+        );
+        config.proxy_type = "socks5".into();
+        assert!(proxy_env_vars(&config).is_empty());
+        config.proxy_type = "http".into();
+        config.enabled = false;
+        assert!(proxy_env_vars(&config).is_empty());
+    }
+
+    /// 测试构型读的是临时目录里的代理配置（没有文件 = 不启用），不会拿用户真实的代理去连 PyPI
+    #[test]
+    fn tests_read_the_sandboxed_proxy_config() {
+        let path = crate::commands::config_paths::resolve_config_file(CONFIG_FILE);
+        assert!(path.starts_with(std::env::temp_dir()), "{}", path.display());
+        assert!(!path.exists());
+        assert!(pip_proxy_env().is_empty());
+    }
 }
 
 #[cfg(test)]
 mod proxy_e2e_tests {
     use super::*;
 
-    /// 测试期间写入真实配置文件，结束时（含断言失败）恢复原内容
+    /// 测试期间写入（测试构型下临时目录里的）代理配置，结束时（含断言失败）恢复原内容：
+    /// 同一进程里的其他测试也读这份配置，不能把 socks5 代理留给它们
     struct RestoreConfig(Option<Vec<u8>>);
 
     fn config_path() -> std::path::PathBuf {
@@ -227,12 +266,12 @@ mod proxy_e2e_tests {
         }
     }
 
-    /// 端到端：保存 socks5 配置(落盘到真实配置文件) → 用与下载相同的客户端构建
-    /// 路径走代理拉取 HF 文件。同时验证"保存真的写盘了"和"reqwest 能走通 socks5"。
-    /// 依赖局域网 socks5 代理和外网，且会临时改写真实配置，只在显式指定时运行：
+    /// 端到端：保存 socks5 配置（落盘） → 用与下载相同的客户端构建路径走代理拉取 HF 文件。
+    /// 同时验证"保存真的写盘了"和"reqwest 能走通 socks5"。
+    /// 依赖局域网 socks5 代理和外网，只在显式指定时运行：
     /// cargo test -- --ignored save_then_download_via_socks5
     #[tokio::test]
-    #[ignore = "依赖局域网 socks5 代理和外网，且会临时改写真实代理配置"]
+    #[ignore = "依赖局域网 socks5 代理和外网"]
     async fn save_then_download_via_socks5() {
         let _restore = RestoreConfig(std::fs::read(config_path()).ok());
         save_proxy_config(

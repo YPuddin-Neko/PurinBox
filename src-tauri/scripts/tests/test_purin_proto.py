@@ -38,6 +38,11 @@ class EmitTests(unittest.TestCase):
         out = captured(purin_proto.emit, {'type': 'log', 'message': '✓ 完成'})
         self.assertEqual(out.buffer.getvalue(), '{"type": "log", "message": "✓ 完成"}\n'.encode('utf-8'))
 
+    def test_emit_replaces_lone_surrogates(self):
+        # 非 UTF-8 文件名经 surrogateescape 解出的孤立代理项写不进 UTF-8，要替换掉而不是抛错
+        lines = captured(purin_proto.emit, {'type': 'log', 'message': 'path\udcff.png'}).lines()
+        self.assertEqual(json.loads(lines[0]), {'type': 'log', 'message': 'path?.png'})
+
     def test_message_shapes_and_key_order(self):
         cases = [
             ((purin_proto.log, '加载中'), {'type': 'log', 'message': '加载中'}),
@@ -48,6 +53,7 @@ class EmitTests(unittest.TestCase):
             ((purin_proto.log_i18n, 'gpu.detected', {}),
              {'type': 'log', 'i18n_key': 'gpu.detected', 'message': 'gpu.detected'}),
             ((purin_proto.error, '坏了'), {'type': 'error', 'message': '坏了'}),
+            ((purin_proto.ready,), {'type': 'ready'}),
             ((purin_proto.progress, 2, 5, 'a.png', 'success', '[2/5] ✓ a.png'),
              {'type': 'progress', 'current': 2, 'total': 5, 'filename': 'a.png',
               'status': 'success', 'message': '[2/5] ✓ a.png'}),
@@ -146,7 +152,23 @@ class ReadTextCompatTests(TempDirTest):
             purin_proto.read_text_compat(self.root / 'missing.txt')
 
 
+class TempPathTests(unittest.TestCase):
+    def test_tag_comes_from_environment_or_process_id(self):
+        with mock.patch.dict(os.environ, {purin_proto.TEMP_TAG_ENV: 'purin-r7'}):
+            self.assertEqual(purin_proto.temp_path('/out/a.png'), '/out/a.png.purin-r7.tmp')
+        with mock.patch.dict(os.environ, {purin_proto.TEMP_TAG_ENV: ''}):
+            self.assertEqual(purin_proto.temp_path(Path('/out/a.png')), f'{Path("/out/a.png")}.purin-{os.getpid()}.tmp')
+
+
 class ReplaceAtomicallyTests(TempDirTest):
+    def test_writes_through_tagged_temp_file(self):
+        out = self.root / 'a.txt'
+        seen = []
+        with mock.patch.dict(os.environ, {purin_proto.TEMP_TAG_ENV: 'purin-r3'}):
+            purin_proto.replace_atomically(out, lambda tmp: (seen.append(tmp), Path(tmp).write_text('new')))
+        self.assertEqual(seen, [f'{out}.purin-r3.tmp'])
+        self.assertEqual(out.read_text(), 'new')
+
     def test_success_leaves_no_temp_file(self):
         out = self.root / 'a.txt'
         purin_proto.replace_atomically(out, lambda tmp: Path(tmp).write_text('new'))
@@ -211,14 +233,12 @@ class WriteTextAtomicTests(TempDirTest):
 
 
 class BootstrapTests(unittest.TestCase):
-    def test_puts_script_dir_first_and_registers_cuda_dlls(self):
+    def test_registers_cuda_dlls_without_touching_sys_path(self):
         import cuda_dll_helper
         saved = list(sys.path)
-        self.addCleanup(setattr, sys, 'path', saved)
         with mock.patch.object(cuda_dll_helper, 'register_cuda_dlls') as register:
             purin_proto.bootstrap()
-        self.assertEqual(sys.path[0], purin_proto.SCRIPT_DIR)
-        self.assertTrue(os.path.samefile(purin_proto.SCRIPT_DIR, Path(__file__).resolve().parents[1]))
+        self.assertEqual(sys.path, saved)
         register.assert_called_once_with()
 
 

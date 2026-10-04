@@ -1,12 +1,15 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use tauri::Emitter;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use super::{ProcessResult, ProgressEvent};
-use crate::commands::{collect_image_files_with_recursive, report_failed_copies};
+use crate::commands::llm_batch::{self, ItemOutcome};
+use crate::commands::llm_client::{self, ChatMessage, ChatParams, RequestThrottle};
+use crate::commands::{collect_image_files_with_recursive, file_name_lossy, ProblemArchive};
 
-use crate::commands::llm_client::{self, ChatError, ChatMessage, ChatParams, RequestThrottle};
+const EVENT: &str = "llm-tagger-progress";
 
 static LLM_CANCELLED: AtomicBool = AtomicBool::new(false);
 
@@ -72,248 +75,114 @@ pub async fn start_llm_tagging(
     app: tauri::AppHandle,
     options: LlmTaggerOptions,
 ) -> Result<ProcessResult, String> {
-    // 互斥：全局取消标志不允许并发运行
-    static LLM_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static LLM_RUNNING: AtomicBool = AtomicBool::new(false);
     let _busy = crate::commands::BusyGuard::acquire(&LLM_RUNNING, "LLM 打标")?;
-
     LLM_CANCELLED.store(false, Ordering::SeqCst);
-    let input_path_owned = options.input_path.clone();
-    let input_dir = Path::new(&input_path_owned);
-    let files = collect_image_files_with_recursive(input_dir, options.recursive)?;
-    let total = files.len() as u32;
-    let mut success_count = 0u32;
-    let mut processed_count = 0u32;
-    let fail_count = 0u32;
-    let errors: Vec<String> = Vec::new();
-    let failed_files: Vec<std::path::PathBuf> = Vec::new();
-
+    crate::commands::begin_run(EVENT);
     let client = llm_client::llm_http_client()?;
-
-    let _ = app.emit(
-        "llm-tagger-progress",
-        ProgressEvent::new("info", format!("读取到 {} 张图片", total)).at(0, total),
-    );
-
-    let concurrency = options.concurrency.max(1) as usize;
-    let interval_ms = options.request_interval_ms;
-
-    // 过滤出需要处理的文件（处理 skip_existing）
-    let mut work_items: Vec<(usize, std::path::PathBuf)> = Vec::new();
-    for (i, file_path) in files.iter().enumerate() {
-        if options.skip_existing {
-            let stem = file_path.file_stem().unwrap_or_default().to_string_lossy();
-            let parent = file_path.parent().unwrap_or(Path::new("."));
-            let txt_path = parent.join(format!("{}.txt", stem));
-            let json_path = parent.join(format!("{}.json", stem));
-            let existing = if json_path.exists() {
-                std::fs::read_to_string(&json_path).ok()
-            } else if txt_path.exists() {
-                std::fs::read_to_string(&txt_path).ok()
-            } else {
-                None
-            };
-            if let Some(content) = existing {
-                if !content.trim().is_empty() {
-                    success_count += 1;
-                    processed_count += 1;
-                    let filename = file_path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let _ = app.emit(
-                        "llm-tagger-progress",
-                        ProgressEvent::new("success", format!("[跳过] {} (已有描述)", filename))
-                            .at(processed_count, total)
-                            .file(filename.clone()),
-                    );
-                    continue;
-                }
-            }
-        }
-        work_items.push((i, file_path.clone()));
-    }
-
-    // 使用 semaphore 控制并发
-    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
-    let app_arc = std::sync::Arc::new(app);
-    let options_arc = std::sync::Arc::new(options);
-    let client_arc = std::sync::Arc::new(client);
-    let success_cnt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(success_count));
-    let fail_cnt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(fail_count));
-    let processed_cnt = std::sync::Arc::new(AtomicU32::new(processed_count));
-    let errors_arc = std::sync::Arc::new(tokio::sync::Mutex::new(errors));
-    let failed_arc = std::sync::Arc::new(tokio::sync::Mutex::new(failed_files));
-
-    let throttle = std::sync::Arc::new(RequestThrottle::new(interval_ms));
-
-    let mut handles = Vec::new();
-
-    for (i, file_path) in work_items.into_iter() {
-        if LLM_CANCELLED.load(Ordering::SeqCst) {
-            break;
-        }
-
-        let permit = sem.clone().acquire_owned().await.unwrap();
-        let app_c = app_arc.clone();
-        let opts = options_arc.clone();
-        let cli = client_arc.clone();
-        let s_cnt = success_cnt.clone();
-        let f_cnt = fail_cnt.clone();
-        let p_cnt = processed_cnt.clone();
-        let errs = errors_arc.clone();
-        let fails = failed_arc.clone();
-        let throttle = throttle.clone();
-
-        let handle = tokio::spawn(async move {
-            let _permit = permit;
-            if LLM_CANCELLED.load(Ordering::SeqCst) {
-                return;
-            }
-
-            let filename = file_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let _ = app_c.emit(
-                "llm-tagger-progress",
-                ProgressEvent::new(
-                    "processing",
-                    format!("正在处理: {} ({}/{})", filename, i + 1, total),
-                )
-                .at(i as u32 + 1, total)
-                .file(filename.clone()),
-            );
-
-            let file_start = std::time::Instant::now();
-
-            let tag_result = tokio::select! {
-                result = tag_with_llm(&cli, &file_path, &opts, &throttle) => result,
-                _ = async {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                        if LLM_CANCELLED.load(Ordering::SeqCst) { break; }
-                    }
-                } => {
-                    Err("已取消".to_string())
-                }
-            };
-
-            let elapsed_ms = file_start.elapsed().as_millis();
-            let elapsed_str = llm_client::fmt_elapsed(elapsed_ms);
-
-            if LLM_CANCELLED.load(Ordering::SeqCst) {
-                return;
-            }
-
-            let current = p_cnt.fetch_add(1, Ordering::SeqCst) + 1;
-            let outcome = tag_result.and_then(|tag_text| {
-                let stem = file_path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                let parent = file_path.parent().unwrap_or(Path::new("."));
-                let out_path = if opts.output_format == "json" {
-                    parent.join(format!("{}.json", stem))
-                } else {
-                    parent.join(format!("{}.txt", stem))
-                };
-                let content = format_output(&tag_text, &opts)?;
-                crate::commands::config_paths::write_file_atomic(&out_path, content.as_bytes())
-                    .map_err(|e| format!("写入失败 {}", e))
-            });
-            match outcome {
-                Ok(()) => {
-                    s_cnt.fetch_add(1, Ordering::SeqCst);
-                    let _ = app_c.emit(
-                        "llm-tagger-progress",
-                        ProgressEvent::new(
-                            "success",
-                            format!("[完成] {} ({})", filename, elapsed_str),
-                        )
-                        .at(current, total)
-                        .file(filename.clone()),
-                    );
-                }
-                Err(e) => {
-                    f_cnt.fetch_add(1, Ordering::SeqCst);
-                    let err_msg = format!("{}: {}", filename, e);
-                    errs.lock().await.push(err_msg.clone());
-                    fails.lock().await.push(file_path.clone());
-                    let _ = app_c.emit(
-                        "llm-tagger-progress",
-                        ProgressEvent::new(
-                            "error",
-                            format!("[错误] {} ({})", err_msg, elapsed_str),
-                        )
-                        .at(current, total)
-                        .file(filename.clone()),
-                    );
-                }
-            }
-        });
-        handles.push(handle);
-    }
-
-    // 等待所有任务完成
-    for h in handles {
-        let _ = h.await;
-    }
-
-    let success_count = success_cnt.load(Ordering::SeqCst);
-    let fail_count = fail_cnt.load(Ordering::SeqCst);
-    let errors = errors_arc.lock().await.clone();
-    let failed_files = failed_arc.lock().await.clone();
-
-    report_failed_copies(
-        &app_arc,
-        "llm-tagger-progress",
-        input_dir,
-        &failed_files,
-        options_arc.recursive,
-        total,
-    );
-
-    let was_cancelled = LLM_CANCELLED.load(Ordering::SeqCst);
-    let _ = app_arc.emit(
-        "llm-tagger-progress",
-        ProgressEvent::new(
-            "done",
-            if was_cancelled {
-                format!(
-                    "已取消: 已完成 {}/{}, 成功 {}, 失败 {}",
-                    success_count + fail_count,
-                    total,
-                    success_count,
-                    fail_count
-                )
-            } else {
-                format!(
-                    "LLM 打标完成: 成功 {}, 失败 {}, 共 {}",
-                    success_count, fail_count, total
-                )
-            },
-        )
-        .at(
-            if was_cancelled {
-                success_count + fail_count
-            } else {
-                total
-            },
-            total,
-        ),
-    );
-
-    Ok(ProcessResult {
-        success_count,
-        fail_count,
-        total,
-        errors,
-    })
+    run_llm_tagging(&app, options, client).await
 }
 
+async fn run_llm_tagging<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    options: LlmTaggerOptions,
+    client: reqwest::Client,
+) -> Result<ProcessResult, String> {
+    let input_dir = PathBuf::from(&options.input_path);
+    let files = collect_image_files_with_recursive(&input_dir, options.recursive)?;
+    let total = files.len() as u32;
+    ProgressEvent::new("info", format!("读取到 {} 张图片", total))
+        .at(0, total)
+        .emit(app, EVENT);
+
+    // 开始前一次定下要跳过的图片：本轮写出的标签不影响其他图片的判断
+    let skipped: Arc<HashSet<PathBuf>> = Arc::new(if options.skip_existing {
+        files
+            .iter()
+            .filter(|path| super::has_labels(path))
+            .cloned()
+            .collect()
+    } else {
+        HashSet::new()
+    });
+    let recursive = options.recursive;
+    let concurrency = options.concurrency.max(1) as usize;
+    let throttle = Arc::new(RequestThrottle::new(options.request_interval_ms));
+    let options = Arc::new(options);
+    let outcome = llm_batch::run_file_batch(
+        app,
+        EVENT,
+        &files,
+        concurrency,
+        &LLM_CANCELLED,
+        move |path| {
+            let (client, options, throttle, skipped) = (
+                client.clone(),
+                options.clone(),
+                throttle.clone(),
+                skipped.clone(),
+            );
+            async move {
+                if skipped.contains(&path) {
+                    return ItemOutcome::Done {
+                        message: format!("[跳过] {} (已有描述)", file_name_lossy(&path)),
+                        warning: false,
+                    };
+                }
+                tag_file(&client, &path, &options, &throttle).await
+            }
+        },
+    )
+    .await;
+    Ok(outcome.finish(
+        app,
+        EVENT,
+        "LLM 打标完成",
+        &ProblemArchive::new(&input_dir, &input_dir, recursive),
+    ))
+}
+
+/// 一张图：请求 VLM、整理成标签文件写到图片旁
+async fn tag_file(
+    client: &reqwest::Client,
+    path: &Path,
+    options: &LlmTaggerOptions,
+    throttle: &RequestThrottle,
+) -> ItemOutcome {
+    let filename = file_name_lossy(path);
+    let start = std::time::Instant::now();
+    let written = async {
+        let text = tag_with_llm(client, path, options, throttle).await?;
+        let content = format_output(&text, options)?;
+        // 回复到达前用户点了取消：不再写盘
+        if LLM_CANCELLED.load(Ordering::SeqCst) {
+            return Err("已取消".to_string());
+        }
+        let output = path.with_extension(if options.output_format == "json" {
+            "json"
+        } else {
+            "txt"
+        });
+        crate::commands::config_paths::write_file_atomic(&output, content.as_bytes())
+            .map_err(|e| format!("写入失败 {}", e))
+    }
+    .await;
+    let elapsed = llm_client::fmt_elapsed(start.elapsed().as_millis());
+    match written {
+        Ok(()) => ItemOutcome::Done {
+            message: format!("[完成] {} ({})", filename, elapsed),
+            warning: false,
+        },
+        Err(message) => ItemOutcome::Failed {
+            filename,
+            message: format!("{} ({})", message, elapsed),
+        },
+    }
+}
+
+/// VLM 回复 → 标签文件内容。txt 原样写；JSON 统一规范成恒定骨架（`tag_manager::normalize_tag_json`）：
+/// 回复是 JSON 对象（可带 ``` 围栏）时补齐缺的段、画师逐位补 `@`、保留额外字段；
+/// 不是 JSON 对象（自然语言、标签串、JSON 数组等）时原文整段放进 nl
 fn format_output(text: &str, options: &LlmTaggerOptions) -> Result<String, String> {
     if options.output_format != "json" {
         return Ok(text.to_string());
@@ -325,22 +194,13 @@ fn format_output(text: &str, options: &LlmTaggerOptions) -> Result<String, Strin
         .map(|s| s.trim_end().trim_end_matches("```"))
         .unwrap_or(trimmed)
         .trim();
-    let value = serde_json::from_str::<serde_json::Value>(cleaned).unwrap_or_else(|_| {
-        if options.json_simplified {
-            serde_json::json!({
-                "quality": "", "series": "", "artist": "", "character": "", "count": "",
-                "appearance": [], "tags": [], "environment": [], "nl": text,
-            })
-        } else {
-            serde_json::json!({
-                "fixed": {"quality": "", "series": "", "artist": ""},
-                "character": {"name": "", "variant": ""},
-                "from_path": {"appearance": []},
-                "ai_output": {"count": "", "appearance": [], "tags": [], "environment": [], "nl": text},
-            })
-        }
-    });
-    serde_json::to_string_pretty(&value).map_err(|e| format!("序列化标签失败: {}", e))
+    let value = match serde_json::from_str::<serde_json::Value>(cleaned) {
+        Ok(value @ serde_json::Value::Object(_)) => value,
+        _ => serde_json::Value::String(text.to_string()),
+    };
+    let normalized =
+        crate::commands::tag_manager::normalize_tag_json(value, options.json_simplified);
+    serde_json::to_string_pretty(&normalized).map_err(|e| format!("序列化标签失败: {}", e))
 }
 
 async fn tag_with_llm(
@@ -366,17 +226,9 @@ async fn tag_with_llm(
             &options.image_detail,
         )),
     ];
-    let reply = llm_client::chat_completion(client, &params, &messages, throttle, &LLM_CANCELLED)
-        .await
-        .map_err(|e| match e {
-            ChatError::ContentFilter => "LLM 内容安全审核拒绝了该图片".to_string(),
-            other => other.into(),
-        })?;
-    if reply.is_truncated() {
-        return Err("响应因 max_tokens 被截断，已丢弃（请调大 max_tokens）".into());
-    }
-    llm_client::reject_refusal(&reply.text, "该图片")?;
-    Ok(reply.text)
+    let reply =
+        llm_client::chat_completion(client, &params, &messages, throttle, &LLM_CANCELLED).await;
+    llm_client::accept_reply(&reply, "该图片").map(str::to_owned)
 }
 
 #[tauri::command]
@@ -390,7 +242,9 @@ pub async fn fetch_llm_models(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::llm_client::test_support::{client, serve_chat_reply, TempDir};
+    use crate::commands::batch::capture_events;
+    use crate::commands::llm_client::test_support::{client, serve_chat_reply};
+    use crate::commands::test_support::TempDir;
     use serde_json::json;
 
     fn options() -> LlmTaggerOptions {
@@ -402,11 +256,14 @@ mod tests {
         .unwrap()
     }
 
+    fn parse(text: &str, opts: &LlmTaggerOptions) -> serde_json::Value {
+        serde_json::from_str(&format_output(text, opts).unwrap()).unwrap()
+    }
+
     #[test]
     fn non_json_responses_keep_the_full_schema() {
         let mut opts = options();
-        let full: serde_json::Value =
-            serde_json::from_str(&format_output("description", &opts).unwrap()).unwrap();
+        let full = parse("description", &opts);
         assert_eq!(
             full,
             json!({
@@ -417,8 +274,7 @@ mod tests {
             })
         );
         opts.json_simplified = true;
-        let simple: serde_json::Value =
-            serde_json::from_str(&format_output("description", &opts).unwrap()).unwrap();
+        let simple = parse("description", &opts);
         assert_eq!(simple.as_object().unwrap().len(), 9);
         assert_eq!(simple["nl"], "description");
         assert_eq!(simple["tags"], json!([]));
@@ -432,10 +288,84 @@ mod tests {
             "```json\n{\"tags\": [\"solo\"]}",
             "```\n{\"tags\": [\"solo\"]}",
         ] {
-            let parsed: serde_json::Value =
-                serde_json::from_str(&format_output(text, &options()).unwrap()).unwrap();
-            assert_eq!(parsed, json!({"tags": ["solo"]}));
+            let parsed = parse(text, &options());
+            assert_eq!(parsed["ai_output"]["tags"], json!(["solo"]), "{text}");
+            assert_eq!(parsed["ai_output"]["nl"], "", "{text}");
+            assert_eq!(
+                parsed.as_object().unwrap().keys().collect::<Vec<_>>(),
+                ["fixed", "character", "from_path", "ai_output"]
+            );
         }
+    }
+
+    /// JSON 回复也补齐骨架：默认完整格式提示词只要求 ai_output 一段；画师逐位补 @，额外字段保留
+    #[test]
+    fn json_replies_are_normalized_to_the_complete_schema() {
+        let mut opts = options();
+        let reply = r#"{"ai_output": {"count": "1girl", "tags": "smile, standing", "nl": "A girl."},
+                        "fixed": {"artist": "foo, @bar"}, "rating": "safe"}"#;
+        let full = parse(reply, &opts);
+        assert_eq!(
+            full["fixed"],
+            json!({"quality": "", "series": "", "artist": "@foo, @bar"})
+        );
+        assert_eq!(full["character"], json!({"name": "", "variant": ""}));
+        assert_eq!(full["from_path"], json!({"appearance": []}));
+        assert_eq!(full["ai_output"]["tags"], json!(["smile", "standing"]));
+        assert_eq!(full["ai_output"]["nl"], "A girl.");
+        assert_eq!(full["rating"], "safe");
+
+        opts.json_simplified = true;
+        let simple = parse(
+            r#"{"artist": ["foo", "bar"], "tags": ["solo"], "mood": "calm"}"#,
+            &opts,
+        );
+        assert_eq!(simple["artist"], "@foo, @bar");
+        assert_eq!(simple["tags"], json!(["solo"]));
+        assert_eq!(simple["mood"], "calm");
+        assert_eq!(simple["character"], "");
+    }
+
+    /// 合法 JSON 但不是对象：原文整段放进 nl，不丢内容
+    #[test]
+    fn json_that_is_not_an_object_goes_into_nl_verbatim() {
+        for text in ["[\"solo\", \"smile\"]", "42", "\"just a string\"", "null"] {
+            let parsed = parse(text, &options());
+            assert_eq!(parsed["ai_output"]["nl"], text, "{text}");
+            assert_eq!(parsed["ai_output"]["tags"], json!([]), "{text}");
+        }
+    }
+
+    #[test]
+    fn txt_output_is_written_verbatim() {
+        let mut opts = options();
+        opts.output_format = "txt".into();
+        assert_eq!(
+            format_output("{\"tags\": []}", &opts).unwrap(),
+            "{\"tags\": []}"
+        );
+    }
+
+    /// 「已有标签」按文件存在且非空判断，txt 与 json 各自判断，不读内容
+    #[test]
+    fn existing_labels_are_judged_by_size_per_format() {
+        use crate::commands::tagger::has_labels;
+        let root = TempDir::new("llm_tagger_existing");
+        let image = root.join("a.png");
+        assert!(!has_labels(&image));
+        std::fs::write(
+            image.with_extension("txt"),
+            b"\xd2\xbb\xb8\xf6\xc5\xae\xba\xa2",
+        )
+        .unwrap();
+        assert!(has_labels(&image), "GBK 编码的旧 txt 也算已有标签");
+        std::fs::write(image.with_extension("txt"), "").unwrap();
+        std::fs::write(image.with_extension("json"), " \n").unwrap();
+        assert!(has_labels(&image));
+        std::fs::write(image.with_extension("json"), "").unwrap();
+        assert!(!has_labels(&image));
+        std::fs::write(image.with_extension("txt"), "solo").unwrap();
+        assert!(has_labels(&image), "空 json 不挡住对 txt 的判断");
     }
 
     #[tokio::test]
@@ -446,9 +376,13 @@ mod tests {
             .save_with_format(&path, image::ImageFormat::Png)
             .unwrap();
         for (text, finish, expected) in [
-            ("partial response", "length", "截断"),
-            ("", "content_filter", "内容安全审核"),
-            ("I cannot assist with this request", "stop", "拒绝"),
+            ("partial response", "length", "max_tokens 上限（20）被截断"),
+            ("", "content_filter", "LLM 内容安全审核拒绝了该图片"),
+            (
+                "I cannot assist with this request",
+                "stop",
+                "拒绝处理该图片",
+            ),
         ] {
             let server = serve_chat_reply(Some(text), finish);
             let mut opts = options();
@@ -468,5 +402,59 @@ mod tests {
                 .unwrap(),
             "a complete description"
         );
+    }
+
+    /// 一轮：跳过已有标签的、成功的写出规范化 JSON、失败的进 Fail/，终态 done 只有一条
+    #[tokio::test]
+    async fn run_skips_labelled_images_writes_json_and_archives_failures() {
+        LLM_CANCELLED.store(false, Ordering::SeqCst);
+        let root = TempDir::new("llm_tagger_run");
+        let good = root.join("a_good.png");
+        image::RgbImage::new(2, 2).save(&good).unwrap();
+        let skipped = root.join("b_skipped.png");
+        image::RgbImage::new(2, 2).save(&skipped).unwrap();
+        std::fs::write(skipped.with_extension("txt"), b"\xc4\xe3\xba\xc3").unwrap();
+        let broken = root.join("c_broken.png");
+        std::fs::write(&broken, "not an image").unwrap();
+        let empty_label = root.join("d_empty.png");
+        std::fs::write(&empty_label, "not an image").unwrap();
+        std::fs::write(empty_label.with_extension("txt"), "").unwrap();
+
+        let server = serve_chat_reply(Some(r#"{"ai_output": {"tags": ["solo"]}}"#), "stop");
+        let mut opts = options();
+        opts.input_path = root.to_string_lossy().into_owned();
+        opts.api_endpoint = server.url.clone();
+        opts.skip_existing = true;
+        let app = tauri::test::mock_app();
+        let events = capture_events(app.handle(), EVENT);
+        let result = run_llm_tagging(app.handle(), opts, client()).await.unwrap();
+
+        assert_eq!(
+            (result.success_count, result.fail_count, result.total),
+            (2, 2, 4)
+        );
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(good.with_extension("json")).unwrap())
+                .unwrap();
+        assert_eq!(written["ai_output"]["tags"], json!(["solo"]));
+        assert_eq!(written["fixed"]["artist"], "");
+        assert!(!skipped.with_extension("json").exists());
+        assert!(root.join("Fail/c_broken.png").exists());
+        assert!(
+            root.join("Fail/d_empty.png").exists(),
+            "空 txt 不算已有标签"
+        );
+        assert!(!root.join("Fail/a_good.png").exists());
+        let events = events.lock().unwrap();
+        let done: Vec<_> = events.iter().filter(|e| e["status"] == "done").collect();
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0]["message"], "LLM 打标完成: 成功 2, 失败 2, 共 4");
+        assert!(events
+            .iter()
+            .any(|e| e["message"] == "[跳过] b_skipped.png (已有描述)"));
+        assert!(events
+            .iter()
+            .filter(|e| e["status"] == "success" || e["status"] == "error")
+            .all(|e| e["total"] == 4));
     }
 }

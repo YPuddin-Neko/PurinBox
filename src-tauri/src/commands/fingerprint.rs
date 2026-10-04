@@ -12,22 +12,35 @@ pub struct ImageFingerprint {
     pub color_hist: [f64; 48], // 16 bins × 3 channels, normalized
 }
 
-/// 按 CPU 核数分块并行计算指纹，结果按输入顺序收集，失败项记为 "路径: 原因"。
-/// 每取一张结果前调用一次 `on_each`；每块开始前检查 `cancel`，已取消时返回 None。
+/// 一批图片的指纹，按输入顺序排列
+#[derive(Default)]
+pub struct FingerprintBatch {
+    pub fingerprints: Vec<ImageFingerprint>,
+    /// 计算失败的文件，记为 "路径: 原因"
+    pub failed: Vec<String>,
+    /// 中途取消：只含取消前已经算完的那些块
+    pub cancelled: bool,
+}
+
+/// 按 CPU 核数分块并行计算指纹。每取一张结果前调用一次 `on_each`；
+/// 每块开始前检查 `cancel`，已取消就停下，返回已算完的部分并标记 `cancelled`。
 pub fn compute_fingerprints(
     files: &[PathBuf],
     cancel: &AtomicBool,
     mut on_each: impl FnMut(),
-) -> Option<(Vec<ImageFingerprint>, Vec<String>)> {
+) -> FingerprintBatch {
     let num_threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
         .min(16);
-    let mut fingerprints = Vec::with_capacity(files.len());
-    let mut failed = Vec::new();
+    let mut batch = FingerprintBatch {
+        fingerprints: Vec::with_capacity(files.len()),
+        ..Default::default()
+    };
     for chunk in files.chunks(num_threads) {
         if cancel.load(Ordering::SeqCst) {
-            return None;
+            batch.cancelled = true;
+            return batch;
         }
         std::thread::scope(|s| {
             let handles: Vec<_> = chunk
@@ -37,23 +50,20 @@ pub fn compute_fingerprints(
             for (file, handle) in chunk.iter().zip(handles) {
                 on_each();
                 match handle.join() {
-                    Ok(Ok(fp)) => fingerprints.push(fp),
-                    Ok(Err(e)) => failed.push(format!("{}: {}", file.display(), e)),
-                    Err(_) => failed.push(format!("{}: 指纹计算线程异常退出", file.display())),
+                    Ok(Ok(fp)) => batch.fingerprints.push(fp),
+                    Ok(Err(e)) => batch.failed.push(format!("{}: {}", file.display(), e)),
+                    Err(_) => batch
+                        .failed
+                        .push(format!("{}: 指纹计算线程异常退出", file.display())),
                 }
             }
         });
     }
-    Some((fingerprints, failed))
+    batch
 }
 
 fn compute_fingerprint(path: &Path) -> Result<ImageFingerprint, String> {
-    let img = image::ImageReader::open(path)
-        .map_err(|e| e.to_string())?
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?
-        .decode()
-        .map_err(|e| e.to_string())?;
+    let img = super::image_io::decode_image(path)?;
     let gray = img.to_luma8();
     let rgb = img.to_rgb8();
 

@@ -2,9 +2,11 @@ use flate2::read::ZlibDecoder;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use tauri::Emitter;
 
+use super::batch::{BatchCounts, RunEvents};
 use super::ProgressEvent;
+
+const EVENT: &str = "sd-metadata-progress";
 
 // ── Data types ──
 
@@ -58,8 +60,8 @@ pub struct ExportResult {
 // ── Commands ──
 
 #[tauri::command]
-pub async fn scan_sd_metadata(
-    app: tauri::AppHandle,
+pub async fn scan_sd_metadata<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     input_path: String,
     recursive: Option<bool>,
 ) -> Result<SdScanResult, String> {
@@ -69,8 +71,8 @@ pub async fn scan_sd_metadata(
 }
 
 #[tauri::command]
-pub async fn export_sd_tags(
-    app: tauri::AppHandle,
+pub async fn export_sd_tags<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     options: ExportTagsOptions,
 ) -> Result<ExportResult, String> {
     tokio::task::spawn_blocking(move || export_sync(&app, &options))
@@ -98,8 +100,8 @@ pub fn read_single_sd_metadata(file_path: String) -> Result<Option<SdImageMeta>,
 
 // ── Scan logic ──
 
-fn scan_sync(
-    app: &tauri::AppHandle,
+fn scan_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     input_path: &str,
     recursive: bool,
 ) -> Result<SdScanResult, String> {
@@ -107,6 +109,7 @@ fn scan_sync(
     let dir = Path::new(input_path);
     let files = super::collect_image_files_with_recursive(dir, recursive)?;
     let total = files.len() as u32;
+    let run = RunEvents::begin(app, EVENT);
 
     let mut items = Vec::new();
     let mut no_meta_files: Vec<String> = Vec::new();
@@ -118,8 +121,7 @@ fn scan_sync(
     for (i, file_path) in files.iter().enumerate() {
         let filename = super::file_name_lossy(file_path);
 
-        let _ = app.emit(
-            "sd-metadata-progress",
+        run.emit(
             ProgressEvent::new("processing", format!("[{}/{}] {}", i + 1, total, filename))
                 .at(i as u32 + 1, total)
                 .file(filename.clone()),
@@ -152,14 +154,15 @@ fn scan_sync(
 
     let elapsed = start.elapsed().as_millis() as u64;
 
-    let _ = app.emit(
-        "sd-metadata-progress",
-        ProgressEvent::new(
-            "done",
-            format!("扫描完成: {} 张图片, {} 有元数据", total, has_meta),
-        )
-        .at(total, total),
-    );
+    let counts = BatchCounts {
+        success: has_meta,
+        skipped: no_meta,
+        total,
+        ..Default::default()
+    };
+    run.finish(&counts, false, |c| {
+        format!("扫描完成: {} 张图片, {} 有元数据", c.total, c.success)
+    });
 
     Ok(SdScanResult {
         items,
@@ -174,10 +177,11 @@ fn scan_sync(
 
 // ── Export logic ──
 
-fn export_sync(
-    app: &tauri::AppHandle,
+fn export_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     options: &ExportTagsOptions,
 ) -> Result<ExportResult, String> {
+    let run = RunEvents::begin(app, EVENT);
     let total = options.items.len() as u32;
     let mut success = 0u32;
     let mut fail = 0u32;
@@ -207,8 +211,7 @@ fn export_sync(
             }
         };
 
-        let _ = app.emit(
-            "sd-metadata-progress",
+        run.emit(
             ProgressEvent::new("processing", format!("[{}/{}] {}.txt", i + 1, total, stem))
                 .at(i as u32 + 1, total)
                 .file(format!("{}.txt", stem)),
@@ -225,14 +228,19 @@ fn export_sync(
         }
     }
 
-    let _ = app.emit(
-        "sd-metadata-progress",
-        ProgressEvent::new(
-            "done",
-            format!("导出完成: 成功 {}, 失败 {}, 跳过 {}", success, fail, skip),
+    let counts = BatchCounts {
+        success,
+        failed: fail,
+        skipped: skip,
+        total,
+        ..Default::default()
+    };
+    run.finish(&counts, false, |c| {
+        format!(
+            "导出完成: 成功 {}, 失败 {}, 跳过 {}",
+            c.success, c.failed, c.skipped
         )
-        .at(total, total),
-    );
+    });
 
     Ok(ExportResult {
         success_count: success,
@@ -640,8 +648,90 @@ fn parse_novelai(comment: &str, source_ver: &str) -> Option<RawMeta> {
 }
 
 #[cfg(test)]
-mod comfyui_tests {
+mod tests {
     use super::*;
+    use crate::commands::batch::capture_raw_events;
+    use crate::commands::test_support::TempDir;
+
+    /// 在 PNG 的 IHDR 之后插入一个 tEXt 块
+    fn png_with_text(path: &Path, key: &str, value: &str) {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(2, 2)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        // 8 字节签名 + IHDR（4 长度 + 4 类型 + 13 数据 + 4 CRC）
+        let (head, tail) = bytes.split_at(8 + 25);
+        let data = [key.as_bytes(), &[0], value.as_bytes()].concat();
+        let mut crc = flate2::Crc::new();
+        crc.update(b"tEXt");
+        crc.update(&data);
+        let mut out = head.to_vec();
+        out.extend((data.len() as u32).to_be_bytes());
+        out.extend(b"tEXt");
+        out.extend(&data);
+        out.extend(crc.sum().to_be_bytes());
+        out.extend(tail);
+        std::fs::write(path, out).unwrap();
+    }
+
+    #[test]
+    fn scan_and_export_each_run_in_one_tagged_round() {
+        let root = TempDir::new("sd_metadata_scan");
+        png_with_text(
+            &root.join("a.png"),
+            "parameters",
+            "1girl, solo\nNegative prompt: lowres\nSteps: 20",
+        );
+        image::RgbImage::new(2, 2).save(root.join("b.png")).unwrap();
+        let app = tauri::test::mock_app();
+        let log = capture_raw_events(app.handle(), EVENT);
+
+        let scan = scan_sync(app.handle(), &root.to_string_lossy(), false).unwrap();
+        assert_eq!((scan.has_meta_count, scan.no_meta_count), (1, 1));
+        assert_eq!(scan.items[0].positive, "1girl, solo");
+        {
+            let events = log.lock().unwrap();
+            let run_id = events[0]["run_id"].as_u64().unwrap();
+            assert!(events.iter().all(|e| e["run_id"] == run_id));
+            let done = events.last().unwrap();
+            assert_eq!(done["message"], "扫描完成: 2 张图片, 1 有元数据");
+            assert_eq!((&done["current"], &done["total"]), (&2.into(), &2.into()));
+        }
+        log.lock().unwrap().clear();
+
+        let export = export_sync(
+            app.handle(),
+            &ExportTagsOptions {
+                mode: "same".into(),
+                dest_folder: None,
+                input_root: None,
+                items: vec![
+                    ExportTagItem {
+                        source_path: root.join("a.png").to_string_lossy().into_owned(),
+                        positive: "1girl, solo".into(),
+                    },
+                    ExportTagItem {
+                        source_path: root.join("b.png").to_string_lossy().into_owned(),
+                        positive: " ".into(),
+                    },
+                ],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (export.success_count, export.fail_count, export.skip_count),
+            (1, 0, 1)
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "1girl, solo"
+        );
+        let events = log.lock().unwrap();
+        let done = events.last().unwrap();
+        assert_eq!(done["message"], "导出完成: 成功 1, 失败 0, 跳过 1");
+        assert!(events.iter().all(|e| e["run_id"] == done["run_id"]));
+    }
 
     #[test]
     fn malformed_nodes_do_not_discard_valid_prompts() {

@@ -2,9 +2,16 @@
 """
 三分法裁切 - 动漫人物检测裁切脚本
 使用 deepghs anime detection ONNX 模型，每种裁切类型使用独立的专用检测模型。
-通过 stdin 接收 JSON 指令，通过 stdout 输出 JSON 结果。
+
+通信协议: JSON lines (stdin/stdout)
+- 输入: {"cmd": "init", "model_paths": {"person": "...", ...}, "use_gpu": false, "options": {...}}
+- 输入: {"cmd": "process", "image_path": "...", "output_dir": "..."}
+- 输入: {"cmd": "quit"}
+- 输出: {"type": "ready"}
+- 输出: {"type": "result", "image_path": "...", "status": "success" | "skip", "message": "..."}
+- 输出: {"type": "error", "message": "...", "image_path": "..."}（image_path 仅单图失败时有）
+- 输出: {"type": "log", "message": "..."}（可带 i18n_key / i18n_params）
 """
-import sys
 import json
 import os
 import traceback
@@ -12,12 +19,8 @@ from functools import lru_cache, partial
 import numpy as np
 from pathlib import Path
 
-from purin_proto import bootstrap, emit, log_i18n, read_text_compat, utf8_stdin, write_text_atomic
-
-def _diag(msg):
-    """诊断信息只写 stderr：stdout 上每张图只回一行结果"""
-    sys.stderr.write(f"[person_crop] {msg}\n")
-    sys.stderr.flush()
+from purin_proto import (bootstrap, error, log, log_i18n, read_text_compat, ready, result, utf8_stdin,
+                         write_text_atomic)
 
 def load_model(model_path, providers):
     """加载 ONNX 模型（使用预先解析好的 providers），GPU 建会话失败时回退 CPU"""
@@ -26,26 +29,26 @@ def load_model(model_path, providers):
 
     return create_session_with_cpu_fallback(
         model_path, providers, quiet_session_options(ort),
-        lambda provider, e: _diag(f"⚠ GPU 加载失败 ({e})，回退到 CPU"))
+        lambda provider, e: log(f"⚠ GPU 加载失败 ({e})，回退到 CPU"))
 
 def preprocess_image(img, input_size=640):
     """预处理 RGB 图: 等比缩放 -> letterbox padding -> 归一化"""
     from PIL import Image
     orig_w, orig_h = img.size
-    
+
     scale = min(input_size / orig_w, input_size / orig_h)
     new_w, new_h = int(orig_w * scale), int(orig_h * scale)
     img_resized = img.resize((new_w, new_h), Image.BILINEAR)
-    
+
     canvas = Image.new('RGB', (input_size, input_size), (114, 114, 114))
     pad_x = (input_size - new_w) // 2
     pad_y = (input_size - new_h) // 2
     canvas.paste(img_resized, (pad_x, pad_y))
-    
+
     arr = np.array(canvas, dtype=np.float32) / 255.0
     arr = arr.transpose(2, 0, 1)  # HWC -> CHW
     arr = np.expand_dims(arr, 0)  # NCHW
-    
+
     return arr, orig_w, orig_h, scale, pad_x, pad_y
 
 def postprocess_yolo(output, orig_w, orig_h, scale, pad_x, pad_y, conf_thresh=0.3):
@@ -55,7 +58,7 @@ def postprocess_yolo(output, orig_w, orig_h, scale, pad_x, pad_y, conf_thresh=0.
     支持 YOLOv8 格式: (1, 4+nc, N) 和 YOLOv5 格式: (1, N, 5+nc)
     """
     pred = output[0]
-    
+
     if len(pred.shape) == 3:
         if pred.shape[1] < pred.shape[2]:
             pred = pred.transpose(0, 2, 1)
@@ -64,7 +67,7 @@ def postprocess_yolo(output, orig_w, orig_h, scale, pad_x, pad_y, conf_thresh=0.
         pass
     else:
         return []
-    
+
     boxes = []
     num_cols = pred.shape[1]
 
@@ -105,7 +108,7 @@ def postprocess_yolo(output, orig_w, orig_h, scale, pad_x, pad_y, conf_thresh=0.
             if score < conf_thresh:
                 continue
             add_box(det, score)
-    
+
     # NMS
     if len(boxes) > 1:
         boxes.sort(key=lambda b: b[4], reverse=True)
@@ -120,7 +123,7 @@ def postprocess_yolo(output, orig_w, orig_h, scale, pad_x, pad_y, conf_thresh=0.
             if not is_dup:
                 keep.append(box)
         boxes = keep
-    
+
     return boxes
 
 def compute_iou(a, b):
@@ -147,23 +150,14 @@ def detect_with_model(sess, letterbox, conf_thresh=0.3):
     outputs = sess.run(None, {input_name: arr})
     return postprocess_yolo(outputs, orig_w, orig_h, scale, pad_x, pad_y, conf_thresh)
 
-def crop_square(img, cx, cy, size, padding_ratio=0.05):
-    """以中心点为基准裁切正方形区域"""
-    w, h = img.size
+def square_box(width, height, x1, y1, x2, y2, padding_ratio=0.05):
+    """以检测框中心为基准、长边为边长取正方形，四周外扩 padding_ratio，裁到图内"""
+    size = max(x2 - x1, y2 - y1)
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
     half = size / 2
     pad = size * padding_ratio
-    x1 = max(0, int(cx - half - pad))
-    y1 = max(0, int(cy - half - pad))
-    x2 = min(w, int(cx + half + pad))
-    y2 = min(h, int(cy + half + pad))
-    return img.crop((x1, y1, x2, y2))
-
-def crop_box(img, x1, y1, x2, y2, padding_ratio=0.05):
-    """按检测框裁切，做正方形居中"""
-    bw, bh = x2 - x1, y2 - y1
-    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-    size = max(bw, bh)
-    return crop_square(img, cx, cy, size, padding_ratio)
+    return (max(0, int(cx - half - pad)), max(0, int(cy - half - pad)),
+            min(width, int(cx + half + pad)), min(height, int(cy + half + pad)))
 
 def scale_box(x1, y1, x2, y2, factor):
     """以框中心为基准把检测框放大 factor 倍"""
@@ -171,6 +165,15 @@ def scale_box(x1, y1, x2, y2, factor):
     cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
     nw, nh = bw * factor, bh * factor
     return cx - nw / 2, cy - nh / 2, cx + nw / 2, cy + nh / 2
+
+def save_cropped(pixels, box, out_path, source):
+    """裁出 box 并按源图格式写出；pixels 是 PIL 图或 OpenCV 数组"""
+    from image_save import save_array_like_source, save_like_source
+    if isinstance(pixels, np.ndarray):
+        x1, y1, x2, y2 = box
+        save_array_like_source(np.ascontiguousarray(pixels[y1:y2, x1:x2]), out_path, source)
+    else:
+        save_like_source(pixels.crop(box), out_path, source)
 
 # 裁切类型：(模型键, 输出名后缀, 结果名, 置信度参数, 标签参数, 放大倍数参数, 边距比例)
 CROP_SPECS = (
@@ -183,13 +186,16 @@ CROP_SPECS = (
 def process_image(models, image_path, options, output_dir):
     """处理单张图片 — 每种裁切类型用独立模型检测（models 只含启用的类型）"""
     from PIL import Image
-    from image_save import SourceInfo, save_like_source
+    from image_save import SourceInfo, load_array, pillow_drops_depth, to_8bit
 
-    # 按原图模式裁切（保留透明通道与位深），检测共用一份 RGB 图，同一输入尺寸只预处理一次
     img = Image.open(image_path)
     img.load()
-    letterbox = lru_cache(maxsize=None)(partial(preprocess_image, img.convert('RGB')))
     source = SourceInfo(image_path)
+    # 裁切按源图原样（模式、透明通道、位深）：Pillow 读丢位深的图改用 OpenCV 按原位深读
+    pixels = load_array(image_path) if pillow_drops_depth(img, source) else img
+    width, height = img.size
+    # 检测共用一份 8 位 RGB 图，同一输入尺寸只预处理一次
+    letterbox = lru_cache(maxsize=None)(partial(preprocess_image, to_8bit(img).convert('RGB')))
     stem = Path(image_path).stem
     ext = Path(image_path).suffix or '.png'
     results = []
@@ -203,12 +209,12 @@ def process_image(models, image_path, options, output_dir):
             text = None
         if text is None:
             # 标签读不出来只是不带原标签，不阻断裁切本身；解不开的字节不能硬解成乱码写进新标签
-            _diag(f"⚠ 原标签读取失败，未复制: {tag_file.name}")
+            log(f"⚠ 原标签读取失败，未复制: {tag_file.name}")
         else:
             orig_tags = text.strip()
-    
-    def save_crop(cropped_img, out_name):
-        """同名冲突加计数器（链式使用时 x_0_full 会撞名互相覆盖）；按源图格式写出。"""
+
+    def unique_path(out_name):
+        """同名冲突加计数器（链式使用时 x_0_full 会撞名互相覆盖）"""
         out_path = Path(output_dir) / out_name
         if out_path.exists():
             base, sfx = out_path.stem, out_path.suffix
@@ -216,7 +222,6 @@ def process_image(models, image_path, options, output_dir):
             while out_path.exists():
                 out_path = Path(output_dir) / f'{base}_{n}{sfx}'
                 n += 1
-        save_like_source(cropped_img, out_path, source)
         return out_path
 
     def save_tag_for(img_out_path, extra_tag=''):
@@ -235,84 +240,74 @@ def process_image(models, image_path, options, output_dir):
             suffix = f'_{idx}' if len(boxes) > 1 else ''
             if scale_key:
                 x1, y1, x2, y2 = scale_box(x1, y1, x2, y2, options[scale_key])
-            cropped = crop_box(img, x1, y1, x2, y2, padding)
-            final_path = save_crop(cropped, f'{stem}{suffix}_{name_suffix}{ext}')
+            final_path = unique_path(f'{stem}{suffix}_{name_suffix}{ext}')
+            save_cropped(pixels, square_box(width, height, x1, y1, x2, y2, padding), final_path, source)
             save_tag_for(final_path, tag)
             results.append(f'{label}({c:.2f})')
 
     if not results:
         return {'status': 'skip', 'message': '未检测到目标'}
-    
+
     return {'status': 'success', 'message': f'裁切: {", ".join(results)}'}
 
+def load_models(config):
+    """按 init 命令加载启用的检测模型，返回 {裁切类型: 会话}"""
+    from gpu_diagnostics import resolve_ort_providers
+    providers = resolve_ort_providers(log_i18n, use_gpu=config.get('use_gpu', False))
+    models = {}
+    for crop_type, path in config['model_paths'].items():
+        log(f"加载 {crop_type} 模型: {os.path.basename(path)}")
+        models[crop_type] = load_model(path, providers)
+    log(f"已加载 {len(models)} 个模型: {', '.join(models)}")
+    return models
+
 def main():
-    """主循环: stdin 读取 JSON, stdout 输出结果"""
+    """主循环: stdin 读取 JSON 命令, stdout 输出结果"""
     bootstrap()
     stdin_reader = utf8_stdin()
 
-    # 读取初始化配置
     init_line = stdin_reader.readline().strip()
-    if not init_line:
-        emit({"type": "error", "message": "未收到初始化配置"})
-        return
-    
     try:
-        config = json.loads(init_line)
+        config = json.loads(init_line) if init_line else None
     except json.JSONDecodeError as e:
-        emit({"type": "error", "message": f"JSON 解析失败: {e}"})
+        error(f"JSON 解析失败: {e}")
         return
-    
-    # 加载多个模型
-    model_paths = config.get('model_paths', {})
-    use_gpu = config.get('use_gpu', False)
+    if not isinstance(config, dict) or config.get('cmd') != 'init':
+        error("未收到初始化配置")
+        return
+    if not config.get('model_paths'):
+        error("未指定模型路径")
+        return
     options = config.get('options', {})
-    
-    if not model_paths:
-        emit({"type": "error", "message": "未指定模型路径"})
-        return
-    
-    models = {}
     try:
-        from gpu_diagnostics import resolve_ort_providers
-        providers = resolve_ort_providers(log_i18n, use_gpu=use_gpu)
-        for crop_type, path in model_paths.items():
-            _diag(f"加载 {crop_type} 模型: {os.path.basename(path)}")
-            models[crop_type] = load_model(path, providers)
+        models = load_models(config)
     except Exception as e:
-        emit({"type": "error", "message": f"模型加载失败: {e}"})
+        error(f"模型加载失败: {e}")
         return
-    
-    loaded_types = list(models.keys())
-    _diag(f"已加载 {len(models)} 个模型: {', '.join(loaded_types)}")
-    
-    emit({"type": "ready"})
-    
-    # 处理循环
+    ready()
+
     for line in stdin_reader:
         line = line.strip()
-        if not line or line == 'EXIT':
-            break
-        
+        if not line:
+            continue
         try:
             cmd = json.loads(line)
         except json.JSONDecodeError:
-            emit({"type": "error", "message": "JSON 解析失败"})
+            error(f"无法解析命令: {line}")
             continue
-        
-        action = cmd.get('action')
-        if action != 'process':
-            emit({"type": "error", "message": f"未知操作: {action}"})
+        command = cmd.get('cmd') if isinstance(cmd, dict) else None
+        if command == 'quit':
+            break
+        if command != 'process':
+            error(f"未知命令: {command}")
             continue
-        
-        image_path = cmd.get('image_path', '')
-        output_dir = cmd.get('output_dir', '')
 
+        image_path = cmd.get('image_path', '')
         try:
-            result = process_image(models, image_path, options, output_dir)
-            emit({"type": "result", "image_path": image_path, **result})
+            result(image_path=image_path, **process_image(models, image_path, options, cmd.get('output_dir', '')))
         except Exception as e:
-            _diag(f"处理失败 {image_path}: {traceback.format_exc()}")
-            emit({"type": "error", "image_path": image_path, "message": str(e)})
+            log(f"处理失败 {image_path}: {traceback.format_exc()}")
+            error(str(e), image_path=image_path)
 
 if __name__ == '__main__':
     main()

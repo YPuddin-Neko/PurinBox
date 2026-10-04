@@ -11,15 +11,51 @@ use super::batch::{BatchJob, FileBatch, FileOutcome};
 
 static JOB: BatchJob = BatchJob::new("裁剪");
 
+/// 裁切方式，JSON 取值为小写名称
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CropMode {
+    /// 中心裁切到目标尺寸
+    Center,
+    /// 等比缩放填满目标尺寸后裁掉多余部分
+    Cover,
+    /// 按宽高比居中裁切
+    Aspect,
+    /// 按上下左右边距裁切
+    Edges,
+}
+
+/// 填满裁切保留的方向
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CropAnchor {
+    #[default]
+    Center,
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl CropAnchor {
+    fn label(self) -> &'static str {
+        match self {
+            CropAnchor::Center => "居中",
+            CropAnchor::Top => "上方",
+            CropAnchor::Bottom => "下方",
+            CropAnchor::Left => "左侧",
+            CropAnchor::Right => "右侧",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CropOptions {
     pub input_path: String,
     pub output_path: String,
-    /// "center" | "cover" | "aspect" | "edges"
-    pub mode: String,
-    /// 填满裁切保留方向: "center" | "top" | "bottom" | "left" | "right"
-    #[serde(default = "default_crop_anchor")]
-    pub crop_anchor: String,
+    pub mode: CropMode,
+    #[serde(default)]
+    pub crop_anchor: CropAnchor,
     /// 中心裁切/填满裁切: 目标宽度
     pub target_width: u32,
     /// 中心裁切/填满裁切: 目标高度
@@ -35,37 +71,24 @@ pub struct CropOptions {
     pub recursive: bool,
 }
 
-fn default_crop_anchor() -> String {
-    "center".to_string()
-}
-
+/// 一条边上的裁切起点：`anchor` 是这条轴的起始方向时贴起点，是结束方向时贴终点，否则居中
 fn anchored_offset(
     outer: u32,
     inner: u32,
-    anchor: &str,
-    start_anchor: &str,
-    end_anchor: &str,
+    anchor: CropAnchor,
+    start: CropAnchor,
+    end: CropAnchor,
 ) -> u32 {
     if outer <= inner {
         return 0;
     }
 
-    if anchor == start_anchor {
+    if anchor == start {
         0
-    } else if anchor == end_anchor {
+    } else if anchor == end {
         outer - inner
     } else {
         (outer - inner) / 2
-    }
-}
-
-fn crop_anchor_label(anchor: &str) -> &'static str {
-    match anchor {
-        "top" => "上方",
-        "bottom" => "下方",
-        "left" => "左侧",
-        "right" => "右侧",
-        _ => "居中",
     }
 }
 
@@ -86,26 +109,29 @@ fn crop_images_sync<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     options: &CropOptions,
 ) -> Result<ProcessResult, String> {
-    match options.mode.as_str() {
-        "center" | "cover" if options.target_width == 0 || options.target_height == 0 => {
+    match options.mode {
+        CropMode::Center | CropMode::Cover
+            if options.target_width == 0 || options.target_height == 0 =>
+        {
             return Err("目标尺寸必须大于 0".to_string())
         }
-        "aspect" if !options.aspect_ratio.is_finite() || options.aspect_ratio <= 0.0 => {
+        CropMode::Aspect if !options.aspect_ratio.is_finite() || options.aspect_ratio <= 0.0 => {
             return Err("无效的宽高比".to_string())
         }
-        "center" | "cover" | "aspect" | "edges" => {}
-        _ => return Err("无效的裁切模式".to_string()),
+        _ => {}
     }
     let input = Path::new(&options.input_path);
     let output_dir = Path::new(&options.output_path);
     std::fs::create_dir_all(output_dir).map_err(|e| format!("无法创建输出目录: {}", e))?;
     let files =
         collect_image_files_with_recursive_excluding(input, options.recursive, Some(output_dir))?;
-    Ok(FileBatch::new(app, "crop-progress", JOB.cancel_flag()).run(
-        &files,
-        |item| process_crop(item.path, input, output_dir, options).map(FileOutcome::done),
-        |c| c.summary("处理完成"),
-    ))
+    Ok(FileBatch::new(app, "crop-progress", JOB.cancel_flag())
+        .archive_failures(input, output_dir, options.recursive)
+        .run(
+            &files,
+            |item| process_crop(item.path, input, output_dir, options).map(FileOutcome::done),
+            |c| c.summary("处理完成"),
+        ))
 }
 
 fn process_crop(
@@ -119,8 +145,8 @@ fn process_crop(
     let filename = file_name_lossy(file_path);
     let output_path = same_name_output(input_root, file_path, output_dir, options.recursive)?;
 
-    match options.mode.as_str() {
-        "center" => {
+    match options.mode {
+        CropMode::Center => {
             let tw = options.target_width.min(orig_w);
             let th = options.target_height.min(orig_h);
             if tw == orig_w && th == orig_h {
@@ -140,17 +166,24 @@ fn process_crop(
                 filename, orig_w, orig_h, tw, th
             ))
         }
-        "cover" => {
+        CropMode::Cover => {
             let tw = options.target_width;
             let th = options.target_height;
             let scale = (tw as f64 / orig_w as f64).max(th as f64 / orig_h as f64);
             let scaled_w = ((orig_w as f64 * scale).ceil() as u32).max(tw);
             let scaled_h = ((orig_h as f64 * scale).ceil() as u32).max(th);
+            if (scaled_w, scaled_h) == (orig_w, orig_h) && (tw, th) == (orig_w, orig_h) {
+                crate::commands::copy_file_safe(file_path, &output_path)?;
+                return Ok(format!(
+                    "[跳过] {} ({}x{}, 无需裁切)",
+                    filename, orig_w, orig_h
+                ));
+            }
             let (img, source) = load_image(file_path)?;
             let resized = img.resize_exact(scaled_w, scaled_h, FilterType::Lanczos3);
-            let anchor = options.crop_anchor.as_str();
-            let x = anchored_offset(scaled_w, tw, anchor, "left", "right");
-            let y = anchored_offset(scaled_h, th, anchor, "top", "bottom");
+            let anchor = options.crop_anchor;
+            let x = anchored_offset(scaled_w, tw, anchor, CropAnchor::Left, CropAnchor::Right);
+            let y = anchored_offset(scaled_h, th, anchor, CropAnchor::Top, CropAnchor::Bottom);
             let cropped = resized.crop_imm(x, y, tw, th);
             save_like_source(cropped, &output_path, &source)?;
             Ok(format!(
@@ -162,10 +195,10 @@ fn process_crop(
                 scaled_h,
                 tw,
                 th,
-                crop_anchor_label(anchor)
+                anchor.label()
             ))
         }
-        "aspect" => {
+        CropMode::Aspect => {
             let target_ratio = options.aspect_ratio;
             let current_ratio = orig_w as f64 / orig_h as f64;
 
@@ -197,7 +230,7 @@ fn process_crop(
                 filename, orig_w, orig_h, tw, th, target_ratio
             ))
         }
-        "edges" => {
+        CropMode::Edges => {
             let ct = options.crop_top;
             let cb = options.crop_bottom;
             let cl = options.crop_left;
@@ -225,30 +258,39 @@ fn process_crop(
                 filename, orig_w, orig_h, tw, th, ct, cb, cl, cr
             ))
         }
-        _ => Err("无效的裁切模式".to_string()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::test_support::TempDir;
     use image::GenericImageView;
-    use std::path::PathBuf;
+    use serde_json::json;
+
+    fn crop_options(input: &Path, output: &Path, mode: &str, w: u32, h: u32) -> CropOptions {
+        serde_json::from_value(json!({
+            "input_path": input.to_string_lossy(),
+            "output_path": output.to_string_lossy(),
+            "mode": mode,
+            "target_width": w,
+            "target_height": h,
+            "aspect_ratio": 1.0,
+            "crop_top": 0, "crop_bottom": 0, "crop_left": 0, "crop_right": 0,
+        }))
+        .unwrap()
+    }
 
     #[test]
     fn skip_uses_dimensions_without_decoding_pixels() {
-        let root = super::super::image_io::test_dir("crop_header");
+        let root = TempDir::new("crop_header");
         let path = root.join("broken.png");
         super::super::image_io::write_broken_pixels(&path);
         let output = root.join("out");
         std::fs::create_dir_all(&output).unwrap();
-        let mut options: CropOptions = serde_json::from_value(serde_json::json!({
-            "input_path": root.to_string_lossy(), "output_path": output.to_string_lossy(), "mode": "center",
-            "target_width": 32, "target_height": 32, "aspect_ratio": 1.0,
-            "crop_top": 0, "crop_bottom": 0, "crop_left": 0, "crop_right": 0
-        })).unwrap();
-        for mode in ["center", "aspect", "edges"] {
-            options.mode = mode.into();
+        // cover 的目标尺寸等于原图时缩放与裁切都不改变像素
+        for mode in ["center", "aspect", "edges", "cover"] {
+            let options = crop_options(&root, &output, mode, 32, 32);
             assert!(process_crop(&path, &root, &output, &options)
                 .unwrap()
                 .starts_with("[跳过]"));
@@ -257,35 +299,29 @@ mod tests {
                 std::fs::read(output.join("broken.png")).unwrap()
             );
         }
-        options.mode = "invalid".into();
-        assert_eq!(
-            crop_images_sync(tauri::test::mock_app().handle(), &options).unwrap_err(),
-            "无效的裁切模式"
-        );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn fixture(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let root =
-            std::env::temp_dir().join(format!("purinbox_crop_keep_{}_{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let (input, output) = (root.join("in"), root.join("out"));
-        std::fs::create_dir_all(&input).unwrap();
-        std::fs::create_dir_all(&output).unwrap();
-        (root, input, output)
+    /// 模式、方向的 JSON 取值与前端一致，未知取值在反序列化时就被拒绝
+    #[test]
+    fn options_use_the_frontend_string_values() {
+        let root = TempDir::new("crop_values");
+        for mode in ["center", "cover", "aspect", "edges"] {
+            let options = crop_options(&root, &root, mode, 8, 8);
+            assert_eq!(serde_json::to_value(options.mode).unwrap(), mode);
+            assert_eq!(options.crop_anchor, CropAnchor::Center);
+        }
+        let mut value = serde_json::to_value(crop_options(&root, &root, "cover", 8, 8)).unwrap();
+        for anchor in ["center", "top", "bottom", "left", "right"] {
+            value["crop_anchor"] = json!(anchor);
+            let options: CropOptions = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(options.crop_anchor).unwrap(), anchor);
+        }
+        value["mode"] = json!("invalid");
+        assert!(serde_json::from_value::<CropOptions>(value).is_err());
     }
 
     fn run(input: &Path, output: &Path) -> Vec<Result<String, String>> {
-        let options: CropOptions = serde_json::from_value(serde_json::json!({
-            "input_path": input.to_string_lossy(),
-            "output_path": output.to_string_lossy(),
-            "mode": "center",
-            "target_width": 32,
-            "target_height": 32,
-            "aspect_ratio": 1.0,
-            "crop_top": 0, "crop_bottom": 0, "crop_left": 0, "crop_right": 0,
-        }))
-        .unwrap();
+        let options = crop_options(input, output, "center", 32, 32);
         collect_image_files_with_recursive_excluding(input, false, Some(output))
             .unwrap()
             .iter()
@@ -303,7 +339,10 @@ mod tests {
 
     #[test]
     fn output_keeps_actual_format_and_name() {
-        let (root, input, out) = fixture("format");
+        let root = TempDir::new("crop_keep_format");
+        let (input, out) = (root.join("in"), root.join("out"));
+        std::fs::create_dir_all(&input).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
         rgb(64, 64, [10, 20, 30])
             .save_with_format(input.join("png_inside.jpg"), image::ImageFormat::Png)
             .unwrap();
@@ -328,12 +367,14 @@ mod tests {
         let cropped =
             image::load_from_memory(&std::fs::read(out.join("png_inside.jpg")).unwrap()).unwrap();
         assert_eq!(cropped.dimensions(), (32, 32));
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn uncropped_files_are_copied_unchanged() {
-        let (root, input, out) = fixture("copy");
+        let root = TempDir::new("crop_keep_copy");
+        let (input, out) = (root.join("in"), root.join("out"));
+        std::fs::create_dir_all(&input).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
         // 小于目标尺寸，走"无需裁切"分支
         rgb(16, 16, [0, 120, 0])
             .save(input.join("small.jpg"))
@@ -345,6 +386,28 @@ mod tests {
             std::fs::read(out.join("small.jpg")).unwrap(),
             std::fs::read(input.join("small.jpg")).unwrap()
         );
-        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// cover：目标比原图小时照常缩放裁切，读不出的文件复制进 Fail/
+    #[test]
+    fn cover_crops_and_archives_failures() {
+        let root = TempDir::new("crop_cover");
+        let (input, out) = (root.join("in"), root.join("out"));
+        std::fs::create_dir_all(&input).unwrap();
+        rgb(64, 32, [200, 10, 10])
+            .save(input.join("wide.png"))
+            .unwrap();
+        std::fs::write(input.join("bad.png"), b"not an image").unwrap();
+        let options = crop_options(&input, &out, "cover", 16, 16);
+        let result = crop_images_sync(tauri::test::mock_app().handle(), &options).unwrap();
+        assert_eq!((result.success_count, result.fail_count), (1, 1));
+        assert_eq!(
+            image::open(out.join("wide.png")).unwrap().dimensions(),
+            (16, 16)
+        );
+        assert_eq!(
+            std::fs::read(out.join("Fail/bad.png")).unwrap(),
+            b"not an image"
+        );
     }
 }
