@@ -48,7 +48,7 @@ impl BatchJob {
     {
         let _busy = BusyGuard::acquire(&self.running, self.what)?;
         self.cancel.store(false, Ordering::SeqCst);
-        tokio::task::spawn_blocking(task)
+        super::spawn_blocking_with_progress(task)
             .await
             .map_err(|e| format!("任务执行失败: {}", e))?
     }

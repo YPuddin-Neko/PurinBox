@@ -62,7 +62,9 @@ use commands::upscale::{
     cancel_upscale, download_upscale_engine, force_cancel_upscale, get_upscale_engines,
     start_upscale,
 };
-use commands::workflow::{carry_tag_sidecars, cleanup_workflow_temp, load_workflow, save_workflow};
+use commands::workflow::{
+    carry_tag_sidecars, cleanup_workflow_temp, execute_workflow_node, load_workflow, save_workflow,
+};
 use commands::{
     allow_asset_dir, apply_concept_repeats, check_for_updates, frontend_ready, get_system_stats,
     scan_concept_folders,
@@ -186,6 +188,7 @@ pub fn run() {
             cancel_aesthetic_scoring,
             force_cancel_aesthetic_scoring,
             save_workflow,
+            execute_workflow_node,
             load_workflow,
             cleanup_workflow_temp,
             carry_tag_sidecars,

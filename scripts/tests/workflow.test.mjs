@@ -13,7 +13,12 @@ after(() => rmSync(output, { recursive: true, force: true }));
 
 // 后端命令由各测试通过 globalThis.__invoke 应答
 const stub = join(output, 'tauri-core.js');
-writeFileSync(stub, 'export async function invoke(cmd, args) { return globalThis.__invoke(cmd, args); }\n');
+writeFileSync(stub, `export async function invoke(cmd, args) {
+  if (cmd === 'execute_workflow_node' && !globalThis.__workflowRawInvoke) return globalThis.__invoke(args.command, { options: args.options });
+  return globalThis.__invoke(cmd, args);
+}\n`);
+const eventStub = join(output, 'tauri-event.js');
+writeFileSync(eventStub, 'export async function listen(name, callback) { return globalThis.__listen(name, callback); }\n');
 const outfile = join(output, 'workflow.cjs');
 buildSync({
   stdin: { contents: `
@@ -25,7 +30,7 @@ buildSync({
     export { setSystemStatsInterval, subscribeSystemStats, getSystemStats } from './src/hooks/useSystemStats';
   `, loader: 'ts', resolveDir: root },
   bundle: true, platform: 'node', format: 'cjs', loader: { '.css': 'empty' }, outfile,
-  alias: { '@tauri-apps/api/core': stub },
+  alias: { '@tauri-apps/api/core': stub, '@tauri-apps/api/event': eventStub },
 });
 const lib = createRequire(import.meta.url)(outfile);
 
@@ -200,6 +205,129 @@ async function run(nodes, edges, handler) {
 }
 
 const ok = { success_count: 1, fail_count: 0, total: 1, errors: [] };
+
+async function withProgressEvents(check) {
+  const listeners = new Map();
+  const retired = [];
+  globalThis.window = { __TAURI_INTERNALS__: {} };
+  globalThis.__workflowRawInvoke = true;
+  globalThis.__listen = async (name, handler) => {
+    assert.equal(listeners.has(name), false);
+    listeners.set(name, handler);
+    return () => { listeners.delete(name); retired.push(handler); };
+  };
+  const emit = (name, payload) => listeners.get(name)?.({ payload });
+  try {
+    await check({ listeners, retired, emit });
+    assert.equal(listeners.size, 0, 'all progress listeners must be removed');
+  } finally {
+    delete globalThis.window;
+    delete globalThis.__workflowRawInvoke;
+    delete globalThis.__listen;
+  }
+}
+
+function progressCallbacks(seen, errors = []) {
+  return {
+    onNodeStatusChange() {}, onStepStart() {}, onComplete() {},
+    onError: (id, message) => errors.push({ id, message }),
+    onProgress: (id, current, total) => seen.push({ id, current, total }),
+  };
+}
+
+test('workflow progress belongs to its request, including the first event and consecutive same-type nodes', async () => {
+  await withProgressEvents(async ({ emit, retired }) => {
+    const seen = [];
+    const requests = [];
+    globalThis.__invoke = async (command, args) => {
+      if (command === 'cleanup_workflow_temp' || command === 'carry_tag_sidecars') return 0;
+      assert.equal(command, 'execute_workflow_node');
+      assert.equal(args.command, 'flip_images');
+      assert.equal(typeof args.requestId, 'string');
+      assert.ok(args.requestId.length > 0);
+      requests.push(args.requestId);
+      emit('flip-progress', { run_id: 99, request_id: requests[0] === args.requestId ? 'old' : requests[0], current: 99, total: 100 });
+      emit('flip-progress', { run_id: 900, request_id: 'other-caller', current: 88, total: 100 });
+      emit('flip-progress', { run_id: 901, current: 77, total: 100 });
+      const own = { run_id: 100 + requests.length, request_id: args.requestId, current: 1, total: 3 };
+      emit('flip-progress', own);
+      // 已注销的回调即使被事件队列继续投递，也不能更改后续节点。
+      for (const callback of retired) callback({ payload: { ...own, request_id: requests[0], current: 66 } });
+      return ok;
+    };
+    const nodes = [input('in'), node('a', 'flip'), node('b', 'flip'), out('o')];
+    await new lib.WorkflowEngine(t).execute(nodes, [edge('in', 'a'), edge('a', 'b'), edge('b', 'o')], progressCallbacks(seen));
+    assert.notEqual(requests[0], requests[1]);
+    for (const callback of retired) callback({ payload: { request_id: requests.at(-1), current: 55, total: 100 } });
+    assert.deepEqual(seen, [{ id: 'a', current: 1, total: 3 }, { id: 'b', current: 1, total: 3 }]);
+  });
+});
+
+test('bucket branch progress uses the same request-scoped invocation', async () => {
+  await withProgressEvents(async ({ emit }) => {
+    const seen = [];
+    globalThis.__invoke = async (command, args) => {
+      if (command !== 'execute_workflow_node') return 0;
+      assert.equal(args.command, 'analyze_buckets');
+      emit('bucket-progress', { request_id: 'old', current: 9, total: 9 });
+      emit('bucket-progress', { request_id: args.requestId, current: 2, total: 2 });
+      return { bucket_count: 1, buckets: [{ bucket_width: 1024, bucket_height: 1024, image_count: 2 }] };
+    };
+    await new lib.WorkflowEngine(t).execute([input('in'), node('b', 'bucket-assign'), out('o')], [edge('in', 'b'), edge('b', 'o', 'output-a')], progressCallbacks(seen));
+    assert.deepEqual(seen, [{ id: 'b', current: 2, total: 2 }]);
+  });
+});
+
+test('cancelled or failed workflow callbacks cannot update a later run', async () => {
+  for (const failure of [false, true]) {
+    await withProgressEvents(async ({ emit, retired }) => {
+      const seen = [];
+      const errors = [];
+      const nodes = [input('in'), node('a', 'flip'), out('o')];
+      const edges = [edge('in', 'a'), edge('a', 'o')];
+      let engine = new lib.WorkflowEngine(t);
+      let firstRequest;
+      let runs = 0;
+      globalThis.__invoke = async (command, args) => {
+        if (command !== 'execute_workflow_node') return 0;
+        runs++;
+        if (runs === 1) {
+          firstRequest = args.requestId;
+          emit('flip-progress', { request_id: firstRequest, current: 1, total: 2 });
+          if (failure) throw 'test failure';
+          engine.cancel();
+          emit('flip-progress', { request_id: firstRequest, current: 2, total: 2 });
+          return ok;
+        }
+        emit('flip-progress', { request_id: firstRequest, current: 99, total: 100 });
+        for (const callback of retired) callback({ payload: { request_id: firstRequest, current: 88, total: 100 } });
+        emit('flip-progress', { request_id: args.requestId, current: 1, total: 1 });
+        return ok;
+      };
+      await engine.execute(nodes, edges, progressCallbacks(seen, errors));
+      engine = new lib.WorkflowEngine(t);
+      await engine.execute(nodes, edges, progressCallbacks(seen, errors));
+      assert.deepEqual(seen, [{ id: 'a', current: 1, total: 2 }, { id: 'a', current: 1, total: 1 }]);
+      assert.equal(errors.length, failure ? 1 : 0);
+    });
+  }
+});
+
+test('cancelling while the progress listener is being installed never invokes the node', async () => {
+  await withProgressEvents(async ({ listeners }) => {
+    const engine = new lib.WorkflowEngine(t);
+    const listen = globalThis.__listen;
+    globalThis.__listen = async (name, handler) => {
+      engine.cancel();
+      return listen(name, handler);
+    };
+    const calls = [];
+    globalThis.__invoke = async command => { calls.push(command); return 0; };
+    await engine.execute([input('in'), node('a', 'flip'), out('o')], [edge('in', 'a'), edge('a', 'o')], progressCallbacks([]));
+    assert.deepEqual(calls, ['cleanup_workflow_temp', 'cleanup_workflow_temp']);
+    assert.equal(listeners.size, 0);
+  });
+});
 
 test('a failed copy into the output folder marks the output node as failed', async () => {
   const result = await run([input('in'), node('scale', 'scale'), out('o')], [edge('in', 'scale'), edge('scale', 'o')], (cmd, args) => {

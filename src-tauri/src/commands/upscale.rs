@@ -510,7 +510,7 @@ pub async fn start_upscale(
     CANCEL_FLAG.store(false, Ordering::SeqCst);
     super::python_env::clear_pending_cancel("upscale");
     let engine = find_engine(&options.engine_id)?;
-    tokio::task::spawn_blocking(move || run_upscale(&app, engine, &options))
+    super::spawn_blocking_with_progress(move || run_upscale(&app, engine, &options))
         .await
         .map_err(|e| format!("任务执行失败: {}", e))?
 }

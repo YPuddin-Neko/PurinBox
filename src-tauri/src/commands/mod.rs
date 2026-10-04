@@ -102,6 +102,21 @@ pub fn frontend_ready() {
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
 /// 事件名 → 该通道当前一轮任务的运行 ID
 static CURRENT_RUNS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
+static RUN_REQUESTS: Mutex<BTreeMap<u64, std::sync::Weak<str>>> = Mutex::new(BTreeMap::new());
+
+tokio::task_local! {
+    static PROGRESS_REQUEST_ID: Option<std::sync::Arc<str>>;
+}
+
+/// 把当前请求归属带入阻塞线程；普通页面调用时不附加请求标识。
+pub(crate) fn spawn_blocking_with_progress<F, T>(task: F) -> tokio::task::JoinHandle<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let request_id = PROGRESS_REQUEST_ID.try_with(Clone::clone).ok().flatten();
+    tokio::task::spawn_blocking(move || PROGRESS_REQUEST_ID.sync_scope(request_id, task))
+}
 
 /// 在 `event` 通道上开始新一轮任务，返回这一轮的运行 ID；之后该通道上的
 /// `ProgressEvent::emit` 都自动带上它（`for_run` 显式指定的除外）。
@@ -115,15 +130,13 @@ pub(crate) fn begin_run(event: &str) -> u64 {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(event.to_string(), run_id);
+    let mut requests = RUN_REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
+    // 只保留仍在执行的请求；显式旧 run_id 不借用频道的新归属。
+    requests.retain(|_, request| request.strong_count() > 0);
+    if let Some(request) = PROGRESS_REQUEST_ID.try_with(Clone::clone).ok().flatten() {
+        requests.insert(run_id, std::sync::Arc::downgrade(&request));
+    }
     run_id
-}
-
-fn current_run(event: &str) -> Option<u64> {
-    CURRENT_RUNS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(event)
-        .copied()
 }
 
 fn is_false(value: &bool) -> bool {
@@ -148,6 +161,9 @@ pub struct ProgressEvent {
     /// 所属那一轮任务的运行 ID（见 `begin_run`）；该通道从没开始过任何一轮时不带
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<u64>,
+    /// 工作流节点调用的请求标识，独立页面调用时省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
     /// 用户取消的那一轮的终态 done 为 true；false 时不序列化
     #[serde(skip_serializing_if = "is_false")]
     pub cancelled: bool,
@@ -211,7 +227,19 @@ impl ProgressEvent {
     /// 发给前端，忽略发送失败（窗口已关闭等）。没有 `for_run` 时带上 `event` 通道当前一轮的运行 ID
     pub fn emit<R: tauri::Runtime>(mut self, app: &tauri::AppHandle<R>, event: &str) {
         if self.run_id.is_none() {
-            self.run_id = current_run(event);
+            self.run_id = CURRENT_RUNS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(event)
+                .copied();
+        }
+        if let Some(run_id) = self.run_id {
+            self.request_id = RUN_REQUESTS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&run_id)
+                .and_then(std::sync::Weak::upgrade)
+                .map(|id| id.to_string());
         }
         let _ = app.emit(event, self);
     }
@@ -1652,6 +1680,125 @@ mod run_and_archive_tests {
     use crate::commands::batch::{capture_events, capture_raw_events};
     use crate::commands::test_support::TempDir;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn progress_request_follows_async_and_blocking_runs_without_leaking() {
+        const ASYNC_EVENT: &str = "request-async-test";
+        const BLOCKING_EVENT: &str = "request-blocking-test";
+        let app = tauri::test::mock_app();
+        let async_log = capture_raw_events(app.handle(), ASYNC_EVENT);
+        let blocking_log = capture_raw_events(app.handle(), BLOCKING_EVENT);
+        PROGRESS_REQUEST_ID
+            .scope(Some("node-a".into()), async {
+                tokio::task::yield_now().await;
+                begin_run(ASYNC_EVENT);
+                // AI 会话的工作线程不新建轮次，继续使用开始时绑定的归属。
+                let handle = app.handle().clone();
+                tokio::task::spawn_blocking(move || {
+                    ProgressEvent::new("processing", "async run").emit(&handle, ASYNC_EVENT);
+                })
+                .await
+                .unwrap();
+                let handle = app.handle().clone();
+                spawn_blocking_with_progress(move || {
+                    begin_run(BLOCKING_EVENT);
+                    ProgressEvent::new("done", "blocking run").emit(&handle, BLOCKING_EVENT);
+                })
+                .await
+                .unwrap();
+            })
+            .await;
+        assert_eq!(async_log.lock().unwrap()[0]["request_id"], "node-a");
+        assert_eq!(blocking_log.lock().unwrap()[0]["request_id"], "node-a");
+
+        let handle = app.handle().clone();
+        spawn_blocking_with_progress(move || {
+            begin_run(BLOCKING_EVENT);
+            ProgressEvent::new("done", "ordinary run").emit(&handle, BLOCKING_EVENT);
+            assert!(PROGRESS_REQUEST_ID.with(|id| id.is_none()));
+        })
+        .await
+        .unwrap();
+        assert!(blocking_log.lock().unwrap()[1].get("request_id").is_none());
+        assert!(PROGRESS_REQUEST_ID.try_with(Clone::clone).is_err());
+    }
+
+    #[tokio::test]
+    async fn progress_request_never_relabels_an_explicit_old_run() {
+        const EVENT: &str = "request-late-event-test";
+        let app = tauri::test::mock_app();
+        let log = capture_raw_events(app.handle(), EVENT);
+        let old = PROGRESS_REQUEST_ID
+            .scope(Some("old".into()), async { begin_run(EVENT) })
+            .await;
+        PROGRESS_REQUEST_ID
+            .scope(Some("new".into()), async {
+                let new = begin_run(EVENT);
+                ProgressEvent::new("done", "late")
+                    .for_run(old)
+                    .emit(app.handle(), EVENT);
+                ProgressEvent::new("processing", "current")
+                    .for_run(new)
+                    .emit(app.handle(), EVENT);
+            })
+            .await;
+        let events = log.lock().unwrap();
+        assert_eq!(events[0]["run_id"], old);
+        assert!(events[0].get("request_id").is_none());
+        assert_eq!(events[1]["request_id"], "new");
+    }
+
+    #[tokio::test]
+    async fn progress_request_keeps_overlapping_runs_on_the_same_channel() {
+        const EVENT: &str = "request-overlap-channel-test";
+        let app = tauri::test::mock_app();
+        let log = capture_raw_events(app.handle(), EVENT);
+        PROGRESS_REQUEST_ID
+            .scope(Some("first".into()), async {
+                let first = begin_run(EVENT);
+                PROGRESS_REQUEST_ID
+                    .scope(Some("second".into()), async {
+                        let second = begin_run(EVENT);
+                        ProgressEvent::new("processing", "first")
+                            .for_run(first)
+                            .emit(app.handle(), EVENT);
+                        ProgressEvent::new("processing", "second")
+                            .for_run(second)
+                            .emit(app.handle(), EVENT);
+                    })
+                    .await;
+                ProgressEvent::new("done", "first done")
+                    .for_run(first)
+                    .emit(app.handle(), EVENT);
+            })
+            .await;
+        let events = log.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e["request_id"].as_str())
+                .collect::<Vec<_>>(),
+            [Some("first"), Some("second"), Some("first")]
+        );
+    }
+
+    #[tokio::test]
+    async fn progress_request_scopes_are_isolated_when_tasks_overlap() {
+        let a = PROGRESS_REQUEST_ID.scope(Some("a".into()), async {
+            tokio::task::yield_now().await;
+            spawn_blocking_with_progress(|| PROGRESS_REQUEST_ID.with(Clone::clone))
+                .await
+                .unwrap()
+        });
+        let b = PROGRESS_REQUEST_ID.scope(Some("b".into()), async {
+            tokio::task::yield_now().await;
+            spawn_blocking_with_progress(|| PROGRESS_REQUEST_ID.with(Clone::clone))
+                .await
+                .unwrap()
+        });
+        assert_eq!(tokio::join!(a, b), (Some("a".into()), Some("b".into())));
+        assert!(PROGRESS_REQUEST_ID.try_with(Clone::clone).is_err());
+    }
 
     #[test]
     fn begin_run_scopes_ids_per_channel() {

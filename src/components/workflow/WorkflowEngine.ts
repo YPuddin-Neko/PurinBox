@@ -182,16 +182,21 @@ export class WorkflowEngine {
       const inactiveEdges = new Set<string>();
 
       // 2. 把当前节点的后端进度事件（节点定义的 progressEvent）转发给 onProgress
-      const startProgressListener = async (nodeType: string) => {
+      const startProgressListener = async (nodeType: string, nodeId: string) => {
         stopProgressListener();
+        const requestId = crypto.randomUUID();
         const eventName = getNodeDef(nodeType)?.progressEvent;
-        if (!eventName || !callbacks.onProgress) return;
+        if (!eventName || !callbacks.onProgress) return requestId;
 
-        currentProgressUnlisten = await listen<{ current: number; total: number }>(eventName, (event) => {
-          if (this.status === 'running' && this.currentNodeId) {
-            callbacks.onProgress!(this.currentNodeId, event.payload.current, event.payload.total);
+        let active = true;
+        const unlisten = await listen<{ current: number; total: number; request_id?: string }>(eventName, (event) => {
+          if (active && !this.cancelFlag && this.status === 'running'
+            && this.currentNodeId === nodeId && event.payload.request_id === requestId) {
+            callbacks.onProgress!(nodeId, event.payload.current, event.payload.total);
           }
         });
+        currentProgressUnlisten = () => { active = false; unlisten(); };
+        return requestId;
       };
 
       // 3. 标记所有节点为等待
@@ -258,13 +263,13 @@ export class WorkflowEngine {
         if (type === 'bucket-assign') {
           try {
             const call = await def!.buildOptions!(params, { input_path: inputPath, output_path: '', recursive: inputNested });
-            await startProgressListener(type);
+            const requestId = await startProgressListener(type, nodeId);
             if (this.cancelFlag) return;
             this.currentNodeType = type;
             const result = await invoke<{
               bucket_count: number;
               buckets: { bucket_width: number; bucket_height: number; image_count: number }[];
-            }>(call.command, { options: call.options });
+            }>('execute_workflow_node', { command: call.command, options: call.options, requestId });
             this.currentNodeType = '';
             stopProgressListener();
             if (this.cancelFlag) return;
@@ -338,10 +343,10 @@ export class WorkflowEngine {
             callbacks.onNodeStatusChange(nodeId, 'idle', t('workflow.statusCancelled'));
             return;
           }
-          await startProgressListener(type);
+          const requestId = await startProgressListener(type, nodeId);
           if (this.cancelFlag) return;
           this.currentNodeType = type;
-          const result = await invoke<unknown>(call.command, { options: call.options });
+          const result = await invoke<unknown>('execute_workflow_node', { command: call.command, options: call.options, requestId });
           this.currentNodeType = '';
           if (this.cancelFlag) return;
           stopProgressListener();

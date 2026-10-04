@@ -1,5 +1,49 @@
 use std::path::Path;
 
+/// 工作流节点沿用各功能的处理入口，仅为进度事件绑定本次请求。
+#[tauri::command]
+pub async fn execute_workflow_node(
+    app: tauri::AppHandle,
+    command: String,
+    options: serde_json::Value,
+    request_id: String,
+) -> Result<serde_json::Value, String> {
+    if request_id.is_empty() || request_id.len() > 128 {
+        return Err("工作流请求标识无效".into());
+    }
+    super::PROGRESS_REQUEST_ID
+        .scope(Some(request_id.into()), async move {
+            macro_rules! run {
+                ($command:path) => {{
+                    let options = serde_json::from_value(options)
+                        .map_err(|e| format!("工作流节点参数无效: {}", e))?;
+                    let result = $command(app, options).await?;
+                    serde_json::to_value(result)
+                        .map_err(|e| format!("读取工作流节点结果失败: {}", e))
+                }};
+            }
+            match command.as_str() {
+                "scale_images" => run!(super::image_scale::scale_images),
+                "crop_images" => run!(super::image_crop::crop_images),
+                "flip_images" => run!(super::image_flip::flip_images),
+                "convert_format" => run!(super::format_convert::convert_format),
+                "convert_alpha" => run!(super::alpha_convert::convert_alpha),
+                "blur_noise_images" => run!(super::blur_noise::blur_noise_images),
+                "perspective_transform" => run!(super::perspective::perspective_transform),
+                "start_upscale" => run!(super::upscale::start_upscale),
+                "start_person_crop" => run!(super::person_crop::start_person_crop),
+                "start_aesthetic_scoring" => run!(super::aesthetic::start_aesthetic_scoring),
+                "start_tagging" => run!(super::tagger::start_tagging),
+                "start_llm_tagging" => run!(super::tagger::llm_tagger::start_llm_tagging),
+                "analyze_buckets" => run!(super::bucket_preview::analyze_buckets),
+                "filter_by_resolution" => run!(super::resolution_filter::filter_by_resolution),
+                "execute_rename" => run!(super::batch_rename::execute_rename),
+                _ => Err(format!("不支持的工作流命令: {}", command)),
+            }
+        })
+        .await
+}
+
 /// 保存工作流 JSON 到指定路径
 #[tauri::command]
 pub async fn save_workflow(path: String, data: String) -> Result<(), String> {

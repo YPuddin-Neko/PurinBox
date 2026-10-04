@@ -166,6 +166,26 @@ fn assert_formats_kept(input: &Path, out: &Path) {
     }
 }
 
+async fn with_node_progress<T>(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    event: &str,
+    task: impl std::future::Future<Output = T>,
+) -> T {
+    let log = super::batch::capture_raw_events(app, event);
+    let result = super::PROGRESS_REQUEST_ID
+        .scope(Some("workflow-node-test".into()), task)
+        .await;
+    let events = log.lock().unwrap();
+    assert!(!events.is_empty(), "节点必须产生进度事件: {event}");
+    assert!(
+        events
+            .iter()
+            .all(|e| e["request_id"] == "workflow-node-test"),
+        "{events:?}"
+    );
+    result
+}
+
 /// 纯 Rust 图像节点用例：input_path / output_path / recursive 这几个公共字段由宏注入，
 /// `{ … }` 里写该节点自己的字段。断言无失败且 5 张图全部输出；
 /// 可选的 `|input, out| …` 追加该节点自己的断言。
@@ -188,7 +208,17 @@ macro_rules! image_node_test {
             }))
             .expect(concat!($node, " 参数与前端不兼容"));
 
-            let r = $cmd(app.handle().clone(), opts).await.unwrap();
+            let event = match stringify!($cmd) {
+                "scale_images" => "scale-progress",
+                "crop_images" => "crop-progress",
+                "flip_images" => "flip-progress",
+                "convert_format" => "convert-progress",
+                "convert_alpha" => "alpha-progress",
+                "blur_noise_images" => "blur-noise-progress",
+                "perspective_transform" => "perspective-progress",
+                other => panic!("缺少进度通道: {other}"),
+            };
+            let r = with_node_progress(app.handle(), event, $cmd(app.handle().clone(), opts)).await.unwrap();
             assert_eq!(r.fail_count, 0, concat!($what, "不应有失败: {:?}"), r.errors);
             assert_eq!(file_count(&out), 5, "输出目录应包含全部 5 张图");
             $({
@@ -294,9 +324,13 @@ async fn node_filter() {
     }))
     .expect("filter 参数与前端不兼容");
 
-    let r = filter_by_resolution(app.handle().clone(), opts)
-        .await
-        .unwrap();
+    let r = with_node_progress(
+        app.handle(),
+        "filter-progress",
+        filter_by_resolution(app.handle().clone(), opts),
+    )
+    .await
+    .unwrap();
     assert_eq!(r.fail_count, 0, "分辨率筛选不应有失败: {:?}", r.errors);
     let hit = file_count(&out);
     assert!(
@@ -324,7 +358,13 @@ async fn node_rename() {
     }))
     .expect("rename 参数与前端不兼容");
 
-    let r = execute_rename(app.handle().clone(), opts).await.unwrap();
+    let r = with_node_progress(
+        app.handle(),
+        "rename-progress",
+        execute_rename(app.handle().clone(), opts),
+    )
+    .await
+    .unwrap();
     assert_eq!(r.fail_count, 0, "重命名不应有失败: {:?}", r.errors);
 
     let names: Vec<String> = std::fs::read_dir(&input)
@@ -359,7 +399,13 @@ async fn node_bucket_assign() {
     }))
     .expect("bucket-assign 参数与前端不兼容");
 
-    let r = analyze_buckets(app.handle().clone(), opts).await.unwrap();
+    let r = with_node_progress(
+        app.handle(),
+        "bucket-progress",
+        analyze_buckets(app.handle().clone(), opts),
+    )
+    .await
+    .unwrap();
     assert_eq!(r.total_images, 5);
     assert!(r.bucket_count > 0, "应至少产生一个桶");
     let sum: u32 = r.buckets.iter().map(|b| b.image_count).sum();

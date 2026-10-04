@@ -157,7 +157,7 @@ pub async fn execute_rename<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: RenameOptions,
 ) -> Result<ProcessResult, String> {
-    tokio::task::spawn_blocking(move || execute_rename_sync(&app, &options))
+    super::spawn_blocking_with_progress(move || execute_rename_sync(&app, &options))
         .await
         .map_err(|e| format!("任务执行失败: {}", e))?
 }
