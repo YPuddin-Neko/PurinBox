@@ -101,7 +101,7 @@ PurinBox 是一个基于 **Tauri 2 + React** 的桌面应用，专注于二次�
 #### 前置依赖
 
 - [Node.js](https://nodejs.org/) 20.19+ 或 22.12+
-- [Rust](https://www.rust-lang.org/tools/install) >= 1.87
+- [Rust](https://www.rust-lang.org/tools/install) >= 1.88
 - [Tauri CLI](https://v2.tauri.app/start/prerequisites/)
 
 Linux 还需要安装 Tauri 构建依赖（以 Ubuntu/Debian 为例）：
