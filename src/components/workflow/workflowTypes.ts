@@ -1,4 +1,4 @@
-import type { OptionsCommandCall } from '../../api/commandOptions';
+import type { CommandIO, OptionsCommandCall } from '../../api/commandOptions';
 
 export type NodeCategory = 'input' | 'process' | 'ai' | 'tag' | 'file' | 'condition' | 'output';
 
@@ -10,6 +10,8 @@ export interface ParamDef {
   labelKey: string;           // i18n key
   type: 'string' | 'number' | 'boolean' | 'select' | 'path' | 'dynamic-select';
   default: string | number | boolean;
+  /** string 类型用多行文本框（提示词） */
+  multiline?: boolean;
   options?: readonly { value: string; labelKey: string }[];  // for select type
   min?: number;
   max?: number;
@@ -37,7 +39,7 @@ export interface NodeTypeDef {
   inputLabelKey?: string;      // i18n key for input slot label
   outputLabelKey?: string;     // i18n key for output slot label
   outputBLabelKey?: string;    // i18n key for second output slot label
-  buildOptions?: (params: Record<string, any>, io: { input_path: string; output_path: string; recursive: boolean }) => OptionsCommandCall | Promise<OptionsCommandCall>;
+  buildOptions?: (params: Record<string, any>, io: CommandIO) => OptionsCommandCall | Promise<OptionsCommandCall>;
   inPlace?: boolean | ((params: Record<string, any>) => boolean);
   carrySidecars?: boolean;
   nestedOutput?: boolean;

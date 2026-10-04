@@ -19,7 +19,7 @@ type InputMode = 'manual' | 'local';
 type VizMode = 'treemap' | 'pie' | 'timeline';
 
 function VizBtn({ active, onClick, icon, title }: { active: boolean; onClick: () => void; icon: React.ReactNode; title: string }) {
-  return <button className={`seg-btn${active ? ' active' : ''}`} onClick={onClick} title={title} aria-label={title}>{icon}</button>;
+  return <button type="button" className="ui-toggle" aria-pressed={active} onClick={onClick} title={title} aria-label={title} style={{ padding: '4px 8px' }}>{icon}</button>;
 }
 
 export default function DatasetBalancerPage() {
@@ -100,7 +100,7 @@ export default function DatasetBalancerPage() {
   };
 
   const calc = useMemo(() => {
-    const eb = (Number(batchSize) || 1) * (Number(gradAccum) || 1);
+    const eb = batchSize * gradAccum;
     const details = folders.map((f, i) => {
       const samples = f.imageCount * f.repeats;
       return { ...f, samples, color: COLORS[i % COLORS.length] };
@@ -110,14 +110,13 @@ export default function DatasetBalancerPage() {
     const withPct = details.map(d => ({ ...d, percent: totalSamples > 0 ? d.samples / totalSamples * 100 : 0 }));
 
     if (mode === 'by_epoch') {
-      return { stepsPerEpoch, totalSteps: stepsPerEpoch * (Number(epochs) || 1), totalSamples, folders: withPct, eb, epochs: Number(epochs) || 1, fullEpochs: Number(epochs) || 1, remaining: 0, suggestedSteps: 0 };
+      return { stepsPerEpoch, totalSteps: stepsPerEpoch * epochs, totalSamples, folders: withPct, eb, epochs, fullEpochs: epochs, remaining: 0, suggestedSteps: 0 };
     }
-    const _maxSteps = Number(maxSteps) || 0;
-    const fullEpochs = stepsPerEpoch > 0 ? Math.floor(_maxSteps / stepsPerEpoch) : 0;
-    const remaining = stepsPerEpoch > 0 ? _maxSteps - fullEpochs * stepsPerEpoch : 0;
-    const computedEpochs = stepsPerEpoch > 0 ? Math.ceil(_maxSteps / stepsPerEpoch) : 0;
+    const fullEpochs = stepsPerEpoch > 0 ? Math.floor(maxSteps / stepsPerEpoch) : 0;
+    const remaining = stepsPerEpoch > 0 ? maxSteps - fullEpochs * stepsPerEpoch : 0;
+    const computedEpochs = stepsPerEpoch > 0 ? Math.ceil(maxSteps / stepsPerEpoch) : 0;
     const suggestedSteps = computedEpochs * stepsPerEpoch;
-    return { stepsPerEpoch, totalSteps: _maxSteps, totalSamples, folders: withPct, eb, epochs: computedEpochs, fullEpochs, remaining, suggestedSteps };
+    return { stepsPerEpoch, totalSteps: maxSteps, totalSamples, folders: withPct, eb, epochs: computedEpochs, fullEpochs, remaining, suggestedSteps };
   }, [folders, batchSize, gradAccum, epochs, maxSteps, mode]);
 
   const isCut = mode === 'by_steps' && calc.remaining > 0;

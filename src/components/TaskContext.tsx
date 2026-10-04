@@ -2,9 +2,10 @@ import { createContext, useContext, useState, useEffect, useCallback, useMemo, u
 import { listen } from '../utils/tauriRuntime';
 import i18next from 'i18next';
 import { EVENT_TASK_MAP } from '../appRegistry';
-import { resolveProgressMessage } from '../hooks/useUnifiedTaskLogs';
+import { RunIdGate, resolveProgressMessage, type UnifiedProgressPayload } from '../hooks/useUnifiedTaskLogs';
 
-export type TaskStatus = 'running' | 'done' | 'error' | 'cancelled';
+/** warning：跑完了但有文件失败 */
+export type TaskStatus = 'running' | 'done' | 'warning' | 'error' | 'cancelled';
 
 export interface TaskInfo {
   id: string;
@@ -26,11 +27,22 @@ export interface TaskActions {
   clearCompleted: () => void;
 }
 
-const CANCEL_PATTERN = /已取消|cancel/i;
-
-/** 后端取消时的 done 事件消息和 Err 文本都带“已取消” */
+/**
+ * 后端以 Err 结束被取消的运行时，文本以「已取消」开头。
+ * 只在用户点过取消时据此判定，否则报错文本恰好以它开头也会被当成取消。
+ */
 export function isCancelMessage(text: string): boolean {
-  return CANCEL_PATTERN.test(text);
+  return text.trimStart().startsWith('已取消');
+}
+
+/**
+ * 进度事件对应的任务状态。终态只有 done：带 cancelled 为已取消，本轮出现过失败为警告；
+ * 其余事件（含逐文件的 error、warning、skipped、info）都说明任务还在跑。
+ */
+export function taskStatusFromEvent(payload: Pick<UnifiedProgressPayload, 'status' | 'cancelled'>, hadError: boolean): TaskStatus {
+  if (payload.status !== 'done') return 'running';
+  if (payload.cancelled === true) return 'cancelled';
+  return hadError ? 'warning' : 'done';
 }
 
 const noop = () => {};
@@ -53,41 +65,37 @@ export function useTaskList(): TaskInfo[] {
   return useContext(TaskListContext);
 }
 
-interface TaskProgressPayload {
-  current: number;
-  total: number;
-  status: string;
-  message: string;
-  i18n_key?: string;
-  i18n_params?: Record<string, unknown>;
-}
-
-function statusFromEvent(payload: TaskProgressPayload, previous: TaskStatus): TaskStatus {
-  switch (payload.status) {
-    case 'done':
-      return isCancelMessage(payload.message) ? 'cancelled' : 'done';
-    case 'error':
-      return isCancelMessage(payload.message) ? 'cancelled' : 'error';
-    // 后续仍有进度事件说明任务还在跑（中途的单文件 error 不应让任务永远停在 error）
-    case 'processing':
-    case 'success':
-      return 'running';
-    default:
-      return previous;
-  }
+/** 任务 ID → 它的进度事件名 */
+const TASK_EVENTS: Record<string, string[]> = {};
+for (const [eventName, taskId] of Object.entries(EVENT_TASK_MAP)) {
+  (TASK_EVENTS[taskId] ??= []).push(eventName);
 }
 
 export function TaskProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<TaskInfo[]>([]);
   const activeTasks = useRef(new Set<string>());
+  /** 本轮收到过 error 事件的任务 */
+  const erroredTasks = useRef(new Set<string>());
+  const gates = useRef(new Map<string, RunIdGate>());
+
+  const gateFor = useCallback((eventName: string) => {
+    let gate = gates.current.get(eventName);
+    if (!gate) {
+      gate = new RunIdGate();
+      gates.current.set(eventName, gate);
+    }
+    return gate;
+  }, []);
 
   const addTask = useCallback((id: string, name: string) => {
     activeTasks.current.add(id);
+    erroredTasks.current.delete(id);
+    for (const eventName of TASK_EVENTS[id] ?? []) gateFor(eventName).begin();
     setTasks(prev => {
       const filtered = prev.filter(t => t.id !== id);
       return [...filtered, { id, name, status: 'running', current: 0, total: 0, message: i18next.t('common.preparing') }];
     });
-  }, []);
+  }, [gateFor]);
 
   const updateTask = useCallback((id: string, update: TaskUpdate) => {
     const trackStatus = (status?: TaskStatus) => {
@@ -123,11 +131,14 @@ export function TaskProvider({ children }: { children: ReactNode }) {
     const unlisteners: Promise<() => void>[] = [];
 
     for (const [eventName, taskId] of Object.entries(EVENT_TASK_MAP)) {
-      const unlistenPromise = listen<TaskProgressPayload>(eventName, (e) => {
-        if (!active || !activeTasks.current.has(taskId)) return;
+      const unlistenPromise = listen<UnifiedProgressPayload>(eventName, (e) => {
+        if (!active) return;
         const p = e.payload;
-        // 终态后同名命令可能由工作流启动，不能重开已完成的页面任务。
-        if (p.status === 'done') activeTasks.current.delete(taskId);
+        if (!gateFor(eventName).accept(p.run_id) || !activeTasks.current.has(taskId)) return;
+        if (p.status === 'error') erroredTasks.current.add(taskId);
+        const status = taskStatusFromEvent(p, erroredTasks.current.has(taskId));
+        // 终态后同名命令可能由工作流启动，不能重开已结束的页面任务。
+        if (status !== 'running') activeTasks.current.delete(taskId);
         const message = resolveProgressMessage(p);
         setTasks(prev => {
           const index = prev.findIndex(t => t.id === taskId);
@@ -139,7 +150,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
             // total 为 0 的日志类事件不清空计数
             ...(p.total > 0 ? { current: p.current, total: p.total } : {}),
             message,
-            status: statusFromEvent(p, task.status),
+            status,
           };
           return next;
         });
@@ -151,7 +162,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
       active = false;
       unlisteners.forEach(p => p.then(fn => fn()));
     };
-  }, []);
+  }, [gateFor]);
 
   const actions = useMemo<TaskActions>(
     () => ({ addTask, updateTask, clearCompleted }),

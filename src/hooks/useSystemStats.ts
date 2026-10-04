@@ -1,6 +1,5 @@
-import { useCallback, useSyncExternalStore } from 'react';
+import { useSyncExternalStore } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { useAppSettings } from '../components/ThemeProvider';
 import { hasTauriRuntime } from '../utils/tauriRuntime';
 
 export interface SystemStats {
@@ -10,56 +9,69 @@ export interface SystemStats {
   vram_used: number; vram_total: number; vram_percent: number;
 }
 
-const subscribers = new Map<() => void, number>();
+// 全应用只有一处轮询：顶栏和设置页的监控面板订阅同一份数据，间隔由设置写入
+const listeners = new Set<() => void>();
 let snapshot: SystemStats | null = null;
 let interval = 0;
 let generation = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let polling = false;
-const getSnapshot = () => snapshot;
+const active = () => interval > 0 && listeners.size > 0;
+
+export const getSystemStats = () => snapshot;
 
 function publish(value: SystemStats | null) {
   snapshot = value;
-  subscribers.forEach((_, listener) => listener());
+  listeners.forEach(listener => listener());
 }
 
 async function poll() {
-  if (polling || interval <= 0) return;
+  if (polling || !active()) return;
   polling = true;
   const current = generation;
   try {
     const stats = await invoke<SystemStats>('get_system_stats');
-    if (current === generation && interval > 0) publish(stats);
+    if (current === generation) publish(stats);
   } catch {
-    // A failed sample must not stop subsequent monitoring.
+    // 单次采样失败不影响后续监控
   } finally {
     polling = false;
-    if (interval > 0) timer = setTimeout(poll, interval);
+    if (active()) timer = setTimeout(poll, interval);
   }
 }
 
-function reconcile() {
-  const enabled = [...subscribers.values()].filter(value => value > 0);
-  const next = hasTauriRuntime() && enabled.length ? Math.min(...enabled) : 0;
+/** 立即采样一次再按当前间隔继续；有采样在途时由它收尾后接上 */
+function restart() {
+  clearTimeout(timer);
+  void poll();
+}
+
+/** 设置里的检测间隔（毫秒）；0 为关闭，已显示的数据随之清空 */
+export function setSystemStatsInterval(ms: number) {
+  const next = hasTauriRuntime() && ms > 0 ? ms : 0;
   if (next === interval) return;
   interval = next;
-  generation += 1;
-  clearTimeout(timer);
-  if (interval > 0) void poll();
-  else publish(null);
+  if (next > 0) {
+    restart();
+  } else {
+    generation += 1;
+    clearTimeout(timer);
+    publish(null);
+  }
+}
+
+// 没有订阅者时只停轮询、保留上一份数据，重新订阅时不会先闪一下空白
+export function subscribeSystemStats(listener: () => void) {
+  listeners.add(listener);
+  if (listeners.size === 1) restart();
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) clearTimeout(timer);
+  };
 }
 
 export default function useSystemStats() {
-  const { monitorInterval } = useAppSettings();
-  const subscribe = useCallback((listener: () => void) => {
-    subscribers.set(listener, monitorInterval);
-    reconcile();
-    return () => {
-      subscribers.delete(listener);
-      reconcile();
-    };
-  }, [monitorInterval]);
-  return useSyncExternalStore(subscribe, getSnapshot, () => null);
+  return useSyncExternalStore(subscribeSystemStats, getSystemStats, () => null);
 }
 
 export function getUsageColor(percent: number) {

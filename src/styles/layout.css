@@ -179,10 +179,6 @@
   font-weight: 400;
 }
 
-/* ---- Tool Cards Grid ---- */
-
-/* ---- Stats Bar ---- */
-
 /* ---- Common Buttons ---- */
 .btn {
   display: inline-flex;
@@ -307,12 +303,6 @@
   color: var(--color-text-tertiary);
 }
 
-/* ---- Dropzone ---- */
-
-/* ---- Progress Bar ---- */
-
-/* ---- Empty State ---- */
-
 /* ---- Tool Page Layout ---- */
 
 .tool-panel {
@@ -334,12 +324,6 @@
   font-weight: 700;
   color: var(--color-text-primary);
 }
-
-/* ---- Image Preview Grid ---- */
-
-/* ---- Toast / Notification ---- */
-
-/* ---- Checkbox / Toggle ---- */
 
 /* ---- Light Theme Layout Overrides ---- */
 
@@ -397,14 +381,6 @@ input[type="range"]::-webkit-slider-thumb {
   transition: color 0.15s, border-color 0.15s;
 }
 .task-clear-button:hover { color: #f87171; border-color: rgba(248,113,113,0.3); }
-.seg-btn {
-  padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--color-border);
-  background: transparent; cursor: pointer; display: inline-flex; align-items: center;
-  color: var(--color-text-tertiary); font-size: 11px; font-weight: 600;
-}
-.seg-btn.active {
-  border-color: var(--color-border-active); background: rgba(124,92,252,0.08); color: var(--color-accent-primary);
-}
 .native-context-item {
   display: block; width: 100%; padding: 6px 12px; border: none; background: none;
   font-size: 12px; text-align: left; border-radius: 4px; font-family: inherit;

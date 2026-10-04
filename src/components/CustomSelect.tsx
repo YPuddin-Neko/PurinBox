@@ -13,14 +13,13 @@ interface CustomSelectProps {
   value: string;
   options: SelectOption[];
   onChange: (value: string) => void;
-  disabled?: boolean;
   style?: React.CSSProperties;
   /** compact 模式：更小字号/高度 */
   compact?: boolean;
 }
 
 export default function CustomSelect({
-  value, options, onChange, disabled = false, style, compact = false,
+  value, options, onChange, style, compact = false,
 }: CustomSelectProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -83,7 +82,6 @@ export default function CustomSelect({
   }, [onChange]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (disabled) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       setOpen(o => !o);
@@ -98,17 +96,17 @@ export default function CustomSelect({
         : Math.max(idx - 1, 0);
       onChange(options[next].value);
     }
-  }, [disabled, options, value, onChange]);
+  }, [options, value, onChange]);
 
   return (
     <div
       ref={ref}
-      className={`cs-root ${open ? 'cs-open' : ''} ${disabled ? 'cs-disabled' : ''} ${compact ? 'cs-compact' : ''}`}
+      className={`cs-root ${open ? 'cs-open' : ''} ${compact ? 'cs-compact' : ''}`}
       style={style}
-      tabIndex={disabled ? -1 : 0}
+      tabIndex={0}
       onKeyDown={handleKeyDown}
     >
-      <div className="cs-trigger" onClick={() => !disabled && setOpen(o => !o)}>
+      <div className="cs-trigger" onClick={() => setOpen(o => !o)}>
         <span className={`cs-value ${!selected && !value ? 'cs-placeholder' : ''}`}>
           {selected ? selected.label : (value || t('common.select'))}
         </span>

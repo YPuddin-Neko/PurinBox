@@ -20,13 +20,7 @@ textarea,
 .cs-dropdown,
 .log-content,
 [style*="overflow-y: auto"],
-[style*="overflow-y:auto"],
-[style*="overflow: auto"],
-[style*="overflow:auto"],
-[style*="overflow: hidden auto"],
-[style*="overflow:hidden auto"],
-[style*="overflow-y: scroll"],
-[style*="overflow-y:scroll"] {
+[style*="overflow: auto"] {
   overscroll-behavior: contain;
 }
 

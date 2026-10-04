@@ -3,11 +3,14 @@ import { useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Sun, Moon, Monitor, ListTodo, Cpu, MemoryStick, MonitorDot, Trash2 } from 'lucide-react';
 import { useAppSettings } from './ThemeProvider';
-import { useTaskList, useTaskQueue } from './TaskContext';
+import { useTaskList, useTaskQueue, type TaskStatus } from './TaskContext';
 import { changeLanguage, availableLanguages } from '../i18n';
 import useSystemStats, { getUsageColor } from '../hooks/useSystemStats';
+import { formatBytes } from '../utils/format';
 import { routeI18nMap, TASK_ROUTE_MAP } from '../appRegistry';
 import '../styles/layout.css';
+
+const MEMORY = { memory: true, compact: true } as const;
 
 function MiniBar({ value, color, max = 100 }: { value: number; color: string; max?: number }) {
   const pct = Math.min(Math.max(value / max * 100, 0), 100);
@@ -18,10 +21,14 @@ function MiniBar({ value, color, max = 100 }: { value: number; color: string; ma
   );
 }
 
-function formatBytes(bytes: number) {
-  const gb = bytes / (1024 * 1024 * 1024);
-  return gb >= 1 ? `${gb.toFixed(1)}G` : `${(bytes / (1024 * 1024)).toFixed(0)}M`;
-}
+/** 任务状态标签的底色和文字色 */
+const TASK_STATUS_COLORS: Record<TaskStatus, { background: string; color: string }> = {
+  running: { background: 'rgba(74,222,128,0.1)', color: '#4ade80' },
+  done: { background: 'rgba(96,165,250,0.1)', color: '#60a5fa' },
+  warning: { background: 'rgba(251,191,36,0.1)', color: '#fbbf24' },
+  cancelled: { background: 'var(--color-bg-tertiary)', color: 'var(--color-text-tertiary)' },
+  error: { background: 'rgba(248,113,113,0.1)', color: '#f87171' },
+};
 
 export default function Header() {
   const { t, i18n } = useTranslation();
@@ -52,10 +59,11 @@ export default function Header() {
 
   const themeLabel = mode === 'dark' ? t('settings.themeDark') : mode === 'light' ? t('settings.themeLight') : t('settings.themeSystem');
 
-  const taskStatusLabel = (status: string) => {
+  const taskStatusLabel = (status: TaskStatus) => {
     switch (status) {
       case 'running': return t('header.running');
       case 'done': return t('header.done');
+      case 'warning': return t('common.warning');
       case 'cancelled': return t('header.cancelled');
       default: return t('header.errorStatus');
     }
@@ -80,7 +88,7 @@ export default function Header() {
             <MiniBar value={stats.cpu_usage} color={getUsageColor(stats.cpu_usage)} />
           </div>
           <div className="header-stat-divider" />
-          <div className="header-stat-item" title={`${formatBytes(stats.memory_used)} / ${formatBytes(stats.memory_total)}`}>
+          <div className="header-stat-item" title={`${formatBytes(stats.memory_used, MEMORY)} / ${formatBytes(stats.memory_total, MEMORY)}`}>
             <MemoryStick style={{ width: 13, height: 13, color: getUsageColor(stats.memory_percent) }} />
             <span className="header-stat-value" style={{ color: getUsageColor(stats.memory_percent) }}>{stats.memory_percent.toFixed(0)}%</span>
             <MiniBar value={stats.memory_percent} color={getUsageColor(stats.memory_percent)} />
@@ -96,7 +104,7 @@ export default function Header() {
               {stats.vram_percent >= 0 && stats.vram_total > 0 && !stats.gpu_name.includes('Apple') && (
                 <>
                   <div className="header-stat-divider" />
-                  <div className="header-stat-item" title={`VRAM: ${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}`}>
+                  <div className="header-stat-item" title={`VRAM: ${formatBytes(stats.vram_used, MEMORY)} / ${formatBytes(stats.vram_total, MEMORY)}`}>
                     <MemoryStick style={{ width: 13, height: 13, color: getUsageColor(stats.vram_percent) }} />
                     <span className="header-stat-value" style={{ color: getUsageColor(stats.vram_percent) }}>{stats.vram_percent.toFixed(0)}%</span>
                     <MiniBar value={stats.vram_percent} color={getUsageColor(stats.vram_percent)} />
@@ -154,8 +162,7 @@ export default function Header() {
                         <span style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{task.name}</span>
                         <span style={{
                           fontSize: 10, padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap', flexShrink: 0,
-                          background: task.status === 'running' ? 'rgba(74,222,128,0.1)' : task.status === 'done' ? 'rgba(96,165,250,0.1)' : task.status === 'cancelled' ? 'var(--color-bg-tertiary)' : 'rgba(248,113,113,0.1)',
-                          color: task.status === 'running' ? '#4ade80' : task.status === 'done' ? '#60a5fa' : task.status === 'cancelled' ? 'var(--color-text-tertiary)' : '#f87171',
+                          ...TASK_STATUS_COLORS[task.status],
                         }}>
                           {taskStatusLabel(task.status)}
                         </span>

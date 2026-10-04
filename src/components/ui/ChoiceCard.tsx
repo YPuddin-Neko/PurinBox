@@ -1,4 +1,4 @@
-import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
+import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import './ui.css';
 
 export interface ChoiceCardProps {
@@ -11,12 +11,12 @@ export interface ChoiceCardProps {
   tone?: 'accent' | 'danger';
   /** 较小的内边距与标记尺寸 */
   compact?: boolean;
+  /** column：标记与内容纵向排列、水平居中（如图标 + 标题 + 说明的操作卡片） */
+  layout?: 'row' | 'column';
   /** 标记所在行之下的内容；传了它卡片变成两段（标题行 + body） */
   body?: ReactNode;
   /** 与标记同一行的内容 */
   children?: ReactNode;
-  className?: string;
-  style?: CSSProperties;
 }
 
 // 卡片里的这些控件自己处理点击，点它们不切换卡片
@@ -29,10 +29,9 @@ export default function ChoiceCard({
   indicator,
   tone = 'accent',
   compact = false,
+  layout = 'row',
   body,
   children,
-  className,
-  style,
 }: ChoiceCardProps) {
   const handleClick = (e: MouseEvent<HTMLDivElement>) => {
     const control = e.target instanceof Element ? e.target.closest(NESTED_CONTROLS) : null;
@@ -53,8 +52,8 @@ export default function ChoiceCard({
     body === undefined ? 'ui-choice-inline' : '',
     selected ? 'is-selected' : '',
     compact ? 'is-compact' : '',
+    layout === 'column' ? 'is-column' : '',
     tone === 'danger' ? 'is-danger' : '',
-    className ?? '',
   ].filter(Boolean).join(' ');
 
   const mark = indicator && <span className={`ui-choice-indicator ui-choice-${indicator}`} aria-hidden="true" />;
@@ -65,7 +64,6 @@ export default function ChoiceCard({
       aria-checked={selected}
       tabIndex={0}
       className={classes}
-      style={style}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
     >

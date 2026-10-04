@@ -21,3 +21,8 @@ export async function listen<T>(
     return () => {};
   }
 }
+
+/** 命令被拒绝时的文本：Rust 命令拒绝时给的是字符串，其余取 Error 的 message，避免显示成 "Error: …" */
+export function errorText(e: unknown): string {
+  return typeof e === 'string' ? e : e instanceof Error ? e.message : String(e);
+}

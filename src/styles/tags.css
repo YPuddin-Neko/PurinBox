@@ -143,9 +143,70 @@
 .tag-batch-options { display: flex; flex-wrap: wrap; gap: 4px; }
 .tag-batch-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 16px -20px -16px; padding: 12px 20px; border-top: 1px solid var(--color-border); }
 .tag-batch-actions .btn { font-size: 11px; height: 30px; padding: 0 16px; }
-.tag-batch-modal[role='dialog'] { padding: 0 !important; border-radius: 16px !important; background: var(--color-bg-card) !important; }
-.tag-batch-modal .modal-header { padding: 16px 20px; margin-bottom: 0 !important; border-bottom: 1px solid var(--color-border); }
-.tag-batch-modal .modal-header span { font-size: 13px !important; font-weight: 700 !important; }
+/* ---- 标签编辑三种模式共用的面板 ---- */
+.tag-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.tag-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+.tag-panel-heading { display: flex; align-items: center; gap: 8px; }
+.tag-panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.tag-panel-note { font-size: 11px; font-weight: 400; color: var(--color-text-tertiary); }
+.tag-panel-count { padding: 1px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+.tag-header-actions { display: flex; align-items: center; gap: 4px; }
+.btn.tag-icon-btn { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; }
+.btn.tag-text-btn { height: 22px; padding: 0 6px; font-size: 9px; }
+.btn.tag-header-btn { height: 24px; padding: 0 10px; gap: 4px; font-size: 10px; }
+.tag-preview-nav { display: flex; align-items: center; gap: 6px; }
+.tag-preview-nav .btn { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border-radius: 6px; }
+.tag-preview-nav span { min-width: 50px; font-size: 11px; color: var(--color-text-tertiary); text-align: center; }
+.tag-preview-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.15);
+}
+.tag-preview-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--color-text-tertiary); }
+.tag-preview-empty span { font-size: 12px; opacity: 0.6; }
+.tag-resize-handle { display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.tag-resize-handle.is-x { width: 6px; cursor: col-resize; }
+.tag-resize-handle.is-y { height: 6px; cursor: row-resize; }
+.tag-resize-handle > span { display: block; border-radius: 1px; background: var(--color-border); transition: background 0.15s; }
+.tag-resize-handle.is-x > span { width: 2px; height: 32px; }
+.tag-resize-handle.is-y > span { width: 32px; height: 2px; }
+.tag-tool-sidebar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  border-left: 1px solid var(--color-border);
+}
+.tag-tool-sidebar .btn { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border-radius: 6px; }
+.tag-chip-drop { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--color-accent-primary); pointer-events: none; }
 @media (max-width: 1100px) {
   .tagger-category-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

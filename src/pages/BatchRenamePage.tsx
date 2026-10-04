@@ -9,33 +9,41 @@ import {
   TextCursorInput,
   Type
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ProcessResult, RenameOptions } from '../api/commandOptions';
+import { buildRenameOptions, RENAME_DEFAULTS, type ProcessResult, type RenameOptions } from '../api/commandOptions';
 import Checkbox from '../components/Checkbox';
 import DedupRenameTab from '../components/DedupRenameTab';
-import InputPathPickerButton from '../components/InputPathPickerButton';
 import ProgressLog from '../components/ProgressLog';
 import NumberInput from '../components/ui/NumberInput';
 import PageHeader from '../components/ui/PageHeader';
 import Pager from '../components/ui/Pager';
+import PathInput from '../components/ui/PathInput';
+import SegmentedTabs from '../components/ui/SegmentedTabs';
 import { useBatchTask } from '../hooks/useBatchTask';
 
-interface PreviewItem { original: string; renamed: string; }
+interface PreviewItem {
+  original: string;
+  renamed: string;
+  /** 共用这个标签文件的图片；非空时执行不重命名它 */
+  shared_by?: string[];
+  /** 新名已被其他文件占着；有这样的行时执行会整批拒绝 */
+  blocked?: boolean;
+}
 
 export default function BatchRenamePage() {
   const { t } = useTranslation();
   const task = useBatchTask({ event: 'rename-progress', taskId: 'rename' });
+  const d = RENAME_DEFAULTS;
+  const folderId = useId();
   const [activeTab, setActiveTab] = useState<'number' | 'dedup'>('number');
   const [inputPath, setInputPath] = useState('');
-  const [prefix, setPrefix] = useState('img_');
-  const [startNumber, setStartNumber] = useState(1);
-  const [digitCount, setDigitCount] = useState(4);
-
-  const [renameTags, setRenameTags] = useState(true);
+  const [prefix, setPrefix] = useState(d.prefix);
+  const [startNumber, setStartNumber] = useState(d.start_number);
+  const [digitCount, setDigitCount] = useState(d.digit_count);
+  const [renameTags, setRenameTags] = useState(d.rename_tags);
   const [previewPage, setPreviewPage] = useState(0);
   const PREVIEW_PER_PAGE = 15;
-
   const [previewLoading, setPreviewLoading] = useState(false);
 
   const [preview, setPreview] = useState<{ options: RenameOptions; items: PreviewItem[]; key: string } | null>(null);
@@ -48,10 +56,11 @@ export default function BatchRenamePage() {
   const runPreview = async (shuffle: boolean) => {
     if (!inputPath || task.processing) return;
     const request = ++previewRequest.current;
-    const options = {
-      input_path: inputPath, prefix, start_number: startNumber, digit_count: digitCount,
-      shuffle, shuffle_seed: shuffle ? Date.now() % 4294967296 : undefined, rename_tags: renameTags
-    } satisfies RenameOptions;
+    // 种子在预览时定下，执行时原样复用，打乱后的顺序才与预览一致
+    const options = buildRenameOptions({ input_path: inputPath }, {
+      prefix, start_number: startNumber, digit_count: digitCount, rename_tags: renameTags,
+      shuffle, shuffle_seed: shuffle ? Date.now() % 4294967296 : undefined,
+    });
     setPreview(null); setPreviewLoading(true);
     try {
       const items = await invoke<PreviewItem[]>('preview_rename', { options });
@@ -66,8 +75,10 @@ export default function BatchRenamePage() {
     if (!previewOpts || !previews.length) return;
     const options = previewOpts;
     await task.run({
-      taskName: t('batchRename.taskName'), startLog: t('batchRename.startMsg', { prefix: options.prefix, start: options.start_number, digits: options.digit_count }), cancellable: false,
-      exec: () => invoke<ProcessResult>('execute_rename', { options: options satisfies RenameOptions })
+      taskName: t('batchRename.taskName'),
+      startLog: t('batchRename.startMsg', { prefix: options.prefix, start: options.start_number, digits: options.digit_count }),
+      cancellable: false,
+      exec: () => invoke<ProcessResult>('execute_rename', { options }),
     });
     setPreview(null);
   };
@@ -79,28 +90,12 @@ export default function BatchRenamePage() {
     <div className="page" style={activeTab === 'dedup' ? { display: 'flex', flexDirection: 'column', height: '100%' } : undefined}>
       <PageHeader icon={TextCursorInput} color={'#38bdf8'} title={t('batchRename.title')} subtitle={t('batchRename.subtitle')} />
 
-      {/* Tabs */}
-      <div style={{
-        display: 'flex', gap: 2, marginBottom: 'var(--space-4)',
-        background: 'var(--color-bg-card)', borderRadius: 'var(--radius-lg)',
-        padding: 3, border: '1px solid var(--color-border)',
-        width: 'fit-content',
-      }}>
-        {[
-          { id: 'number' as const, label: t('dedupRename.tabNumber') },
-          { id: 'dedup' as const, label: t('dedupRename.tabDedup') },
-        ].map(tab => (
-          <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
-            padding: '8px 20px', borderRadius: 'var(--radius-md)', border: 'none',
-            cursor: 'pointer', fontSize: 'var(--font-size-sm)', fontWeight: 600,
-            transition: 'all 0.2s', fontFamily: 'inherit',
-            background: activeTab === tab.id ? 'var(--color-accent-primary)' : 'transparent',
-            color: activeTab === tab.id ? '#fff' : 'var(--color-text-tertiary)',
-          }}>{tab.label}</button>
-        ))}
-      </div>
+      <SegmentedTabs value={activeTab} onChange={setActiveTab} style={{ marginBottom: 'var(--space-4)' }} tabs={[
+        { id: 'number', label: t('dedupRename.tabNumber') },
+        { id: 'dedup', label: t('dedupRename.tabDedup') },
+      ]} />
 
-      {/* Tab: Number rename */}
+      {/* 序号重命名 */}
       <div style={{ display: activeTab === 'number' ? 'block' : 'none' }}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 400px', gap: 'var(--space-6)' }}>
           {/* 左侧 */}
@@ -109,11 +104,8 @@ export default function BatchRenamePage() {
             <div className="tool-panel">
               <div className="tool-panel-header"><span className="tool-panel-title">{t('batchRename.imageFolder')}</span></div>
               <div className="form-group">
-                <label className="form-label">{t('batchRename.folderDesc')}</label>
-                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('batchRename.selectFolder')} value={inputPath} onChange={(e) => setInputPath(e.target.value)} style={{ flex: 1 }} />
-                  <InputPathPickerButton onSelect={(path) => { setInputPath(path); setPreview(null); }} />
-                </div>
+                <label className="form-label" htmlFor={folderId}>{t('batchRename.folderDesc')}</label>
+                <PathInput id={folderId} pick="folderOrImage" placeholder={t('batchRename.selectFolder')} value={inputPath} onChange={setInputPath} />
               </div>
             </div>
 
@@ -181,11 +173,15 @@ export default function BatchRenamePage() {
               const totalPages = Math.ceil(previews.length / PREVIEW_PER_PAGE);
               const pageItems = previews.slice(previewPage * PREVIEW_PER_PAGE, (previewPage + 1) * PREVIEW_PER_PAGE);
               const startIdx = previewPage * PREVIEW_PER_PAGE;
+              const blockedCount = previews.filter(item => item.blocked).length;
               return (
                 <div className="tool-panel" style={{ padding: 0, overflow: 'hidden' }}>
                   <div className="tool-panel-header" style={{ padding: 'var(--space-3) var(--space-4)' }}>
                     <span className="tool-panel-title">{t('batchRename.previewTitle')}</span>
-                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>{t('batchRename.fileCount', { count: previews.length })}</span>
+                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>
+                      {t('batchRename.fileCount', { count: previews.length })}
+                      {blockedCount > 0 && <span style={{ color: 'var(--color-error)' }}> · {t('batchRename.conflictCount', { count: blockedCount })}</span>}
+                    </span>
                   </div>
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                     <thead>
@@ -199,12 +195,22 @@ export default function BatchRenamePage() {
                     <tbody>
                       {pageItems.map((item, localIdx) => {
                         const idx = startIdx + localIdx;
+                        const shared = item.shared_by?.length ? item.shared_by : null;
+                        const note = item.blocked ? t('batchRename.targetExists')
+                          : shared ? t('batchRename.sharedNotRenamed', { files: shared }) : null;
                         return (
                           <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
                             <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>{idx + 1}</td>
                             <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', fontFamily: 'monospace', wordBreak: 'break-all' }}>{item.original}</td>
                             <td style={{ padding: '6px 0', textAlign: 'center' }}><ArrowRight style={{ width: 12, height: 12, color: 'var(--color-text-tertiary)' }} /></td>
-                            <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-sm)', color: '#38bdf8', fontFamily: 'monospace', fontWeight: 600 }}>{item.renamed}</td>
+                            <td style={{ padding: '6px var(--space-4)', fontSize: 'var(--font-size-sm)', color: item.blocked ? 'var(--color-error)' : shared ? 'var(--color-warning)' : '#38bdf8', fontFamily: 'monospace', fontWeight: 600 }}>
+                              {item.renamed}
+                              {note && (
+                                <div style={{ fontSize: 'var(--font-size-xs)', fontFamily: 'inherit', fontWeight: 400, wordBreak: 'break-all' }}>
+                                  {note}
+                                </div>
+                              )}
+                            </td>
                           </tr>
                         );
                       })}
@@ -229,7 +235,7 @@ export default function BatchRenamePage() {
         </div>
       </div>
 
-      {/* Tab: Dedup rename */}
+      {/* 查重重命名 */}
       <div style={{ display: activeTab === 'dedup' ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0 }}>
         <DedupRenameTab />
       </div>

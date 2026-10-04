@@ -6,9 +6,9 @@
  * label 本地化、value 保持协议原值：显示怎么翻译都不影响发给后端的字段。
  */
 export const IMAGE_DETAIL_OPTIONS = (t: (key: string) => string) => [
-  { value: '', label: t('tagRefine.imageDetailDefault') },
-  { value: 'auto', label: `${t('tagRefine.imageDetailAuto')} (auto)` },
-  { value: 'low', label: `${t('tagRefine.imageDetailLow')} (low)` },
-  { value: 'high', label: `${t('tagRefine.imageDetailHigh')} (high)` },
-  { value: 'original', label: `${t('tagRefine.imageDetailOriginal')} (original)` },
+  { value: '', label: t('llmApi.imageDetailDefault') },
+  { value: 'auto', label: `${t('llmApi.imageDetailAuto')} (auto)` },
+  { value: 'low', label: `${t('llmApi.imageDetailLow')} (low)` },
+  { value: 'high', label: `${t('llmApi.imageDetailHigh')} (high)` },
+  { value: 'original', label: `${t('llmApi.imageDetailOriginal')} (original)` },
 ];

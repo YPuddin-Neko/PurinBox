@@ -1,9 +1,7 @@
 import { useId, type ReactNode } from 'react';
-import { open } from '@tauri-apps/plugin-dialog';
-import { FolderOpen } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import InputPathPickerButton from '../InputPathPickerButton';
 import RecursiveScanToggle from '../RecursiveScanToggle';
+import PathInput from './PathInput';
 import './ui.css';
 
 /** output 为 undefined 时不渲染输出行（如筛选页的删除模式：output={needsOutput ? outputPath : undefined}） */
@@ -36,11 +34,6 @@ export type PathFieldsProps = OutputFieldProps & RecursiveFieldProps & LayoutPro
   allowFile?: boolean;
 };
 
-async function pickFolder(title: string, onPick: (path: string) => void) {
-  const selected = await open({ directory: true, multiple: false, title });
-  if (typeof selected === 'string') onPick(selected);
-}
-
 export default function PathFields(props: PathFieldsProps) {
   const { t } = useTranslation();
   const inputId = useId();
@@ -56,40 +49,12 @@ export default function PathFields(props: PathFieldsProps) {
             <RecursiveScanToggle checked={props.recursive} onChange={props.onRecursive} />
           )}
         </div>
-        <div className="ui-path-row">
-          <input
-            id={inputId}
-            className="form-input"
-            placeholder={allowFile ? t('pages.selectInputPath') : t('pages.selectInputFolder')}
-            value={input}
-            onChange={e => onInput(e.target.value)}
-          />
-          {allowFile ? (
-            <InputPathPickerButton onSelect={onInput} />
-          ) : (
-            <button type="button" className="btn btn-secondary" aria-label={t('pages.selectInputTitle')}
-              onClick={() => pickFolder(t('pages.selectInputTitle'), onInput)}>
-              <FolderOpen style={{ width: 16, height: 16 }} />
-            </button>
-          )}
-        </div>
+        <PathInput id={inputId} value={input} onChange={onInput} pick={allowFile ? 'folderOrImage' : 'folder'} />
       </div>
       {props.output !== undefined && (
         <div className="form-group">
           <label className="form-label" htmlFor={outputId}>{props.outputLabel ?? t('pages.outputPath')}</label>
-          <div className="ui-path-row">
-            <input
-              id={outputId}
-              className="form-input"
-              placeholder={t('pages.selectOutputFolder')}
-              value={props.output}
-              onChange={e => props.onOutput(e.target.value)}
-            />
-            <button type="button" className="btn btn-secondary" aria-label={t('pages.selectOutputTitle')}
-              onClick={() => pickFolder(t('pages.selectOutputTitle'), props.onOutput)}>
-              <FolderOpen style={{ width: 16, height: 16 }} />
-            </button>
-          </div>
+          <PathInput id={outputId} kind="output" value={props.output} onChange={props.onOutput} />
         </div>
       )}
     </>

@@ -26,14 +26,21 @@ import NodePanel from '../components/workflow/NodePanel';
 import PropertyPanel from '../components/workflow/PropertyPanel';
 import BaseNode from '../components/workflow/nodes/BaseNode';
 import { getNodeDef, withDefaults } from '../components/workflow/nodeDefinitions';
-import type { WorkflowNodeData, WorkflowData } from '../components/workflow/workflowTypes';
+import type { WorkflowNodeData } from '../components/workflow/workflowTypes';
 import { WorkflowEngine } from '../components/workflow/WorkflowEngine';
+import { parseWorkflow, serializeWorkflow } from '../components/workflow/workflowFile';
+import PageHeader from '../components/ui/PageHeader';
+import { errorText } from '../utils/tauriRuntime';
 import '../components/workflow/workflow.css';
 
 let nodeIdCounter = 0;
 function nextNodeId() { return `node_${++nodeIdCounter}`; }
 
 const nodeTypes = { baseNode: BaseNode };
+
+const idleData = (data: WorkflowNodeData): WorkflowNodeData => ({
+  ...data, status: 'idle', statusMessage: undefined, progressCurrent: undefined, progressTotal: undefined,
+});
 
 function WorkflowEditor() {
   const { t } = useTranslation();
@@ -135,30 +142,28 @@ function WorkflowEditor() {
     try {
       const path = await save({ title: t('workflow.save'), filters: [{ name: t('workflow.workflowFile'), extensions: ['purin'] }] });
       if (!path) return;
-      const data: WorkflowData = {
-        version: 1, name: path.split(/[\\/]/).pop()?.replace('.purin', '') || 'workflow',
-        nodes: nodes.map(n => ({ id: n.id, type: n.data.type, position: n.position, data: { type: n.data.type, params: withDefaults(getNodeDef(n.data.type), n.data.params), status: 'idle' } })),
-        edges: edges.map(e => ({ id: e.id, source: e.source, target: e.target, sourceHandle: e.sourceHandle ?? undefined, targetHandle: e.targetHandle ?? undefined })),
-      };
-      await invoke('save_workflow', { path, data: JSON.stringify(data) });
-    } catch (e: unknown) { await message(`${t('workflow.saveFailed')}: ${String(e)}`, { title: t('workflow.save'), kind: 'error' }); }
+      const name = path.split(/[\\/]/).pop()?.replace('.purin', '') || 'workflow';
+      await invoke('save_workflow', { path, data: serializeWorkflow(name, nodes, edges) });
+    } catch (e: unknown) { await message(`${t('workflow.saveFailed')}: ${errorText(e)}`, { title: t('workflow.save'), kind: 'error' }); }
   }, [nodes, edges, t]);
 
   const handleLoad = useCallback(async () => {
+    const fail = (reason: string) => message(`${t('workflow.loadFailed')}: ${reason}`, { title: t('workflow.load'), kind: 'error' });
     try {
       const path = await open({ title: t('workflow.load'), filters: [{ name: t('workflow.workflowFile'), extensions: ['purin'] }], multiple: false }) as string | null;
       if (!path) return;
-      const json = await invoke<string>('load_workflow', { path });
-      const data: WorkflowData = JSON.parse(json);
-      if (!Array.isArray(data.nodes) || !Array.isArray(data.edges)) throw new Error(t('workflow.loadFailed'));
-      if (data.nodes.some(node => !node.id || !node.data?.type || !node.position)) throw new Error(t('workflow.loadFailed'));
-      setNodes(data.nodes.map(n => ({ id: n.id, type: 'baseNode', position: n.position, data: { type: n.data.type, params: withDefaults(getNodeDef(n.data.type), n.data.params), status: 'idle' } })));
-      setEdges(data.edges.map(e => ({ id: e.id, source: e.source, target: e.target, sourceHandle: e.sourceHandle, targetHandle: e.targetHandle })));
+      const loaded = parseWorkflow(await invoke<string>('load_workflow', { path }));
+      if (!loaded) {
+        await fail(t('workflow.loadInvalid'));
+        return;
+      }
+      setNodes(loaded.nodes);
+      setEdges(loaded.edges);
       setSelectedNodeId(null);
-      const maxId = data.nodes.reduce((max, n) => { const num = parseInt(n.id.replace('node_', '')); return isNaN(num) ? max : Math.max(max, num); }, 0);
+      const maxId = loaded.nodes.reduce((max, n) => { const num = parseInt(n.id.replace('node_', '')); return isNaN(num) ? max : Math.max(max, num); }, 0);
       nodeIdCounter = maxId;
       setRunningMessage('');
-    } catch (e: unknown) { await message(`${t('workflow.loadFailed')}: ${String(e)}`, { title: t('workflow.load'), kind: 'error' }); }
+    } catch (e: unknown) { await fail(errorText(e)); }
   }, [setNodes, setEdges, t]);
 
   const handleRun = useCallback(async () => {
@@ -166,10 +171,7 @@ function WorkflowEditor() {
       runningRef.current = false;
       requestRef.current++;
       engineRef.current?.cancel();
-      setNodes(nds => nds.map(n => ({
-        ...n,
-        data: { ...n.data, status: 'idle', statusMessage: undefined, progressCurrent: undefined, progressTotal: undefined },
-      })));
+      setNodes(nds => nds.map(n => ({ ...n, data: idleData(n.data) })));
       setIsRunning(false);
       setRunningMessage('');
       return;
@@ -186,6 +188,8 @@ function WorkflowEditor() {
       await execPromiseRef.current.catch(() => {});
     }
     if (!isCurrent()) return;
+    // 上一轮的状态先清掉：运行前校验没通过时只有出问题的节点会被标出来
+    setNodes(nds => nds.map(n => ({ ...n, data: idleData(n.data) })));
     setRunningMessage(t('workflow.runStart'));
 
     const updateNodeStatus = (nodeId: string, status: WorkflowNodeData['status'], message?: string) => {
@@ -210,7 +214,7 @@ function WorkflowEditor() {
       }));
     };
 
-    const engine = new WorkflowEngine();
+    const engine = new WorkflowEngine(t);
     engineRef.current = engine;
 
     const runPromise = engine.execute(nodes, edges, {
@@ -252,16 +256,7 @@ function WorkflowEditor() {
 
   return (
     <div className="page" style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      {/* 页面标题 */}
-      <div className="page-header" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-            <WorkflowIcon style={{ width: 28, height: 28, color: '#7c5cfc' }} />
-            <h1 className="page-title">{t('workflow.title')}</h1>
-          </div>
-          <p className="page-subtitle">{t('workflow.subtitle')}</p>
-        </div>
-        {/* 工具栏 - 右对齐，纯图标 */}
+      <PageHeader icon={WorkflowIcon} color="#7c5cfc" title={t('workflow.title')} subtitle={t('workflow.subtitle')} actions={
         <div className="wf-toolbar">
           <div className="wf-tb-group">
             <button className="wf-tb-btn" onClick={() => setShowNodePanel(!showNodePanel)} title={t('workflow.nodeLibrary')}>
@@ -289,7 +284,7 @@ function WorkflowEditor() {
             {isRunning ? <Square size={15} /> : <Play size={15} />}
           </button>
         </div>
-      </div>
+      } />
 
       {/* 画布区域 */}
       <div className="wf-main">

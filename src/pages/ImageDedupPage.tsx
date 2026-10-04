@@ -1,16 +1,15 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
 import {
   Check,
   ChevronLeft, ChevronRight,
   Copy,
-  FolderOpen,
   Search,
   Trash2,
   X,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { DedupDeleteResult, DedupOptions, DedupResult, DupGroup } from '../api/commandOptions';
 import HashThresholdFields from '../components/HashThresholdFields';
 import LightboxShell from '../components/LightboxShell';
 import ProcessButton from '../components/ProcessButton';
@@ -19,14 +18,14 @@ import RecursiveScanToggle from '../components/RecursiveScanToggle';
 import ThumbImage from '../components/ThumbImage';
 import PageHeader from '../components/ui/PageHeader';
 import Pager, { clampPage } from '../components/ui/Pager';
+import PathInput from '../components/ui/PathInput';
+import StatChips from '../components/ui/StatChips';
 import { useBatchTask } from '../hooks/useBatchTask';
 import { ensureAssetScope } from '../utils/assetScope';
 
-interface DupGroup { paths: string[]; method: string; }
-interface DedupResult { total_images: number; duplicate_groups: DupGroup[]; scan_time_ms: number; failed_files: string[]; }
-
 export default function ImageDedupPage() {
   const { t } = useTranslation();
+  const folderId = useId();
   const task = useBatchTask({ event: 'dedup_progress', logDone: false });
   const [inputPath, setInputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
@@ -43,19 +42,18 @@ export default function ImageDedupPage() {
 
   const [lightbox, setLightbox] = useState<{ groupIdx: number; imgIdx: number } | null>(null);
 
-  const pickFolder = async () => { const selected = await open({ directory: true, title: t('pages.selectInputTitle') }); if (typeof selected === 'string') setInputPath(selected); };
-
   const handleStart = async () => {
     setDupGroups([]); setSelectedForDelete(new Set()); setTotalImages(0); setCurrentPage(0); setLightbox(null);
     const result = await task.run({
-      startLog: t('imageDedup.scanStart'), exec: async () => {
+      startLog: t('imageDedup.scanStart'),
+      exec: async () => {
         await ensureAssetScope(inputPath);
         return invoke<DedupResult>('start_image_dedup', {
           options: {
             folder_path: inputPath, dhash_threshold: dhashThreshold, phash_threshold: phashThreshold, color_threshold: colorThreshold, recursive,
-          }
+          } satisfies DedupOptions,
         });
-      }
+      },
     });
     if (!result) return;
     setDupGroups(result.duplicate_groups); setTotalImages(result.total_images);
@@ -76,7 +74,7 @@ export default function ImageDedupPage() {
     if (selectedForDelete.size === 0 || task.processing || deleting) return;
     setDeleting(true);
     try {
-      const result = await invoke<{ deleted: number; failed: number; errors: string[] }>('delete_dedup_files', { paths: Array.from(selectedForDelete) });
+      const result = await invoke<DedupDeleteResult>('delete_dedup_files', { paths: Array.from(selectedForDelete) });
       task.logger.appendLog(t('imageDedup.deleteDone', { ok: result.deleted, fail: result.failed }), result.failed > 0 ? 'warning' : 'success');
       if (result.errors.length) task.logger.appendLog(result.errors.join('\n'), 'error');
       const deletedSet = new Set(Array.from(selectedForDelete).filter(p => !result.errors.some(e => e.startsWith(p + ': '))));
@@ -86,34 +84,27 @@ export default function ImageDedupPage() {
     finally { setDeleting(false); }
   };
 
-  const panel: React.CSSProperties = { background: 'var(--color-bg-card)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-lg)', padding: 20 };
-  const label: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 6, display: 'block' };
-
   return (
     <div className="page" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <PageHeader icon={Copy} color={'#14b8a6'} title={t('imageDedup.title')} subtitle={t('imageDedup.subtitle')} />
 
       {/* 网格占满页面剩余高度：结果区在右栏内滚动，翻页栏始终可见 */}
       <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gridTemplateRows: 'minmax(0, 1fr)', gap: 20, flex: 1, minHeight: 420 }}>
-        {/* Left: settings */}
+        {/* 左栏：设置 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflowY: 'auto' }}>
-          <div style={panel}>
+          <div className="tool-panel">
             <div className="form-label-row" style={{ marginBottom: 6 }}>
-              <label style={{ ...label, marginBottom: 0 }}>{t('imageDedup.imageFolder')}</label>
+              <label className="form-label" htmlFor={folderId}>{t('imageDedup.imageFolder')}</label>
               <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <input className="form-input" value={inputPath} onChange={e => setInputPath(e.target.value)}
-                placeholder={t('imageDedup.selectFolderPlaceholder')} style={{ flex: 1, fontSize: 12 }} />
-              <button className="btn btn-secondary" onClick={pickFolder} style={{ flexShrink: 0 }}>
-                <FolderOpen style={{ width: 14, height: 14 }} />
-              </button>
-            </div>
+            <PathInput id={folderId} size="sm" value={inputPath} onChange={setInputPath}
+              placeholder={t('imageDedup.selectFolderPlaceholder')} style={{ gap: 6 }} />
           </div>
 
-          <div style={panel}><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: 12 }}>
-            {t('imageDedup.algoParams')}
-          </div><HashThresholdFields dhash={dhashThreshold} onDhash={setDhashThreshold} phash={phashThreshold} onPhash={setPhashThreshold} color={colorThreshold} onColor={setColorThreshold} /></div>
+          <div className="tool-panel">
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: 12 }}>{t('imageDedup.algoParams')}</div>
+            <HashThresholdFields dhash={dhashThreshold} onDhash={setDhashThreshold} phash={phashThreshold} onPhash={setPhashThreshold} color={colorThreshold} onColor={setColorThreshold} />
+          </div>
 
           <ProcessButton {...task.buttonProps} onStart={handleStart}
             disabled={!inputPath || deleting}
@@ -122,34 +113,26 @@ export default function ImageDedupPage() {
 
           <ProgressLog {...task.progressLogProps} />
         </div>
-        {/* Right: results */}
+        {/* 右栏：结果 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minHeight: 300, overflow: 'hidden' }}>
-          {/* stats bar */}
           {task.progressLogProps.isDone && dupGroups.length > 0 && (
-            <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
-              {[
-                { label: t('imageDedup.totalImages'), value: totalImages, color: '#60a5fa' },
-                { label: t('imageDedup.dupGroups'), value: dupGroups.length, color: '#f59e0b' },
-                { label: t('imageDedup.dupImages'), value: dupGroups.reduce((a, g) => a + g.paths.length - 1, 0), color: '#ef4444' },
-                { label: t('imageDedup.selectedDel'), value: selectedForDelete.size, color: '#7c5cfc' },
-              ].map(s => (
-                <div key={s.label} style={{ ...panel, flex: 1, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{ fontSize: 18, fontWeight: 800, color: s.color, fontFamily: 'monospace' }}>{s.value}</span>
-                  <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', fontWeight: 600 }}>{s.label}</span>
-                </div>
-              ))}
-            </div>
+            <StatChips size="md" items={[
+              { label: t('imageDedup.totalImages'), value: totalImages, color: '#60a5fa' },
+              { label: t('imageDedup.dupGroups'), value: dupGroups.length, color: '#f59e0b' },
+              { label: t('imageDedup.dupImages'), value: dupGroups.reduce((a, g) => a + g.paths.length - 1, 0), color: '#ef4444' },
+              { label: t('imageDedup.selectedDel'), value: selectedForDelete.size, color: '#7c5cfc' },
+            ]} />
           )}
 
-          {/* empty state */}
+          {/* 空状态 */}
           {dupGroups.length === 0 && (
-            <div style={{ ...panel, flex: 1, minHeight: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, color: 'var(--color-text-tertiary)' }}>
+            <div className="tool-panel" style={{ flex: 1, minHeight: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, color: 'var(--color-text-tertiary)' }}>
               <Search style={{ width: 48, height: 48, opacity: 0.15 }} />
               <span style={{ fontSize: 13 }}>{task.processing ? t('imageDedup.emptyScanning') : task.progressLogProps.isDone ? t('imageDedup.emptyNoDup') : ''}</span>
             </div>
           )}
 
-          {/* paginated groups grid (3 cols, max 3 rows = 9 per page) */}
+          {/* 分组网格：3 列，每页最多 3 行共 9 组 */}
           {dupGroups.length > 0 && (() => {
             const totalPages = Math.ceil(dupGroups.length / GROUPS_PER_PAGE);
             const page = clampPage(currentPage, totalPages);
@@ -161,8 +144,8 @@ export default function ImageDedupPage() {
                     {pageGroups.map((group, localIdx) => {
                       const gi = page * GROUPS_PER_PAGE + localIdx;
                       return (
-                        <div key={gi} style={{ ...panel, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                          {/* group header */}
+                        <div key={gi} className="tool-panel" style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                          {/* 组标题 */}
                           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                               <span style={{ fontSize: 9, fontWeight: 700, color: '#fff', background: '#ef4444', borderRadius: 4, padding: '1px 6px' }}>
@@ -186,7 +169,7 @@ export default function ImageDedupPage() {
                               {t('imageDedup.toggleAll')}
                             </button>
                           </div>
-                          {/* images grid */}
+                          {/* 组内图片 */}
                           <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(3, group.paths.length)}, 1fr)`, gap: 4 }}>
                             {group.paths.map((p, pi) => {
                               const isSelected = selectedForDelete.has(p);
@@ -203,8 +186,8 @@ export default function ImageDedupPage() {
                                     <ThumbImage path={p} alt={fname}
                                       style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                                   </div>
-                                  {/* select/deselect badge */}
-                                  <div onClick={(e) => { e.stopPropagation(); toggleSelect(p); }} style={{
+                                  {/* 标记删除 */}
+                                  <div onClick={() => toggleSelect(p)} style={{
                                     position: 'absolute', top: 4, right: 4, width: 20, height: 20, borderRadius: '50%',
                                     background: isSelected ? '#ef4444' : 'rgba(0,0,0,0.5)',
                                     display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -225,7 +208,7 @@ export default function ImageDedupPage() {
                               );
                             })}
                           </div>
-                          {/* method info */}
+                          {/* 判定方式 */}
                           <div style={{ fontSize: 8, color: 'var(--color-text-tertiary)', textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {group.method}
                           </div>
@@ -235,11 +218,9 @@ export default function ImageDedupPage() {
                   </div>
                 </div>
 
-                {/* pagination + actions */}
+                {/* 翻页与删除操作 */}
                 <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}>
-                  {/* pagination */}
                   <Pager page={currentPage} pages={totalPages} onChange={setCurrentPage}><span>{t('imageDedup.totalGroups', { n: dupGroups.length })}</span></Pager>
-                  {/* delete actions */}
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button className="btn btn-secondary" onClick={() => setSelectedForDelete(new Set())}
                       style={{ fontSize: 10, height: 30, padding: '0 10px' }}>
@@ -257,7 +238,7 @@ export default function ImageDedupPage() {
         </div>
       </div>
 
-      {/* Lightbox */}
+      {/* 大图 */}
       {lightbox && dupGroups[lightbox.groupIdx] && (() => {
         const group = dupGroups[lightbox.groupIdx];
         const idx = lightbox.imgIdx;
@@ -266,8 +247,7 @@ export default function ImageDedupPage() {
         const isSelected = selectedForDelete.has(p);
         return (
           <LightboxShell onClose={() => setLightbox(null)}>
-            {/* prev */}
-            <button onClick={e => { e.stopPropagation(); setLightbox({ ...lightbox, imgIdx: idx - 1 }); }}
+            <button onClick={() => setLightbox({ ...lightbox, imgIdx: idx - 1 })}
               disabled={idx === 0}
               style={{
                 position: 'absolute', left: 20, top: '50%', transform: 'translateY(-50%)',
@@ -278,8 +258,7 @@ export default function ImageDedupPage() {
               }}>
               <ChevronLeft style={{ width: 24, height: 24 }} />
             </button>
-            {/* image */}
-            <div onClick={e => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, maxWidth: '80vw', maxHeight: '85vh' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, maxWidth: '80vw', maxHeight: '85vh' }}>
               <img src={convertFileSrc(p)} alt={fname}
                 style={{ maxWidth: '80vw', maxHeight: '75vh', objectFit: 'contain', borderRadius: 8 }} />
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -300,8 +279,7 @@ export default function ImageDedupPage() {
                 </button>
               </div>
             </div>
-            {/* next */}
-            <button onClick={e => { e.stopPropagation(); setLightbox({ ...lightbox, imgIdx: idx + 1 }); }}
+            <button onClick={() => setLightbox({ ...lightbox, imgIdx: idx + 1 })}
               disabled={idx >= group.paths.length - 1}
               style={{
                 position: 'absolute', right: 20, top: '50%', transform: 'translateY(-50%)',
@@ -312,8 +290,6 @@ export default function ImageDedupPage() {
               }}>
               <ChevronRight style={{ width: 24, height: 24 }} />
             </button>
-            {/* close hint */}
-
           </LightboxShell>
         );
       })()}

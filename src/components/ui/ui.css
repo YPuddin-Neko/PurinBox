@@ -39,6 +39,246 @@
   flex: 1;
 }
 
+/* ---- PathInput ---- */
+.ui-path-row.is-sm > .form-input {
+  height: 32px;
+  font-size: 12px;
+}
+
+.ui-path-row.is-sm .ui-path-btn {
+  height: 32px;
+}
+
+.ui-path-menu-anchor {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.ui-path-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 148px;
+  padding: 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-lg);
+  z-index: 50;
+}
+
+.ui-path-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ui-path-menu-item:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(124, 92, 252, 0.45);
+}
+
+/* ---- ToolPageLayout ---- */
+.ui-tool-grid {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: var(--space-6);
+}
+
+.ui-tool-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* ---- RangeField ---- */
+.ui-range-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.ui-range-value {
+  font-family: monospace;
+  font-size: var(--font-size-sm);
+}
+
+.ui-range-input {
+  width: 100%;
+}
+
+.ui-range-ends {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  font-size: 9px;
+  color: var(--color-text-tertiary);
+}
+
+.ui-range-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.ui-range-inline > .ui-range-input {
+  flex: 1;
+  width: auto;
+}
+
+.ui-range-inline-label,
+.ui-range-inline-value {
+  flex-shrink: 0;
+  font-size: 12px;
+  text-align: right;
+}
+
+.ui-range-inline-label {
+  width: 32px;
+  font-weight: 600;
+}
+
+.ui-range-inline-value {
+  width: 28px;
+  font-weight: 700;
+  font-family: monospace;
+}
+
+/* 滑块按行内元素排进文字行，上下留白由行高决定（查重阈值面板的间距） */
+.form-group.ui-range-flow {
+  display: block;
+}
+
+.ui-range-flow > .ui-range-head {
+  align-items: stretch;
+  margin-bottom: 6px;
+}
+
+.ui-range-flow > .ui-range-ends {
+  margin-top: 0;
+}
+
+/* ---- StatChips ---- */
+.ui-stats {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ui-stat {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  text-align: left;
+  transition: all 0.15s;
+}
+
+.ui-stat.is-clickable {
+  cursor: pointer;
+}
+
+.ui-stat.is-clickable:focus-visible {
+  box-shadow: 0 0 0 2px rgba(124, 92, 252, 0.45);
+}
+
+.ui-stat-value {
+  font-size: 16px;
+  font-weight: 800;
+  font-family: monospace;
+}
+
+.ui-stat-label {
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--color-text-tertiary);
+}
+
+.ui-stat-more {
+  margin-left: auto;
+  font-size: 9px;
+  opacity: 0.6;
+}
+
+.ui-stats.is-md {
+  gap: 10px;
+}
+
+.ui-stats.is-md .ui-stat {
+  gap: 10px;
+  padding: 10px 14px;
+}
+
+.ui-stats.is-md .ui-stat-value {
+  font-size: 18px;
+}
+
+.ui-stats.is-md .ui-stat-label {
+  font-size: 10px;
+  line-height: inherit;
+}
+
+/* ---- ResultTable ---- */
+.ui-result-table {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.ui-result-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.ui-result-table-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ui-result-table-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.ui-result-table-grid {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ui-result-table-grid > thead > tr {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.ui-result-table-grid > thead th {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+}
+
 /* ---- ChoiceCard ---- */
 .ui-choice {
   --choice-color: var(--color-accent-primary);
@@ -81,6 +321,12 @@
 
 .ui-choice-row {
   margin-bottom: var(--space-3);
+}
+
+.ui-choice.is-column.ui-choice-inline,
+.ui-choice.is-column .ui-choice-row {
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 .ui-choice-indicator {
@@ -153,6 +399,37 @@
   opacity: 1;
 }
 
+/* ---- 选项按钮：选中时边框、文字取 --toggle-color，底色取它的淡色；尺寸由使用处给 ---- */
+.ui-toggle {
+  --toggle-color: var(--color-accent-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-weight: 700;
+  text-align: center;
+  transition: all 0.15s;
+}
+
+.ui-toggle[aria-pressed='true'] {
+  border-color: var(--toggle-color);
+  background: color-mix(in srgb, var(--toggle-color) 7%, transparent);
+  color: var(--toggle-color);
+}
+
+.ui-toggle:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.ui-toggle:focus-visible {
+  box-shadow: 0 0 0 2px rgba(124, 92, 252, 0.35);
+}
+
 /* ---- DeviceToggle ---- */
 .ui-device {
   display: flex;
@@ -161,25 +438,8 @@
 }
 
 .ui-device-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
   padding: 4px 12px;
-  border-radius: var(--radius-sm);
-  border: 1.5px solid var(--color-border);
   font-size: 11px;
-  font-weight: 700;
-  color: var(--color-text-tertiary);
-  transition: all 0.15s;
-}
-
-.ui-device-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-
-.ui-device-btn:focus-visible {
-  box-shadow: 0 0 0 2px rgba(124, 92, 252, 0.35);
 }
 
 .ui-device-icon {

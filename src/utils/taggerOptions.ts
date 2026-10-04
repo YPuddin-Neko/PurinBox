@@ -1,9 +1,10 @@
 /**
- * 打标类命令共用的选项表与界面值规范化：类别与追加字段的选项表、输出格式拆分、
- * LLM 请求参数（间隔、并发、图片尺寸）从输入框字符串到 Rust 字段的换算。
+ * 打标类命令共用的选项表与界面值换算：类别与追加字段的选项表、输出格式拆分、
+ * 请求间隔从秒到 request_interval_ms 的换算。
  * 各页面自己的默认值不放在这里。
  */
 import {
+  JSON_APPEND_FIELD_KEYS,
   TAGGER_CATEGORY_KEYS,
   isOneOf,
   type JsonAppendField,
@@ -85,32 +86,29 @@ export interface JsonAppendFieldDef {
   labelKey: string;
 }
 
-/** JSON 输出时“追加标签”可选的 8 个目标字段，默认 tags */
-export const JSON_APPEND_FIELDS: readonly JsonAppendFieldDef[] = [
-  { value: 'tags', labelKey: 'aiTagger.fieldTags' },
-  { value: 'appearance', labelKey: 'aiTagger.fieldAppearance' },
-  { value: 'environment', labelKey: 'aiTagger.fieldEnvironment' },
-  { value: 'quality', labelKey: 'aiTagger.fieldQuality' },
-  { value: 'character', labelKey: 'aiTagger.fieldCharacter' },
-  { value: 'series', labelKey: 'aiTagger.fieldSeries' },
-  { value: 'artist', labelKey: 'aiTagger.fieldArtist' },
-  { value: 'count', labelKey: 'aiTagger.fieldCount' },
-];
+/** 与 JSON 标签编辑器同一套字段名 */
+const APPEND_FIELD_LABELS: Record<JsonAppendField, string> = {
+  tags: 'jsonTag.fieldTags',
+  appearance: 'jsonTag.fieldAppearance',
+  environment: 'jsonTag.fieldEnvironment',
+  quality: 'jsonTag.fieldQuality',
+  character: 'jsonTag.fieldCharacter',
+  series: 'jsonTag.fieldSeries',
+  artist: 'jsonTag.fieldArtist',
+  count: 'jsonTag.fieldCount',
+};
+
+/** JSON 输出时“追加标签”可选的目标字段，默认 tags */
+export const JSON_APPEND_FIELDS: readonly JsonAppendFieldDef[] =
+  JSON_APPEND_FIELD_KEYS.map(value => ({ value, labelKey: APPEND_FIELD_LABELS[value] }));
 
 // ── 输出格式 ──
 
 /** 界面上的三选一输出格式；提交时拆成 output_format + json_simplified */
 export type TagOutputChoice = 'txt' | 'json' | 'json_simplified';
 
-export const TAG_OUTPUT_CHOICES: readonly TagOutputChoice[] = ['txt', 'json', 'json_simplified'];
-
 export function splitOutputFormat(choice: TagOutputChoice): { output_format: TagFileFormat; json_simplified: boolean } {
   return { output_format: choice === 'txt' ? 'txt' : 'json', json_simplified: choice === 'json_simplified' };
-}
-
-export function joinOutputFormat(format: TagFileFormat, simplified: boolean): TagOutputChoice {
-  if (format === 'txt') return 'txt';
-  return simplified ? 'json_simplified' : 'json';
 }
 
 // ── LLM 请求参数 ──
@@ -123,18 +121,4 @@ export function toIntervalMs(seconds: string | number): number {
   const sec = typeof seconds === 'number' ? seconds : parseFloat(seconds);
   if (!Number.isFinite(sec) || sec < 0) return -1;
   return Math.min(Math.round(sec * 1000), Number.MAX_SAFE_INTEGER);
-}
-
-/** 并发输入框 → concurrency：取整数部分，限定在 1..max；空串或非法值按 1 */
-export function toThreads(value: string | number, max = 32): number {
-  const n = typeof value === 'number' ? Math.trunc(value) : parseInt(value, 10);
-  if (!Number.isFinite(n) || n < 1) return 1;
-  return Math.min(n, max);
-}
-
-/** 图片发送尺寸输入框 → image_size（u32）：空串、非法值或小于 1 时用 fallback */
-export function toImageSize(value: string | number, fallback = 1024): number {
-  const n = typeof value === 'number' ? Math.trunc(value) : parseInt(value, 10);
-  if (!Number.isFinite(n) || n < 1) return fallback;
-  return Math.min(n, 0xffffffff);
 }

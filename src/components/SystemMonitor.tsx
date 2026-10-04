@@ -1,11 +1,9 @@
 import useSystemStats, { getUsageColor } from '../hooks/useSystemStats';
 import { MonitorDot } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { formatBytes } from '../utils/format';
 
-function formatBytes(bytes: number): string {
-  const gb = bytes / (1024 * 1024 * 1024);
-  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
-}
+const MEMORY = { memory: true } as const;
 
 function GaugeRing({ value, color, label, detail, subtitle, size = 80 }: { value: number; color: string; label: string; detail: string; subtitle?: string; size?: number }) {
   const r = (size - 8) / 2;
@@ -53,7 +51,7 @@ export default function SystemMonitor() {
         <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'flex-start' }}>
           <GaugeRing value={stats.cpu_usage} color={getUsageColor(stats.cpu_usage)} label="CPU" detail={`${stats.cpu_cores} ${t('systemMonitor.cores')}`} />
           <GaugeRing value={stats.memory_percent} color={getUsageColor(stats.memory_percent)} label="RAM"
-            detail={`${formatBytes(stats.memory_used)} / ${formatBytes(stats.memory_total)}`} />
+            detail={`${formatBytes(stats.memory_used, MEMORY)} / ${formatBytes(stats.memory_total, MEMORY)}`} />
           {stats.gpu_usage >= 0 ? (
             <>
               <GaugeRing value={stats.gpu_usage} color={getUsageColor(stats.gpu_usage)} label="GPU"
@@ -63,7 +61,7 @@ export default function SystemMonitor() {
                 <GaugeRing value={stats.vram_percent >= 0 ? stats.vram_percent : 0}
                   color={stats.vram_percent >= 0 ? getUsageColor(stats.vram_percent) : '#5a5e78'}
                   label="VRAM"
-                  detail={stats.vram_total > 0 ? `${formatBytes(stats.vram_used)} / ${formatBytes(stats.vram_total)}` : 'N/A'} />
+                  detail={stats.vram_total > 0 ? `${formatBytes(stats.vram_used, MEMORY)} / ${formatBytes(stats.vram_total, MEMORY)}` : 'N/A'} />
               )}
             </>
           ) : (

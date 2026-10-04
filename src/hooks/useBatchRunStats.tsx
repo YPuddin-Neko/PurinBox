@@ -24,7 +24,7 @@ export function useBatchRunStats() {
     if (p.status === 'warning') { next.warnings++; next.warningFiles = [...next.warningFiles, p.filename]; }
     current.current = next;
     setStats(next);
-    // IPC can resolve before the final progress events arrive.
+    // 命令可能先于最后几条进度事件返回：汇总写完后才到的失败、警告逐条补记
     if (summaryLogger.current && (p.status === 'error' || p.status === 'warning')) {
       summaryLogger.current.appendLog(`${t(p.status === 'error' ? 'tagSort.failedFiles' : 'tagSort.warnFiles')}: ${p.filename}`, p.status);
     }

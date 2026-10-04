@@ -106,7 +106,7 @@ export function useTagFieldDrag({ scope, revision, disabled, onDrop }: {
     insertionIndex: state?.target?.field === field ? state.target.index : null,
     onPointerDown: (event, index, value) => {
       if (disabled || gesture.current || event.button !== 0 || event.detail > 1 || (event.target as HTMLElement).closest('button, input, textarea, fieldset:disabled')) return;
-      // Capture only after movement, preserving native double-click editing in WebView2.
+      // 移动超过阈值才捕获指针：按下就捕获会让 WebView2 的双击编辑失效
       gesture.current = { source: { field, index, value }, id: event.pointerId, element: event.currentTarget,
         x: event.clientX, y: event.clientY, startX: event.clientX, startY: event.clientY, active: false, target: null };
     },

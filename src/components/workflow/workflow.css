@@ -331,6 +331,11 @@
 .wf-inline-input:focus {
   border-color: var(--color-accent-primary);
 }
+.wf-textarea {
+  display: block;
+  resize: vertical;
+  line-height: 1.4;
+}
 .wf-inline-select {
   width: 100%;
   box-sizing: border-box;

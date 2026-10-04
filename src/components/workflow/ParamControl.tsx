@@ -42,6 +42,8 @@ export default function ParamControl({ param: p, value, onChange, disabled = fal
     case 'dynamic-select':
       return <DynamicSelect param={p} value={String(value)} onChange={v => onChange(p.key, v)} className={inline ? 'wf-inline-select' : className} />;
     default:
-      return <input className={className} aria-label={label} value={String(value)} onChange={e => onChange(p.key, e.target.value)} />;
+      return p.multiline
+        ? <textarea className={`${className} wf-textarea`} aria-label={label} rows={inline ? 3 : 6} value={String(value)} onChange={e => onChange(p.key, e.target.value)} />
+        : <input className={className} aria-label={label} value={String(value)} onChange={e => onChange(p.key, e.target.value)} />;
   }
 }

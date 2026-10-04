@@ -35,11 +35,6 @@
   border-color: var(--color-accent-primary);
 }
 
-.cs-disabled .cs-trigger {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .cs-value {
   flex: 1;
   overflow: hidden;

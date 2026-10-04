@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import {
   DEFAULT_LLM_PRESET,
   fetchLlmModels,
@@ -62,9 +62,10 @@ function useTimedResult<T>(durationMs: number): [T | null, (value: T) => void] {
 
 /**
  * LLM API 设置的状态与操作，配合 LlmApiPanel 使用。
- * 保存后通知其他保活面板刷新配置，模型名仍由各面板单独维护。
+ * 保存后通知其他保活面板同步预设、端点和 Key；模型名和已拉取的模型列表仍由各面板单独维护。
  */
 export function useLlmApiConfig(options: UseLlmApiConfigOptions = {}): LlmApiConfigController {
+  const panelId = useId();
   const [preset, setPreset] = useState<LlmPresetId>(DEFAULT_LLM_PRESET);
   const [customEndpoint, setCustomEndpoint] = useState('');
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
@@ -85,14 +86,17 @@ export function useLlmApiConfig(options: UseLlmApiConfigOptions = {}): LlmApiCon
         setPreset(cfg.preset);
         setCustomEndpoint(cfg.customEndpoint);
         setApiKeys(cfg.apiKeys);
-        setModelList([]);
       })
       .catch(() => { /* 读取失败沿用默认值，用户仍可手填后保存 */ });
     };
+    // 本面板保存的配置就是当前状态，不再读回：读回期间的编辑会被盖掉
+    const onSaved = (event: Event) => {
+      if ((event as CustomEvent<string>).detail !== panelId) reload();
+    };
     reload();
-    window.addEventListener(CONFIG_SAVED_EVENT, reload);
-    return () => { active = false; window.removeEventListener(CONFIG_SAVED_EVENT, reload); };
-  }, []);
+    window.addEventListener(CONFIG_SAVED_EVENT, onSaved);
+    return () => { active = false; window.removeEventListener(CONFIG_SAVED_EVENT, onSaved); };
+  }, [panelId]);
 
   const endpoint = resolveEndpoint(preset, customEndpoint);
   const apiKey = apiKeys[preset] ?? '';
@@ -119,12 +123,12 @@ export function useLlmApiConfig(options: UseLlmApiConfigOptions = {}): LlmApiCon
   const saveConfig = useCallback(async () => {
     try {
       await saveLlmApiConfig({ preset, customEndpoint, apiKeys });
-      window.dispatchEvent(new Event(CONFIG_SAVED_EVENT));
+      window.dispatchEvent(new CustomEvent(CONFIG_SAVED_EVENT, { detail: panelId }));
       showSaveResult({ ok: true });
     } catch (e) {
       showSaveResult({ ok: false, error: String(e) });
     }
-  }, [preset, customEndpoint, apiKeys, showSaveResult]);
+  }, [preset, customEndpoint, apiKeys, showSaveResult, panelId]);
 
   return {
     preset,

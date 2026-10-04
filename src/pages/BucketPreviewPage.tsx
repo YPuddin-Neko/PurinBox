@@ -1,11 +1,9 @@
-import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
+import { useId, useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
-import { open } from '@tauri-apps/plugin-dialog';
 import ThumbImage from '../components/ThumbImage';
 import {
   Grid3X3,
-  FolderOpen,
   Play,
   Loader2,
   Download,
@@ -16,16 +14,19 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { BUCKET_DEFAULTS, buildBucketOptions, type BucketMode } from '../api/commandOptions';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
+import { isCancelMessage } from '../components/TaskContext';
 import PageHeader from '../components/ui/PageHeader';
 import NumberInput from '../components/ui/NumberInput';
+import PathInput from '../components/ui/PathInput';
 import Switch from '../components/ui/Switch';
 import SegmentedTabs from '../components/ui/SegmentedTabs';
 import Pager from '../components/ui/Pager';
 import ExportBar from '../components/ExportBar';
 
 type BucketEngine = 'sd' | 'diffusion_pipe';
-type SdBucketMode = 'legacy' | 'nearest_only';
+type SdBucketMode = Exclude<BucketMode, 'diffusion_pipe'>;
 
 interface BucketImageInfo {
   path: string;
@@ -109,9 +110,9 @@ function bucketColor(ratio: number): string {
   return `hsl(${Math.round(hue % 360)}, 65%, 55%)`;
 }
 
-const fieldLabelStyle = (invalid: boolean): CSSProperties => ({ fontSize: 10, color: invalid ? '#ef4444' : undefined });
+const fieldLabelStyle = (invalid = false): CSSProperties => ({ fontSize: 10, color: invalid ? '#ef4444' : undefined });
 
-const fieldInputStyle = (invalid: boolean): CSSProperties => ({
+const fieldInputStyle = (invalid = false): CSSProperties => ({
   height: 32,
   borderColor: invalid ? '#ef4444' : undefined,
   boxShadow: invalid ? '0 0 0 1px #ef4444' : undefined,
@@ -119,19 +120,21 @@ const fieldInputStyle = (invalid: boolean): CSSProperties => ({
 
 export default function BucketPreviewPage() {
   const { t } = useTranslation();
+  const d = BUCKET_DEFAULTS;
+  const datasetId = useId();
   const [inputPath, setInputPath] = useState('');
-  const [resolution, setResolution] = useState('1024,1024');
-  const [bucketRange, setBucketRange] = useState('256,2048');
-  const [steps, setSteps] = useState(32);
-  const [noUpscale, setNoUpscale] = useState(true);
+  const [resolution, setResolution] = useState(`${d.res_width},${d.res_height}`);
+  const [bucketRange, setBucketRange] = useState(`${d.min_bucket_reso},${d.max_bucket_reso}`);
+  const [steps, setSteps] = useState(d.steps);
+  const [noUpscale, setNoUpscale] = useState(d.no_upscale);
   const [bucketEngine, setBucketEngine] = useState<BucketEngine>('sd');
   const [bucketMode, setBucketMode] = useState<SdBucketMode>('legacy');
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
-  const [dpMinArInput, setDpMinArInput] = useState('0.5');
-  const [dpMaxArInput, setDpMaxArInput] = useState('2.0');
-  const [dpArBucketCount, setDpArBucketCount] = useState(7);
-  const [batchSize, setBatchSize] = useState(1);
-  const [dropLast, setDropLast] = useState(true);
+  const [dpMinAr, setDpMinAr] = useState(d.dp_min_ar);
+  const [dpMaxAr, setDpMaxAr] = useState(d.dp_max_ar);
+  const [dpArBucketCount, setDpArBucketCount] = useState(d.dp_num_ar_buckets);
+  const [batchSize, setBatchSize] = useState(d.batch_size);
+  const [dropLast, setDropLast] = useState(d.drop_last);
   const [recursive, setRecursive] = useState(false);
   const modeMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -144,22 +147,21 @@ export default function BucketPreviewPage() {
   const resPair = parsePair(resolution);
   const rangePair = parsePair(bucketRange);
   const isDpMode = bucketEngine === 'diffusion_pipe';
-  const resWidth = resPair?.[0] ?? 1024;
-  const resHeight = resPair?.[1] ?? 1024;
-  const minBucketReso = rangePair?.[0] ?? 256;
-  const maxBucketReso = rangePair?.[1] ?? 2048;
-  const dpMinAr = Number.parseFloat(dpMinArInput);
-  const dpMaxAr = Number.parseFloat(dpMaxArInput);
+  const resWidth = resPair?.[0] ?? d.res_width;
+  const resHeight = resPair?.[1] ?? d.res_height;
+  const minBucketReso = rangePair?.[0] ?? d.min_bucket_reso;
+  const maxBucketReso = rangePair?.[1] ?? d.max_bucket_reso;
 
-  const stepsError = steps < 32 || (steps > 32 && steps % 64 !== 0);
+  // NumberInput 保证 steps ≥ 32 且为整数，只剩「大于 32 时须是 64 的倍数」要查
+  const stepsError = steps > 32 && steps % 64 !== 0;
   const resError = !resPair;
-  const dpArError = isDpMode && (!Number.isFinite(dpMinAr) || !Number.isFinite(dpMaxAr) || dpMinAr <= 0 || dpMaxAr <= dpMinAr);
-  const dpBucketError = isDpMode && (!Number.isFinite(dpArBucketCount) || dpArBucketCount < 1);
-  const batchSizeError = !Number.isFinite(batchSize) || batchSize < 1;
-
+  const dpArError = isDpMode && dpMaxAr <= dpMinAr;
 
   const [analyzing, setAnalyzing] = useState(false);
   const analyzeActive = useRef(false);
+  /** 本轮分析 / 推荐点过取消：后端以「已取消」返回时按取消收尾，不报错 */
+  const analyzeCancelRequested = useRef(false);
+  const recommendCancelRequested = useRef(false);
   const [analysis, setAnalysis] = useState<BucketAnalysis | null>(null);
   const analysisIsDpMode = analysis?.ar_error_metric === 'log';
   const droppedMaterialPreview = useMemo<DroppedBucketPreview[]>(() => {
@@ -191,6 +193,7 @@ export default function BucketPreviewPage() {
   const [enableExport, setEnableExport] = useState(false);
   const [exportPath, setExportPath] = useState('');
   const [exporting, setExporting] = useState(false);
+  const exportActive = useRef(false);
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
   // toast 定时器：先 clear 再设，避免快速连续 toast 时旧定时器提前清掉新 toast
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -250,58 +253,50 @@ export default function BucketPreviewPage() {
       setScanMsg(e.payload.message);
       if (e.payload.total > 0) setScanProgress((e.payload.current / e.payload.total) * 100);
     });
+    // 导出每复制 20 个文件报一次进度
+    const p2 = listen<ScanProgress>('bucket-export-progress', (e) => {
+      if (!active || !exportActive.current) return;
+      showToast(e.payload.message, 'success');
+    });
     return () => {
-      active = false; p1.then(fn => fn());
+      active = false; p1.then(fn => fn()); p2.then(fn => fn());
       if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); toastTimerRef.current = null; }
     };
   }, []);
 
-  const selectInputFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: t('bucketPreview.selectDataset') });
-    if (selected) setInputPath(selected as string);
-  };
-
-  const selectExportFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: t('bucketPreview.selectExport') });
-    if (selected) setExportPath(selected as string);
-  };
-
   const handleAnalyze = async () => {
     if (!inputPath || analyzing || recommending || exporting) return;
-    if (resError || stepsError || dpArError || dpBucketError || batchSizeError) return;
-    // 通过上面的校验后各值都已在合法范围内，只剩小数需要取整
-    const dpArBucketCountVal = Math.floor(dpArBucketCount);
-    const batchSizeVal = Math.floor(batchSize);
-    if (isDpMode && dpArBucketCountVal !== dpArBucketCount) setDpArBucketCount(dpArBucketCountVal);
-    if (batchSizeVal !== batchSize) setBatchSize(batchSizeVal);
+    if (resError || stepsError || dpArError) return;
     const gen = ++analyzeGenRef.current;
     analyzeActive.current = true;
+    analyzeCancelRequested.current = false;
     setAnalyzing(true);
     clearAnalysisResult();
     setScanMsg(t('bucketPreview.scanning'));
     try {
       const result = await invoke<BucketAnalysis>('analyze_buckets', {
-        options: {
-          input_path: inputPath,
+        options: buildBucketOptions({ input_path: inputPath, recursive }, {
           res_width: resWidth,
           res_height: resHeight,
           steps,
-          no_upscale: isDpMode ? true : noUpscale,
-          min_bucket_reso: noUpscale || isDpMode ? null : minBucketReso,
-          max_bucket_reso: noUpscale || isDpMode ? null : maxBucketReso,
+          no_upscale: noUpscale,
+          min_bucket_reso: minBucketReso,
+          max_bucket_reso: maxBucketReso,
           bucket_mode: isDpMode ? 'diffusion_pipe' : bucketMode,
-          recursive,
-          dp_min_ar: isDpMode ? dpMinAr : null,
-          dp_max_ar: isDpMode ? dpMaxAr : null,
-          dp_num_ar_buckets: isDpMode ? dpArBucketCountVal : null,
-          batch_size: batchSizeVal,
-          drop_last: isDpMode ? dropLast : false,
-        },
+          dp_min_ar: dpMinAr,
+          dp_max_ar: dpMaxAr,
+          dp_num_ar_buckets: dpArBucketCount,
+          batch_size: batchSize,
+          drop_last: dropLast,
+        }),
       });
       if (gen !== analyzeGenRef.current) return; // 输入/引擎已切换，丢弃过期结果
       setAnalysis(result);
-    } catch (e: any) {
-      if (gen === analyzeGenRef.current) setScanMsg(`${t('pages.errorPrefix')}: ${String(e)}`);
+    } catch (e) {
+      const text = String(e);
+      if (gen === analyzeGenRef.current && !(analyzeCancelRequested.current && isCancelMessage(text))) {
+        showToast(`${t('pages.errorPrefix')}: ${text}`, 'error');
+      }
     } finally {
       analyzeActive.current = false;
       setAnalyzing(false);
@@ -318,25 +313,28 @@ export default function BucketPreviewPage() {
   const applyRecommendation = (candidate: BucketParamCandidate) => {
     setResolution(`${candidate.res_width},${candidate.res_height}`);
     setSteps(candidate.steps);
-    setDpMinArInput(formatRecommendedAr(candidate.dp_min_ar));
-    setDpMaxArInput(formatRecommendedAr(candidate.dp_max_ar));
+    setDpMinAr(Number(formatRecommendedAr(candidate.dp_min_ar)));
+    setDpMaxAr(Number(formatRecommendedAr(candidate.dp_max_ar)));
     setDpArBucketCount(candidate.dp_num_ar_buckets);
     setBatchSize(candidate.batch_size);
     clearAnalysisResult();
   };
 
-  // 取消进行中的分析/推荐：后端命中取消标志后以 "已取消" 错误返回，走各自的 catch 分支收尾
+  // 取消进行中的分析/推荐：后端命中取消标志后以「已取消」错误返回，走各自的 catch 分支收尾
   const cancelAnalyze = () => {
+    analyzeCancelRequested.current = true;
     invoke('cancel_bucket_analysis').catch(() => {});
   };
 
   const cancelRecommend = () => {
+    recommendCancelRequested.current = true;
     invoke('cancel_bucket_recommend').catch(() => {});
   };
 
   const handleRecommend = async () => {
     if (!inputPath || recommending || analyzing || exporting) return;
     const gen = analyzeGenRef.current;
+    recommendCancelRequested.current = false;
     setRecommending(true);
     try {
       const recommendation = await invoke<BucketParamRecommendation>('recommend_bucket_params', {
@@ -346,7 +344,10 @@ export default function BucketPreviewPage() {
         },
       });
       if (gen !== analyzeGenRef.current) return;
-      if (!recommendation.candidates.length) throw new Error(t('bucketPreview.recommendFailed'));
+      if (!recommendation.candidates.length) {
+        showToast(t('bucketPreview.recommendFailed'), 'error');
+        return;
+      }
       setRecommendation(recommendation);
       setRecommendPage(0);
       applyRecommendation(recommendation.candidates[0]);
@@ -355,8 +356,11 @@ export default function BucketPreviewPage() {
         n: recommendation.total_images,
         sizes: recommendation.unique_sizes,
       }), 'success');
-    } catch (e: any) {
-      showToast(`${t('bucketPreview.recommendFailed')}: ${String(e)}`, 'error');
+    } catch (e) {
+      const text = String(e);
+      if (!(recommendCancelRequested.current && isCancelMessage(text))) {
+        showToast(`${t('bucketPreview.recommendFailed')}: ${text}`, 'error');
+      }
     } finally {
       setRecommending(false);
     }
@@ -364,13 +368,15 @@ export default function BucketPreviewPage() {
 
   const handleExport = async () => {
     if (!analysis || !exportPath || exporting || analyzing || recommending) return;
+    exportActive.current = true;
     setExporting(true);
     try {
       const msg = await invoke<string>('export_buckets', { analysis, outputPath: exportPath });
       showToast(msg, 'success');
-    } catch (e: any) {
+    } catch (e) {
       showToast(`${t('bucketPreview.exportFailed')}: ${String(e)}`, 'error');
     } finally {
+      exportActive.current = false;
       setExporting(false);
     }
   };
@@ -392,7 +398,7 @@ export default function BucketPreviewPage() {
 
   return (
     <div className="page" style={{ minHeight: '100%', display: 'flex', flexDirection: 'column', overflow: 'visible', position: 'relative', paddingBottom: 'var(--space-6)' }}>
-      {/* Toast */}
+      {/* 提示条 */}
       {toast && (
         <div style={{
           position: 'absolute', top: 24, left: '50%', transform: 'translateX(-50%)',
@@ -407,10 +413,9 @@ export default function BucketPreviewPage() {
         </div>
       )}
       <style>{`@keyframes toast-in { from { opacity: 0; transform: translateX(-50%) translateY(-10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }`}</style>
-      {/* Header */}
       <PageHeader icon={Grid3X3} color="#f59e0b" title={t('bucketPreview.title')} subtitle={t('bucketPreview.subtitle')} style={{ flexShrink: 0 }} />
 
-      {/* Params */}
+      {/* 参数 */}
       <div className="tool-panel" style={{ flexShrink: 0 }}>
         <div className="tool-panel-header" style={{ gap: 12 }}>
           <span className="tool-panel-title" style={{ minHeight: 30, display: 'flex', alignItems: 'center' }}>{t('bucketPreview.paramSettings')}</span>
@@ -485,13 +490,11 @@ export default function BucketPreviewPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           <div className="form-group">
             <div className="form-label-row">
-              <label className="form-label" style={{ margin: 0 }}>{t('bucketPreview.datasetFolder')}</label>
+              <label className="form-label" htmlFor={datasetId}>{t('bucketPreview.datasetFolder')}</label>
               <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
             </div>
-            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-              <input className="form-input" placeholder={t('bucketPreview.datasetPlaceholder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
-              <button className="btn btn-secondary" onClick={selectInputFolder}><FolderOpen style={{ width: 16, height: 16 }} /></button>
-            </div>
+            <PathInput id={datasetId} value={inputPath} onChange={setInputPath}
+              dialogTitle={t('bucketPreview.selectDataset')} placeholder={t('bucketPreview.datasetPlaceholder')} />
           </div>
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
@@ -505,12 +508,12 @@ export default function BucketPreviewPage() {
               <>
                 <div style={{ position: 'relative', width: 92 }}>
                   <label className="form-label" style={fieldLabelStyle(dpArError)}>{t('bucketPreview.dpMinAr')}</label>
-                  <input className="form-input" type="number" step="0.01" min="0.01" value={dpMinArInput} onChange={e => setDpMinArInput(e.target.value)} style={fieldInputStyle(dpArError)} />
+                  <NumberInput value={dpMinAr} onChange={setDpMinAr} min={0.01} step={0.01} fallback={d.dp_min_ar} style={fieldInputStyle(dpArError)} />
                 </div>
 
                 <div style={{ position: 'relative', width: 92 }}>
                   <label className="form-label" style={fieldLabelStyle(dpArError)}>{t('bucketPreview.dpMaxAr')}</label>
-                  <input className="form-input" type="number" step="0.01" min="0.01" value={dpMaxArInput} onChange={e => setDpMaxArInput(e.target.value)} style={fieldInputStyle(dpArError)} />
+                  <NumberInput value={dpMaxAr} onChange={setDpMaxAr} min={0.01} step={0.01} fallback={d.dp_max_ar} style={fieldInputStyle(dpArError)} />
                 </div>
               </>
             )}
@@ -524,7 +527,7 @@ export default function BucketPreviewPage() {
             {/* 桶分辨率划分单位 */}
             <div style={{ position: 'relative', width: 90 }}>
               <label className="form-label" style={fieldLabelStyle(stepsError)}>{t('bucketPreview.stepsLabel')}</label>
-              <NumberInput value={steps} onChange={setSteps} min={32} step={32} integer fallback={32} style={fieldInputStyle(stepsError)} />
+              <NumberInput value={steps} onChange={setSteps} min={32} step={32} integer fallback={d.steps} style={fieldInputStyle(stepsError)} />
               {stepsError && <div style={{
                 position: 'absolute', top: '100%', left: 0, marginTop: 2,
                 fontSize: 9, color: '#ef4444', whiteSpace: 'nowrap',
@@ -532,8 +535,8 @@ export default function BucketPreviewPage() {
             </div>
 
             <div style={{ position: 'relative', width: 82 }}>
-              <label className="form-label" style={fieldLabelStyle(batchSizeError)}>{t('bucketPreview.batchSize')}</label>
-              <NumberInput value={batchSize} onChange={setBatchSize} min={1} step={1} integer fallback={1} style={fieldInputStyle(batchSizeError)} />
+              <label className="form-label" style={fieldLabelStyle()}>{t('bucketPreview.batchSize')}</label>
+              <NumberInput value={batchSize} onChange={setBatchSize} min={1} step={1} integer fallback={d.batch_size} style={fieldInputStyle()} />
             </div>
 
             {isDpMode && (
@@ -566,8 +569,8 @@ export default function BucketPreviewPage() {
 
             {isDpMode && (
               <div style={{ position: 'relative', width: 84 }}>
-                <label className="form-label" style={fieldLabelStyle(dpBucketError)}>{t('bucketPreview.dpArBuckets')}</label>
-                <NumberInput value={dpArBucketCount} onChange={setDpArBucketCount} min={1} step={1} integer fallback={7} style={fieldInputStyle(dpBucketError)} />
+                <label className="form-label" style={fieldLabelStyle()}>{t('bucketPreview.dpArBuckets')}</label>
+                <NumberInput value={dpArBucketCount} onChange={setDpArBucketCount} min={1} step={1} integer fallback={d.dp_num_ar_buckets} style={fieldInputStyle()} />
               </div>
             )}
 
@@ -596,7 +599,7 @@ export default function BucketPreviewPage() {
                 {recommending ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('common.cancel')}</> : <><Sparkles style={{ width: 14, height: 14 }} /> {t('bucketPreview.recommendParams')}</>}
               </button>
             )}
-            <button className="btn btn-primary" style={{ height: 34, padding: '0 20px', flexShrink: 0 }} onClick={analyzing ? cancelAnalyze : handleAnalyze} disabled={!analyzing && (recommending || !inputPath || resError || stepsError || dpArError || dpBucketError || batchSizeError)}>
+            <button className="btn btn-primary" style={{ height: 34, padding: '0 20px', flexShrink: 0 }} onClick={analyzing ? cancelAnalyze : handleAnalyze} disabled={!analyzing && (recommending || !inputPath || resError || stepsError || dpArError)}>
               {analyzing ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('common.cancel')}</> : <><Play style={{ width: 14, height: 14 }} /> {t('bucketPreview.startPreview')}</>}
             </button>
           </div>
@@ -680,10 +683,10 @@ export default function BucketPreviewPage() {
         </div>
       </div>
 
-      {/* Results */}
+      {/* 分析结果 */}
       {analysis && (
         <div style={{ display: 'flex', flexDirection: 'column', overflow: 'visible', marginTop: 'var(--space-4)' }}>
-          {/* Stats */}
+          {/* 统计 */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0, marginBottom: 'var(--space-3)' }}>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#4ade80' }} />
@@ -794,7 +797,7 @@ export default function BucketPreviewPage() {
             </div>
           )}
 
-          {/* Bucket grid — fixed 3 columns, paginated */}
+          {/* 桶网格：固定 3 列，分页 */}
           {(() => {
             const totalBucketPages = Math.ceil(analysis.buckets.length / BUCKETS_PER_PAGE);
             const pageBuckets = analysis.buckets.slice(bucketPage * BUCKETS_PER_PAGE, (bucketPage + 1) * BUCKETS_PER_PAGE);
@@ -825,9 +828,9 @@ export default function BucketPreviewPage() {
                     display: 'flex', flexDirection: 'column',
                     position: 'relative',
                   }}>
-                    {/* Top-left: index */}
+                    {/* 左上：序号 */}
                     <div style={{ position: 'absolute', top: 6, left: 8, fontSize: 9, fontWeight: 700, color: 'var(--color-text-tertiary)', zIndex: 1 }}>#{bucket.index}</div>
-                    {/* Top-right: orientation badge */}
+                    {/* 右上：方向标记 */}
                     <div style={{
                       position: 'absolute', top: 6, right: 8, zIndex: 1,
                       width: 20, height: 20, borderRadius: 5, background: color, opacity: 0.85,
@@ -835,10 +838,10 @@ export default function BucketPreviewPage() {
                       fontSize: 10, fontWeight: 800, color: '#fff',
                     }}>{orientLabel}</div>
 
-                    {/* Top spacer — centers content when collapsed, collapses when expanded */}
+                    {/* 上方留白：收起时让信息区垂直居中，展开时收拢 */}
                     <div style={{ flex: isExpanded ? 0 : 1, transition: 'flex 0.35s ease' }} />
 
-                    {/* Info section */}
+                    {/* 信息区 */}
                     <div style={{
                       display: 'flex', flexDirection: 'column', alignItems: 'center',
                       gap: isExpanded ? 1 : 4,
@@ -846,7 +849,7 @@ export default function BucketPreviewPage() {
                       transition: 'gap 0.35s ease, padding 0.35s ease',
                       flexShrink: 0,
                     }}>
-                      {/* Aspect ratio preview — shrinks when expanded */}
+                      {/* 宽高比示意，展开时收起 */}
                       <div style={{
                         width: pw,
                         height: isExpanded ? 0 : ph,
@@ -857,7 +860,7 @@ export default function BucketPreviewPage() {
                         opacity: isExpanded ? 0 : 1,
                         overflow: 'hidden',
                       }} />
-                      {/* Resolution */}
+                      {/* 分辨率 */}
                       <div style={{
                         fontSize: isExpanded ? 11 : 13,
                         fontWeight: 700, color: 'var(--color-text-primary)', lineHeight: 1.2,
@@ -865,7 +868,7 @@ export default function BucketPreviewPage() {
                       }}>
                         {bucket.bucket_width}×{bucket.bucket_height}
                       </div>
-                      {/* Count info */}
+                      {/* 数量 */}
                       <div style={{
                         fontSize: isExpanded ? 8 : 10,
                         color: 'var(--color-text-tertiary)', textAlign: 'center', lineHeight: 1.3,
@@ -905,7 +908,7 @@ export default function BucketPreviewPage() {
                       }}>
                         {analysisIsDpMode ? 'LogErr' : 'Err'} {bucket.mean_ar_error.toFixed(6)}
                       </div>
-                      {/* Mini bar — hides when expanded */}
+                      {/* 占比条，展开时隐藏 */}
                       <div style={{
                         width: '65%',
                         height: isExpanded ? 0 : 3,
@@ -917,10 +920,10 @@ export default function BucketPreviewPage() {
                       </div>
                     </div>
 
-                    {/* Bottom spacer — centers content when collapsed */}
+                    {/* 下方留白：收起时让信息区垂直居中 */}
                     <div style={{ flex: isExpanded ? 0 : 1, transition: 'flex 0.35s ease' }} />
 
-                    {/* Image grid — fills remaining space when expanded */}
+                    {/* 图片网格：展开时占满剩余空间 */}
                     <div onClick={e => e.stopPropagation()} style={{
                       flex: isExpanded ? 1 : 0,
                       opacity: isExpanded ? 1 : 0,
@@ -937,7 +940,8 @@ export default function BucketPreviewPage() {
                         height: '100%',
                         overflowY: 'auto',
                         overflowX: 'hidden',
-                        // 同时写了 overflowX/Y 会被序列化成 overflow 简写，global.css 的属性选择器匹配不到，这里要自己声明
+                        // overflowX/Y 同时设置时 style 属性会写成 overflow 简写，global.css 的属性选择器匹配不到
+                        overscrollBehavior: 'contain',
                         alignContent: 'start',
                       }}>
                         {(() => {
@@ -989,7 +993,7 @@ export default function BucketPreviewPage() {
             </div>
           </div>
 
-          {/* Pagination */}
+          {/* 翻页 */}
           {totalBucketPages > 1 && <Pager page={bucketPage} pages={totalBucketPages} onChange={setBucketPage} footer>
             <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{t('bucketPreview.allBuckets', { n: analysis.buckets.length })}</span>
           </Pager>}
@@ -999,23 +1003,16 @@ export default function BucketPreviewPage() {
 
           <ExportBar enabled={enableExport} onChange={setEnableExport} label={t('bucketPreview.exportResult')}
             disabled={exporting} style={{ marginTop: 'var(--space-3)' }}>
-            {enableExport && (
-              <>
-                <div style={{ flex: 1, display: 'flex', gap: 'var(--space-2)' }}>
-                  <input className="form-input" placeholder={t('bucketPreview.exportPlaceholder')} value={exportPath} onChange={e => setExportPath(e.target.value)} style={{ flex: 1, height: 32, fontSize: 12 }} />
-                  <button className="btn btn-secondary" onClick={selectExportFolder} style={{ height: 32 }}><FolderOpen style={{ width: 14, height: 14 }} /></button>
-                </div>
-                <button className="btn btn-primary" style={{ height: 32, padding: '0 16px', fontSize: 12, whiteSpace: 'nowrap' }} onClick={handleExport} disabled={exporting || analyzing || recommending || !exportPath}>
-                  {exporting ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('bucketPreview.exporting')}</> : <><Download style={{ width: 14, height: 14 }} /> {t('bucketPreview.export')}</>}
-                </button>
-              </>
-            )}
-
+            <PathInput kind="output" size="sm" value={exportPath} onChange={setExportPath} style={{ flex: 1 }}
+              dialogTitle={t('bucketPreview.selectExport')} placeholder={t('bucketPreview.exportPlaceholder')} />
+            <button className="btn btn-primary" style={{ height: 32, padding: '0 16px', fontSize: 12, whiteSpace: 'nowrap' }} onClick={handleExport} disabled={exporting || analyzing || recommending || !exportPath}>
+              {exporting ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('bucketPreview.exporting')}</> : <><Download style={{ width: 14, height: 14 }} /> {t('bucketPreview.export')}</>}
+            </button>
           </ExportBar>
         </div>
       )}
 
-      {/* Empty state */}
+      {/* 空状态 */}
       {!analysis && !analyzing && (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, opacity: 0.5 }}>
           <ImageIcon style={{ width: 48, height: 48, color: 'var(--color-text-tertiary)' }} />

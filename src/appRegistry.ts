@@ -46,7 +46,7 @@ interface PageTaskDef {
   events: string[];
 }
 
-interface PageDef {
+export interface PageDef {
   /** 路由路径（唯一键） */
   path: string;
   /** sidebar.* 翻译 key（侧边栏与面包屑共用） */

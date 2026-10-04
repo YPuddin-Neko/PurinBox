@@ -19,22 +19,19 @@ const DEVICES = [
 export default function DeviceToggle({ useGpu, onChange, cpuDisabled = false, className, style }: DeviceToggleProps) {
   return (
     <div className={className ? `ui-device ${className}` : 'ui-device'} style={style}>
-      {DEVICES.map(({ gpu, label, Icon, color }) => {
-        const active = useGpu === gpu;
-        return (
-          <button
-            key={label}
-            type="button"
-            className="ui-device-btn"
-            aria-pressed={active}
-            disabled={!gpu && cpuDisabled}
-            onClick={() => onChange(gpu)}
-            style={active ? { borderColor: color, background: `${color}12`, color } : undefined}
-          >
-            <Icon className="ui-device-icon" /> {label}
-          </button>
-        );
-      })}
+      {DEVICES.map(({ gpu, label, Icon, color }) => (
+        <button
+          key={label}
+          type="button"
+          className="ui-toggle ui-device-btn"
+          aria-pressed={useGpu === gpu}
+          disabled={!gpu && cpuDisabled}
+          onClick={() => onChange(gpu)}
+          style={{ '--toggle-color': color } as CSSProperties}
+        >
+          <Icon className="ui-device-icon" /> {label}
+        </button>
+      ))}
     </div>
   );
 }

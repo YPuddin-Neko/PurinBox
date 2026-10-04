@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '../utils/tauriRuntime';
 
 type TranslationResult = { translations: { source: string; translated: string }[] };
-// Progress has no request ID. Serialize requests from the three persistent editors.
+// 翻译进度事件不带请求 ID：三个常驻编辑器的翻译请求排队依次执行
 let translationQueue: Promise<unknown> = Promise.resolve();
 
 export function useTagTranslation() {

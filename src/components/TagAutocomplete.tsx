@@ -36,7 +36,7 @@ interface TagAutocompleteProps {
   placeholder?: string;
   onSelect: (tag: string) => void;
   inputStyle?: React.CSSProperties;
-  /** If true, stay open after select (for multi-add) */
+  /** 选中后保持输入状态，用于连续添加 */
   keepOpen?: boolean;
   autoFocus?: boolean;
   initialValue?: string;
@@ -112,6 +112,7 @@ export default function TagAutocomplete({
     } catch {
       if (seq !== searchSeqRef.current) return;
       setSuggestions([]);
+      setShowDropdown(false);
     }
   }, []);
 
@@ -136,16 +137,21 @@ export default function TagAutocomplete({
     }
   }, [autoFocus]);
 
+  // 新结果到达前保留上一次的建议，下拉框不随每次按键闪烁；
+  // 序号作废进行中的旧请求，晚到的过期结果不会显示出来被选中
   const scheduleSearch = (val: string, caret: number) => {
     caretRef.current = caret;
     searchSeqRef.current++;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    setSuggestions([]);
-    setShowDropdown(false);
     setActiveIndex(-1);
     const prefix = val.slice(0, caret);
-    const token = multi ? prefix.split(/[,，]/).slice(-1)[0] ?? '' : val;
-    debounceRef.current = setTimeout(() => search(token.trim()), 120);
+    const token = (multi ? prefix.split(/[,，]/).slice(-1)[0] ?? '' : val).trim();
+    if (!token) {
+      setSuggestions([]);
+      setShowDropdown(false);
+      return;
+    }
+    debounceRef.current = setTimeout(() => search(token), 120);
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -210,7 +216,7 @@ export default function TagAutocomplete({
         return;
       }
     }
-    // Enter without selection: use raw input
+    // 没有选中建议时回车提交输入框原文
     if (e.key === 'Enter' && query.trim()) {
       e.preventDefault();
       onSelect(query.trim());
@@ -220,8 +226,11 @@ export default function TagAutocomplete({
       setShowDropdown(false);
       return;
     }
-    if (e.key === 'Escape') {
+    // 下拉框开着时 Esc 只收起它：preventDefault 让外层弹窗不关闭，也不转给 onKeyDown 退出编辑
+    if (e.key === 'Escape' && showDropdown && suggestions.length > 0) {
+      e.preventDefault();
       setShowDropdown(false);
+      return;
     }
     onKeyDown?.(e);
   };
@@ -340,7 +349,7 @@ export default function TagAutocomplete({
         onKeyDown={handleKeyDown}
         onFocus={() => { if (suggestions.length > 0) setShowDropdown(true); }}
         onBlur={() => {
-          // Delay hiding to allow click on dropdown
+          // 延迟收起，让点击下拉项先生效
           setTimeout(() => {
             if (!dropdownRef.current?.contains(document.activeElement)) {
               setShowDropdown(false);

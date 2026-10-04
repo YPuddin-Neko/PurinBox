@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import SegmentedTabs from '../components/ui/SegmentedTabs';
+import PageHeader from '../components/ui/PageHeader';
 import { Wand2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import TagSortTab from '../components/TagSortTab';
@@ -16,13 +17,7 @@ export default function TagSortPage() {
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-          <Wand2 style={{ width: 28, height: 28, color: '#a78bfa' }} />
-          <h1 className="page-title">{t('tagOptimize.title')}</h1>
-        </div>
-        <p className="page-subtitle">{t('tagOptimize.subtitle')}</p>
-      </div>
+      <PageHeader icon={Wand2} color="#a78bfa" title={t('tagOptimize.title')} subtitle={t('tagOptimize.subtitle')} />
 
       <SegmentedTabs tabs={tabs} value={activeTab} onChange={setActiveTab} style={{ marginBottom: 'var(--space-4)' }} />
       <div style={{ display: activeTab === 'sort' ? 'block' : 'none' }}><TagSortTab /></div>

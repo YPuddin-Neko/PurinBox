@@ -10,6 +10,38 @@ export interface UnifiedProgressPayload {
   message: string;
   i18n_key?: string;
   i18n_params?: Record<string, unknown>;
+  /** 后端 begin_run 分配的运行 ID，同一事件名下递增；不经 begin_run 的事件没有 */
+  run_id?: number;
+  /** 被用户取消的那一轮，终态 done 带 true */
+  cancelled?: boolean;
+}
+
+/**
+ * 按事件通道丢弃上一轮迟到的进度事件。一个事件名用一个实例。
+ *
+ * 通道上的每条事件都要先过 accept（包括不归本页处理的轮次，如工作流跑同一命令），
+ * begin 记下的下限才能覆盖别处跑过的轮次。
+ */
+export class RunIdGate {
+  private seen = 0;
+  private floor = 0;
+
+  /** 新一轮开始：此前见过的 run_id 都算旧轮 */
+  begin(): void {
+    this.floor = this.seen;
+  }
+
+  /** 是否接收这条事件；没有 run_id 的事件照常接收 */
+  accept(runId: number | undefined): boolean {
+    if (typeof runId !== 'number' || !Number.isFinite(runId)) return true;
+    if (runId > this.seen) this.seen = runId;
+    return runId > this.floor;
+  }
+}
+
+/** 被用户取消的那一轮的终态事件 */
+export function isCancelledDone(payload: Pick<UnifiedProgressPayload, 'status' | 'cancelled'>): boolean {
+  return payload.status === 'done' && payload.cancelled === true;
 }
 
 export interface UnifiedDownloadPayload {
@@ -38,9 +70,9 @@ function normalizeLogStatus(status: string): LogStatus {
   return 'info';
 }
 
-function isDuplicateBackendError(errorText: string, lastBackendError: string): boolean {
-  return !!lastBackendError
-    && (errorText.includes(lastBackendError) || lastBackendError.includes(errorText));
+/** 两段文本互相包含：后端事件里的消息与命令返回的 Err 文本常是同一句的长短版本 */
+export function textsOverlap(logged: string | null | undefined, text: string): boolean {
+  return !!logged && (logged.includes(text) || text.includes(logged));
 }
 
 interface ProgressLogOptions {
@@ -131,7 +163,7 @@ export function useUnifiedTaskLogs(setLogs: SetLogs) {
 
   const appendCatchError = useCallback((error: unknown, prefix: string) => {
     const errorText = String(error);
-    if (!lastBackendErrorRef.current.some(message => isDuplicateBackendError(errorText, message))) {
+    if (!lastBackendErrorRef.current.some(message => textsOverlap(message, errorText))) {
       appendLog(`${prefix}: ${errorText}`, 'error');
     }
     return errorText;

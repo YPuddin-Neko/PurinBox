@@ -3,7 +3,7 @@ import { useReactFlow } from '@xyflow/react';
 import type { WorkflowNodeData } from './workflowTypes';
 import { getNodeDef, withDefaults } from './nodeDefinitions';
 import { categoriesFromFlags, pruneTaggerCategories, TAGGER_CATEGORIES } from '../../utils/taggerOptions';
-import { getDefaultPrompts } from '../../utils/llmPrompts';
+import { switchDefaultPrompts } from '../../utils/llmPrompts';
 import { useDynamicItems } from './useDynamicItems';
 
 export function useNodeParamUpdater(id: string, data: WorkflowNodeData) {
@@ -30,10 +30,13 @@ export function useNodeParamUpdater(id: string, data: WorkflowNodeData) {
         }
       }
       if (current.type === 'llm-tagger' && key === 'output_format') {
-        const before = getDefaultPrompts(previous.output_format === 'txt' ? 'txt' : 'json', previous.output_format === 'json_simplified');
-        const after = getDefaultPrompts(value === 'txt' ? 'txt' : 'json', value === 'json_simplified');
-        if (!previous.system_prompt || previous.system_prompt === before.sys) updates.system_prompt = after.sys;
-        if (!previous.user_prompt || previous.user_prompt === before.user) updates.user_prompt = after.user;
+        const prompts = switchDefaultPrompts(
+          { sys: previous.system_prompt, user: previous.user_prompt },
+          value === 'txt' ? 'txt' : 'json',
+          value === 'json_simplified',
+        );
+        updates.system_prompt = prompts.sys;
+        updates.user_prompt = prompts.user;
       }
       return { ...node, data: { ...current, params: withDefaults(getNodeDef(current.type), updates) } };
     }));

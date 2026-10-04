@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { setSystemStatsInterval } from '../hooks/useSystemStats';
 
 type ThemeMode = 'dark' | 'light' | 'system';
 
@@ -65,6 +66,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setMonitorIntervalRaw(ms);
     localStorage.setItem('monitorInterval', String(ms));
   };
+
+  useEffect(() => {
+    setSystemStatsInterval(monitorInterval);
+  }, [monitorInterval]);
 
   const setWorkflowEnabled = (on: boolean) => {
     setWorkflowEnabledRaw(on);

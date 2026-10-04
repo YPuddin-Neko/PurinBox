@@ -2,12 +2,17 @@
 import { invoke } from '@tauri-apps/api/core';
 // 走 tauriRuntime 封装：浏览器模式下（无 Tauri 运行时）listen 为 noop
 import { listen } from '../../utils/tauriRuntime';
-type UnlistenFn = () => void;
 import type { Node, Edge } from '@xyflow/react';
 import type { WorkflowNodeData } from './workflowTypes';
-import { getNodeDef, withDefaults } from './nodeDefinitions';
+import type { ProcessResult } from '../../api/commandOptions';
+import { getNodeDef, isInPlaceNode, withDefaults } from './nodeDefinitions';
+import { planWorkflow, TEMP_PATH_RE, type WorkflowIssueKind } from './workflowValidation';
 
+type UnlistenFn = () => void;
 type ExecutionStatus = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
+
+/** i18next 的 t：节点状态与错误按当前界面语言生成 */
+export type Translate = (key: string, params?: Record<string, unknown>) => string;
 
 interface ExecutionCallbacks {
   onNodeStatusChange: (nodeId: string, status: WorkflowNodeData['status'], message?: string) => void;
@@ -17,49 +22,19 @@ interface ExecutionCallbacks {
   onProgress?: (nodeId: string, current: number, total: number) => void;
 }
 
-function errMsg(e: any): string {
-  return typeof e === 'string' ? e : e?.message || '未知错误';
-}
-
-function topologicalSort(nodes: Node<WorkflowNodeData>[], edges: Edge[]): string[] {
-  const adj = new Map<string, string[]>();
-  const inDegree = new Map<string, number>();
-
-  for (const node of nodes) {
-    adj.set(node.id, []);
-    inDegree.set(node.id, 0);
-  }
-  for (const edge of edges) {
-    adj.get(edge.source)?.push(edge.target);
-    inDegree.set(edge.target, (inDegree.get(edge.target) || 0) + 1);
-  }
-
-  // BFS 从入度为 0 的节点开始
-  const queue: string[] = [];
-  for (const [id, deg] of inDegree) {
-    if (deg === 0) queue.push(id);
-  }
-
-  const sorted: string[] = [];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    sorted.push(current);
-    for (const next of adj.get(current) || []) {
-      const newDeg = (inDegree.get(next) || 1) - 1;
-      inDegree.set(next, newDeg);
-      if (newDeg === 0) queue.push(next);
-    }
-  }
-
-  if (sorted.length !== nodes.length) {
-    throw new Error('工作流中存在循环依赖');
-  }
-
-  return sorted;
-}
+/** 运行前校验问题 → [节点上的简短状态, 底栏的完整提示]（workflow.* 键，可带节点名 name） */
+const ISSUE_MESSAGES: Record<WorkflowIssueKind, [string, string]> = {
+  inputInTemp: ['workflow.statusInputInTemp', 'workflow.errInputInTemp'],
+  cycle: ['workflow.errCycle', 'workflow.errCycle'],
+  missingInputPath: ['workflow.errNoInputPath', 'workflow.errNoInputPath'],
+  missingOutputPath: ['workflow.errNoOutputPath', 'workflow.errNoOutputPath'],
+  missingModel: ['workflow.errNoModel', 'workflow.errNoModel'],
+  noInput: ['workflow.statusNoInput', 'workflow.errNoInput'],
+  multipleInputs: ['workflow.statusMultipleInputs', 'workflow.errMultipleInputs'],
+  needsOutput: ['workflow.errNeedsOutput', 'workflow.errNeedsOutput'],
+};
 
 const TEMP_DIR_NAME = '.workflow_temp';
-const TEMP_PATH_RE = /[\\/]\.workflow_temp(?=[\\/]|$)/;
 
 /**
  * 推导临时目录的根（.workflow_temp 所在的目录），分隔符无关。
@@ -132,6 +107,8 @@ export class WorkflowEngine {
   private currentNodeType = '';
   private cancelPromise: Promise<unknown> = Promise.resolve();
 
+  constructor(private readonly t: Translate) {}
+
   /**
    * 取消工作流。
    * 仅置本地标志不足以停止正在运行的节点——Rust 侧的处理循环和 Python
@@ -157,6 +134,9 @@ export class WorkflowEngine {
     edges: Edge[],
     callbacks: ExecutionCallbacks,
   ): Promise<void> {
+    const t = this.t;
+    const errMsg = (e: unknown): string =>
+      typeof e === 'string' ? e : (e as { message?: string } | null)?.message || t('workflow.errUnknown');
     const fail = (id: string, short: string, detail = short) => {
       callbacks.onNodeStatusChange(id, 'error', short);
       callbacks.onError(id, detail);
@@ -164,11 +144,8 @@ export class WorkflowEngine {
     };
     this.status = 'running';
     const startTime = Date.now();
-    // 为 true 时 finally 跳过清理。目前唯一场景：输入位于 .workflow_temp 内被拒跑——
-    // 拒跑就是为了保护它，finally 若照常清理等于把用户数据删了
-    let preserveTempOnExit = false;
-    // 成功时是否保留临时目录（有链条终点的产物留在里面）
-    let keepTempOnSuccess = false;
+    // 校验通过后才会动临时目录：没通过时什么都没执行，输入还可能就在 .workflow_temp 里
+    let started = false;
 
     // 当前节点的进度监听器（每个步骤动态切换）
     let currentProgressUnlisten: UnlistenFn | null = null;
@@ -180,35 +157,28 @@ export class WorkflowEngine {
     };
 
     try {
-      // 0. 清理上一次运行的中间产物。
-      // 临时目录名按 step_{序号}_{类型} 生成。清理残留目录，避免旧文件被当成上游产物。
-      // 输入目录若位于 .workflow_temp 内（上次无输出节点的运行把成品留在那里），
-      // 下面的残留清理会连输入一起删掉——直接拒跑并提示搬出
-      const inputInTemp = nodes.find(
-        n => n.data.type === 'image-folder' && TEMP_PATH_RE.test(String(n.data.params.path || '')),
-      );
-      if (inputInTemp) {
-        preserveTempOnExit = true;
-        fail(
-          inputInTemp.id,
-          '输入位于临时目录内',
-          '输入目录位于 .workflow_temp 内，运行前的残留清理会把它删除；请先把上次产物移动到正式目录再作为输入',
-        );
+      // 0. 运行前校验整张图，有问题就一个节点都不跑
+      const { order, issue } = planWorkflow(nodes, edges);
+      if (issue) {
+        const node = nodes.find(n => n.id === issue.nodeId);
+        const name = node ? t(getNodeDef(node.data.type)?.nameKey ?? node.data.type) : '';
+        const [short, detail] = ISSUE_MESSAGES[issue.kind];
+        fail(issue.nodeId, t(short, { name }), t(detail, { name }));
         return;
       }
+      started = true;
 
+      // 1. 清理上一次运行的中间产物：临时目录按 step_{序号}_{类型} 命名，残留的旧文件会被当成上游产物
       await cleanupWorkflowTemp(nodes);
 
-      // 1. 拓扑排序
-      const sortedIds = topologicalSort(nodes, edges);
       const nodeMap = new Map(nodes.map(n => [n.id, n]));
-      const totalSteps = sortedIds.length;
+      const totalSteps = order.length;
 
       // 用于跟踪每个节点的输出目录（作为下游的输入）
       const nodeOutputs = new Map<string, string>();
       // 输出目录带 <label>/ 子层级的节点（美学评分）：下游收集必须递归，且沿链传递
       const nodeNested = new Map<string, boolean>();
-      // 用于跟踪被条件分支跳过的节点
+      // 分桶节点没走的那个出口上的连线
       const inactiveEdges = new Set<string>();
 
       // 2. 把当前节点的后端进度事件（节点定义的 progressEvent）转发给 onProgress
@@ -225,85 +195,72 @@ export class WorkflowEngine {
       };
 
       // 3. 标记所有节点为等待
-      for (const id of sortedIds) {
+      for (const id of order) {
         callbacks.onNodeStatusChange(id, 'waiting');
       }
 
       // 4. 依次执行每个节点
-      for (let i = 0; i < sortedIds.length; i++) {
+      for (let i = 0; i < order.length; i++) {
         if (this.cancelFlag) {
           this.status = 'cancelled';
-          for (let j = i; j < sortedIds.length; j++) {
-            callbacks.onNodeStatusChange(sortedIds[j], 'idle');
+          for (let j = i; j < order.length; j++) {
+            callbacks.onNodeStatusChange(order[j], 'idle');
           }
           return;
         }
 
-        const nodeId = sortedIds[i];
+        const nodeId = order[i];
         const node = nodeMap.get(nodeId)!;
-        const def = getNodeDef(node.data.type);
-        const data = { ...node.data, params: withDefaults(def, node.data.params) };
+        const type = node.data.type;
+        const def = getNodeDef(type);
+        const params = withDefaults(def, node.data.params);
 
         this.currentNodeId = nodeId;
         callbacks.onStepStart(nodeId, i, totalSteps);
-        callbacks.onNodeStatusChange(nodeId, 'running', `执行中 (${i + 1}/${totalSteps})`);
+        callbacks.onNodeStatusChange(nodeId, 'running', t('workflow.statusRunning', { current: i + 1, total: totalSteps }));
 
         // ── 输入节点：直接使用用户指定的路径 ──
-        if (data.type === 'image-folder') {
-          const folderPath = data.params.path as string;
-          if (!folderPath) {
-            fail(nodeId, '未指定输入路径', '输入路径为空');
-            return;
-          }
-          nodeOutputs.set(nodeId, folderPath);
+        if (type === 'image-folder') {
+          nodeOutputs.set(nodeId, params.path);
           // 开启递归扫描时下游也必须递归收集，否则嵌套数据集（10_charA/ 等）会收集到 0 张图
-          nodeNested.set(nodeId, !!data.params.recursive);
+          nodeNested.set(nodeId, !!params.recursive);
           callbacks.onNodeStatusChange(nodeId, 'done', '✓');
           continue;
         }
 
-        const parentEdges = edges.filter(edge => edge.target === nodeId);
-        const activeParents = [...new Set(parentEdges
-          .filter(edge => !inactiveEdges.has(edge.id) && nodeOutputs.has(edge.source))
-          .map(edge => edge.source))];
-        if (parentEdges.length > 0 && activeParents.length === 0) {
+        // 校验保证最多一个上游实际产出；一个都没有说明在分桶没走的分支上
+        const upstream = edges.find(
+          edge => edge.target === nodeId && !inactiveEdges.has(edge.id) && nodeOutputs.has(edge.source),
+        )?.source;
+        if (upstream === undefined) {
           callbacks.onNodeStatusChange(nodeId, 'idle');
           continue;
         }
-        if (activeParents.length > 1) {
-          fail(nodeId, '多个上游输入', '该节点有多个实际产出的上游输入，目前只支持单输入，请合并为一条链');
-          return;
-        }
-        const upstream = activeParents[0];
-        const inputPath = nodeOutputs.get(upstream) || '';
+        const inputPath = nodeOutputs.get(upstream)!;
         const inputNested = nodeNested.get(upstream) ?? false;
 
-        if (data.type === 'output-folder') {
-          const outputPath = data.params.path as string;
-          if (!outputPath || !inputPath) {
-            fail(nodeId, !outputPath ? '未设置路径' : '无输入');
+        if (type === 'output-folder') {
+          // 上游已直接写进这个目录时两边相同，后端不再复制
+          try {
+            await invoke('carry_tag_sidecars', { inputPath, outputPath: params.path, recursive: inputNested, copyImages: true });
+          } catch (e) {
+            if (!this.cancelFlag) fail(nodeId, errMsg(e));
             return;
           }
-          await invoke('carry_tag_sidecars', { inputPath, outputPath, recursive: inputNested, copyImages: true });
           if (this.cancelFlag) return;
-          nodeOutputs.set(nodeId, outputPath);
+          nodeOutputs.set(nodeId, params.path);
           nodeNested.set(nodeId, inputNested);
           callbacks.onNodeStatusChange(nodeId, 'done', '✓');
           continue;
         }
 
         // ── 分桶条件分支节点 ──
-        if (data.type === 'bucket-assign') {
-          if (!inputPath) {
-            fail(nodeId, '无输入', '该节点没有输入路径');
-            return;
-          }
-
+        if (type === 'bucket-assign') {
           try {
-            const call = await def!.buildOptions!(data.params, { input_path: inputPath, output_path: '', recursive: inputNested });
-            await startProgressListener(data.type);
+            const call = await def!.buildOptions!(params, { input_path: inputPath, output_path: '', recursive: inputNested });
+            await startProgressListener(type);
             if (this.cancelFlag) return;
-            this.currentNodeType = data.type;
+            this.currentNodeType = type;
             const result = await invoke<{
               bucket_count: number;
               buckets: { bucket_width: number; bucket_height: number; image_count: number }[];
@@ -320,16 +277,15 @@ export class WorkflowEngine {
               if (b.image_count > maxBucket.image_count) maxBucket = b;
             }
 
-            const uniformThreshold = data.params.uniform_threshold / 100;
-            const maxOutlierBuckets = data.params.max_outlier_buckets;
+            const uniformThreshold = params.uniform_threshold / 100;
+            const maxOutlierBuckets = params.max_outlier_buckets;
             const maxBucketRatio = totalImages > 0 ? maxBucket.image_count / totalImages : 1;
             const outlierCount = buckets.filter(b => b !== maxBucket && b.image_count > 0).length;
 
             const isUniform = maxBucketRatio >= uniformThreshold || outlierCount <= maxOutlierBuckets;
 
-            // 确定活跃分支，标记非活跃分支的所有下游为 skipped
+            // 没走的出口上的连线失效，只连在它上面的下游整条跳过
             const inactiveHandle = isUniform ? 'output-b' : 'output-a';
-
             for (const edge of edges) {
               if (edge.source === nodeId && edge.sourceHandle === inactiveHandle) inactiveEdges.add(edge.id);
             }
@@ -338,9 +294,13 @@ export class WorkflowEngine {
             nodeOutputs.set(nodeId, inputPath);
             nodeNested.set(nodeId, inputNested);
 
-            const branchLabel = isUniform ? 'A (均匀)' : 'B (分散)';
-            const info = `→ ${branchLabel} | 桶${buckets.length}个 | 最大桶${(maxBucket?.image_count ?? 0)}/${totalImages}张 (${(maxBucketRatio * 100).toFixed(0)}%)`;
-            callbacks.onNodeStatusChange(nodeId, 'done', info);
+            callbacks.onNodeStatusChange(nodeId, 'done', t('workflow.bucketResult', {
+              branch: t(isUniform ? 'workflow.bucketBranchUniform' : 'workflow.bucketBranchScattered'),
+              buckets: buckets.length,
+              max: maxBucket?.image_count ?? 0,
+              total: totalImages,
+              percent: (maxBucketRatio * 100).toFixed(0),
+            }));
           } catch (e) {
             if (!this.cancelFlag) fail(nodeId, errMsg(e));
             return;
@@ -349,58 +309,38 @@ export class WorkflowEngine {
           continue;
         }
 
+        // 旧版工作流里已移除的节点类型：原样透传
         if (!def?.buildOptions) {
-          if (inputPath) {
-            nodeOutputs.set(nodeId, inputPath);
-            nodeNested.set(nodeId, inputNested);
-          }
+          nodeOutputs.set(nodeId, inputPath);
+          nodeNested.set(nodeId, inputNested);
           callbacks.onNodeStatusChange(nodeId, 'done', '✓');
           continue;
         }
 
         // 重命名后端只扫顶层（无递归支持），嵌套输入必然找到 0 张图——给出可操作的报错
         if (inputNested && def.flatInputOnly) {
-          fail(nodeId, '不支持嵌套输入', '重命名节点不支持递归处理子目录（上游输出按分类分层或开启了递归扫描）——请调整链路');
-          return;
-        }
-        if (!inputPath) {
-          fail(nodeId, '无输入', '该节点没有输入路径（需要连接上游节点）');
+          fail(nodeId, t('workflow.statusNestedInput'), t('workflow.errNestedInput'));
           return;
         }
 
-        // 确定输出路径
-        // 在全部下游里找 output-folder（不能只看第一条边——先画的边不一定是它）
-        const children = edges.filter(e => e.source === nodeId).map(e => e.target);
-        let outputPath = '';
-
-        const outFolder = children
-          .map(cid => nodeMap.get(cid))
+        // 下游接了输出文件夹就直接写进去（不能只看第一条边——先画的边不一定是它），否则写进临时目录
+        const outFolder = edges
+          .filter(e => e.source === nodeId)
+          .map(e => nodeMap.get(e.target))
           .find(c => c?.data.type === 'output-folder');
-        if (outFolder) {
-          const outFolderPath = outFolder.data.params.path as string;
-          if (!outFolderPath) {
-            // 空路径若静默跳过，成品会写进临时目录并在成功清理时被删
-            fail(outFolder.id, '未设置路径', '输出文件夹节点未设置路径');
-            return;
-          }
-          outputPath = outFolderPath;
-        }
-
-        if (!outputPath) {
-          outputPath = buildTempOutputPath(inputPath, i, data.type);
-        }
+        const outputPath = outFolder ? String(outFolder.data.params.path) : buildTempOutputPath(inputPath, i, type);
 
         try {
-          const call = await def.buildOptions(data.params, { input_path: inputPath, output_path: outputPath, recursive: inputNested });
+          const call = await def.buildOptions(params, { input_path: inputPath, output_path: outputPath, recursive: inputNested });
           // 在调用后端前再次检查取消标志，覆盖取消请求早于节点启动的情况。
           if (this.cancelFlag) {
             this.status = 'cancelled';
-            callbacks.onNodeStatusChange(nodeId, 'idle', '已取消');
+            callbacks.onNodeStatusChange(nodeId, 'idle', t('workflow.statusCancelled'));
             return;
           }
-          await startProgressListener(data.type);
+          await startProgressListener(type);
           if (this.cancelFlag) return;
-          this.currentNodeType = data.type;
+          this.currentNodeType = type;
           const result = await invoke<unknown>(call.command, { options: call.options });
           this.currentNodeType = '';
           if (this.cancelFlag) return;
@@ -409,30 +349,22 @@ export class WorkflowEngine {
           // ProcessResult 不能丢弃：全部失败/输入为空时若照样标 ✓，
           // 空目录会沿链传下去，最后显示"运行完成"却什么都没有
           let doneMsg = '✓';
-          const r = result as { success_count?: number; fail_count?: number; total?: number } | null;
+          const r = result as Partial<ProcessResult> | null;
           if (r && typeof r === 'object' && typeof r.success_count === 'number' && typeof r.total === 'number') {
-            if (r.total === 0 || r.success_count === 0) {
-              // 取消会让命令带着 0 成功正常返回——按取消收尾，不能报成错误
-              if (this.cancelFlag) {
-                this.status = 'cancelled';
-                callbacks.onNodeStatusChange(nodeId, 'idle', '已取消');
-                return;
-              }
-              // 过滤节点的 success 只计"匹配"数：0 匹配是正常的空跑（delete 模式尤其如此），
-              // 不能中止整条链；copy 模式的空产物会在下游以清晰的 total=0 报出
-              if (!def.allowEmptyResult) {
-                throw `没有任何文件处理成功（成功 ${r.success_count}/${r.total}），已中止后续节点`;
-              }
+            // 过滤节点的 success 只计"匹配"数：0 匹配是正常的空跑（delete 模式尤其如此），
+            // 不能中止整条链；copy 模式的空产物会在下游以清晰的 total=0 报出
+            if ((r.total === 0 || r.success_count === 0) && !def.allowEmptyResult) {
+              throw t('workflow.errNothingProcessed', { success: r.success_count, total: r.total });
             }
-            if ((r.fail_count ?? 0) > 0) doneMsg = `✓ (${r.fail_count} 个失败)`;
+            if ((r.fail_count ?? 0) > 0) doneMsg = t('workflow.doneWithFailures', { count: r.fail_count });
           }
 
           // filter 的 delete 模式是就地删除、不产出输出目录，必须按就地节点透传输入
-          const isInPlaceNode = typeof def.inPlace === 'function' ? def.inPlace(data.params) : !!def.inPlace;
+          const inPlace = isInPlaceNode(def, params);
 
           // 图像节点只搬图片：把上游同名 .txt/.json/.caption 一起带上，
           // 否则"打标在前、图像处理在后"的链会把标签留在临时目录里随清理丢失
-          if (def.carrySidecars && !isInPlaceNode) {
+          if (def.carrySidecars && !inPlace) {
             try {
               await invoke('carry_tag_sidecars', { inputPath, outputPath, recursive: inputNested });
             } catch (e) {
@@ -442,7 +374,7 @@ export class WorkflowEngine {
 
           // 原地操作节点（打标/重命名/过滤删除）不产出新目录，输出即输入，需透传给下游，
           // 否则下游会拿到一个从未被创建的临时目录路径而报「输入路径无效」
-          nodeOutputs.set(nodeId, isInPlaceNode ? inputPath : outputPath);
+          nodeOutputs.set(nodeId, inPlace ? inputPath : outputPath);
           nodeNested.set(nodeId, !!def.nestedOutput || inputNested);
           callbacks.onNodeStatusChange(nodeId, 'done', doneMsg);
         } catch (e) {
@@ -455,38 +387,19 @@ export class WorkflowEngine {
       if (this.cancelFlag) return;
 
       // 5. 全部完成
-      // 记录是否有"链条终点产物仍留在临时目录"（该链没接输出文件夹）——
-      // 那些 step_N 就是用户的最终结果，成功后的清理不能删
-      {
-        const processedIds = new Set(nodeOutputs.keys());
-        const hasDownstreamProcessing = (id: string) =>
-          edges.some(
-            e => e.source === id && processedIds.has(e.target),
-          );
-        keepTempOnSuccess = [...nodeOutputs.entries()].some(
-          ([id, p]) => !hasDownstreamProcessing(id) && TEMP_PATH_RE.test(p),
-        );
-      }
-      const elapsed = Date.now() - startTime;
       this.status = 'done';
-      callbacks.onComplete(elapsed);
+      callbacks.onComplete(Date.now() - startTime);
 
     } catch (e) {
-      if (!this.cancelFlag) {
-        this.status = 'error';
-        callbacks.onError(this.currentNodeId, errMsg(e));
-      }
+      if (!this.cancelFlag) fail(this.currentNodeId, errMsg(e));
     } finally {
       this.currentNodeType = '';
       await this.cancelPromise;
       stopProgressListener();
       if (this.cancelFlag) this.status = 'cancelled';
 
-      // 清理中间产物临时目录。
-      // 失败/取消：中间产物是无用垃圾，直接清理。
-      // 成功：有链条终点产物留在临时目录里时（keepTempOnSuccess）不清理，那些就是用户的结果。
-      const shouldCleanup = !preserveTempOnExit && (this.status !== 'done' || !keepTempOnSuccess);
-      if (shouldCleanup) {
+      // 校验保证每条链的结果都在输入或输出文件夹里，临时目录只剩中间产物，运行结束一律清理
+      if (started) {
         await cleanupWorkflowTemp(nodes);
       }
     }

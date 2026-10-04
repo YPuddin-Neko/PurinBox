@@ -8,46 +8,51 @@ import {
   ScanFace,
   User
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { PersonCropOptions } from '../api/commandOptions';
+import { buildPersonCropOptions, PERSON_CROP_DEFAULTS } from '../api/commandOptions';
 import Checkbox from '../components/Checkbox';
 import ProcessButton from '../components/ProcessButton';
 import ProgressLog from '../components/ProgressLog';
 import DeviceToggle from '../components/ui/DeviceToggle';
 import NumberInput from '../components/ui/NumberInput';
-import PageHeader from '../components/ui/PageHeader';
 import PathFields from '../components/ui/PathFields';
+import RangeField from '../components/ui/RangeField';
+import ToolPageLayout from '../components/ui/ToolPageLayout';
 import { useBatchTask, type ProcessResult } from '../hooks/useBatchTask';
-import { hasTauriRuntime, listen } from '../utils/tauriRuntime';
+import { hasTauriRuntime } from '../utils/tauriRuntime';
 
 interface CropModelInfo { crop_type: string; downloaded: boolean; }
-interface DlProgress { percent: number; speed_mbps: number; status: string; message: string; }
+
+const GPU_STORAGE_KEY = 'person_crop_gpu';
 
 export default function PersonCropPage() {
   const { t } = useTranslation();
-  const task = useBatchTask({ event: 'person-crop-progress', taskId: 'person-crop', pythonEnv: true });
-  const downloadActive = useRef(false);
+  const task = useBatchTask({
+    event: 'person-crop-progress', taskId: 'person-crop', pythonEnv: true,
+    download: { event: 'person-crop-download' },
+  });
+  const d = PERSON_CROP_DEFAULTS;
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
-  const [useGpu, setUseGpu] = useState(() => localStorage.getItem('person_crop_gpu') === 'true');
+  const [useGpu, setUseGpu] = useState(() => localStorage.getItem(GPU_STORAGE_KEY) === 'true');
   const [models, setModels] = useState<CropModelInfo[]>([]);
   const [downloading, setDownloading] = useState(false);
-  const [personEnabled, setPersonEnabled] = useState(true);
-  const [personConf, setPersonConf] = useState(0.3);
-  const [upperEnabled, setUpperEnabled] = useState(true);
-  const [upperConf, setUpperConf] = useState(0.5);
-  const [upperTag, setUpperTag] = useState('upper body');
-  const [headEnabled, setHeadEnabled] = useState(true);
-  const [headConf, setHeadConf] = useState(0.4);
-  const [headTag, setHeadTag] = useState('head view');
-  const [headScale, setHeadScale] = useState(1.5);
-  const [eyesEnabled, setEyesEnabled] = useState(true);
-  const [eyesConf, setEyesConf] = useState(0.3);
-  const [eyesTag, setEyesTag] = useState('eyes view');
-  const [eyesScale, setEyesScale] = useState(2.4);
-  const [keepOriginalTags, setKeepOriginalTags] = useState(false);
+  const [personEnabled, setPersonEnabled] = useState(d.person_enabled);
+  const [personConf, setPersonConf] = useState(d.person_conf);
+  const [upperEnabled, setUpperEnabled] = useState(d.upper_enabled);
+  const [upperConf, setUpperConf] = useState(d.upper_conf);
+  const [upperTag, setUpperTag] = useState(d.upper_tag);
+  const [headEnabled, setHeadEnabled] = useState(d.head_enabled);
+  const [headConf, setHeadConf] = useState(d.head_conf);
+  const [headTag, setHeadTag] = useState(d.head_tag);
+  const [headScale, setHeadScale] = useState(d.head_scale);
+  const [eyesEnabled, setEyesEnabled] = useState(d.eyes_enabled);
+  const [eyesConf, setEyesConf] = useState(d.eyes_conf);
+  const [eyesTag, setEyesTag] = useState(d.eyes_tag);
+  const [eyesScale, setEyesScale] = useState(d.eyes_scale);
+  const [keepOriginalTags, setKeepOriginalTags] = useState(d.keep_original_tags);
 
   const loadModels = useCallback(async () => {
     if (!hasTauriRuntime()) {
@@ -60,47 +65,44 @@ export default function PersonCropPage() {
   useEffect(() => { loadModels(); }, []);
 
   const downloadAll = async () => {
-    downloadActive.current = true;
     setDownloading(true);
     task.logger.appendLog(t('personCrop.downloadStart'), 'info');
     try {
-      await invoke('download_person_crop_model');
-    } catch (e: any) {
+      await task.trackDownload(() => invoke('download_person_crop_model'));
+    } catch (e) {
       task.logger.appendCatchError(e, t('personCrop.downloadFailed'));
-    } finally { downloadActive.current = false; setDownloading(false); }
+    } finally {
+      setDownloading(false);
+      loadModels();
+    }
   };
 
-  useEffect(() => {
-    let active = true;
-    const p = listen<DlProgress>('person-crop-download', (e) => {
-      if (!active || !downloadActive.current) return;
-      task.logger.appendDownloadLog(e.payload);
-      if (e.payload.status === 'done') loadModels();
-    });
-    return () => { active = false; p.then(fn => fn()); };
-  }, [loadModels, task.logger]);
+  const changeDevice = (gpu: boolean) => {
+    setUseGpu(gpu);
+    localStorage.setItem(GPU_STORAGE_KEY, String(gpu));
+  };
 
   const handleProcess = () => {
-
     return task.run({
-      taskName: t('personCrop.taskName'), startLog: t('personCrop.startMsg'), exec: () => invoke<ProcessResult>('start_person_crop', {
-        options: {
-          input_path: inputPath, output_path: outputPath, use_gpu: useGpu,
+      taskName: t('personCrop.taskName'),
+      startLog: t('personCrop.startMsg'),
+      exec: () => invoke<ProcessResult>('start_person_crop', {
+        options: buildPersonCropOptions({ input_path: inputPath, output_path: outputPath, recursive }, {
+          use_gpu: useGpu,
           person_enabled: personEnabled, person_conf: personConf,
           upper_enabled: upperEnabled, upper_conf: upperConf, upper_tag: upperTag,
           head_enabled: headEnabled, head_conf: headConf, head_tag: headTag, head_scale: headScale,
           eyes_enabled: eyesEnabled, eyes_conf: eyesConf, eyes_tag: eyesTag, eyes_scale: eyesScale,
           keep_original_tags: keepOriginalTags,
-          recursive,
-        } satisfies PersonCropOptions,
-      })
+        }),
+      }),
     });
   };
 
   const detCard = (
     enabled: boolean, setEnabled: (v: boolean) => void,
-    icon: React.ReactNode, label: string, color: string, alphaBase: string,
-    modelType: string, children: React.ReactNode,
+    icon: ReactNode, label: string, color: string, alphaBase: string,
+    modelType: string, children: ReactNode,
   ) => {
     const m = models.find(x => x.crop_type === modelType);
     return (
@@ -128,6 +130,13 @@ export default function PersonCropPage() {
     </div>
   );
 
+  const scaleSlider = (value: number, onChange: (v: number) => void, max: number, color: string, nearEnd: string) => (
+    <RangeField label={t('personCrop.scaleFactor')} value={value} onChange={onChange}
+      min={1} max={max} step={0.1} color={color} format={v => `${v.toFixed(1)}x`}
+      ends={[`1.0x ${nearEnd}`, `${max.toFixed(1)}x ${t('personCrop.moreAround')}`]}
+      style={{ marginTop: 8, marginBottom: 4 }} />
+  );
+
   const tagInput = (value: string, onChange: (v: string) => void, placeholder: string) => (
     <div className="form-group">
       <label className="form-label">{t('personCrop.appendTag')}</label>
@@ -151,103 +160,71 @@ export default function PersonCropPage() {
   const ms = modelStatusSummary();
 
   return (
-    <div className="page">
-      <PageHeader icon={ScanFace} color={'#fb923c'} title={t('personCrop.title')} subtitle={t('personCrop.subtitle')} />
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 'var(--space-6)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          {/* 路径设置 */}
-          <PathFields allowFile title={t('personCrop.cropSettings')} input={inputPath} onInput={setInputPath} output={outputPath} onOutput={setOutputPath} recursive={recursive} onRecursive={setRecursive}>{/* 模型状态 + 下载 */}<div className="form-group">
-            <label className="form-label">{t('personCrop.detModel')}</label>
-            <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
-              <div style={{ flex: 1, padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>
-                {ms.allReady ? (
-                  <span style={{ color: '#4ade80' }}>✓ {t('personCrop.allReady')} ({ms.ready}/{ms.total})</span>
-                ) : (
-                  <span style={{ color: '#fbbf24' }}>⬇ {t('personCrop.needDownload')} ({ms.ready}/{ms.total} {t('personCrop.ready')})</span>
-                )}
-              </div>
-              <button className="btn btn-secondary" onClick={downloadAll} disabled={task.processing || downloading || ms.allReady}
-                style={{ height: 36, padding: '0 12px', gap: 6, display: 'flex', alignItems: 'center' }}>
-                {downloading ? <Loader2 style={{ width: 15, height: 15, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 15, height: 15 }} />}
-                {downloading ? t('personCrop.downloading') : t('personCrop.downloadModel')}
-              </button>
+    <ToolPageLayout icon={ScanFace} color="#fb923c" title={t('personCrop.title')} subtitle={t('personCrop.subtitle')}
+      aside={<>
+        <ProcessButton {...task.buttonProps} onStart={handleProcess}
+          disabled={!inputPath || !outputPath || !ms.allReady || downloading}
+          cancelCommand="cancel_person_crop" forceCancelCommand="force_cancel_person_crop" startText={t('personCrop.startCrop')} />
+        <ProgressLog {...task.progressLogProps} />
+      </>}>
+      <PathFields allowFile title={t('personCrop.cropSettings')} input={inputPath} onInput={setInputPath} output={outputPath} onOutput={setOutputPath} recursive={recursive} onRecursive={setRecursive}>
+        <div className="form-group">
+          <label className="form-label">{t('personCrop.detModel')}</label>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
+            <div style={{ flex: 1, padding: '8px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-bg-input)', border: '1px solid var(--color-border)', fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>
+              {ms.allReady ? (
+                <span style={{ color: '#4ade80' }}>✓ {t('personCrop.allReady')} ({ms.ready}/{ms.total})</span>
+              ) : (
+                <span style={{ color: '#fbbf24' }}>⬇ {t('personCrop.needDownload')} ({ms.ready}/{ms.total} {t('personCrop.ready')})</span>
+              )}
             </div>
-            <div style={{ marginTop: 6, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>
-              {t('personCrop.modelSource')} <a href="https://huggingface.co/deepghs" target="_blank" rel="noreferrer" style={{ color: '#818cf8' }}>deepghs</a>
-            </div>
-          </div><div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-              <DeviceToggle useGpu={useGpu} onChange={v => { setUseGpu(v); localStorage.setItem('person_crop_gpu', String(v)); }} />
-            </div></PathFields>
-
-          {/* 检测选项 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">{t('personCrop.detOptions')}</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-              {detCard(personEnabled, setPersonEnabled, <PersonStanding style={{ width: 18, height: 18 }} />, t('personCrop.fullBody'), '#4ade80', 'rgba(74, 222, 128, ', 'person', <>
-                {confSlider(personConf, setPersonConf, '#4ade80')}
-
-              </>)}
-
-              {detCard(upperEnabled, setUpperEnabled, <User style={{ width: 18, height: 18 }} />, t('personCrop.halfBody'), '#818cf8', 'rgba(129, 140, 248, ', 'halfbody', <>
-                {confSlider(upperConf, setUpperConf, '#818cf8')}
-                {tagInput(upperTag, setUpperTag, 'upper body')}
-
-              </>)}
-
-              {detCard(headEnabled, setHeadEnabled, <CircleUser style={{ width: 18, height: 18 }} />, t('personCrop.headDet'), '#f59e0b', 'rgba(245, 158, 11, ', 'head', <>
-                {confSlider(headConf, setHeadConf, '#f59e0b')}
-                <div className="form-group" style={{ marginTop: 8, marginBottom: 4 }}>
-                  <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>{t('personCrop.scaleFactor')}</span>
-                    <span style={{ fontFamily: 'monospace', color: '#f59e0b', fontSize: 'var(--font-size-sm)' }}>{headScale.toFixed(1)}x</span>
-                  </label>
-                  <input type="range" min="1.0" max="3.0" step="0.1" value={headScale} onChange={e => setHeadScale(Number(e.target.value))}
-                    style={{ width: '100%', accentColor: '#f59e0b' }} />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}><span>1.0x {t('personCrop.headOnly')}</span><span>3.0x {t('personCrop.moreAround')}</span></div>
-                </div>
-                {tagInput(headTag, setHeadTag, 'head view')}
-
-              </>)}
-
-              {detCard(eyesEnabled, setEyesEnabled, <Eye style={{ width: 18, height: 18 }} />, t('personCrop.eyesDet'), '#f472b6', 'rgba(244, 114, 182, ', 'eyes', <>
-                {confSlider(eyesConf, setEyesConf, '#f472b6')}
-                <div className="form-group" style={{ marginTop: 8, marginBottom: 4 }}>
-                  <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span>{t('personCrop.scaleFactor')}</span>
-                    <span style={{ fontFamily: 'monospace', color: '#f472b6', fontSize: 'var(--font-size-sm)' }}>{eyesScale.toFixed(1)}x</span>
-                  </label>
-                  <input type="range" min="1.0" max="4.0" step="0.1" value={eyesScale} onChange={e => setEyesScale(Number(e.target.value))}
-                    style={{ width: '100%', accentColor: '#f472b6' }} />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}><span>1.0x {t('personCrop.eyesOnly')}</span><span>4.0x {t('personCrop.moreAround')}</span></div>
-                </div>
-                {tagInput(eyesTag, setEyesTag, 'eyes view')}
-
-              </>)}
-            </div>
+            <button className="btn btn-secondary" onClick={downloadAll} disabled={task.processing || downloading || ms.allReady}
+              style={{ height: 36, padding: '0 12px', gap: 6, display: 'flex', alignItems: 'center' }}>
+              {downloading ? <Loader2 style={{ width: 15, height: 15, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 15, height: 15 }} />}
+              {downloading ? t('personCrop.downloading') : t('personCrop.downloadModel')}
+            </button>
           </div>
-
-          {/* 其他选项 */}
-          <div className="tool-panel">
-            <div className="tool-panel-header"><span className="tool-panel-title">{t('personCrop.otherOptions')}</span></div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                <Checkbox checked={keepOriginalTags} onChange={setKeepOriginalTags} color="#7c5cfc" size={16} />
-                <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-sm)' }}>{t('personCrop.keepTags')}</span>
-              </label>
-
-            </div>
+          <div style={{ marginTop: 6, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>
+            {t('personCrop.modelSource')} <a href="https://huggingface.co/deepghs" target="_blank" rel="noreferrer" style={{ color: '#818cf8' }}>deepghs</a>
           </div>
         </div>
+        <DeviceToggle useGpu={useGpu} onChange={changeDevice} />
+      </PathFields>
 
-        {/* 右侧 */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
-          <ProcessButton {...task.buttonProps} onStart={handleProcess}
-            disabled={!inputPath || !outputPath || !ms.allReady || downloading}
-            cancelCommand="cancel_person_crop" forceCancelCommand="force_cancel_person_crop" startText={t('personCrop.startCrop')} />
-          <ProgressLog {...task.progressLogProps} />
+      <div className="tool-panel">
+        <div className="tool-panel-header"><span className="tool-panel-title">{t('personCrop.detOptions')}</span></div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+          {detCard(personEnabled, setPersonEnabled, <PersonStanding style={{ width: 18, height: 18 }} />, t('personCrop.fullBody'), '#4ade80', 'rgba(74, 222, 128, ', 'person',
+            confSlider(personConf, setPersonConf, '#4ade80'))}
+
+          {detCard(upperEnabled, setUpperEnabled, <User style={{ width: 18, height: 18 }} />, t('personCrop.halfBody'), '#818cf8', 'rgba(129, 140, 248, ', 'halfbody', <>
+            {confSlider(upperConf, setUpperConf, '#818cf8')}
+            {tagInput(upperTag, setUpperTag, d.upper_tag)}
+          </>)}
+
+          {detCard(headEnabled, setHeadEnabled, <CircleUser style={{ width: 18, height: 18 }} />, t('personCrop.headDet'), '#f59e0b', 'rgba(245, 158, 11, ', 'head', <>
+            {confSlider(headConf, setHeadConf, '#f59e0b')}
+            {scaleSlider(headScale, setHeadScale, 3, '#f59e0b', t('personCrop.headOnly'))}
+            {tagInput(headTag, setHeadTag, d.head_tag)}
+          </>)}
+
+          {detCard(eyesEnabled, setEyesEnabled, <Eye style={{ width: 18, height: 18 }} />, t('personCrop.eyesDet'), '#f472b6', 'rgba(244, 114, 182, ', 'eyes', <>
+            {confSlider(eyesConf, setEyesConf, '#f472b6')}
+            {scaleSlider(eyesScale, setEyesScale, 4, '#f472b6', t('personCrop.eyesOnly'))}
+            {tagInput(eyesTag, setEyesTag, d.eyes_tag)}
+          </>)}
         </div>
       </div>
-    </div>
+
+      <div className="tool-panel">
+        <div className="tool-panel-header"><span className="tool-panel-title">{t('personCrop.otherOptions')}</span></div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+            <Checkbox checked={keepOriginalTags} onChange={setKeepOriginalTags} color="#7c5cfc" size={16} />
+            <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-sm)' }}>{t('personCrop.keepTags')}</span>
+          </label>
+        </div>
+      </div>
+    </ToolPageLayout>
   );
 }

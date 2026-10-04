@@ -1,22 +1,30 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import i18n from '../i18n';
-import { listen } from '../utils/tauriRuntime';
+import { errorText, listen } from '../utils/tauriRuntime';
+import type { ProcessResult } from '../api/commandOptions';
 import { useLogState, type LogEntry } from '../components/ProgressLog';
 import { isCancelMessage, useTaskQueue, type TaskStatus } from '../components/TaskContext';
 import { usePythonEnvEvents } from './usePythonEnvEvents';
 import {
+  RunIdGate,
+  isCancelledDone,
+  textsOverlap,
   useUnifiedTaskLogs,
-  type LogStatus,
+  type UnifiedDownloadPayload,
   type UnifiedProgressPayload,
   type UnifiedTaskLogger,
 } from './useUnifiedTaskLogs';
 
-/** 批处理命令的通用返回值（Rust commands::ProcessResult） */
-export interface ProcessResult {
-  success_count: number;
-  fail_count: number;
-  total: number;
-  errors: string[];
+export type { ProcessResult };
+
+/** 模型、引擎等下载事件的写法 */
+export interface BatchDownloadOptions {
+  /** 下载事件名，如 'aesthetic-download'、'tagger-download' */
+  event: string;
+  /** done 时追加完成消息，默认 true；后端在进度通道也报了完成时（美学、打标）传 false，免得同一句记两遍 */
+  appendDone?: boolean;
+  /** error 消息的前缀，如 t('aiTagger.downloadFail') */
+  errorPrefix?: string;
 }
 
 export interface BatchTaskOptions {
@@ -28,12 +36,25 @@ export interface BatchTaskOptions {
   logProcessing?: (payload: UnifiedProgressPayload) => boolean;
   /** done 事件是否写日志；默认 true。完成汇总由页面自己写时关掉 */
   logDone?: boolean;
-  /** 覆盖单条事件的日志状态；返回 undefined 按事件 status 归一化 */
-  logStatus?: (payload: UnifiedProgressPayload) => LogStatus | undefined;
   /** 每条被接收的事件在内置处理之后回调（计数、收集文件名等）；任务面板由 TaskContext 统一维护，不要在这里写 */
   onEvent?: (payload: UnifiedProgressPayload) => void;
   /** 运行期间把 python-env-progress / python-env-download 写进本页日志 */
   pythonEnv?: boolean;
+  /**
+   * 运行期间（以及 trackDownload 包住的下载期间）把下载事件写进本页日志：
+   * 进度条原地更新；完成或取消时移除进度条，各只记一条日志。
+   * 运行中收到 cancelled 即按用户取消收尾。
+   */
+  download?: BatchDownloadOptions;
+}
+
+/** 交给 exec 的本轮状态 */
+export interface BatchRunContext {
+  /**
+   * 本轮点过取消。exec 串了多条命令时，在下一条之前查它：后一条命令开头若会复位取消标志，
+   * 两条之间点的取消就会被抹掉。查到为 true 时直接返回（不必再调命令），这一轮按已取消收尾
+   */
+  cancelRequested: () => boolean;
 }
 
 export interface BatchRunRequest<T> {
@@ -41,8 +62,11 @@ export interface BatchRunRequest<T> {
   taskName?: string;
   /** 开始日志；不传则只清空日志 */
   startLog?: string;
-  /** 执行动作，可以串多个 invoke；reject 视为失败（文本含“已取消”视为取消） */
-  exec: () => Promise<T>;
+  /**
+   * 执行动作，可以串多个 invoke。reject 视为失败；后端已报告取消（done 带 cancelled、下载事件 cancelled），
+   * 或用户点过取消且文本以「已取消」开头时视为取消
+   */
+  exec: (run: BatchRunContext) => Promise<T>;
   /** true：保留已有日志，开始日志追加在后面 */
   keepLogs?: boolean;
   /** false：这一轮不能用 ProcessButton 取消，buttonProps.processing 保持 false */
@@ -73,45 +97,61 @@ export interface BatchTask {
   logger: UnifiedTaskLogger;
   /** 已有一轮在执行时直接返回 undefined；exec 失败时错误已写入日志，同样返回 undefined */
   run: <T = ProcessResult>(request: BatchRunRequest<T>) => Promise<T | undefined>;
+  /**
+   * 在 run 之外发起下载（如单独的「下载模型」按钮）时用它包住 invoke，
+   * 期间 download.event 的事件照样写进本页日志；run 里的下载不用包。失败照常 reject，由页面处理。
+   */
+  trackDownload: <T>(exec: () => Promise<T>) => Promise<T>;
   progressLogProps: ProgressLogBindings;
   buttonProps: ProcessButtonBindings;
 }
 
-/** 命令正常返回后继续接收迟到事件的最长时间（收到 done 事件立即停止）；也是失败后复核任务面板状态的延迟 */
+/** 命令正常返回后继续接收迟到事件的最长时间（收到 done 事件立即停止） */
 const LATE_EVENT_WINDOW_MS = 2000;
 
-interface RunRecord {
-  /** 进任务面板时的任务 ID */
-  taskId: string | null;
+/** 一轮的结果中决定任务面板终态的部分 */
+export interface RunOutcome {
+  /** 后端确认本轮被取消 */
+  cancelled: boolean;
   /** 本轮点过 ProcessButton 的取消 */
   cancelRequested: boolean;
-  /** 本轮收到的 done 事件消息 */
-  doneMessage: string | null;
+  /** 收到过本轮的 done 事件 */
+  doneSeen: boolean;
+  /** 本轮有文件失败（error 事件，或返回值 fail_count > 0） */
+  failed: boolean;
+}
+
+interface RunRecord extends RunOutcome {
+  /** 进任务面板时的任务 ID */
+  taskId: string | null;
+  /** 已写进日志的取消消息；Err 文本与它重叠时不再重复写 */
+  cancelNotice: string | null;
   outcome: 'pending' | 'resolved' | 'rejected';
-  /** outcome 为 rejected 时 catch 判定的任务状态 */
-  failStatus: TaskStatus;
   /** 已停止接收事件 */
   closed: boolean;
+}
+
+/** 命令正常返回（没有 reject）的一轮在任务面板上的终态 */
+export function settledTaskStatus(run: RunOutcome): TaskStatus {
+  // 取消后命令仍可能正常返回且不发 done，此时按用户的取消收尾
+  if (run.cancelled || (run.cancelRequested && !run.doneSeen)) return 'cancelled';
+  return run.failed ? 'warning' : 'done';
 }
 
 function isProcessResultLike(value: unknown): value is Pick<ProcessResult, 'fail_count'> {
   return typeof value === 'object' && value !== null && 'fail_count' in value && typeof value.fail_count === 'number';
 }
 
-function errorText(error: unknown): string {
-  if (typeof error === 'string') return error;
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
 /**
  * 批处理页面的任务样板：运行状态、进度事件监听、开始/收尾、任务面板与两层日志。
  *
  * 事件只在本页发起的一轮里接收（命令返回后再留一个短窗口给迟到事件），
- * 工作流等其它来源运行同名命令时不会写进本页的进度和日志。
+ * 工作流等其它来源运行同名命令时不会写进本页的进度和日志；
+ * 上一轮晚到的事件按 run_id 丢弃。
  */
 export function useBatchTask(options: BatchTaskOptions): BatchTask {
   const { event, pythonEnv = false } = options;
+  const downloadEvent = options.download?.event;
   const { addTask, updateTask } = useTaskQueue();
   const [logs, setLogs] = useLogState();
   const logger = useUnifiedTaskLogs(setLogs);
@@ -130,7 +170,10 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
 
   const runRef = useRef<RunRecord | null>(null);
   const busyRef = useRef(false);
+  /** trackDownload 包住的下载数 */
+  const downloadsRef = useRef(0);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gateRef = useRef(new RunIdGate());
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current !== null) {
@@ -141,23 +184,15 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
 
   useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
 
-  // 任务面板还停在运行中（done 事件丢失、被迟到事件改回运行中）时按本轮结果落定
+  // 返回值里的 fail_count 只有这里知道，所以正常返回的一轮由这里落定终态
   const settleTask = useCallback((record: RunRecord) => {
-    if (record.taskId === null || record.outcome === 'pending') return;
-    if (record.outcome === 'rejected') {
-      const status = record.failStatus;
-      updateTask(record.taskId, task => (task.status === 'running' ? { status } : null));
-      return;
-    }
-    const status: TaskStatus = record.doneMessage !== null
-      ? (isCancelMessage(record.doneMessage) ? 'cancelled' : 'done')
-      : (record.cancelRequested ? 'cancelled' : 'done');
-    // 命令已正常返回：此时的 error 只可能来自中途的单文件失败事件
-    updateTask(record.taskId, task => (task.status === 'running' || task.status === 'error' ? { status } : null));
+    if (record.taskId === null || record.outcome !== 'resolved') return;
+    updateTask(record.taskId, { status: settledTaskStatus(record) });
   }, [updateTask]);
 
   // 停止接收事件并落定任务面板
   const closeRun = useCallback((record: RunRecord) => {
+    if (record.closed) return;
     clearCloseTimer();
     record.closed = true;
     settleTask(record);
@@ -165,23 +200,34 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
 
   useEffect(() => {
     let active = true;
+    const gate = gateRef.current;
     const unlisten = listen<UnifiedProgressPayload>(event, ({ payload }) => {
+      // 先过 run_id：不归本页处理的轮次也要记下，下一轮才能把它们当旧轮丢弃
+      if (!active || !gate.accept(payload.run_id)) return;
       const record = runRef.current;
-      if (!active || !record || record.closed) return;
-      const { logProcessing, logDone = true, logStatus, onEvent } = optionsRef.current;
+      if (!record || record.closed) return;
+      const { logProcessing, logDone = true, onEvent } = optionsRef.current;
       if (payload.total > 0) {
         setCurrent(payload.current);
         setTotal(payload.total);
       }
-      if (payload.status === 'error') setHasError(true);
+      if (payload.status === 'error') {
+        record.failed = true;
+        setHasError(true);
+      }
+      const done = payload.status === 'done';
       const shouldLog = payload.status === 'processing'
         ? (logProcessing?.(payload) ?? false)
-        : (payload.status !== 'done' || logDone);
-      if (shouldLog) logger.appendProgressLog(payload, { status: logStatus?.(payload) });
+        : (!done || logDone);
+      if (shouldLog) logger.appendProgressLog(payload);
       onEvent?.(payload);
-      if (payload.status === 'done') {
+      if (done) {
         setIsDone(true);
-        record.doneMessage = payload.message;
+        record.doneSeen = true;
+        if (isCancelledDone(payload) || (record.cancelRequested && isCancelMessage(payload.message))) {
+          record.cancelled = true;
+          if (shouldLog) record.cancelNotice = payload.message;
+        }
         if (record.outcome === 'resolved') closeRun(record);
       }
     });
@@ -191,7 +237,32 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
     };
   }, [event, logger, closeRun]);
 
-  usePythonEnvEvents(pythonEnv && runState !== null, setLogs, logger);
+  useEffect(() => {
+    if (!downloadEvent) return;
+    let active = true;
+    const unlisten = listen<UnifiedDownloadPayload>(downloadEvent, ({ payload }) => {
+      if (!active) return;
+      const record = busyRef.current ? runRef.current : null;
+      if (!record && downloadsRef.current === 0) return;
+      const download = optionsRef.current.download;
+      if (payload.status !== 'cancelled') {
+        logger.appendDownloadLog(payload, { appendDone: download?.appendDone ?? true, errorPrefix: download?.errorPrefix });
+        return;
+      }
+      logger.appendDownloadLog(payload, { appendDone: false });
+      if (record) record.cancelled = true;
+      if (!textsOverlap(record?.cancelNotice, payload.message)) {
+        logger.appendLog(payload.message, 'warning');
+        if (record) record.cancelNotice = payload.message;
+      }
+    });
+    return () => {
+      active = false;
+      unlisten.then(fn => fn());
+    };
+  }, [downloadEvent, logger]);
+
+  usePythonEnvEvents(pythonEnv && runState !== null, logger);
 
   const run = useCallback(async <T>(request: BatchRunRequest<T>): Promise<T | undefined> => {
     if (busyRef.current) return undefined;
@@ -200,15 +271,18 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
     if (previous && closeTimerRef.current !== null) closeRun(previous);
 
     const { taskId } = optionsRef.current;
+    gateRef.current.begin();
     const tracked = taskId !== undefined && request.taskName !== undefined
       ? { id: taskId, name: request.taskName }
       : null;
     const record: RunRecord = {
       taskId: tracked ? tracked.id : null,
       cancelRequested: false,
-      doneMessage: null,
+      cancelled: false,
+      cancelNotice: null,
+      doneSeen: false,
+      failed: false,
       outcome: 'pending',
-      failStatus: 'error',
       closed: false,
     };
     runRef.current = record;
@@ -223,41 +297,50 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
     if (tracked) addTask(tracked.id, tracked.name);
 
     try {
-      const result = await request.exec();
+      const result = await request.exec({ cancelRequested: () => record.cancelRequested });
       record.outcome = 'resolved';
-      if (isProcessResultLike(result) && result.fail_count > 0) setHasError(true);
+      if (isProcessResultLike(result) && result.fail_count > 0) {
+        record.failed = true;
+        setHasError(true);
+      }
       return result;
     } catch (error) {
       record.outcome = 'rejected';
       const text = errorText(error);
-      if (isCancelMessage(text)) {
-        record.failStatus = 'cancelled';
-        // 后端取消时常先发一条“…已取消”的 done 事件再返回 Err，已写过就不再重复
-        const seen = record.doneMessage;
-        const logged = seen !== null && (optionsRef.current.logDone ?? true) && (seen.includes(text) || text.includes(seen));
-        if (!logged) logger.appendLog(text, 'warning');
+      const cancelled = record.cancelled || (record.cancelRequested && isCancelMessage(text));
+      if (cancelled) {
+        record.cancelled = true;
+        if (!textsOverlap(record.cancelNotice, text)) logger.appendLog(text, 'warning');
       } else {
-        record.failStatus = 'error';
         logger.appendCatchError(text, i18n.t('pages.errorPrefix'));
         setHasError(true);
       }
-      if (record.taskId !== null) updateTask(record.taskId, { status: record.failStatus, message: text });
+      if (record.taskId !== null) updateTask(record.taskId, { status: cancelled ? 'cancelled' : 'error', message: text });
       return undefined;
     } finally {
       busyRef.current = false;
       setRunState(null);
       setIsDone(true);
-      if (record.outcome === 'resolved' && record.doneMessage !== null) {
+      if (record.outcome === 'rejected') {
+        // 失败时立即停收：命令可能因工作流正占用同一命令被拒，之后到达的事件不属于本页
+        record.closed = true;
+      } else if (record.doneSeen) {
         closeRun(record);
       } else {
-        // 失败时立即停收：命令可能因工作流正占用同一命令被拒，之后到达的事件不属于本页；
-        // 但任务面板仍要等迟到事件过去再复核一次
-        if (record.outcome === 'rejected') record.closed = true;
         clearCloseTimer();
         closeTimerRef.current = setTimeout(() => closeRun(record), LATE_EVENT_WINDOW_MS);
       }
     }
   }, [addTask, updateTask, logger, closeRun, clearCloseTimer]);
+
+  const trackDownload = useCallback(async <T>(exec: () => Promise<T>): Promise<T> => {
+    downloadsRef.current += 1;
+    try {
+      return await exec();
+    } finally {
+      downloadsRef.current -= 1;
+    }
+  }, []);
 
   const onCancelLog = useCallback((message: string) => {
     const record = runRef.current;
@@ -293,6 +376,7 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
     processing: runState !== null,
     logger,
     run,
+    trackDownload,
     progressLogProps,
     buttonProps,
   };

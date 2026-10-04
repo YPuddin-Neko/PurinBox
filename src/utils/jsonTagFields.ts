@@ -1,4 +1,4 @@
-import { sameTags } from './tagText';
+import { moveTagWithin, sameTags } from './tagText';
 
 export interface JsonTagData {
   fixed: { quality?: string; series?: string; artist?: string; [key: string]: unknown };
@@ -39,6 +39,15 @@ export const collectAllTags = (data: JsonTagData) => JSON_FIELDS.flatMap(field =
 
 export interface JsonTagPosition { field: string; index: number; }
 
+const ARTIST_FIELD = 'fixed.artist';
+
+/** 画师按约定每位都带 @：拖进画师字段时补上，拖出时去掉 */
+function valueForField(value: string, from: string, to: string) {
+  if (to === ARTIST_FIELD && from !== ARTIST_FIELD) return value.startsWith('@') ? value : `@${value}`;
+  if (from === ARTIST_FIELD && to !== ARTIST_FIELD) return value.replace(/^@+/, '');
+  return value;
+}
+
 export function moveJsonTag(data: JsonTagData, source: JsonTagPosition & { value: string }, target: JsonTagPosition, simplified: boolean) {
   const from = JSON_FIELDS.find(field => field.key === source.field);
   const to = JSON_FIELDS.find(field => field.key === target.field);
@@ -46,21 +55,20 @@ export function moveJsonTag(data: JsonTagData, source: JsonTagPosition & { value
   const sourceValues = from.get(data), targetValues = to.get(data);
   if (!Number.isInteger(source.index) || source.index < 0 || sourceValues[source.index] !== source.value
     || !Number.isInteger(target.index) || target.index < 0 || target.index > targetValues.length) return data;
-  const remaining = sourceValues.filter((_, index) => index !== source.index);
   if (from === to) {
-    const index = target.index > source.index ? target.index - 1 : target.index;
-    if (index === source.index) return data;
-    remaining.splice(index, 0, source.value);
-    return from.set(data, remaining);
+    const moved = moveTagWithin(sourceValues, source.index, target.index);
+    return moved === sourceValues ? data : from.set(data, moved);
   }
-  const next = from.set(data, remaining);
-  if (targetValues.some(value => value.toLowerCase() === source.value.toLowerCase())) return next;
+  const value = valueForField(source.value, from.key, to.key);
+  if (!value) return data;
+  const next = from.set(data, sourceValues.filter((_, index) => index !== source.index));
+  if (targetValues.some(existing => existing.toLowerCase() === value.toLowerCase())) return next;
   const inserted = [...targetValues];
-  inserted.splice(target.index, 0, source.value);
+  inserted.splice(target.index, 0, value);
   return to.set(next, inserted);
 }
 
-// Mirrors tag_manager::to_simplified; full JSON retains extension fields and empty schema values.
+// 与 tag_manager::to_simplified 一致；完整格式保留扩展字段，缺省的固定字段补空值
 export function jsonTagPreview(data: JsonTagData, simplified: boolean) {
   if (!simplified) return { ...data,
     fixed: { ...data.fixed, quality: data.fixed.quality ?? '', series: data.fixed.series ?? '', artist: data.fixed.artist ?? '' },

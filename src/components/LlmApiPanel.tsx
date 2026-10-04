@@ -63,7 +63,10 @@ export default function LlmApiPanel({ api, compact = false, style, children }: L
           {api.preset === 'custom' ? (
             <>
               {!compact && (
-                <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginTop: 6 }}>{t('llmApi.apiAddress')}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 6 }}>
+                  <span style={{ fontSize: 11, color: 'var(--color-text-secondary)' }}>{t('llmApi.apiAddress')}</span>
+                  <span title={t('llmApi.openaiOnly')} style={{ cursor: 'help', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, borderRadius: '50%', fontSize: 9, fontWeight: 700, color: 'var(--color-text-tertiary)', border: '1px solid var(--color-border)' }}>?</span>
+                </div>
               )}
               <input className="form-input" placeholder="https://api.example.com/v1/" value={api.customEndpoint}
                 onChange={e => api.setCustomEndpoint(e.target.value)} style={{ marginTop: compact ? 6 : 4 }} />

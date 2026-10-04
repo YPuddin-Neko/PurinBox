@@ -37,7 +37,7 @@ export default function ProcessButton({
   const resolvedStartText = startText || t('processButton.start');
   const resolvedProcessingText = processingText || t('processButton.processing');
   const [hovered, setHovered] = useState(false);
-  const [cancelStage, setCancelStage] = useState(0); // 0=none, 1=graceful, 2=force
+  const [cancelStage, setCancelStage] = useState(0); // 0 未取消，1 已请求取消，2 已强制结束
   const processingSinceRef = useRef(0);
   useEffect(() => {
     if (processing) processingSinceRef.current = Date.now();

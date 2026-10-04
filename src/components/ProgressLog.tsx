@@ -20,7 +20,10 @@ interface ProgressLogProps {
   isDone: boolean;
   hasError: boolean;
   onClearLogs?: () => void;
-  /** 外部传入的开始时间戳，优先使用 */
+  /**
+   * 耗时的起点（如点击开始的时间戳）；不传或为 0 时从第一个计数开始计时。
+   * 速度总是从第一个计数开始算，不含环境部署、模型下载等准备时间。
+   */
   externalStartTime?: number;
   /** 日志面板标题栏右侧、计时之后的附加内容（如成功/失败/警告计数） */
   headerExtra?: ReactNode;
@@ -58,19 +61,49 @@ export function useLogState(): [LogEntry[], Dispatch<SetStateAction<LogEntry[]>>
   return [logs, setLogs];
 }
 
+/**
+ * 速度的采样：本轮第一个计数和最近一次计数变化的时间。
+ * 只用这两次之间完成的条数和时间：不含第一个条目之前的准备时间，任务结束后读数保持不变。
+ */
+export interface SpeedSample {
+  /** 所属一轮的 externalStartTime，换轮时作废 */
+  run: number;
+  firstTime: number;
+  firstCount: number;
+  lastTime: number;
+  lastCount: number;
+}
+
+export function nextSpeedSample(prev: SpeedSample | null, current: number, run: number, now: number): SpeedSample | null {
+  if (current < 1) return null;
+  if (!prev || prev.run !== run) return { run, firstTime: now, firstCount: current, lastTime: now, lastCount: current };
+  if (current === prev.lastCount) return prev;
+  return { ...prev, lastTime: now, lastCount: current };
+}
+
+/** 采样不足（还没有第二次计数，或间隔不到 0.5 秒）时返回空串 */
+export function formatSpeed(sample: SpeedSample | null): string {
+  if (!sample || sample.lastCount <= sample.firstCount) return '';
+  const seconds = (sample.lastTime - sample.firstTime) / 1000;
+  if (seconds < 0.5) return '';
+  const speed = (sample.lastCount - sample.firstCount) / seconds;
+  return speed >= 1 ? `${speed.toFixed(1)} it/s` : `${(1 / speed).toFixed(1)} s/it`;
+}
+
 export default function ProgressLog({ current, total, logs, isDone, hasError, onClearLogs, externalStartTime, headerExtra }: ProgressLogProps) {
   const { t } = useTranslation();
-  const [internalStart, setInternalStart] = useState(0);
+  const [sample, setSample] = useState<SpeedSample | null>(null);
   const [elapsed, setElapsed] = useState('');
 
   const progress = total > 0 ? Math.min(100, Math.max(0, (current / total) * 100)) : 0;
+  const run = externalStartTime ?? 0;
 
-  // 没有外部起点时从第一个计数开始计时，计数归零时复位
+  // 第一个计数到达时开始取样，计数归零或换轮时复位
   useEffect(() => {
-    setInternalStart(prev => (!externalStartTime && current >= 1 ? prev || Date.now() : 0));
-  }, [current, externalStartTime]);
+    setSample(prev => nextSpeedSample(prev, current, run, Date.now()));
+  }, [current, run]);
 
-  const startTime = externalStartTime && externalStartTime > 0 ? externalStartTime : internalStart;
+  const startTime = run > 0 ? run : (sample?.firstTime ?? 0);
 
   useEffect(() => {
     if (startTime === 0) {
@@ -84,7 +117,7 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
     return () => clearInterval(timer);
   }, [startTime, isDone]);
 
-  // Auto-scroll to bottom only if user is near bottom
+  // 停在底部附近时才自动滚到底，往上翻看日志时不打断
   const logContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
 
@@ -100,15 +133,7 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
     }
   }, [logs.length, logs[logs.length - 1]?.dlPercent]);
 
-  const getSpeed = () => {
-    if (startTime === 0 || current <= 0) return '';
-    const el = (Date.now() - startTime) / 1000;
-    if (el < 0.5) return '';
-    const speed = current / el;
-    return speed >= 1 ? `${speed.toFixed(1)} it/s` : `${(1 / speed).toFixed(1)} s/it`;
-  };
-
-  const speed = getSpeed();
+  const speed = formatSpeed(sample);
 
   const statusIcon = (status: LogEntry['status']) => {
     switch (status) {
@@ -149,62 +174,62 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
         {current} / {total} {t('progressLog.files')}
       </div>
 
-        <div className="log-panel" style={{ marginTop: 'var(--space-4)' }}>
-          <div className="log-panel-header">
-            <div className="log-panel-title">
-              <ScrollText style={{ width: 14, height: 14 }} />
-              {t('progressLog.logTitle')}
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-              {elapsed && (
-                <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-                  <Timer style={{ width: 11, height: 11 }} />
-                  {elapsed}
-                </span>
-              )}
-              {headerExtra}
-              <span className="log-panel-count">{logs.length} {t('progressLog.entries')}</span>
-              {onClearLogs && (
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={onClearLogs}
-                  style={{ padding: '2px 6px' }}
-                  title={t('progressLog.clearLogs')}
-                >
-                  <Trash2 style={{ width: 12, height: 12 }} />
-                </button>
-              )}
-            </div>
+      <div className="log-panel" style={{ marginTop: 'var(--space-4)' }}>
+        <div className="log-panel-header">
+          <div className="log-panel-title">
+            <ScrollText style={{ width: 14, height: 14 }} />
+            {t('progressLog.logTitle')}
           </div>
-          <div className="log-content" ref={logContainerRef} onScroll={handleScroll}>
-            {logs.length === 0 ? (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>{t('progressLog.noLogs')}</div>
-            ) : logs.map((log, i) => (
-              log.status === 'download' && log.dlPercent != null ? (
-                <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)' }}>
-                    <span className="log-entry-time">{log.time}</span>
-                    {statusIcon(log.status)}
-                    <span className="log-entry-message info">{log.message}</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 90 }}>
-                    <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
-                      <div style={{ height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #7c5cfc, #60a5fa)', width: `${log.dlPercent}%`, transition: 'width 0.3s ease' }} />
-                    </div>
-                    <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#60a5fa', fontSize: 10, minWidth: 36, textAlign: 'right', flexShrink: 0 }}>{log.dlPercent!.toFixed(1)}%</span>
-                    {log.dlSpeed && <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>{log.dlSpeed}</span>}
-                  </div>
-                </div>
-              ) : (
-                <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
-                  <span className="log-entry-time">{log.time}</span>
-                  {statusIcon(log.status)}
-                  <span className={`log-entry-message ${log.status}`}>{log.message}</span>
-                </div>
-              )
-            ))}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+            {elapsed && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+                <Timer style={{ width: 11, height: 11 }} />
+                {elapsed}
+              </span>
+            )}
+            {headerExtra}
+            <span className="log-panel-count">{logs.length} {t('progressLog.entries')}</span>
+            {onClearLogs && (
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={onClearLogs}
+                style={{ padding: '2px 6px' }}
+                title={t('progressLog.clearLogs')}
+              >
+                <Trash2 style={{ width: 12, height: 12 }} />
+              </button>
+            )}
           </div>
         </div>
+        <div className="log-content" ref={logContainerRef} onScroll={handleScroll}>
+          {logs.length === 0 ? (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>{t('progressLog.noLogs')}</div>
+          ) : logs.map((log, i) => (
+            log.status === 'download' && log.dlPercent != null ? (
+              <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)' }}>
+                  <span className="log-entry-time">{log.time}</span>
+                  {statusIcon(log.status)}
+                  <span className="log-entry-message info">{log.message}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 90 }}>
+                  <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #7c5cfc, #60a5fa)', width: `${log.dlPercent}%`, transition: 'width 0.3s ease' }} />
+                  </div>
+                  <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#60a5fa', fontSize: 10, minWidth: 36, textAlign: 'right', flexShrink: 0 }}>{log.dlPercent!.toFixed(1)}%</span>
+                  {log.dlSpeed && <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>{log.dlSpeed}</span>}
+                </div>
+              </div>
+            ) : (
+              <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`}>
+                <span className="log-entry-time">{log.time}</span>
+                {statusIcon(log.status)}
+                <span className={`log-entry-message ${log.status}`}>{log.message}</span>
+              </div>
+            )
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

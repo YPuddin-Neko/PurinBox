@@ -24,6 +24,8 @@ const fixture = () => ({
 });
 const move = (data, from, index, to, insertion, simplified = false) => moveJsonTag(data,
   { field: from, index, value: field(from).get(data)[index] }, { field: to, index: insertion }, simplified);
+// 拖进画师字段的标签补上 @
+const arrived = (to, value) => to.key === 'fixed.artist' ? `@${value}` : value;
 
 test('moves tags between every pair of fields without mutating the source', () => {
   for (const from of JSON_FIELDS) for (const to of JSON_FIELDS) {
@@ -33,7 +35,7 @@ test('moves tags between every pair of fields without mutating the source', () =
     const original = structuredClone(data);
     const next = move(data, from.key, 0, to.key, 1);
     assert.deepEqual(from.get(next), ['keep me'], `${from.key} -> ${to.key}`);
-    assert.deepEqual(to.get(next), ['first', 'move me', 'last']);
+    assert.deepEqual(to.get(next), ['first', arrived(to, 'move me'), 'last']);
     assert.deepEqual(data, original);
     assert.equal(next.ai_output.nl, original.ai_output.nl);
     assert.deepEqual(next.extension, original.extension);
@@ -48,7 +50,7 @@ test('supports empty destinations and leaves an empty source in its original for
     const data = to.set(from.set(fixture(), ['move me']), []);
     const next = move(data, from.key, 0, to.key, 0);
     assert.deepEqual(from.get(next), []);
-    assert.deepEqual(to.get(next), ['move me']);
+    assert.deepEqual(to.get(next), [arrived(to, 'move me')]);
     assert.deepEqual(next[from.section][from.name], from.kind === 'csv' ? '' : []);
   }
 });
@@ -62,13 +64,34 @@ test('reorders within a field at the beginning, middle, and end', () => {
   assert.equal(move(data, 'ai_output.tags', 1, 'ai_output.tags', 2), data);
 });
 
-test('does not add duplicates to the destination or normalize the moved text', () => {
+test('does not add duplicates to the destination or normalize the moved text outside the artist field', () => {
   const data = field('ai_output.tags').set(fixture(), ['BLUE_EYES', 'other']);
   const duplicate = field('fixed.quality').set(data, ['blue_eyes', 'first']);
   const next = move(duplicate, 'ai_output.tags', 0, 'fixed.quality', 0);
   assert.deepEqual(next.ai_output.tags, ['other']);
   assert.equal(next.fixed.quality, 'blue_eyes, first');
   assert.equal(move(data, 'ai_output.tags', 0, 'fixed.series', 0).fixed.series, 'BLUE_EYES');
+});
+
+test('artist tags gain @ on the way in and lose it on the way out', () => {
+  const data = field('fixed.artist').set(fixture(), ['@kantoku', 'mika pikazo']);
+  const withTags = field('ai_output.tags').set(data, ['smile', '@already', 'kantoku']);
+  assert.equal(move(withTags, 'ai_output.tags', 0, 'fixed.artist', 2).fixed.artist, '@kantoku, mika pikazo, @smile');
+  assert.equal(move(withTags, 'ai_output.tags', 1, 'fixed.artist', 0).fixed.artist, '@already, @kantoku, mika pikazo');
+  const out = move(withTags, 'fixed.artist', 0, 'ai_output.tags', 0);
+  assert.equal(out.fixed.artist, 'mika pikazo');
+  // 去掉 @ 后与目标里的 kantoku 重复：只从画师字段移除
+  assert.deepEqual(out.ai_output.tags, ['smile', '@already', 'kantoku']);
+  assert.deepEqual(move(data, 'fixed.artist', 1, 'ai_output.environment', 0).ai_output.environment, ['mika pikazo']);
+  // 已有 @kantoku 时再拖进 kantoku 视为重复
+  const duplicate = move(withTags, 'ai_output.tags', 2, 'fixed.artist', 0);
+  assert.equal(duplicate.fixed.artist, '@kantoku, mika pikazo');
+  assert.deepEqual(duplicate.ai_output.tags, ['smile', '@already']);
+  // 画师字段内部排序不改写
+  assert.equal(move(data, 'fixed.artist', 1, 'fixed.artist', 0).fixed.artist, 'mika pikazo, @kantoku');
+  // 只有 @ 的标签拖出去会变成空标签，不移动
+  const bare = field('fixed.artist').set(fixture(), ['@']);
+  assert.equal(move(bare, 'fixed.artist', 0, 'ai_output.tags', 0), bare);
 });
 
 test('only removes the dragged occurrence from a source containing duplicates', () => {

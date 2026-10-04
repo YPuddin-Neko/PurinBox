@@ -1,12 +1,14 @@
 import { useBatchTask } from '../hooks/useBatchTask';
-import { useTaggerModels } from '../hooks/useTaggerModels';
+import { notifyTaggerModelsChanged, useTaggerModels } from '../hooks/useTaggerModels';
+import { useTaggerJsonSimplified } from '../hooks/useTaggerJsonSimplified';
+import { taggerDownloadLog } from '../hooks/useTaggerDownloadLog';
 import { TaggerCategoryGrid, ThresholdSliders } from './TaggerControls';
 import DeviceToggle from './ui/DeviceToggle';
-import { JSON_APPEND_FIELDS, isTaggerCategory } from '../utils/taggerOptions';
-import { JSON_APPEND_FIELD_KEYS, isOneOf, type JsonAppendField, type TaggerOptions } from '../api/commandOptions';
+import NumberInput from './ui/NumberInput';
+import { JSON_APPEND_FIELDS, isTaggerCategory, splitOutputFormat, type TagOutputChoice } from '../utils/taggerOptions';
+import { JSON_APPEND_FIELD_KEYS, buildTaggerOptions, isOneOf, type JsonAppendField, type TagFileFormat } from '../api/commandOptions';
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '../utils/tauriRuntime';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Loader2, Download, Plus, Check, Trash2, Search, FileUp, Save, ChevronDown, X } from 'lucide-react';
 import ProgressLog from './ProgressLog';
@@ -14,13 +16,9 @@ import ProcessButton from './ProcessButton';
 import { ConfirmModal } from './Modal';
 import CustomSelect from './CustomSelect';
 import TaggerModelSelect from './TaggerModelSelect';
-import InputPathPickerButton from './InputPathPickerButton';
+import DatasetPathPanel from './DatasetPathPanel';
 import Checkbox from './Checkbox';
-import RecursiveScanToggle from './RecursiveScanToggle';
 import { useTranslation } from 'react-i18next';
-import i18n from '../i18n';
-import { type UnifiedDownloadPayload } from '../hooks/useUnifiedTaskLogs';
-
 
 interface OnnxModelInfo { input_size: number; input_shape: number[]; }
 
@@ -40,21 +38,20 @@ interface TaggerPreset {
   escapeParentheses: boolean;
   sortBy: 'confidence' | 'frequency';
   existingTagsAction: 'overwrite' | 'skip' | 'prepend' | 'append';
-  outputFormat: 'txt' | 'json';
+  outputFormat: TagFileFormat;
   jsonSimplified: boolean;
 }
+
+const DEFAULT_MODEL_SIZE = 448;
 
 export default function AiTaggerTab() {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
-  const { models, selectedModel, setSelectedModel, genTh, setGenTh, charTh, setCharTh, enabled, setEnabled, cur, reload: load } = useTaggerModels();
-  const task = useBatchTask({ event: 'tagger-progress', taskId: 'tagger', pythonEnv: true, logProcessing: () => true });
+  const { models, selectedModel, setSelectedModel, genTh, setGenTh, charTh, setCharTh, enabled, setEnabled, cur } = useTaggerModels();
+  const task = useBatchTask({ event: 'tagger-progress', taskId: 'tagger', pythonEnv: true, logProcessing: () => true, download: taggerDownloadLog() });
   const taskLogs = task.logger;
-  const processingRef = useRef(false);
-  processingRef.current = task.processing;
   const [useGpu, setUseGpu] = useState(false);
   const [batchSize, setBatchSize] = useState(1);
-  const DEFAULT_MODEL_SIZE = 448;
   const [showAdd, setShowAdd] = useState(false);
   const [nName, setNName] = useState('');
   const [nModelPath, setNModelPath] = useState('');
@@ -70,8 +67,9 @@ export default function AiTaggerTab() {
   const [escapeParentheses, setEscapeParentheses] = useState(false);
   const [sortBy, setSortBy] = useState<'confidence' | 'frequency'>('confidence');
   const [existingTagsAction, setExistingTagsAction] = useState<'overwrite' | 'skip' | 'prepend' | 'append'>('overwrite');
-  const [outputFormat, setOutputFormat] = useState<'txt' | 'json'>('txt');
-  const [jsonSimplified, setJsonSimplified] = useState(()=>localStorage.getItem('tagger_json_simplified')==='true');
+  const [outputFormat, setOutputFormat] = useState<TagFileFormat>('txt');
+  const [jsonSimplified, setJsonSimplified] = useTaggerJsonSimplified();
+  const outputChoice: TagOutputChoice = outputFormat === 'txt' ? 'txt' : jsonSimplified ? 'json_simplified' : 'json';
   const [recursive, setRecursive] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
 
@@ -141,7 +139,6 @@ export default function AiTaggerTab() {
     setExistingTagsAction(preset.existingTagsAction ?? 'overwrite');
     setOutputFormat(preset.outputFormat);
     setJsonSimplified(preset.jsonSimplified);
-    localStorage.setItem('tagger_json_simplified', String(preset.jsonSimplified));
     setShowPresets(false);
     taskLogs.appendLog(t('aiTagger.presetLoaded', { name: preset.name }), 'info');
   };
@@ -150,33 +147,37 @@ export default function AiTaggerTab() {
     savePresetsToStorage(presets.filter(p => p.name !== name));
   };
 
-  useEffect(() => {
-    let active = true;
-    const handler = (e: { payload: UnifiedDownloadPayload }) => {
-      if (!active || !processingRef.current) return;
-      const d = e.payload;
-      if (d.status === 'done' || d.status === 'cancelled') {
-        taskLogs.appendDownloadLog(d, { appendDone: false });
-      } else if (d.status === 'error') {
-        taskLogs.appendDownloadLog(d, { errorPrefix: i18n.t('aiTagger.downloadFail') });
-      } else {
-        taskLogs.appendDownloadLog(d);
-      }
-    };
-    const u1 = listen<UnifiedDownloadPayload>('tagger-download', handler);
-    return () => { active = false; u1.then(fn => fn()); };
-  }, [taskLogs]);
-
   const handleStart = async () => {
     if (!inputPath || !selectedModel || enabled.size === 0) return;
-    const bs = Number.isFinite(batchSize) ? Math.max(1, Math.min(Math.trunc(batchSize), 64)) : 1;
     await task.run({
       taskName: `${t('aiTagger.taskName')} - ${cur?.name || '?'}`,
       startLog: t('aiTagger.startMsg', { model: cur?.name, hw: useGpu ? 'GPU' : 'CPU' }),
       exec: async () => {
-        const result = await invoke('start_tagging', { options: { input_path: inputPath, model_id: selectedModel, general_threshold: genTh, character_threshold: charTh, enabled_categories: Array.from(enabled), use_gpu: useGpu, batch_size: useGpu ? bs : 1, exclude_tags: excludeTags, append_tags: appendTags, append_position: appendPosition, json_append_field: jsonAppendField, replace_underscore: replaceUnderscore, escape_parentheses: escapeParentheses, sort_by: sortBy, existing_tags_action: existingTagsAction, output_format: outputFormat, json_simplified: jsonSimplified, recursive } satisfies TaggerOptions });
-        await load();
-        return result;
+        try {
+          return await invoke('start_tagging', {
+            options: buildTaggerOptions({ input_path: inputPath, recursive }, {
+              model_id: selectedModel,
+              general_threshold: genTh,
+              character_threshold: charTh,
+              enabled_categories: [...enabled],
+              use_gpu: useGpu,
+              batch_size: batchSize,
+              exclude_tags: excludeTags,
+              append_tags: appendTags,
+              append_position: appendPosition,
+              json_append_field: jsonAppendField,
+              replace_underscore: replaceUnderscore,
+              escape_parentheses: escapeParentheses,
+              sort_by: sortBy,
+              existing_tags_action: existingTagsAction,
+              output_format: outputFormat,
+              json_simplified: jsonSimplified,
+            }),
+          });
+        } finally {
+          // 打标时可能下载了模型
+          notifyTaggerModelsChanged();
+        }
       },
     });
   };
@@ -208,15 +209,12 @@ export default function AiTaggerTab() {
       taskLogs.appendLog(t('aiTagger.fillAllFields'), 'error');
       return;
     }
-    // 提交前规范数字参数。
-    const size = Number.isFinite(nSize) && nSize >= 1 ? nSize : DEFAULT_MODEL_SIZE;
-    if (size !== nSize) setNSize(size);
     setImporting(true);
     try {
-      await invoke<string>('import_local_tagger_model', { name: nName, modelPath: nModelPath, tagsPath: nTagsPath, inputSize: size });
+      await invoke<string>('import_local_tagger_model', { name: nName, modelPath: nModelPath, tagsPath: nTagsPath, inputSize: nSize });
       taskLogs.appendLog(t('aiTagger.importOk', { name: nName }), 'success');
       setShowAdd(false); setNName(''); setNModelPath(''); setNTagsPath(''); setNSize(DEFAULT_MODEL_SIZE);
-      await load();
+      notifyTaggerModelsChanged();
     } catch (e: any) {
       taskLogs.appendLog(`${t('aiTagger.importFail')}: ${String(e)}`, 'error');
     }
@@ -227,7 +225,7 @@ export default function AiTaggerTab() {
     try {
       await invoke('remove_custom_tagger_model', { id });
       taskLogs.appendLog(`${t('aiTagger.deletedModel')}: ${name}`, 'info');
-      await load();
+      notifyTaggerModelsChanged();
     } catch (e: any) {
       taskLogs.appendLog(`${t('aiTagger.deleteFail')}: ${String(e)}`, 'error');
     }
@@ -237,17 +235,7 @@ export default function AiTaggerTab() {
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-5)', alignItems: 'start' }}>
       {/* 左栏 - 所有设置 */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        {/* 数据集路径 */}
-        <div className="tool-panel">
-          <div className="tool-panel-header">
-            <span className="tool-panel-title">{t('aiTagger.datasetPath')}</span>
-            <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
-          </div>
-          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-            <input className="form-input" placeholder={t('aiTagger.selectFolder')} value={inputPath} onChange={e => setInputPath(e.target.value)} style={{ flex: 1 }} />
-            <InputPathPickerButton onSelect={setInputPath} />
-          </div>
-        </div>
+        <DatasetPathPanel value={inputPath} onChange={setInputPath} recursive={recursive} onRecursive={setRecursive} />
 
         {/* 打标模型 */}
         <div className="tool-panel">
@@ -302,7 +290,10 @@ export default function AiTaggerTab() {
               <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.modelFile')}</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder={t('aiTagger.modelPlaceholder')} value={nModelPath} onChange={e => setNModelPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseOnnx}><FileUp style={{ width: 14, height: 14 }} /> {t('aiTagger.browse')}</button></div></div>
               <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.tagMapping')}</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder={t('aiTagger.tagFilePlaceholder')} value={nTagsPath} onChange={e => setNTagsPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseTags}><FileUp style={{ width: 14, height: 14 }} /> {t('aiTagger.browse')}</button></div></div>
               <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
-                <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.inputSize')}</label><input className="form-input" type="number" value={nSize} onChange={e => setNSize(e.target.value === "" ? "" as any : Number(e.target.value))} onBlur={e => { if (e.target.value === "") setNSize(DEFAULT_MODEL_SIZE); }} style={{ width: 80 }} /></div>
+                <div>
+                  <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.inputSize')}</label>
+                  <NumberInput integer min={1} fallback={DEFAULT_MODEL_SIZE} value={nSize} onChange={setNSize} style={{ width: 80 }} />
+                </div>
                 <button className="btn btn-secondary btn-sm" onClick={autoDetect} disabled={detecting || !nModelPath} style={{ height: 34, whiteSpace: 'nowrap' }}>{detecting ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Search style={{ width: 14, height: 14 }} />} {t('aiTagger.autoDetect')}</button>
                 <button className="btn btn-primary btn-sm" onClick={handleImport} disabled={importing || !nName || !nModelPath || !nTagsPath} style={{ height: 34 }}>{importing ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <Plus style={{ width: 14, height: 14 }} />} {t('aiTagger.add')}</button>
               </div>
@@ -334,7 +325,8 @@ export default function AiTaggerTab() {
             {/* GPU/CPU 切换 */}
             <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
               <span style={{ fontSize: 11, fontWeight: 600, color: useGpu ? 'var(--color-text-secondary)' : 'var(--color-text-tertiary)', whiteSpace: 'nowrap' }}>{t('aiTagger.batchSize')}</span>
-              <input type="number" className="form-input" min={1} max={64} value={batchSize} onChange={e => setBatchSize(e.target.value === "" ? "" as any : Math.max(1, parseInt(e.target.value) || 1))} onBlur={e => { if (e.target.value === "") setBatchSize(1); }} disabled={!useGpu} style={{ width: 58, padding: '3px 6px', fontSize: 11, textAlign: 'center', opacity: useGpu ? 1 : 0.4 }} />
+              <NumberInput integer min={1} max={64} fallback={1} value={batchSize} onChange={setBatchSize} disabled={!useGpu}
+                style={{ width: 58, padding: '3px 6px', fontSize: 11, textAlign: 'center', opacity: useGpu ? 1 : 0.4 }} />
               <div style={{ width: 1, height: 16, background: 'var(--color-border)', margin: '0 4px' }} />
               <DeviceToggle useGpu={useGpu} onChange={setUseGpu} />
             </div>
@@ -348,17 +340,17 @@ export default function AiTaggerTab() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
             <div>
               <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.outputFormat')}</label>
-              <CustomSelect value={outputFormat === 'json' ? (jsonSimplified ? 'json_simplified' : 'json_full') : 'txt'}
+              <CustomSelect value={outputChoice}
                 onChange={v => {
-                  if (v === 'txt') { setOutputFormat('txt'); }
-                  else if (v === 'json_full') { setOutputFormat('json'); setJsonSimplified(false); localStorage.setItem('tagger_json_simplified', 'false'); }
-                  else { setOutputFormat('json'); setJsonSimplified(true); localStorage.setItem('tagger_json_simplified', 'true'); }
+                  const { output_format, json_simplified } = splitOutputFormat(v as TagOutputChoice);
+                  setOutputFormat(output_format);
+                  if (output_format === 'json') setJsonSimplified(json_simplified);
                 }}
                 options={[
                   { value: 'txt', label: '.txt' },
-                  { value: 'json_full', label: `.json (${t('aiTagger.fullFormat')})` },
+                  { value: 'json', label: `.json (${t('aiTagger.fullFormat')})` },
                   { value: 'json_simplified', label: `.json (${t('aiTagger.simplified')})` },
-                ]} compact />
+                ] satisfies { value: TagOutputChoice; label: string }[]} compact />
             </div>
             <div>
               <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.existingTagsAction')}</label>
@@ -392,13 +384,20 @@ export default function AiTaggerTab() {
               <label className="form-label" style={{ fontSize: 11, margin: 0 }}>{t('aiTagger.appendTags')}</label>
               <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                 {outputFormat === 'json' && (
-                  <div style={{ width: 96 }} title={t('aiTagger.appendField')}>
+                  <div style={{ width: 120 }} title={t('aiTagger.appendField')}>
                     <CustomSelect value={jsonAppendField}
                       onChange={v => { if (isOneOf(JSON_APPEND_FIELD_KEYS, v)) setJsonAppendField(v); }}
                       options={JSON_APPEND_FIELDS.map(f => ({ value: f.value, label: t(f.labelKey) }))} compact />
                   </div>
                 )}
-                {(['prepend', 'append'] as const).map(pos => (<button key={pos} onClick={() => setAppendPosition(pos)} style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${appendPosition === pos ? 'var(--color-border-active)' : 'var(--color-border)'}`, background: appendPosition === pos ? 'rgba(124,92,252,0.08)' : 'transparent', color: appendPosition === pos ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 10, fontWeight: 600, cursor: 'pointer' }}>{pos === 'prepend' ? t('aiTagger.prepend') : t('aiTagger.append')}</button>))}
+                {(['prepend', 'append'] as const).map(pos => (
+                  <button key={pos} onClick={() => setAppendPosition(pos)}
+                    style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${appendPosition === pos ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                      background: appendPosition === pos ? 'rgba(124,92,252,0.08)' : 'transparent',
+                      color: appendPosition === pos ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 10, fontWeight: 600, cursor: 'pointer' }}>
+                    {pos === 'prepend' ? t('aiTagger.prepend') : t('aiTagger.append')}
+                  </button>
+                ))}
               </div>
             </div>
             <input className="form-input" placeholder="tag1, tag2, tag3 ..." value={appendTags} onChange={e => setAppendTags(e.target.value)} style={{ width: '100%' }} />

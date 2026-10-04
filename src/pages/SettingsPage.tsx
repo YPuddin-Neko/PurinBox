@@ -1,13 +1,16 @@
-import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, Terminal, RefreshCw as RefreshIcon, Database, Download, Upload, X, Play, KeyRound, FlaskConical } from 'lucide-react';
+import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, Terminal, RefreshCw as RefreshIcon, Database, Download, Upload, X, Play, KeyRound, FlaskConical, type LucideIcon } from 'lucide-react';
 import { useAppSettings } from '../components/ThemeProvider';
-import { useState, useEffect, useRef, type CSSProperties } from 'react';
+import { useState, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { hasTauriRuntime, listen } from '../utils/tauriRuntime';
+import { errorText, hasTauriRuntime, listen } from '../utils/tauriRuntime';
 import { ConfirmModal, AlertModal } from '../components/Modal';
 import CustomSelect from '../components/CustomSelect';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { packageAppVersion, type UpdateCheckResult } from '../utils/appVersion';
+import { formatBytes } from '../utils/format';
+import { isCancelMessage } from '../components/TaskContext';
+import { RunIdGate, type UnifiedProgressPayload } from '../hooks/useUnifiedTaskLogs';
 
 import SystemMonitor from '../components/SystemMonitor';
 import PageHeader from '../components/ui/PageHeader';
@@ -86,6 +89,63 @@ const SaveButton = ({ saving, msg, disabled, onClick }: { saving: boolean; msg: 
   );
 };
 
+const PanelHeader = ({ icon: Icon, color, title, children }: { icon: LucideIcon; color: string; title: string; children?: ReactNode }) => (
+  <div className="tool-panel-header">
+    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+      <Icon style={{ width: 16, height: 16, color }} />
+      <span className="tool-panel-title">{title}</span>
+    </div>
+    {children}
+  </div>
+);
+
+/** 卡片里的一行开关：左侧标题，右侧开关 */
+const SwitchRow = ({ label, checked, onChange, children, style, labelStyle }: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  /** 跟在标题后面（如 Beta 标记） */
+  children?: ReactNode;
+  style?: CSSProperties;
+  labelStyle?: CSSProperties;
+}) => (
+  <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 12px', ...style }}>
+    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)', ...labelStyle }}>
+      {label}
+      {children}
+    </span>
+    <Switch checked={checked} onChange={onChange} aria-label={label} />
+  </div>
+);
+
+/** 标签库的下载、翻译按钮：运行中显示进度，悬停时变成取消 */
+const TaskButton = ({ running, runningLabel, label, icon, className, disabled, onStart, onCancel }: {
+  running: boolean;
+  runningLabel: string;
+  label: string;
+  icon: ReactNode;
+  className: string;
+  disabled: boolean;
+  onStart: () => void;
+  onCancel: () => void;
+}) => {
+  const { t } = useTranslation();
+  const [hover, setHover] = useState(false);
+  return (
+    <button className={running ? 'btn btn-secondary' : className} onClick={running ? onCancel : onStart} disabled={disabled}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4,
+        ...(running && hover ? { color: '#f87171', borderColor: 'rgba(248,113,113,0.3)' } : {}),
+      }}>
+      {running
+        ? (hover
+          ? <><X style={{ width: 12, height: 12 }} /> {t('common.cancel')}</>
+          : <><Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> {runningLabel}</>)
+        : <>{icon} {label}</>}
+    </button>
+  );
+};
+
 interface ProviderField {
   /** localStorage 键，同时作为 React key */
   storageKey: string;
@@ -161,11 +221,15 @@ export default function SettingsPage() {
   const [tagDbStats, setTagDbStats] = useState<TagDbStats | null>(null);
   const [tagDbDownloading, setTagDbDownloading] = useState(false);
   const [tagDbTranslating, setTagDbTranslating] = useState(false);
-  const [translateHover, setTranslateHover] = useState(false);
   const [tagDbProgress, setTagDbProgress] = useState('');
   const [tagDbClearConfirm, setTagDbClearConfirm] = useState(false);
   const [tagDbLatest, setTagDbLatest] = useState('');
   const [tagDbChecking, setTagDbChecking] = useState(false);
+  // 下载和翻译共用 tag-db-progress，新一轮开始后丢掉上一轮迟到的事件
+  const tagDbGate = useRef(new RunIdGate());
+  const tagDbCancelRequested = useRef(false);
+  // 下载前先查新版本，这段时间还没有可取消的后端下载
+  const tagDbCheckingUpdate = useRef(false);
 
   // 代理设置
   const [proxyEnabled, setProxyEnabled] = useState(false);
@@ -273,34 +337,70 @@ export default function SettingsPage() {
     } catch (e) { console.error(e); }
   };
 
+  // 用户点了取消、后端以「已取消」开头拒绝时按取消显示，不加失败前缀
+  const tagDbFailureText = (e: unknown) => {
+    const text = errorText(e);
+    return tagDbCancelRequested.current && isCancelMessage(text) ? text : `${t('common.failed')}: ${text}`;
+  };
+
+  const startTagDbTask = () => {
+    tagDbCancelRequested.current = false;
+    tagDbGate.current.begin();
+  };
+
   const handleDownloadTagDb = async () => {
-    if (tagDbStats?.has_data) {
-      setTagDbDownloading(true); setTagDbProgress(t('settings.checkingUpdate'));
-      try {
-        const latest = await invoke<string>('check_tag_db_update');
+    startTagDbTask();
+    setTagDbDownloading(true);
+    try {
+      if (tagDbStats?.has_data) {
+        setTagDbProgress(t('settings.checkingUpdate'));
+        tagDbCheckingUpdate.current = true;
+        let latest: string;
+        try {
+          latest = await invoke<string>('check_tag_db_update');
+        } catch (e) {
+          setTagDbProgress(`${t('settings.checkFailed')}: ${errorText(e)}`);
+          return;
+        } finally {
+          tagDbCheckingUpdate.current = false;
+        }
         setTagDbLatest(latest);
         if (latest === tagDbStats.source_file) {
           setTagDbProgress(t('settings.alreadyLatestVersion'));
-          setTagDbDownloading(false);
           return;
         }
-      } catch (e: any) {
-        setTagDbProgress(`${t('settings.checkFailed')}: ${e?.message || e}`);
-        setTagDbDownloading(false);
-        return;
+        if (tagDbCancelRequested.current) {
+          setTagDbProgress(t('settings.downloadCancelled'));
+          return;
+        }
       }
-    } else {
-      setTagDbDownloading(true);
+      setTagDbProgress(t('settings.downloading'));
+      await invoke('download_danbooru_tags');
+      await loadTagDbStats();
+    } catch (e) {
+      setTagDbProgress(tagDbFailureText(e));
+    } finally {
+      setTagDbDownloading(false);
     }
-    setTagDbProgress(t('settings.downloading'));
-    try { await invoke('download_danbooru_tags'); await loadTagDbStats(); } catch (e: any) { setTagDbProgress(`${t('common.failed')}: ${e?.message || e}`); }
-    finally { setTagDbDownloading(false); }
+  };
+
+  const cancelTagDbDownload = () => {
+    tagDbCancelRequested.current = true;
+    if (!tagDbCheckingUpdate.current) {
+      invoke('cancel_tag_db_download').catch(e => console.warn('取消标签库下载失败:', e));
+    }
   };
 
   const handleTranslateTagDb = async () => {
+    startTagDbTask();
     setTagDbTranslating(true); setTagDbProgress(t('settings.translating'));
-    try { await invoke('translate_tag_db', { targetLang: localStorage.getItem('translate_target_lang') || 'zh-CN' }); await loadTagDbStats(); } catch (e: any) { setTagDbProgress(`${t('common.failed')}: ${e?.message || e}`); }
+    try { await invoke('translate_tag_db', { targetLang: localStorage.getItem('translate_target_lang') || 'zh-CN' }); await loadTagDbStats(); } catch (e) { setTagDbProgress(tagDbFailureText(e)); }
     finally { setTagDbTranslating(false); }
+  };
+
+  const cancelTagDbTranslation = () => {
+    tagDbCancelRequested.current = true;
+    invoke('cancel_tag_db_translation').catch(e => console.warn('取消标签翻译失败:', e));
   };
 
   const handleClearTagDb = async () => {
@@ -308,7 +408,6 @@ export default function SettingsPage() {
   };
 
   useEffect(() => {
-
     if (!hasTauriRuntime()) return;
 
     loadCacheStats(); loadCachePath(); loadTagDbStats();
@@ -319,8 +418,8 @@ export default function SettingsPage() {
       setTagDbTranslating(translating);
     }).catch(() => {});
     let active = true;
-    const unlisten = listen<{ status: string; message: string; current: number; total: number }>('tag-db-progress', (e) => {
-      if (!active) return;
+    const unlisten = listen<UnifiedProgressPayload>('tag-db-progress', (e) => {
+      if (!active || !tagDbGate.current.accept(e.payload.run_id)) return;
       setTagDbProgress(e.payload.message);
       if (e.payload.status === 'translating') {
         loadTagDbStats();
@@ -384,12 +483,6 @@ export default function SettingsPage() {
     } catch (e: any) { setAlertMsg(`${t('settings.resetFailed')}: ${e?.message || e}`); }
   };
 
-  const formatSize = (bytes: number) => {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  };
-
   return (
     <>
     <div className="page" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -399,16 +492,9 @@ export default function SettingsPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {monitorInterval > 0 && isDesktopRuntime && <SystemMonitor />}
 
-
-
           {/* Monitor Interval */}
           <div className="tool-panel">
-            <div className="tool-panel-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <Activity style={{ width: 16, height: 16, color: '#4ade80' }} />
-                <span className="tool-panel-title">{t('settings.monitor')}</span>
-              </div>
-            </div>
+            <PanelHeader icon={Activity} color="#4ade80" title={t('settings.monitor')} />
             <div>
               <label className="form-label" style={{ marginBottom: 8 }}>{t('settings.monitorInterval')}</label>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 'var(--space-2)' }}>
@@ -439,12 +525,7 @@ export default function SettingsPage() {
 
           {/* Experimental Features */}
           <div className="tool-panel">
-            <div className="tool-panel-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <FlaskConical style={{ width: 16, height: 16, color: '#fbbf24' }} />
-                <span className="tool-panel-title">{t('settings.experimental')}</span>
-              </div>
-            </div>
+            <PanelHeader icon={FlaskConical} color="#fbbf24" title={t('settings.experimental')} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {[
                 {
@@ -458,47 +539,28 @@ export default function SettingsPage() {
                   title: t('settings.hybridTaggerToggle'),
                 },
               ].map((feature) => (
-                <div key={feature.title} style={{
-                  ...cardStyle,
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
-                  padding: '10px 12px',
-                }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-                    {feature.title}
-                    <span className="beta-badge">
-                      Beta
-                    </span>
+                <SwitchRow key={feature.title} label={feature.title} checked={feature.enabled} onChange={feature.setEnabled}
+                  style={{ gap: 16 }} labelStyle={{ fontWeight: 600 }}>
+                  <span className="beta-badge">
+                    Beta
                   </span>
-                  <Switch checked={feature.enabled} onChange={feature.setEnabled} aria-label={feature.title} />
-                </div>
+                </SwitchRow>
               ))}
             </div>
           </div>
 
           {/* Proxy */}
           <div className="tool-panel">
-            <div className="tool-panel-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <Globe style={{ width: 16, height: 16, color: '#f59e0b' }} />
-                <span className="tool-panel-title">{t('settings.proxy')}</span>
-              </div>
+            <PanelHeader icon={Globe} color="#f59e0b" title={t('settings.proxy')}>
               <SaveButton saving={proxySave.saving} msg={proxySave.msg} disabled={!isDesktopRuntime} onClick={handleSaveProxy} />
-            </div>
+            </PanelHeader>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               {/* 启用开关 + LLM 开关 + 代理类型 */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px' }}>
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.proxyEnabled')}</div>
-                  </div>
-                  <Switch checked={proxyEnabled} onChange={setProxyEnabled} aria-label={t('settings.proxyEnabled')} />
-                </div>
-                <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '10px 12px' }}>
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.proxyLlm')}</div>
-                  </div>
-                  <Switch checked={llmProxy} onChange={setLlmProxy} aria-label={t('settings.proxyLlm')} />
-                </div>
+                <SwitchRow label={t('settings.proxyEnabled')} checked={proxyEnabled} onChange={setProxyEnabled}
+                  style={{ gap: 8 }} labelStyle={{ fontSize: 12 }} />
+                <SwitchRow label={t('settings.proxyLlm')} checked={llmProxy} onChange={setLlmProxy}
+                  style={{ gap: 8 }} labelStyle={{ fontSize: 12 }} />
                 <div style={{ ...cardStyle, padding: '10px 12px' }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 5 }}>{t('settings.proxyType')}</div>
                   <SegmentedTabs className="ui-seg-compact" value={proxyType} onChange={setProxyType} tabs={[
@@ -536,52 +598,34 @@ export default function SettingsPage() {
 
           {/* Tokens */}
           <div className="tool-panel">
-            <div className="tool-panel-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <KeyRound style={{ width: 16, height: 16, color: '#f97316' }} />
-                <span className="tool-panel-title">{t('settings.tokenSettings')}</span>
-              </div>
+            <PanelHeader icon={KeyRound} color="#f97316" title={t('settings.tokenSettings')}>
               <SaveButton saving={huggingFaceSave.saving} msg={huggingFaceSave.msg} disabled={!isDesktopRuntime} onClick={handleSaveHuggingFace} />
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              <div style={{ ...cardStyle, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.huggingFace')}</div>
-                </div>
-                <SecretInput
-                  value={huggingFaceToken}
-                  onChange={setHuggingFaceToken}
-                  placeholder={isDesktopRuntime ? t('settings.huggingFaceTokenPlaceholder') : desktopOnlyText}
-                  show={showHuggingFaceToken}
-                  onToggle={() => setShowHuggingFaceToken(!showHuggingFaceToken)}
-                />
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <LinkButton href="https://huggingface.co/settings/tokens" text={t('settings.huggingFaceTokenLink')} />
-                </div>
+            </PanelHeader>
+            <div style={{ ...cardStyle, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.huggingFace')}</div>
               </div>
-              <p style={{ fontSize: 10, color: 'var(--color-text-tertiary)', lineHeight: 1.6, margin: 0 }}>
-                {t('settings.huggingFaceDesc')}
-              </p>
+              <SecretInput
+                value={huggingFaceToken}
+                onChange={setHuggingFaceToken}
+                placeholder={isDesktopRuntime ? t('settings.huggingFaceTokenPlaceholder') : desktopOnlyText}
+                show={showHuggingFaceToken}
+                onToggle={() => setShowHuggingFaceToken(!showHuggingFaceToken)}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <LinkButton href="https://huggingface.co/settings/tokens" text={t('settings.huggingFaceTokenLink')} />
+              </div>
             </div>
           </div>
 
           {/* Translation */}
           <div className="tool-panel">
-            <div className="tool-panel-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <Languages style={{ width: 16, height: 16, color: '#60a5fa' }} />
-                <span className="tool-panel-title">{t('settings.translation')}</span>
-              </div>
-            </div>
+            <PanelHeader icon={Languages} color="#60a5fa" title={t('settings.translation')} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               {/* 开关 + 供应商 同一行 */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '12px 14px' }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.enableTranslation')}</div>
-                  </div>
-                  <Switch checked={translateEnabled} onChange={toggleTranslate} aria-label={t('settings.enableTranslation')} />
-                </div>
+                <SwitchRow label={t('settings.enableTranslation')} checked={translateEnabled} onChange={toggleTranslate}
+                  style={{ padding: '12px 14px' }} />
                 <div style={{ ...cardStyle, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6, padding: '12px 14px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.translationProvider')}</label>
@@ -661,7 +705,7 @@ export default function SettingsPage() {
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.translationCache')}</div>
                     <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                      {cacheStats ? `${t('settings.cacheRecords', { count: cacheStats.total })} · ${formatSize(cacheStats.db_size_bytes)}` : (isDesktopRuntime ? t('common.loading') : desktopOnlyText)}
+                      {cacheStats ? `${t('settings.cacheRecords', { count: cacheStats.total })} · ${formatBytes(cacheStats.db_size_bytes)}` : (isDesktopRuntime ? t('common.loading') : desktopOnlyText)}
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
@@ -717,12 +761,7 @@ export default function SettingsPage() {
 
           {/* 标签数据库 */}
           <div className="tool-panel">
-            <div className="tool-panel-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <Database style={{ width: 16, height: 16, color: '#a78bfa' }} />
-                <span className="tool-panel-title">{t('settings.tagDatabase')}</span>
-              </div>
-            </div>
+            <PanelHeader icon={Database} color="#a78bfa" title={t('settings.tagDatabase')} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
                 {t('settings.tagDbSource')}: <a href="https://github.com/DraconicDragon/dbr-e621-lists-archive" target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent-primary)' }}>DraconicDragon/dbr-e621-lists-archive</a>
@@ -732,7 +771,7 @@ export default function SettingsPage() {
                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.tagData')}</div>
                   <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
                     {tagDbStats ? (tagDbStats.has_data
-                      ? `${t('settings.tagCount', { count: tagDbStats.total_tags.toLocaleString() })} · ${t('settings.translatedCount', { count: tagDbStats.translated_tags.toLocaleString() })} · ${formatSize(tagDbStats.db_size_bytes)}`
+                      ? `${t('settings.tagCount', { count: tagDbStats.total_tags.toLocaleString() })} · ${t('settings.translatedCount', { count: tagDbStats.translated_tags.toLocaleString() })} · ${formatBytes(tagDbStats.db_size_bytes)}`
                       : t('settings.notDownloaded')) : (isDesktopRuntime ? t('common.loading') : desktopOnlyText)}
                   </div>
                   {tagDbStats?.has_data && tagDbStats.source_file && (
@@ -755,34 +794,24 @@ export default function SettingsPage() {
                     <button className="btn btn-ghost btn-sm" title={t('settings.checkUpdate')} disabled={tagDbDownloading || tagDbTranslating || tagDbChecking || !isDesktopRuntime}
                       onClick={async () => {
                         setTagDbChecking(true);
-                        try { setTagDbLatest(await invoke<string>('check_tag_db_update')); } catch (e: any) { setTagDbProgress(`${t('settings.checkFailed')}: ${e?.message || e}`); }
+                        try { setTagDbLatest(await invoke<string>('check_tag_db_update')); } catch (e) { setTagDbProgress(`${t('settings.checkFailed')}: ${errorText(e)}`); }
                         finally { setTagDbChecking(false); }
                       }}
                       style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       <RefreshIcon style={{ width: 12, height: 12, animation: tagDbChecking ? 'spin 1s linear infinite' : undefined, transition: 'transform 0.2s' }} />
                     </button>
                   )}
-                  <button className="btn btn-primary" onClick={handleDownloadTagDb}
-                    disabled={tagDbDownloading || tagDbTranslating || (!!tagDbLatest && tagDbLatest === tagDbStats?.source_file) || !isDesktopRuntime}
-                    style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4 }}>
-                    {tagDbDownloading ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <Download style={{ width: 12, height: 12 }} />}
-                    {tagDbDownloading ? t('settings.downloading') : (tagDbStats?.has_data ? t('common.update') : t('common.download'))}
-                  </button>
+                  <TaskButton className="btn btn-primary" running={tagDbDownloading} onStart={handleDownloadTagDb} onCancel={cancelTagDbDownload}
+                    disabled={tagDbTranslating || (!tagDbDownloading && !!tagDbLatest && tagDbLatest === tagDbStats?.source_file) || !isDesktopRuntime}
+                    icon={<Download style={{ width: 12, height: 12 }} />}
+                    label={tagDbStats?.has_data ? t('common.update') : t('common.download')}
+                    runningLabel={t('settings.downloading')} />
                   {tagDbStats?.has_data && (
-                    <button className="btn btn-secondary"
-                      onClick={tagDbTranslating ? async () => { await invoke('cancel_tag_db_translation'); } : handleTranslateTagDb}
+                    <TaskButton className="btn btn-secondary" running={tagDbTranslating} onStart={handleTranslateTagDb} onCancel={cancelTagDbTranslation}
                       disabled={tagDbDownloading || !isDesktopRuntime}
-                      onMouseEnter={() => setTranslateHover(true)}
-                      onMouseLeave={() => setTranslateHover(false)}
-                      style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4,
-                        ...(tagDbTranslating && translateHover ? { color: '#f87171', borderColor: 'rgba(248,113,113,0.3)' } : {})
-                      }}>
-                      {tagDbTranslating
-                        ? (translateHover
-                          ? <><X style={{ width: 12, height: 12 }} /> {t('settings.cancelTranslate')}</>
-                          : <><Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> {t('settings.translating')}</>)
-                        : <><Languages style={{ width: 12, height: 12 }} /> {t('settings.translate')}</>}
-                    </button>
+                      icon={<Languages style={{ width: 12, height: 12 }} />}
+                      label={t('settings.translate')}
+                      runningLabel={t('settings.translating')} />
                   )}
                   {tagDbStats?.has_data && (
                     <button className="btn btn-secondary" onClick={() => setTagDbClearConfirm(true)} disabled={tagDbDownloading || tagDbTranslating || !isDesktopRuntime}
@@ -802,12 +831,7 @@ export default function SettingsPage() {
 
           {/* 环境设置 */}
           <div className="tool-panel">
-            <div className="tool-panel-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <Terminal style={{ width: 16, height: 16, color: '#38bdf8' }} />
-                <span className="tool-panel-title">{t('settings.envSettings')}</span>
-              </div>
-            </div>
+            <PanelHeader icon={Terminal} color="#38bdf8" title={t('settings.envSettings')} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               {/* Python 环境信息 */}
               <div style={{ ...cardStyle, padding: '10px 14px' }}>
@@ -855,12 +879,7 @@ export default function SettingsPage() {
 
           {/* About */}
           <div className="tool-panel">
-            <div className="tool-panel-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <Info style={{ width: 16, height: 16, color: 'var(--color-text-tertiary)' }} />
-                <span className="tool-panel-title">{t('settings.about')}</span>
-              </div>
-            </div>
+            <PanelHeader icon={Info} color="var(--color-text-tertiary)" title={t('settings.about')} />
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', lineHeight: 1.8 }}>
               <p><strong>PurinBox</strong> · v{appVersion}</p>
               <p style={{ display: 'flex', alignItems: 'center', gap: 4 }}>

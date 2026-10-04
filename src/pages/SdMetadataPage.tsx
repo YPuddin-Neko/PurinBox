@@ -1,34 +1,26 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useId, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { hasTauriRuntime } from '../utils/tauriRuntime';
-import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import ThumbImage from '../components/ThumbImage';
 import {
   FileCode2, FolderOpen, Loader2, Eye, Download,
   ImageUp, Clipboard, Check,
 } from 'lucide-react';
+import type { ExportTagsOptions, ExportTagsResult, ScanSdMetadataArgs, SdImageMeta, SdScanResult } from '../api/commandOptions';
 import ProgressLog from '../components/ProgressLog';
 import { useBatchTask } from '../hooks/useBatchTask';
 import { Modal } from '../components/Modal';
 import PageHeader from '../components/ui/PageHeader';
 import Pager from '../components/ui/Pager';
+import PathInput from '../components/ui/PathInput';
+import ResultTable from '../components/ui/ResultTable';
+import StatChips from '../components/ui/StatChips';
 import { useTranslation } from 'react-i18next';
 import '../styles/metadata.css';
 import RecursiveScanToggle from '../components/RecursiveScanToggle';
 
-interface SdImageMeta { path: string; filename: string; positive: string; negative: string; params: string; source: string; }
-interface ScanResult {
-  items: SdImageMeta[]; total_images: number; has_meta_count: number; no_meta_count: number;
-  no_meta_files: string[]; source_counts: Record<string, number>; scan_time_ms: number;
-}
-
 const PER_PAGE = 15;
-
-const panel: React.CSSProperties = {
-  background: 'var(--color-bg-card)', border: '1px solid var(--color-border)',
-  borderRadius: 'var(--radius-lg)',
-};
 
 const SOURCE_COLORS: Record<string, string> = {
   a1111: '#7c5cfc', comfyui: '#38bdf8', novelai: '#f59e0b', unknown: '#6b7280',
@@ -62,6 +54,9 @@ export default function SdMetadataPage() {
   const task = useBatchTask({ event: 'sd-metadata-progress', taskId: 'sd-metadata', logDone: false });
   const { logger } = task;
   const { isDone } = task.progressLogProps;
+  const pageRef = useRef<HTMLDivElement>(null);
+  const inputId = useId();
+  const destId = useId();
   const [inputPath, setInputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -72,18 +67,22 @@ export default function SdMetadataPage() {
   const [showNoMeta, setShowNoMeta] = useState(false);
   const [noMetaFiles, setNoMetaFiles] = useState<string[]>([]);
   const [copiedField, setCopiedField] = useState<string | null>(null);
-  const [exportMode, setExportMode] = useState<'same' | 'custom'>('same');
+  const [exportMode, setExportMode] = useState<ExportTagsOptions['mode']>('same');
   const [destFolder, setDestFolder] = useState('');
   const [exporting, setExporting] = useState(false);
   const [dragging, setDragging] = useState(false);
 
-
-  // Tauri native drag-drop (gives real file paths)
+  // 拖放事件来自整个窗口：页面切走后仍保持挂载，只在本页显示时处理，否则在别的页面拖图也会弹出元数据框
   useEffect(() => {
     if (!hasTauriRuntime()) return;
     let active = true;
+    const isVisible = () => (pageRef.current?.getClientRects().length ?? 0) > 0;
     const unlisten = getCurrentWebview().onDragDropEvent(async (e) => {
       if (!active) return;
+      if (!isVisible()) {
+        setDragging(false);
+        return;
+      }
       if (e.payload.type === 'over') {
         setDragging(true);
       } else if (e.payload.type === 'leave') {
@@ -101,7 +100,7 @@ export default function SdMetadataPage() {
           } else {
             logger.appendLog(t('sdMetadata.dropNoMeta'), 'warning');
           }
-        } catch (err: any) {
+        } catch (err) {
           logger.appendLog(String(err), 'error');
         }
       }
@@ -112,19 +111,16 @@ export default function SdMetadataPage() {
     };
   }, [t, logger]);
 
-  const pickFolder = useCallback(async (setter: (v: string) => void, output = false) => {
-    const sel = await open({ directory: true, title: t(output ? 'pages.selectOutputTitle' : 'pages.selectInputTitle') });
-    if (sel) setter(sel as string);
-  }, [t]);
-
   const handleScan = async () => {
     if (!inputPath || task.processing) return;
     setScanning(true); setPage(0);
     setItems([]); setSourceCounts({}); setNoMetaFiles([]);
     try {
       const result = await task.run({
-        taskName: t('sidebar.sdMetadata'), startLog: t('sdMetadata.scanStart'), cancellable: false,
-        exec: () => invoke<ScanResult>('scan_sd_metadata', { inputPath, recursive }),
+        taskName: t('sidebar.sdMetadata'),
+        startLog: t('sdMetadata.scanStart'),
+        cancellable: false,
+        exec: () => invoke<SdScanResult>('scan_sd_metadata', { inputPath, recursive } satisfies ScanSdMetadataArgs),
       });
       if (result) {
         setItems(result.items);
@@ -143,7 +139,7 @@ export default function SdMetadataPage() {
       await navigator.clipboard.writeText(text);
       setCopiedField(field);
       setTimeout(() => setCopiedField(null), 1500);
-    } catch { /* ignore */ }
+    } catch { /* 剪贴板不可用时不提示 */ }
   }, []);
 
   const handleExport = async () => {
@@ -151,13 +147,15 @@ export default function SdMetadataPage() {
     setExporting(true);
     try {
       const result = await task.run({
-        taskName: t('sdMetadata.exporting'), startLog: t('sdMetadata.exportStart', { count: items.length }),
-        keepLogs: true, cancellable: false,
-        exec: () => invoke<{ success_count: number; fail_count: number; skip_count: number; errors: string[] }>('export_sd_tags', {
+        taskName: t('sdMetadata.exporting'),
+        startLog: t('sdMetadata.exportStart', { count: items.length }),
+        keepLogs: true,
+        cancellable: false,
+        exec: () => invoke<ExportTagsResult>('export_sd_tags', {
           options: {
             mode: exportMode, dest_folder: exportMode === 'custom' ? destFolder : null, input_root: inputPath,
             items: items.map(i => ({ source_path: i.path, positive: i.positive })),
-          },
+          } satisfies ExportTagsOptions,
         }),
       });
       if (result) logger.appendLog(t('sdMetadata.exportDone', {
@@ -175,40 +173,31 @@ export default function SdMetadataPage() {
   const startIdx = page * PER_PAGE;
 
   return (
-    <div className="page" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div ref={pageRef} className="page" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <PageHeader icon={FileCode2} color="#a78bfa" title={t('sdMetadata.title')} subtitle={t('sdMetadata.subtitle')} />
 
       {/* 网格占满页面剩余高度：结果表在右栏内滚动，翻页栏始终可见 */}
       <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gridTemplateRows: 'minmax(0, 1fr)', gap: 20, flex: 1, minHeight: 420 }}>
-        {/* Left panel */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)', minHeight: 0, overflowY: 'auto' }}>
-          {/* Folder */}
           <div className="tool-panel">
             <div className="form-group">
               <div className="form-label-row">
-                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <label className="form-label" htmlFor={inputId} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <FolderOpen style={{ width: 14, height: 14, color: 'var(--color-text-tertiary)' }} />
                   {t('sdMetadata.inputFolder')}
                 </label>
                 <RecursiveScanToggle checked={recursive} onChange={setRecursive} />
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input className="form-input" value={inputPath} readOnly placeholder={t('sdMetadata.selectFolder')} style={{ flex: 1 }} />
-                <button className="btn btn-secondary" onClick={() => pickFolder(setInputPath)} style={{ flexShrink: 0 }}>
-                  <FolderOpen style={{ width: 14, height: 14 }} />
-                </button>
-              </div>
+              <PathInput id={inputId} readOnly value={inputPath} onChange={setInputPath} placeholder={t('sdMetadata.selectFolder')} />
             </div>
           </div>
 
-          {/* Scan */}
           <button className="btn btn-primary" style={{ width: '100%', height: 44 }}
             onClick={handleScan} disabled={!inputPath || task.processing}>
             {scanning ? <><Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> {t('sdMetadata.scanning')}</>
               : <><Eye style={{ width: 16, height: 16 }} /> {t('sdMetadata.scan')}</>}
           </button>
 
-          {/* Export settings */}
           {items.length > 0 && (
             <div className="tool-panel" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
               <div className="form-group">
@@ -224,13 +213,8 @@ export default function SdMetadataPage() {
               </div>
               {exportMode === 'custom' && (
                 <div className="form-group">
-                  <label className="form-label">{t('sdMetadata.destFolder')}</label>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <input className="form-input" value={destFolder} readOnly placeholder={t('sdMetadata.selectFolder')} style={{ flex: 1 }} />
-                    <button className="btn btn-secondary" onClick={() => pickFolder(setDestFolder, true)} style={{ flexShrink: 0 }}>
-                      <FolderOpen style={{ width: 14, height: 14 }} />
-                    </button>
-                  </div>
+                  <label className="form-label" htmlFor={destId}>{t('sdMetadata.destFolder')}</label>
+                  <PathInput id={destId} kind="output" readOnly value={destFolder} onChange={setDestFolder} placeholder={t('sdMetadata.selectFolder')} />
                 </div>
               )}
               <button className="btn btn-primary" style={{ width: '100%', height: 40, marginTop: 'var(--space-2)' }}
@@ -241,45 +225,23 @@ export default function SdMetadataPage() {
             </div>
           )}
 
-          {/* Progress log */}
           <ProgressLog {...task.progressLogProps} />
         </div>
 
-        {/* Right panel */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, minHeight: 300, overflow: 'hidden' }}>
-          {/* Stats */}
           {items.length > 0 && (
-            <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-              {[
-                { label: t('sdMetadata.statTotal'), value: totalImages, color: '#60a5fa', clickable: false },
-                { label: t('sdMetadata.statHasMeta'), value: hasMeta, color: '#4ade80', clickable: false },
-                { label: t('sdMetadata.statNoMeta'), value: noMeta, color: '#ef4444', clickable: noMeta > 0 },
-                ...Object.entries(sourceCounts).map(([src, cnt]) => ({
-                  label: src.toUpperCase(), value: cnt, color: sourceColor(src), clickable: false,
-                })),
-              ].map(s => (
-                <div key={s.label}
-                  onClick={s.clickable ? () => setShowNoMeta(true) : undefined}
-                  style={{
-                    ...panel, flex: 1, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 6,
-                    cursor: s.clickable ? 'pointer' : 'default',
-                    transition: 'all 0.15s',
-                    ...(s.clickable ? { borderColor: 'rgba(239,68,68,0.3)' } : {}),
-                  }}>
-                  <span style={{ fontSize: 16, fontWeight: 800, color: s.color, fontFamily: 'monospace' }}>{s.value}</span>
-                  <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', fontWeight: 600, lineHeight: 1.2 }}>
-                    {s.label}{s.clickable ? ' ▸' : ''}
-                  </span>
-                </div>
-              ))}
-            </div>
+            <StatChips items={[
+              { label: t('sdMetadata.statTotal'), value: totalImages, color: '#60a5fa' },
+              { label: t('sdMetadata.statHasMeta'), value: hasMeta, color: '#4ade80' },
+              { label: t('sdMetadata.statNoMeta'), value: noMeta, color: '#ef4444', onClick: noMeta > 0 ? () => setShowNoMeta(true) : undefined },
+              ...Object.entries(sourceCounts).map(([src, cnt]) => ({ label: src.toUpperCase(), value: cnt, color: sourceColor(src) })),
+            ]} />
           )}
 
-          {/* Empty / scanning / drop zone */}
           {items.length === 0 ? (
-            <div
+            <div className="tool-panel"
               style={{
-                ...panel, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
                 flexDirection: 'column', gap: 12, color: 'var(--color-text-tertiary)',
                 border: dragging ? '2px dashed var(--color-accent-primary)' : '1px solid var(--color-border)',
                 background: dragging ? 'rgba(124,92,252,0.06)' : 'var(--color-bg-card)',
@@ -299,65 +261,52 @@ export default function SdMetadataPage() {
               )}
             </div>
           ) : (
-            <>
-              {/* Table */}
-              <div style={{ ...panel, flex: 1, padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontSize: 13, fontWeight: 700 }}>{t('sdMetadata.metaList')}</span>
-                  <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{items.length} {t('sdMetadata.items')}</span>
-                </div>
-                <div style={{ flex: 1, overflowY: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid var(--color-border)' }}>
-                        <th style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 600, width: 30 }}>#</th>
-                        <th style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 600 }}>{t('sdMetadata.filename')}</th>
-                        <th style={{ padding: '8px 12px', textAlign: 'center', fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 600, width: 70 }}>{t('sdMetadata.source')}</th>
-                        <th style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 600 }}>{t('sdMetadata.positivePreview')}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pageItems.map((item, localIdx) => {
-                        const idx = startIdx + localIdx;
-                        return (
-                          <tr key={idx} className="metadata-row" style={{ borderBottom: '1px solid rgba(255,255,255,0.03)', cursor: 'pointer', transition: 'background 0.15s' }}
-                            onClick={() => setModalItem(item)}>
-                            <td style={{ padding: '6px 12px', fontSize: 11, color: 'var(--color-text-tertiary)' }}>{idx + 1}</td>
-                            <td style={{ padding: '6px 12px' }}>
-                              <div style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--color-text-secondary)', wordBreak: 'break-all' }}>{item.filename}</div>
-                            </td>
-                            <td style={{ padding: '6px 8px', textAlign: 'center' }}>
-                              <span style={{
-                                fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
-                                background: `${sourceColor(item.source)}22`,
-                                color: sourceColor(item.source),
-                              }}>{item.source.toUpperCase()}</span>
-                            </td>
-                            <td style={{ padding: '6px 12px', fontSize: 11, color: 'var(--color-text-tertiary)', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {item.positive.slice(0, 80)}{item.positive.length > 80 ? '...' : ''}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                {/* Pagination */}
-                {totalPages > 1 && <Pager page={page} pages={totalPages} onChange={setPage} footer />}
-              </div>
-            </>
+            <ResultTable title={t('sdMetadata.metaList')}
+              extra={<span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{items.length} {t('sdMetadata.items')}</span>}
+              columns={[
+                { label: '#', width: 30 },
+                { label: t('sdMetadata.filename') },
+                { label: t('sdMetadata.source'), align: 'center', width: 70 },
+                { label: t('sdMetadata.positivePreview') },
+              ]}
+              footer={totalPages > 1 && <Pager page={page} pages={totalPages} onChange={setPage} footer />}>
+              {pageItems.map((item, localIdx) => {
+                const idx = startIdx + localIdx;
+                return (
+                  <tr key={idx} className="metadata-row" style={{ borderBottom: '1px solid rgba(255,255,255,0.03)', cursor: 'pointer', transition: 'background 0.15s' }}
+                    onClick={() => setModalItem(item)}>
+                    <td style={{ padding: '6px 12px', fontSize: 11, color: 'var(--color-text-tertiary)' }}>{idx + 1}</td>
+                    <td style={{ padding: '6px 12px' }}>
+                      <div style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--color-text-secondary)', wordBreak: 'break-all' }}>{item.filename}</div>
+                    </td>
+                    <td style={{ padding: '6px 8px', textAlign: 'center' }}>
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+                        background: `${sourceColor(item.source)}22`,
+                        color: sourceColor(item.source),
+                      }}>{item.source.toUpperCase()}</span>
+                    </td>
+                    <td style={{ padding: '6px 12px', fontSize: 11, color: 'var(--color-text-tertiary)', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {item.positive.slice(0, 80)}{item.positive.length > 80 ? '...' : ''}
+                    </td>
+                  </tr>
+                );
+              })}
+            </ResultTable>
           )}
         </div>
       </div>
 
       {modalItem && (
-        <Modal open onClose={() => setModalItem(null)} title={modalItem.filename} maxWidth={960} className="metadata-detail-modal" headerIcon={false} bodyStyle={{ padding: 20 }}
+        <Modal open onClose={() => setModalItem(null)} title={modalItem.filename} width="min(80vw, 960px)" maxWidth={960}
+          sectioned className="metadata-detail-modal" headerIcon={false} bodyStyle={{ padding: 20 }}
+          dialogStyle={{ borderRadius: 12, maxHeight: '85vh' }} titleStyle={{ fontSize: 14, fontWeight: 600 }}
           headerExtra={<span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: `${sourceColor(modalItem.source)}22`, color: sourceColor(modalItem.source) }}>{modalItem.source.toUpperCase()}</span>}>
           <div className="metadata-detail-content">
             <div className="metadata-detail-preview">
               <div style={{ borderRadius: 'var(--radius-md)', overflow: 'hidden', border: '1px solid var(--color-border)', background: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 200 }}>
-              <ThumbImage path={modalItem.path} maxEdge={1024} alt={modalItem.filename}
-                style={{ maxWidth: '100%', maxHeight: 360, objectFit: 'contain' }} />
+                <ThumbImage path={modalItem.path} maxEdge={1024} alt={modalItem.filename}
+                  style={{ maxWidth: '100%', maxHeight: 360, objectFit: 'contain' }} />
               </div>
               <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', overflowWrap: 'anywhere', fontFamily: 'monospace' }}>{modalItem.path}</div>
             </div>
