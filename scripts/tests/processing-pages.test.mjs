@@ -39,6 +39,7 @@ await build({
     import HashThresholdFields from './src/components/HashThresholdFields';
     import DeviceToggle from './src/components/ui/DeviceToggle';
     import ResultTable from './src/components/ui/ResultTable';
+    import HybridTaggerTab from './src/components/HybridTaggerTab';
     import AestheticPage from './src/pages/AestheticPage';
     import AlphaConvertPage from './src/pages/AlphaConvertPage';
     import BatchRenamePage from './src/pages/BatchRenamePage';
@@ -63,7 +64,7 @@ await build({
     export const pages = {
       AestheticPage, AlphaConvertPage, BatchRenamePage, BlurNoisePage, BucketPreviewPage, CropPage, FileKeeperPage,
       FilterPage, FlipPage, FormatConvertPage, ImageClusterPage, ImageDedupPage, PersonCropPage, PerspectivePage,
-      ResolutionAnalyzePage, ScalePage, SdMetadataPage, UpscalePage,
+      ResolutionAnalyzePage, ScalePage, SdMetadataPage, UpscalePage, HybridTaggerTab,
     };
     export const page = name => { const Page = pages[name]; return render(<Page />); };
     export const modal = props => render(<Modal open onClose={() => {}} title="T" {...props}><p>body</p></Modal>);
@@ -82,6 +83,26 @@ Object.defineProperty(globalThis, 'localStorage', {
 const lib = require(outfile);
 
 const count = (html, pattern) => (html.match(pattern) || []).length;
+
+test('hybrid trigger word disables native autocomplete but retains the saved value', () => {
+  const storage = globalThis.localStorage;
+  try {
+    globalThis.localStorage = {
+      getItem: key => key === 'hybrid_trigger_word' ? 'saved_trigger' : null,
+      setItem: () => {},
+    };
+    const html = lib.page('HybridTaggerTab');
+    const input = html.match(/<input\b[^>]*\bid="hybrid-trigger-word"[^>]*>/)?.[0];
+    assert.ok(input);
+    assert.match(input, /autocomplete="off"/i);
+    assert.match(input, /value="saved_trigger"/);
+    assert.match(input, /class="form-input"/);
+    assert.match(html, /<label\b[^>]*\bfor="hybrid-trigger-word"/);
+    assert.doesNotMatch(input, /\b(?:readonly|disabled)=/);
+  } finally {
+    globalThis.localStorage = storage;
+  }
+});
 
 test('every two-column processing page renders through ToolPageLayout', () => {
   const twoColumn = [

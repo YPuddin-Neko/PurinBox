@@ -459,7 +459,7 @@ export default function HybridTaggerTab() {
                 <label htmlFor="hybrid-trigger-word" className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   <Hash style={{ width: 12, height: 12, color: 'var(--color-text-tertiary)' }} /> {t('hybridTagger.triggerWord')}
                 </label>
-                <input id="hybrid-trigger-word" className="form-input" value={triggerWord}
+                <input id="hybrid-trigger-word" className="form-input" autoComplete="off" value={triggerWord}
                   onChange={e => {
                     setTriggerWord(e.target.value);
                     try { localStorage.setItem(TRIGGER_WORD_KEY, e.target.value); } catch { /* 配额满等，忽略 */ }

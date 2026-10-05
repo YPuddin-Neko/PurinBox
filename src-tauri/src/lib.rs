@@ -212,17 +212,33 @@ pub fn run() {
                 }
             }
 
-            // Windows: 禁用 WebView2 的默认右键菜单（前端已有自定义右键菜单）
+            // Windows: 右键菜单和输入建议由前端提供，不使用 WebView2 的默认弹窗。
             #[cfg(target_os = "windows")]
             {
                 use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.with_webview(|webview| {
                         unsafe {
-                            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings;
-                            let core = webview.controller().CoreWebView2().unwrap();
-                            let settings: ICoreWebView2Settings = core.Settings().unwrap();
-                            settings.SetAreDefaultContextMenusEnabled(false).unwrap_or(());
+                            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
+                            use windows::core::Interface;
+                            let settings = match webview
+                                .controller()
+                                .CoreWebView2()
+                                .and_then(|core| core.Settings())
+                            {
+                                Ok(settings) => settings,
+                                Err(error) => {
+                                    eprintln!("Failed to access WebView2 settings: {error}");
+                                    return;
+                                }
+                            };
+                            let _ = settings.SetAreDefaultContextMenusEnabled(false);
+                            let autofill_result = settings
+                                .cast::<ICoreWebView2Settings4>()
+                                .and_then(|settings| settings.SetIsGeneralAutofillEnabled(false));
+                            if let Err(error) = autofill_result {
+                                eprintln!("Failed to disable WebView2 autofill: {error}");
+                            }
                         }
                     });
                 }
