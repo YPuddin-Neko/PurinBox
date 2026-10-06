@@ -21,7 +21,6 @@ import PageHeader from '../components/ui/PageHeader';
 import NumberInput from '../components/ui/NumberInput';
 import PathInput from '../components/ui/PathInput';
 import Switch from '../components/ui/Switch';
-import SegmentedTabs from '../components/ui/SegmentedTabs';
 import Pager from '../components/ui/Pager';
 import ExportBar from '../components/ExportBar';
 
@@ -560,10 +559,17 @@ export default function BucketPreviewPage() {
             {!isDpMode && (
               <div>
                 <label className="form-label" style={{ fontSize: 10 }}>{t('bucketPreview.sdBucketMode')}</label>
-                <SegmentedTabs className="ui-seg-compact" value={bucketMode} onChange={setBucketMode} tabs={[
-                  { id: 'legacy', label: t('bucketPreview.modeLegacy') },
-                  { id: 'nearest_only', label: t('bucketPreview.modeNearest') },
-                ]} />
+                <div style={{ display: 'flex', gap: 4 }} role="group" aria-label={t('bucketPreview.sdBucketMode')}>
+                  {(['legacy', 'nearest_only'] as const).map(value => (
+                    <button key={value} type="button" aria-pressed={bucketMode === value} onClick={() => setBucketMode(value)} style={{
+                      padding: '4px 10px', borderRadius: 'var(--radius-sm)',
+                      border: `1px solid ${bucketMode === value ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                      background: bucketMode === value ? 'rgba(124,92,252,0.08)' : 'transparent',
+                      color: bucketMode === value ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
+                      fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                    }}>{t(value === 'legacy' ? 'bucketPreview.modeLegacy' : 'bucketPreview.modeNearest')}</button>
+                  ))}
+                </div>
               </div>
             )}
 

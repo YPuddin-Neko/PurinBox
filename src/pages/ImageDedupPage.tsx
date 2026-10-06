@@ -128,7 +128,7 @@ export default function ImageDedupPage() {
           {dupGroups.length === 0 && (
             <div className="tool-panel" style={{ flex: 1, minHeight: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12, color: 'var(--color-text-tertiary)' }}>
               <Search style={{ width: 48, height: 48, opacity: 0.15 }} />
-              <span style={{ fontSize: 13 }}>{task.processing ? t('imageDedup.emptyScanning') : task.progressLogProps.isDone ? t('imageDedup.emptyNoDup') : ''}</span>
+              <span style={{ fontSize: 13 }}>{task.processing ? t('imageDedup.emptyScanning') : task.progressLogProps.isDone ? t('imageDedup.emptyNoDup') : t('imageDedup.emptyHint')}</span>
             </div>
           )}
 

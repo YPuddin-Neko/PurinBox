@@ -51,11 +51,11 @@ export default function CropPage() {
   const [cropLeft, setCropLeft] = useState(d.crop_left);
   const [cropRight, setCropRight] = useState(d.crop_right);
 
-  const modeCards: { key: CropMode; Icon: LucideIcon; label: string; color: string; colorAlpha: string }[] = [
-    { key: 'center', Icon: Maximize2, label: t('crop.center'), color: '#4ade80', colorAlpha: 'rgba(74, 222, 128, ' },
-    { key: 'cover', Icon: Scaling, label: t('crop.cover'), color: '#06b6d4', colorAlpha: 'rgba(6, 182, 212, ' },
-    { key: 'aspect', Icon: RatioIcon, label: t('crop.aspect'), color: '#818cf8', colorAlpha: 'rgba(129, 140, 248, ' },
-    { key: 'edges', Icon: Scissors, label: t('crop.edges'), color: '#f59e0b', colorAlpha: 'rgba(245, 158, 11, ' },
+  const modeCards: { key: CropMode; Icon: LucideIcon; label: string; desc: string; color: string; colorAlpha: string }[] = [
+    { key: 'center', Icon: Maximize2, label: t('crop.center'), desc: t('crop.centerDesc'), color: '#4ade80', colorAlpha: 'rgba(74, 222, 128, ' },
+    { key: 'cover', Icon: Scaling, label: t('crop.cover'), desc: t('crop.coverDesc'), color: '#06b6d4', colorAlpha: 'rgba(6, 182, 212, ' },
+    { key: 'aspect', Icon: RatioIcon, label: t('crop.aspect'), desc: t('crop.aspectDesc'), color: '#818cf8', colorAlpha: 'rgba(129, 140, 248, ' },
+    { key: 'edges', Icon: Scissors, label: t('crop.edges'), desc: t('crop.edgesDesc'), color: '#f59e0b', colorAlpha: 'rgba(245, 158, 11, ' },
   ];
   const cropAnchors: { key: CropAnchor; Icon: LucideIcon; label: string }[] = [
     { key: 'center', Icon: Crosshair, label: t('crop.anchorCenter') },
@@ -203,12 +203,10 @@ export default function CropPage() {
                 </div>
               )}
 
-              {mc.key === 'cover' && (
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: mc.colorAlpha + '0.06)', border: '1px solid ' + mc.colorAlpha + '0.1)' }}>
-                  <Info style={{ width: 14, height: 14, color: mc.color, marginTop: 2, minWidth: 14 }} />
-                  <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('crop.coverDesc')}</span>
-                </div>
-              )}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: mc.colorAlpha + '0.06)', border: '1px solid ' + mc.colorAlpha + '0.1)' }}>
+                <Info style={{ width: 14, height: 14, color: mc.color, marginTop: 2, minWidth: 14 }} />
+                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{mc.desc}</span>
+              </div>
             </>}>
               <span style={{ color: mode === mc.key ? mc.color : 'var(--color-text-tertiary)' }}><mc.Icon style={{ width: 18, height: 18 }} /></span>
               <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{mc.label}</span>

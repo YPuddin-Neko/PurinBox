@@ -3,6 +3,7 @@ import {
   CircleUser,
   Download,
   Eye,
+  Info,
   Loader2,
   PersonStanding,
   ScanFace,
@@ -102,7 +103,7 @@ export default function PersonCropPage() {
   const detCard = (
     enabled: boolean, setEnabled: (v: boolean) => void,
     icon: ReactNode, label: string, color: string, alphaBase: string,
-    modelType: string, children: ReactNode,
+    modelType: string, tip: string, children: ReactNode,
   ) => {
     const m = models.find(x => x.crop_type === modelType);
     return (
@@ -115,7 +116,13 @@ export default function PersonCropPage() {
           </label>
           {m && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: m.downloaded ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)', color: m.downloaded ? '#4ade80' : '#fbbf24', fontWeight: 600 }}>{m.downloaded ? t('personCrop.modelReady') : t('personCrop.modelPending')}</span>}
         </div>
-        {enabled && <div style={{ paddingLeft: 32 }}>{children}</div>}
+        {enabled && <div style={{ paddingLeft: 32 }}>
+          {children}
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: `${alphaBase}0.06)`, border: `1px solid ${alphaBase}0.1)`, marginTop: 8 }}>
+            <Info style={{ width: 13, height: 13, color, marginTop: 2, minWidth: 13 }} />
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{tip}</span>
+          </div>
+        </div>}
       </div>
     );
   };
@@ -185,7 +192,7 @@ export default function PersonCropPage() {
             </button>
           </div>
           <div style={{ marginTop: 6, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>
-            {t('personCrop.modelSource')} <a href="https://huggingface.co/deepghs" target="_blank" rel="noreferrer" style={{ color: '#818cf8' }}>deepghs</a>
+            {t('personCrop.modelSource')} <a href="https://huggingface.co/deepghs" target="_blank" rel="noreferrer" style={{ color: '#818cf8' }}>deepghs</a> · {t('personCrop.modelSourceDesc')}
           </div>
         </div>
         <DeviceToggle useGpu={useGpu} onChange={changeDevice} />
@@ -194,21 +201,21 @@ export default function PersonCropPage() {
       <div className="tool-panel">
         <div className="tool-panel-header"><span className="tool-panel-title">{t('personCrop.detOptions')}</span></div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-          {detCard(personEnabled, setPersonEnabled, <PersonStanding style={{ width: 18, height: 18 }} />, t('personCrop.fullBody'), '#4ade80', 'rgba(74, 222, 128, ', 'person',
+          {detCard(personEnabled, setPersonEnabled, <PersonStanding style={{ width: 18, height: 18 }} />, t('personCrop.fullBody'), '#4ade80', 'rgba(74, 222, 128, ', 'person', t('personCrop.fullBodyTip'),
             confSlider(personConf, setPersonConf, '#4ade80'))}
 
-          {detCard(upperEnabled, setUpperEnabled, <User style={{ width: 18, height: 18 }} />, t('personCrop.halfBody'), '#818cf8', 'rgba(129, 140, 248, ', 'halfbody', <>
+          {detCard(upperEnabled, setUpperEnabled, <User style={{ width: 18, height: 18 }} />, t('personCrop.halfBody'), '#818cf8', 'rgba(129, 140, 248, ', 'halfbody', t('personCrop.halfBodyTip'), <>
             {confSlider(upperConf, setUpperConf, '#818cf8')}
             {tagInput(upperTag, setUpperTag, d.upper_tag)}
           </>)}
 
-          {detCard(headEnabled, setHeadEnabled, <CircleUser style={{ width: 18, height: 18 }} />, t('personCrop.headDet'), '#f59e0b', 'rgba(245, 158, 11, ', 'head', <>
+          {detCard(headEnabled, setHeadEnabled, <CircleUser style={{ width: 18, height: 18 }} />, t('personCrop.headDet'), '#f59e0b', 'rgba(245, 158, 11, ', 'head', t('personCrop.headTip'), <>
             {confSlider(headConf, setHeadConf, '#f59e0b')}
             {scaleSlider(headScale, setHeadScale, 3, '#f59e0b', t('personCrop.headOnly'))}
             {tagInput(headTag, setHeadTag, d.head_tag)}
           </>)}
 
-          {detCard(eyesEnabled, setEyesEnabled, <Eye style={{ width: 18, height: 18 }} />, t('personCrop.eyesDet'), '#f472b6', 'rgba(244, 114, 182, ', 'eyes', <>
+          {detCard(eyesEnabled, setEyesEnabled, <Eye style={{ width: 18, height: 18 }} />, t('personCrop.eyesDet'), '#f472b6', 'rgba(244, 114, 182, ', 'eyes', t('personCrop.eyesTip'), <>
             {confSlider(eyesConf, setEyesConf, '#f472b6')}
             {scaleSlider(eyesScale, setEyesScale, 4, '#f472b6', t('personCrop.eyesOnly'))}
             {tagInput(eyesTag, setEyesTag, d.eyes_tag)}
@@ -223,6 +230,10 @@ export default function PersonCropPage() {
             <Checkbox checked={keepOriginalTags} onChange={setKeepOriginalTags} color="#7c5cfc" size={16} />
             <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-sm)' }}>{t('personCrop.keepTags')}</span>
           </label>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(124, 92, 252, 0.06)', border: '1px solid rgba(124, 92, 252, 0.1)' }}>
+            <Info style={{ width: 13, height: 13, color: '#7c5cfc', marginTop: 2, minWidth: 13 }} />
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('personCrop.keepTagsTip')}</span>
+          </div>
         </div>
       </div>
     </ToolPageLayout>

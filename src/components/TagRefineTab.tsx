@@ -60,7 +60,7 @@ export default function TagRefineTab() {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        <PromptPanel title={t('tagRefine.promptTitle')} value={prompt} onChange={setPrompt} onReset={() => setPrompt(TAG_REFINE_PROMPT)} />
+        <PromptPanel title={t('tagRefine.promptTitle')} hint={t('tagRefine.promptHint')} value={prompt} onChange={setPrompt} onReset={() => setPrompt(TAG_REFINE_PROMPT)} />
         <ProcessButton {...run.buttonProps} onStart={handleStart}
           disabled={!inputPath || !outputPath || !api.ready}
           cancelCommand="cancel_tag_refining" startText={t('tagRefine.startRefine')} processingText={t('tagRefine.refining')} />

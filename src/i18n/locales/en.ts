@@ -136,6 +136,9 @@ const en = {
     vertical: 'Vertical Flip',
     both: 'Horizontal + Vertical',
     taskName: 'Image Flip',
+    horizontalDesc: 'Mirror the image along the vertical center axis',
+    verticalDesc: 'Mirror the image along the horizontal center axis',
+    bothDesc: 'Flip both axes, equivalent to 180° rotation',
   },
 
   crop: {
@@ -163,6 +166,9 @@ const en = {
     cropRight: 'Right (px)',
     startCrop: 'Start Crop',
     taskName: 'Image Crop',
+    centerDesc: 'Crop from image center to specified size. Good for unifying dataset resolution.',
+    aspectDesc: 'Crop from center by aspect ratio, removing excess edges. Good for unifying aspect ratios.',
+    edgesDesc: 'Crop specified pixels from each edge. Good for removing borders, watermarks, or black bars.',
   },
 
   scale: {
@@ -181,6 +187,8 @@ const en = {
     startDown: 'Downscale',
     startBoth: 'Upscale + Downscale',
     resizeHint: 'Images outside the selected resize conditions are copied unchanged to the output folder.',
+    upscaleDesc: 'Proportionally upscale by target pixel area (W×H), preserving aspect ratio. Output dimensions are rounded to the nearest multiple of 64.',
+    downscaleDesc: 'Proportionally downscale by target pixel area (W×H), preserving aspect ratio. Output dimensions are rounded to the nearest multiple of 64.',
   },
 
   filter: {
@@ -250,6 +258,8 @@ const en = {
     resolutionDistribution: 'Resolution Distribution',
     failedFiles: 'Unreadable files',
     taskName: 'Resolution Analysis',
+    clickRareHint: 'Red = rare resolutions, click to view files',
+    aggregateToleranceDesc: 'Resolutions whose aspect ratios differ within this percentage are grouped together',
   },
 
   formatConvert: {
@@ -263,6 +273,9 @@ const en = {
     converting: 'Converting...',
     startConvertMsg: 'Start converting to .{{format}} format',
     taskName: 'Format Convert',
+    pngDesc: 'Lossless compression, supports transparency',
+    jpegDesc: 'Same as JPG, lossy compression',
+    webpDesc: 'Modern format, even smaller',
   },
 
   alphaConvert: {
@@ -276,6 +289,8 @@ const en = {
     bgWhite: 'White',
     bgBlack: 'Black',
     taskName: 'Alpha Convert',
+    whiteBgDesc: 'Fill transparent areas with white, suitable for most training scenarios',
+    blackBgDesc: 'Fill transparent areas with black',
   },
 
   batchRename: {
@@ -345,6 +360,9 @@ const en = {
     executing: 'Renaming...',
     execStart: 'Renaming {{count}} pairs...',
     execDone: 'Done: {{ok}} success, {{fail}} failed',
+    folderAHint: 'Select tagged original folder...',
+    folderBHint: 'Select processed images folder...',
+    unmatchHint: 'These images had no match. Try adjusting thresholds and rescan.',
   },
 
   blurNoise: {
@@ -360,6 +378,7 @@ const en = {
     noiseMax: '100 (strong noise)',
     startProcess: 'Start Process',
     taskName: 'Blur / Noise',
+    tip: 'Blur and noise can be used together or separately (set the other to 0). Recommended: blur 1.0~3.0, noise 5~25.',
   },
 
   perspective: {
@@ -372,6 +391,7 @@ const en = {
     startMsg: 'Start perspective transform | intensity: {{intensity}}',
     startProcess: 'Start Process',
     taskName: 'Perspective',
+    tip: 'Randomly applies perspective warp from one direction (top/bottom/left/right). Recommended: 0.05~0.15, higher values may cause severe distortion.',
   },
 
   tagger: {
@@ -435,6 +455,9 @@ const en = {
     startMsg: 'Start clustering | {{algo}} | {{feat}} | {{param}} | {{device}}',
     gpuAuto: 'GPU (auto)',
     taskName: 'Image Clustering',
+    weightTip: 'Set to 0 to ignore, higher weight = more influence',
+    minClusterSizeTip: 'Smaller = more fine-grained groups',
+    kmeansTip: 'K-Means requires specifying group count. Start with a larger K and adjust based on results.',
   },
 
   imageDedup: {
@@ -470,6 +493,7 @@ const en = {
     markedDel: '✓ Marked',
     selectDel: 'Select',
     groupOf: 'Group {{g}} · {{i}}/{{t}}',
+    emptyHint: 'Set parameters and click scan',
   },
 
   tagSort: {
@@ -484,6 +508,7 @@ const en = {
     failedFiles: '❌ Failed files',
     warnFiles: '⚠️ Warning files',
     taskName: 'Tag Sort',
+    promptHint: 'Use {tags} as tag placeholder',
   },
 
   tagOptimize: {
@@ -503,6 +528,7 @@ const en = {
     refining: 'Refining...',
     startMsg: 'Start tag refine | Model: {{model}} | Threads: {{threads}} | Interval: {{interval}}',
     taskName: 'Tag Refine',
+    promptHint: 'Use {tags} as placeholder for existing tags',
   },
 
   bucketPreview: {
@@ -684,6 +710,7 @@ const en = {
     downloadFail: 'Download failed',
     tagFileLabel: 'Tag File',
     batchSize: 'Batch',
+    excludeTagsTip: 'Exclude these tags from results, comma separated',
   },
 
   llmTagger: {
@@ -762,6 +789,7 @@ const en = {
   },
 
   tagEditor: {
+    loadToShow: 'Load a folder to show images',
     filterAll: 'All',
     filterUntagged: 'Untagged',
     filterTagged: 'Tagged',
@@ -848,6 +876,12 @@ const en = {
     startCrop: 'Start Crop',
     startMsg: 'Starting 3-split crop processing...',
     taskName: '3-Split Crop',
+    modelSourceDesc: 'Anime-specific detection models, each crop type uses a dedicated model',
+    fullBodyTip: 'Uses dedicated full-body detection model for precise anime character body cropping.',
+    halfBodyTip: 'Uses dedicated half-body detection model to directly detect upper body region.',
+    headTip: 'Expands crop area around detected head by scale factor. Higher values include more surrounding area.',
+    eyesTip: 'Expands crop area around detected eyes by scale factor. Higher values include more surrounding area.',
+    keepTagsTip: 'Copy original .txt tag content to cropped image tag files.',
   },
 
   fileKeeper: {
@@ -978,6 +1012,26 @@ const en = {
     setCachePathFailed: 'Failed to set cache path',
     bingKeyPlaceholder: 'Enter Ocp-Apim-Subscription-Key',
     bingRegionPlaceholder: 'e.g. eastasia, global, leave empty',
+    enableTranslationDesc: 'Enable tag translation in Tag Manager',
+    targetLanguageDesc: 'Affects tag translation and autocomplete display',
+    tagDatabaseDesc: 'Download Danbooru tag data for autocomplete in Tag Manager.',
+    proxyLlmDesc: 'Route VLM API through proxy',
+    resetConfirmMsg: 'Reset the Python environment used by the toolbox',
+    workflowToggleDesc: 'Beta feature: orchestrate multiple processing steps as a node graph. Still being polished and may be unstable.',
+    hybridTaggerToggleDesc: 'Beta feature: generate tags with a local model, then use an VLM to review and refine them against the image.',
+    monitorRealtime: 'Realtime',
+    monitorFast: 'Fast',
+    monitorDefault: 'Default',
+    monitorSave: 'Power Save',
+    monitorLow: 'Low Freq',
+    monitorNone: 'Disabled',
+    proxyNoAuthHint: 'Leave empty if no auth',
+    proxyDesc: 'Proxy applies to all network requests including translation API, VLM, and model downloads. Click "Save" after changes.',
+    huggingFaceDesc: 'Used to access Hugging Face resources that require authorization.',
+    baiduAppIdPlaceholder: 'Enter Baidu Translate APP ID',
+    baiduKeyPlaceholder: 'Enter Baidu Translate secret key',
+    youdaoAppKeyPlaceholder: 'Enter Youdao App Key',
+    youdaoAppSecretPlaceholder: 'Enter Youdao App Secret',
   },
 
   pythonEnv: {

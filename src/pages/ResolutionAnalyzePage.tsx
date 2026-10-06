@@ -242,6 +242,7 @@ export default function ResolutionAnalyzePage() {
               <span style={{ fontSize: 11, fontWeight: 600, color: '#ef4444' }}>
                 {t('resolutionAnalyze.rareTitle', { n: rareGroups.length })}
               </span>
+              <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{t('resolutionAnalyze.clickRareHint')}</span>
             </div>
             <div style={{
               display: 'flex', flexWrap: 'wrap', gap: 4,
@@ -348,6 +349,7 @@ export default function ResolutionAnalyzePage() {
           <div className="form-group">
             <label className="form-label">{t('resolutionAnalyze.aggregateTolerance')}</label>
             <NumberInput value={arTolerance} onChange={setArTolerance} min={0} max={50} integer fallback={5} />
+            <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)', margin: '4px 0 0' }}>{t('resolutionAnalyze.aggregateToleranceDesc')}</p>
           </div>
           <div className="form-group">
             <label className="form-label">{t('resolutionAnalyze.alignStep')}</label>

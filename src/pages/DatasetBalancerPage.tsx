@@ -7,7 +7,6 @@ import CustomSelect from '../components/CustomSelect';
 import { ConfirmModal } from '../components/Modal';
 import PageHeader from '../components/ui/PageHeader';
 import NumberInput from '../components/ui/NumberInput';
-import SegmentedTabs from '../components/ui/SegmentedTabs';
 import { arcPath } from '../utils/donut';
 
 interface ConceptFolder { id: number; name: string; imageCount: number; repeats: number; folderName?: string; }
@@ -288,10 +287,13 @@ export default function DatasetBalancerPage() {
             <span className="tool-panel-title">{t('datasetBalancer.conceptFolders')}</span>
             <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
               {/* Mode toggle */}
-              <SegmentedTabs className="ui-seg-compact" value={inputMode} onChange={setInputMode} tabs={[
-                { id: 'manual', label: t('datasetBalancer.manualMode') },
-                { id: 'local', label: t('datasetBalancer.localMode') },
-              ]} />
+              {(['manual', 'local'] as const).map(value => (
+                <button key={value} type="button" aria-pressed={inputMode === value} onClick={() => setInputMode(value)} style={{
+                  padding: '3px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${inputMode === value ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                  background: inputMode === value ? 'rgba(124,92,252,0.08)' : 'transparent', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+                  color: inputMode === value ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
+                }}>{t(value === 'manual' ? 'datasetBalancer.manualMode' : 'datasetBalancer.localMode')}</button>
+              ))}
             </div>
           </div>
 

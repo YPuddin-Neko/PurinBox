@@ -15,11 +15,11 @@ export default function FormatConvertPage() {
   const task = useBatchTask({ event: 'convert-progress', taskId: 'convert' });
 
   const targetFormats: { value: ConvertFormat; desc?: string; color: string }[] = [
-    { value: 'png', color: '#4ade80' },
+    { value: 'png', desc: t('formatConvert.pngDesc'), color: '#4ade80' },
     { value: 'jpg', desc: t('formatConvert.jpgDesc'), color: '#ffa647' },
-    { value: 'jpeg', desc: t('formatConvert.jpgDesc'), color: '#ffa647' },
+    { value: 'jpeg', desc: t('formatConvert.jpegDesc'), color: '#ffa647' },
     { value: 'bmp', desc: t('formatConvert.bmpDesc'), color: '#f87171' },
-    { value: 'webp', color: '#60a5fa' },
+    { value: 'webp', desc: t('formatConvert.webpDesc'), color: '#60a5fa' },
   ];
 
   const sourceFormats = ['PNG', 'JPG', 'JPEG', 'WebP', 'BMP', 'TIFF', 'GIF', 'PSD'];

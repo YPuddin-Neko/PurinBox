@@ -56,7 +56,7 @@ export default function TagSortTab() {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-        <PromptPanel title={t('tagSort.promptTitle')} value={prompt} onChange={setPrompt} onReset={() => setPrompt(TAG_SORT_PROMPT)} />
+        <PromptPanel title={t('tagSort.promptTitle')} hint={t('tagSort.promptHint')} value={prompt} onChange={setPrompt} onReset={() => setPrompt(TAG_SORT_PROMPT)} />
         <ProcessButton {...run.buttonProps} onStart={handleStart}
           disabled={!inputPath || !outputPath || !api.ready}
           cancelCommand="cancel_tag_sorting" startText={t('tagSort.startSort')} processingText={t('tagSort.sorting')} />

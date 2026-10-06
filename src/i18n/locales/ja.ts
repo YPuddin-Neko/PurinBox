@@ -136,6 +136,9 @@ const ja = {
     vertical: '垂直反転',
     both: '水平＋垂直反転',
     taskName: '画像フリップ',
+    horizontalDesc: '垂直中心軸に沿って左右ミラー反転',
+    verticalDesc: '水平中心軸に沿って上下ミラー反転',
+    bothDesc: '両軸同時にミラー反転、180°回転と同等',
   },
 
   crop: {
@@ -163,6 +166,9 @@ const ja = {
     cropRight: '右 (px)',
     startCrop: 'クロップ開始',
     taskName: '画像クロップ',
+    centerDesc: '画像中心から指定サイズにクロップ。データセットの解像度統一に最適。',
+    aspectDesc: '指定アスペクト比で中心からクロップ。比率の統一に最適。',
+    edgesDesc: '各辺から指定ピクセルをクロップ。枠、透かし、黒帯の除去に最適。',
   },
 
   scale: {
@@ -181,6 +187,8 @@ const ja = {
     startDown: 'ダウンスケール',
     startBoth: 'アップ + ダウンスケール',
     resizeHint: '選択したリサイズ条件に合わない画像は、そのまま出力フォルダにコピーされます。',
+    upscaleDesc: 'ターゲットピクセル面積（幅×高）に基づいて等比率で拡大。アスペクト比を維持し、出力サイズは64の倍数に丸められます。',
+    downscaleDesc: 'ターゲットピクセル面積（幅×高）に基づいて等比率で縮小。アスペクト比を維持し、出力サイズは64の倍数に丸められます。',
   },
 
   filter: {
@@ -250,6 +258,8 @@ const ja = {
     resolutionDistribution: '解像度分布',
     failedFiles: '読み取り不能なファイル',
     taskName: '解像度分析',
+    clickRareHint: '赤はレア解像度、クリックでファイルを表示',
+    aggregateToleranceDesc: 'アスペクト比の差がこの割合以内の解像度を同じグループにまとめます',
   },
 
   formatConvert: {
@@ -263,6 +273,9 @@ const ja = {
     converting: '変換中...',
     startConvertMsg: '.{{format}} 形式への変換を開始',
     taskName: 'フォーマット変換',
+    pngDesc: 'ロスレス圧縮、透明対応',
+    jpegDesc: 'JPGと同じ、非可逆圧縮',
+    webpDesc: 'モダン形式、さらに小サイズ',
   },
 
   alphaConvert: {
@@ -276,6 +289,8 @@ const ja = {
     bgWhite: '白',
     bgBlack: '黒',
     taskName: 'アルファ変換',
+    whiteBgDesc: '透明領域を白で塗りつぶし、ほとんどのトレーニングに最適',
+    blackBgDesc: '透明領域を黒で塗りつぶし',
   },
 
   batchRename: {
@@ -345,6 +360,9 @@ const ja = {
     executing: 'リネーム中...',
     execStart: '{{count}}ペアのリネームを開始...',
     execDone: '完了: 成功 {{ok}}, 失敗 {{fail}}',
+    folderAHint: 'タグ付き元画像フォルダを選択...',
+    folderBHint: '処理済み画像フォルダを選択...',
+    unmatchHint: 'マッチしなかった画像です。閾値を調整して再スキャンしてください。',
   },
 
   blurNoise: {
@@ -360,6 +378,7 @@ const ja = {
     noiseMax: '100 (強いノイズ)',
     startProcess: '処理開始',
     taskName: 'ぼかし/ノイズ',
+    tip: 'ぼかしとノイズは同時に使用可能です。片方だけ使う場合はもう一方を0に設定してください。推奨: ぼかし 1.0~3.0、ノイズ 5~25。',
   },
 
   perspective: {
@@ -372,6 +391,7 @@ const ja = {
     startMsg: '透視変換開始 | 強度: {{intensity}}',
     startProcess: '処理開始',
     taskName: '透視変換',
+    tip: 'ランダムに方向（上/下/左/右）を選択し透視変形を適用。推奨: 0.05~0.15、高すぎると画像が大きく歪みます。',
   },
 
   tagger: {
@@ -435,6 +455,9 @@ const ja = {
     startMsg: 'クラスタリング開始 | {{algo}} | {{feat}} | {{param}} | {{device}}',
     gpuAuto: 'GPU (自動)',
     taskName: '画像クラスタリング',
+    weightTip: '0にすると無視、重みが大きいほど影響大',
+    minClusterSizeTip: '小さいほど細かいグループ',
+    kmeansTip: 'K-Meansはグループ数を事前に指定する必要があります。大きめのKから始めて調整してください。',
   },
 
   imageDedup: {
@@ -470,6 +493,7 @@ const ja = {
     markedDel: '✓ 選択済',
     selectDel: '選択',
     groupOf: 'グループ{{g}} · {{i}}/{{t}}',
+    emptyHint: 'パラメータ設定後スキャン実行',
   },
 
   tagSort: {
@@ -484,6 +508,7 @@ const ja = {
     failedFiles: '❌ 失敗ファイル',
     warnFiles: '⚠️ タグ異常ファイル',
     taskName: 'タグソート',
+    promptHint: '{tags}をタグプレースホルダーとして使用',
   },
 
   tagOptimize: {
@@ -503,6 +528,7 @@ const ja = {
     refining: '細化中...',
     startMsg: 'タグ細化開始 | モデル: {{model}} | スレッド: {{threads}} | 間隔: {{interval}}',
     taskName: 'タグ細化',
+    promptHint: '{tags} で既存タグのプレースホルダー',
   },
 
   bucketPreview: {
@@ -684,6 +710,7 @@ const ja = {
     downloadFail: 'ダウンロード失敗',
     tagFileLabel: 'タグファイル',
     batchSize: 'バッチ',
+    excludeTagsTip: 'これらのタグを結果から除外、カンマ区切り',
   },
 
   llmTagger: {
@@ -762,6 +789,7 @@ const ja = {
   },
 
   tagEditor: {
+    loadToShow: 'フォルダを読み込むと画像が表示されます',
     filterAll: '全て',
     filterUntagged: '未タグ',
     filterTagged: 'タグ済',
@@ -848,6 +876,12 @@ const ja = {
     startCrop: 'クロップ開始',
     startMsg: '三分割クロップ処理を開始...',
     taskName: '三分割クロップ',
+    modelSourceDesc: 'アニメ専用検出モデル、各クロップタイプに専用モデルを使用',
+    fullBodyTip: '専用全身検出モデルでアニメキャラクターの全身を正確に検出・クロップ。',
+    halfBodyTip: '専用半身検出モデルで上半身領域を直接検出。',
+    headTip: '検出した頭部をスケール係数で拡大してクロップ。値が大きいほど周囲を多く含みます。',
+    eyesTip: '検出した目をスケール係数で拡大してクロップ。値が大きいほど周囲を多く含みます。',
+    keepTagsTip: '元画像の.txtタグ内容をクロップ後のタグファイルにコピーします。',
   },
 
   fileKeeper: {
@@ -978,6 +1012,26 @@ const ja = {
     setCachePathFailed: 'キャッシュパスの設定に失敗',
     bingKeyPlaceholder: 'Ocp-Apim-Subscription-Keyを入力',
     bingRegionPlaceholder: '例: eastasia、global、空欄可',
+    enableTranslationDesc: 'タグ管理のタグ翻訳機能を有効にする',
+    targetLanguageDesc: 'タグ翻訳とオートコンプリートの表示言語に影響',
+    tagDatabaseDesc: 'タグ管理のオートコンプリート用 Danbooru タグデータをダウンロードします。',
+    proxyLlmDesc: 'VLM APIをプロキシ経由にする',
+    resetConfirmMsg: 'ツールボックスが使用しているPython環境をリセットする',
+    workflowToggleDesc: 'ベータ版機能：複数の処理ステップをノードとして編成し自動実行します。まだ調整中のため不安定な場合があります。',
+    hybridTaggerToggleDesc: 'ベータ版機能：ローカルモデルでタグを生成し、VLM が画像と照合して確認・調整します。',
+    monitorRealtime: 'リアルタイム',
+    monitorFast: '高速',
+    monitorDefault: 'デフォルト',
+    monitorSave: '省エネ',
+    monitorLow: '低頻度',
+    monitorNone: '無効',
+    proxyNoAuthHint: '認証不要の場合は空欄',
+    proxyDesc: 'プロキシは翻訳API、VLM、モデルダウンロード等全てのネットワークリクエストに適用されます。変更後「保存」をクリックしてください。',
+    huggingFaceDesc: '認可が必要な Hugging Face リソースへのアクセスに使用します。',
+    baiduAppIdPlaceholder: '百度翻訳 APP IDを入力',
+    baiduKeyPlaceholder: '百度翻訳シークレットキーを入力',
+    youdaoAppKeyPlaceholder: '有道アプリキーを入力',
+    youdaoAppSecretPlaceholder: '有道アプリシークレットを入力',
   },
 
   pythonEnv: {

@@ -16,7 +16,7 @@ import SystemMonitor from '../components/SystemMonitor';
 import PageHeader from '../components/ui/PageHeader';
 import Switch from '../components/ui/Switch';
 import NumberInput from '../components/ui/NumberInput';
-import SegmentedTabs from '../components/ui/SegmentedTabs';
+import '../styles/settings.css';
 
 // 密钥输入框组件（提升到模块顶层，避免每次重渲染重建组件类型导致输入丢焦点）
 const SecretInput = ({ value, onChange, placeholder, show, onToggle, fontSize = 12 }: { value: string; onChange: (v: string) => void; placeholder?: string; show: boolean; onToggle: () => void; fontSize?: number }) => (
@@ -100,8 +100,11 @@ const PanelHeader = ({ icon: Icon, color, title, children }: { icon: LucideIcon;
 );
 
 /** 卡片里的一行开关：左侧标题，右侧开关 */
-const SwitchRow = ({ label, checked, onChange, children, style, labelStyle }: {
+const SwitchRow = ({ label, description, descriptionStyle, switchClassName, checked, onChange, children, style, labelStyle }: {
   label: string;
+  description?: string;
+  descriptionStyle?: CSSProperties;
+  switchClassName?: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
   /** 跟在标题后面（如 Beta 标记） */
@@ -110,11 +113,13 @@ const SwitchRow = ({ label, checked, onChange, children, style, labelStyle }: {
   labelStyle?: CSSProperties;
 }) => (
   <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 12px', ...style }}>
-    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)', ...labelStyle }}>
-      {label}
-      {children}
-    </span>
-    <Switch checked={checked} onChange={onChange} aria-label={label} />
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)', ...labelStyle }}>
+        {label}{children}
+      </div>
+      {description && <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1, ...descriptionStyle }}>{description}</div>}
+    </div>
+    <Switch checked={checked} onChange={onChange} aria-label={label} className={switchClassName} />
   </div>
 );
 
@@ -170,12 +175,12 @@ export default function SettingsPage() {
   const desktopOnlyText = t('settings.desktopOnly');
 
   const intervalOptions = [
-    { value: 1000, label: t('settings.monitorSec', { n: 1 }) },
-    { value: 2000, label: t('settings.monitorSec', { n: 2 }) },
-    { value: 3000, label: t('settings.monitorSec', { n: 3 }) },
-    { value: 5000, label: t('settings.monitorSec', { n: 5 }) },
-    { value: 10000, label: t('settings.monitorSec', { n: 10 }) },
-    { value: 0, label: t('settings.monitorOff') },
+    { value: 1000, label: t('settings.monitorSec', { n: 1 }), desc: t('settings.monitorRealtime') },
+    { value: 2000, label: t('settings.monitorSec', { n: 2 }), desc: t('settings.monitorFast') },
+    { value: 3000, label: t('settings.monitorSec', { n: 3 }), desc: t('settings.monitorDefault') },
+    { value: 5000, label: t('settings.monitorSec', { n: 5 }), desc: t('settings.monitorSave') },
+    { value: 10000, label: t('settings.monitorSec', { n: 10 }), desc: t('settings.monitorLow') },
+    { value: 0, label: t('settings.monitorOff'), desc: t('settings.monitorNone') },
   ];
 
   const providerOptions = [
@@ -257,8 +262,8 @@ export default function SettingsPage() {
       name: t('settings.providerBaidu'),
       applyUrl: 'https://fanyi-api.baidu.com',
       fields: [
-        { storageKey: 'baidu_appid', label: t('settings.baiduAppId'), value: baiduAppid, setValue: setBaiduAppid },
-        { storageKey: 'baidu_key', label: t('settings.baiduKey'), value: baiduKey, setValue: setBaiduKey,
+        { storageKey: 'baidu_appid', label: t('settings.baiduAppId'), placeholder: t('settings.baiduAppIdPlaceholder'), value: baiduAppid, setValue: setBaiduAppid },
+        { storageKey: 'baidu_key', label: t('settings.baiduKey'), placeholder: t('settings.baiduKeyPlaceholder'), value: baiduKey, setValue: setBaiduKey,
           secret: { show: showBaiduKey, toggle: () => setShowBaiduKey(!showBaiduKey) } },
       ],
     },
@@ -266,8 +271,8 @@ export default function SettingsPage() {
       name: t('settings.providerYoudao'),
       applyUrl: 'https://ai.youdao.com',
       fields: [
-        { storageKey: 'youdao_app_key', label: t('settings.youdaoAppKey'), value: youdaoAppKey, setValue: setYoudaoAppKey },
-        { storageKey: 'youdao_app_secret', label: t('settings.youdaoAppSecret'), value: youdaoAppSecret, setValue: setYoudaoAppSecret,
+        { storageKey: 'youdao_app_key', label: t('settings.youdaoAppKey'), placeholder: t('settings.youdaoAppKeyPlaceholder'), value: youdaoAppKey, setValue: setYoudaoAppKey },
+        { storageKey: 'youdao_app_secret', label: t('settings.youdaoAppSecret'), placeholder: t('settings.youdaoAppSecretPlaceholder'), value: youdaoAppSecret, setValue: setYoudaoAppSecret,
           secret: { show: showYoudaoKey, toggle: () => setShowYoudaoKey(!showYoudaoKey) } },
       ],
     },
@@ -487,7 +492,7 @@ export default function SettingsPage() {
     <>
     <div className="page" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <div style={{ width: '100%', maxWidth: 640 }}>
-        <PageHeader icon={Settings} color="var(--color-accent-primary)" title={t('settings.title')} subtitle={t('settings.aboutDesc')} />
+        <PageHeader icon={Settings} color="var(--color-text-secondary)" title={t('settings.title')} subtitle={t('settings.aboutDesc')} />
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
           {monitorInterval > 0 && isDesktopRuntime && <SystemMonitor />}
@@ -510,6 +515,7 @@ export default function SettingsPage() {
                     }}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{opt.label}</span>
+                        <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{opt.desc}</span>
                       </div>
                       {active && (
                         <div style={{ width: 16, height: 16, borderRadius: '50%', background: opt.value === 0 ? '#f87171' : 'var(--color-accent-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -532,16 +538,19 @@ export default function SettingsPage() {
                   enabled: workflowEnabled,
                   setEnabled: setWorkflowEnabled,
                   title: t('settings.workflowToggle'),
+                  desc: t('settings.workflowToggleDesc'),
                 },
                 {
                   enabled: hybridTaggerEnabled,
                   setEnabled: setHybridTaggerEnabled,
                   title: t('settings.hybridTaggerToggle'),
+                  desc: t('settings.hybridTaggerToggleDesc'),
                 },
               ].map((feature) => (
                 <SwitchRow key={feature.title} label={feature.title} checked={feature.enabled} onChange={feature.setEnabled}
+                  description={feature.desc} descriptionStyle={{ fontSize: 11, marginTop: 3, lineHeight: 1.6 }}
                   style={{ gap: 16 }} labelStyle={{ fontWeight: 600 }}>
-                  <span className="beta-badge">
+                  <span className="beta-badge settings-beta-badge">
                     Beta
                   </span>
                 </SwitchRow>
@@ -558,14 +567,18 @@ export default function SettingsPage() {
               {/* 启用开关 + LLM 开关 + 代理类型 */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                 <SwitchRow label={t('settings.proxyEnabled')} checked={proxyEnabled} onChange={setProxyEnabled}
+                  description={t('settings.proxy')} descriptionStyle={{ fontSize: 9 }}
                   style={{ gap: 8 }} labelStyle={{ fontSize: 12 }} />
                 <SwitchRow label={t('settings.proxyLlm')} checked={llmProxy} onChange={setLlmProxy}
+                  description={t('settings.proxyLlmDesc')} descriptionStyle={{ fontSize: 9 }}
                   style={{ gap: 8 }} labelStyle={{ fontSize: 12 }} />
                 <div style={{ ...cardStyle, padding: '10px 12px' }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-text-secondary)', marginBottom: 5 }}>{t('settings.proxyType')}</div>
-                  <SegmentedTabs className="ui-seg-compact" value={proxyType} onChange={setProxyType} tabs={[
-                    { id: 'http', label: 'HTTP' }, { id: 'socks5', label: 'SOCKS5' },
-                  ]} />
+                  <div className="settings-proxy-types" role="group" aria-label={t('settings.proxyType')}>
+                    {(['http', 'socks5'] as const).map(type => (
+                      <button key={type} type="button" aria-pressed={proxyType === type} onClick={() => setProxyType(type)}>{type.toUpperCase()}</button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
@@ -585,14 +598,15 @@ export default function SettingsPage() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <div>
                   <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('settings.proxyUserOptional')}</label>
-                  <input className="form-input" placeholder="" value={proxyUser} onChange={e => setProxyUser(e.target.value)} style={{ height: 32 }} />
+                  <input className="form-input" placeholder={t('settings.proxyNoAuthHint')} value={proxyUser} onChange={e => setProxyUser(e.target.value)} style={{ height: 32 }} />
                 </div>
                 <div>
                   <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('settings.proxyPassOptional')}</label>
-                  <SecretInput fontSize={13} value={proxyPass} onChange={setProxyPass} placeholder=""
+                  <SecretInput fontSize={13} value={proxyPass} onChange={setProxyPass} placeholder={t('settings.proxyNoAuthHint')}
                     show={showProxyPass} onToggle={() => setShowProxyPass(!showProxyPass)} />
                 </div>
               </div>
+              <p className="settings-help">{t('settings.proxyDesc')}</p>
             </div>
           </div>
 
@@ -616,6 +630,7 @@ export default function SettingsPage() {
                 <LinkButton href="https://huggingface.co/settings/tokens" text={t('settings.huggingFaceTokenLink')} />
               </div>
             </div>
+            <p className="settings-help" style={{ marginTop: 'var(--space-3)' }}>{t('settings.huggingFaceDesc')}</p>
           </div>
 
           {/* Translation */}
@@ -625,6 +640,7 @@ export default function SettingsPage() {
               {/* 开关 + 供应商 同一行 */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                 <SwitchRow label={t('settings.enableTranslation')} checked={translateEnabled} onChange={toggleTranslate}
+                  description={t('settings.enableTranslationDesc')} switchClassName="settings-translation-switch"
                   style={{ padding: '12px 14px' }} />
                 <div style={{ ...cardStyle, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6, padding: '12px 14px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -644,6 +660,7 @@ export default function SettingsPage() {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{t('settings.targetLanguage')}</div>
+                    <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 1 }}>{t('settings.targetLanguageDesc')}</div>
                   </div>
                   <CustomSelect value={targetLang}
                     onChange={v => { setTargetLang(v); localStorage.setItem('translate_target_lang', v); if (isDesktopRuntime) loadTagDbStats(); }}
@@ -764,6 +781,7 @@ export default function SettingsPage() {
             <PanelHeader icon={Database} color="#a78bfa" title={t('settings.tagDatabase')} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
+                {t('settings.tagDatabaseDesc')}{' '}
                 {t('settings.tagDbSource')}: <a href="https://github.com/DraconicDragon/dbr-e621-lists-archive" target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent-primary)' }}>DraconicDragon/dbr-e621-lists-archive</a>
               </div>
               <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
@@ -857,7 +875,7 @@ export default function SettingsPage() {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
                   <div style={{ fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>{pythonInfo?.available ? t('settings.resetPythonEnv') : t('settings.deployPythonEnv')}</div>
-                  {!pythonInfo?.available && <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{t('settings.deployPythonDesc')}</div>}
+                  <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{pythonInfo?.available ? t('settings.resetConfirmMsg') : t('settings.deployPythonDesc')}</div>
                 </div>
                 {pythonInfo?.available ? (
                   <button className="btn btn-danger" onClick={() => setResetPythonConfirmOpen(true)} disabled={resettingPython}
@@ -882,6 +900,7 @@ export default function SettingsPage() {
             <PanelHeader icon={Info} color="var(--color-text-tertiary)" title={t('settings.about')} />
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', lineHeight: 1.8 }}>
               <p><strong>PurinBox</strong> · v{appVersion}</p>
+              <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Tauri 2 + React + TypeScript</p>
               <p style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <a href="https://github.com/YPuddin-Neko/PurinBox" target="_blank" rel="noreferrer"
                   style={{ color: '#60a5fa', display: 'inline-flex', alignItems: 'center', gap: 4 }}>

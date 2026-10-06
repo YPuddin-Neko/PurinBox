@@ -64,7 +64,7 @@ export default function AestheticPage() {
             <div style={{ width: 1, height: 16, background: 'var(--color-border)', margin: '0 4px' }} />
             <DeviceToggle useGpu={useGpu} onChange={setUseGpu} />
           </div>
-        )}>
+        )} footer={<>
         <div style={{ marginTop: 'var(--space-3)', fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
           {t('aesthetic.description')}：
           {GRADES.map((grade, i) => (
@@ -76,7 +76,7 @@ export default function AestheticPage() {
         <div style={{ marginTop: 6, fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>
           {t('aesthetic.modelSource')} <a href="https://huggingface.co/deepghs/anime_aesthetic" target="_blank" rel="noreferrer" style={{ color: '#818cf8' }}>deepghs/anime_aesthetic</a>
         </div>
-      </PathFields>
+      </>} />
     </ToolPageLayout>
   );
 }

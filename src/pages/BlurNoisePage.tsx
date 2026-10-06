@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Sparkles } from 'lucide-react';
+import { Info, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BLUR_NOISE_DEFAULTS, buildBlurNoiseOptions } from '../api/commandOptions';
@@ -49,6 +49,10 @@ export default function BlurNoisePage() {
             <RangeField label={t('blurNoise.noiseStrength')} value={noiseStrength} onChange={setNoiseStrength}
               min={0} max={100} color="#a78bfa"
               ends={[t('blurNoise.noiseMin'), t('blurNoise.noiseMax')]} />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(96, 165, 250, 0.06)', border: '1px solid rgba(96, 165, 250, 0.1)' }}>
+            <Info style={{ width: 13, height: 13, color: '#60a5fa', marginTop: 2, minWidth: 13 }} />
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('blurNoise.tip')}</span>
           </div>
         </div>
       </div>

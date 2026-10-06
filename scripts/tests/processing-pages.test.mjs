@@ -15,9 +15,18 @@ const require = createRequire(import.meta.url);
 
 // 服务端渲染不支持 portal：把 createPortal 换成原地渲染，弹窗内容就能出现在静态 HTML 里
 const reactDomPath = require.resolve('react-dom', { paths: [root] });
+const reactPath = require.resolve('react', { paths: [root] });
 const portalShim = {
   name: 'portal-shim',
   setup(build) {
+    build.onResolve({ filter: /^react$/ }, args => (
+      args.importer.startsWith(join(root, 'src')) ? { path: 'react-shim', namespace: 'react-shim' } : undefined
+    ));
+    build.onLoad({ filter: /.*/, namespace: 'react-shim' }, () => ({
+      // These client-only stores use their current snapshot for static fixture rendering.
+      contents: `export * from ${JSON.stringify(reactPath)}; import React from ${JSON.stringify(reactPath)}; export default React; export const useSyncExternalStore = (subscribe, snapshot, serverSnapshot = snapshot) => React.useSyncExternalStore(subscribe, snapshot, serverSnapshot);`,
+      resolveDir: root,
+    }));
     build.onResolve({ filter: /^react-dom$/ }, args => (
       args.importer.startsWith(join(root, 'src')) ? { path: 'react-dom-shim', namespace: 'shim' } : undefined
     ));
@@ -31,6 +40,7 @@ const portalShim = {
 await build({
   stdin: { contents: `
     import { renderToStaticMarkup } from 'react-dom/server';
+    import { MemoryRouter } from 'react-router-dom';
     import i18n from './src/i18n';
     import zhCN from './src/i18n/locales/zh-CN';
     import en from './src/i18n/locales/en';
@@ -58,6 +68,13 @@ await build({
     import ScalePage from './src/pages/ScalePage';
     import SdMetadataPage from './src/pages/SdMetadataPage';
     import UpscalePage from './src/pages/UpscalePage';
+    import HomePage from './src/pages/HomePage';
+    import SettingsPage from './src/pages/SettingsPage';
+    import TaggerPage from './src/pages/TaggerPage';
+    import TagManagerPage from './src/pages/TagManagerPage';
+    import TagSortPage from './src/pages/TagSortPage';
+    import DatasetBalancerPage from './src/pages/DatasetBalancerPage';
+    import WorkflowPage from './src/pages/WorkflowPage';
     export const locales = { 'zh-CN': zhCN, en, ja };
     export const setLanguage = lng => i18n.changeLanguage(lng);
     const render = node => renderToStaticMarkup(node);
@@ -65,8 +82,9 @@ await build({
       AestheticPage, AlphaConvertPage, BatchRenamePage, BlurNoisePage, BucketPreviewPage, CropPage, FileKeeperPage,
       FilterPage, FlipPage, FormatConvertPage, ImageClusterPage, ImageDedupPage, PersonCropPage, PerspectivePage,
       ResolutionAnalyzePage, ScalePage, SdMetadataPage, UpscalePage, HybridTaggerTab,
+      HomePage, SettingsPage, TaggerPage, TagManagerPage, TagSortPage, DatasetBalancerPage, WorkflowPage,
     };
-    export const page = name => { const Page = pages[name]; return render(<Page />); };
+    export const page = name => { const Page = pages[name]; return render(<MemoryRouter><Page /></MemoryRouter>); };
     export const modal = props => render(<Modal open onClose={() => {}} title="T" {...props}><p>body</p></Modal>);
     export const thresholds = () => render(<HashThresholdFields dhash={10} onDhash={() => {}} phash={10} onPhash={() => {}} color={0.85} onColor={() => {}} />);
     export const device = props => render(<DeviceToggle onChange={() => {}} {...props} />);
@@ -83,6 +101,69 @@ Object.defineProperty(globalThis, 'localStorage', {
 const lib = require(outfile);
 
 const count = (html, pattern) => (html.match(pattern) || []).length;
+
+test('all page entry points render in every supported language', async () => {
+  try {
+    for (const language of Object.keys(lib.locales)) {
+      await lib.setLanguage(language);
+      for (const name of Object.keys(lib.pages)) {
+        assert.ok(lib.page(name).length > 100, `${language}: ${name}`);
+      }
+    }
+  } finally {
+    await lib.setLanguage('zh-CN');
+  }
+});
+
+test('settings retain operational descriptions and the outlined proxy controls', async () => {
+  const keys = [
+    'monitorRealtime', 'monitorFast', 'monitorDefault', 'monitorSave', 'monitorLow', 'monitorNone',
+    'workflowToggleDesc', 'hybridTaggerToggleDesc', 'proxyLlmDesc', 'proxyDesc', 'proxyNoAuthHint',
+    'huggingFaceDesc', 'enableTranslationDesc', 'targetLanguageDesc', 'tagDatabaseDesc', 'deployPythonDesc',
+  ];
+  try {
+    for (const [language, dict] of Object.entries(lib.locales)) {
+      await lib.setLanguage(language);
+      const html = lib.page('SettingsPage');
+      for (const key of keys) {
+        assert.equal(typeof dict.settings[key], 'string', `${language}: ${key}`);
+        const escaped = dict.settings[key].replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll("'", '&#x27;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+        assert.ok(html.includes(escaped), `${language}: ${key}`);
+      }
+      assert.match(html, /class="settings-proxy-types" role="group"/);
+      assert.match(html, /aria-pressed="true">HTTP/);
+      assert.match(html, /settings-translation-switch/);
+      assert.match(html, /Tauri 2 \+ React \+ TypeScript/);
+    }
+  } finally {
+    await lib.setLanguage('zh-CN');
+  }
+});
+
+test('processing descriptions remain visible after shared-component extraction', () => {
+  const checks = {
+    FlipPage: ['flip.horizontalDesc', 'flip.verticalDesc', 'flip.bothDesc'],
+    AlphaConvertPage: ['alphaConvert.whiteBgDesc', 'alphaConvert.blackBgDesc'],
+    FormatConvertPage: ['formatConvert.pngDesc', 'formatConvert.jpegDesc', 'formatConvert.webpDesc'],
+    CropPage: ['crop.centerDesc', 'crop.coverDesc', 'crop.aspectDesc', 'crop.edgesDesc'],
+    ScalePage: ['scale.upscaleDesc', 'scale.downscaleDesc'],
+    BlurNoisePage: ['blurNoise.tip'], PerspectivePage: ['perspective.tip'],
+    PersonCropPage: ['personCrop.modelSourceDesc', 'personCrop.keepTagsTip'],
+    ImageClusterPage: ['imageCluster.minClusterSizeTip', 'imageCluster.kmeansTip'],
+    ImageDedupPage: ['imageDedup.emptyHint'],
+    TagManagerPage: ['tagEditor.loadToShow'], TaggerPage: ['aiTagger.excludeTagsTip'],
+    TagSortPage: ['tagSort.promptHint', 'tagRefine.promptHint'],
+  };
+  for (const [name, keys] of Object.entries(checks)) {
+    const html = lib.page(name);
+    for (const key of keys) {
+      const [section, item] = key.split('.');
+      assert.ok(html.includes(lib.locales['zh-CN'][section][item]), `${name}: ${key}`);
+    }
+  }
+  assert.match(lib.page('BucketPreviewPage'), /role="group" aria-label="分桶方式"/);
+  assert.match(lib.page('DatasetBalancerPage'), /aria-pressed="true" style="[^"]*border:1px/);
+});
 
 test('hybrid trigger word disables native autocomplete but retains the saved value', () => {
   const storage = globalThis.localStorage;

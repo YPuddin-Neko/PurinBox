@@ -146,6 +146,9 @@ const zhCN = {
     vertical: '垂直翻转',
     both: '水平 + 垂直翻转',
     taskName: '图片处理',
+    horizontalDesc: '将图片沿垂直中心轴进行左右镜像翻转',
+    verticalDesc: '将图片沿水平中心轴进行上下镜像翻转',
+    bothDesc: '同时进行水平和垂直镜像翻转，等同于旋转180°',
   },
 
   // ═══════════════ 图片裁切 ═══════════════
@@ -174,6 +177,9 @@ const zhCN = {
     cropRight: '右边距 (px)',
     startCrop: '开始裁切',
     taskName: '图片裁切',
+    centerDesc: '从图片中心裁切到指定尺寸。适用于统一数据集分辨率，只保留中心区域内容。',
+    aspectDesc: '按指定宽高比从中心裁切，去除多余边缘。适用于统一数据集的宽高比。',
+    edgesDesc: '指定上下左右各裁切多少像素。适用于去除图片边框、水印区域或黑边。',
   },
 
   // ═══════════════ 图片缩放 ═══════════════
@@ -193,6 +199,8 @@ const zhCN = {
     startDown: '下采样',
     startBoth: '上采样 + 下采样',
     resizeHint: '不满足所选缩放条件的图片原样复制到输出目录。',
+    upscaleDesc: '按目标分辨率的像素面积（宽×高乘积）等比放大，保持原图宽高比不变，输出尺寸自动对齐到 64 的倍数。',
+    downscaleDesc: '按目标分辨率的像素面积（宽×高乘积）等比缩小，保持原图宽高比不变，输出尺寸自动对齐到 64 的倍数。',
   },
 
   // ═══════════════ 分辨率筛选 ═══════════════
@@ -264,6 +272,8 @@ const zhCN = {
     resolutionDistribution: '分辨率分布',
     failedFiles: '无法读取的文件',
     taskName: '分辨率分析',
+    clickRareHint: '红色为稀有分辨率，点击查看文件',
+    aggregateToleranceDesc: '宽高比相差在此百分比内的分辨率会被归为同一组',
   },
 
   // ═══════════════ 格式转换 ═══════════════
@@ -278,6 +288,9 @@ const zhCN = {
     converting: '转换中...',
     startConvertMsg: '开始转换到 .{{format}} 格式',
     taskName: '图片格式转换',
+    pngDesc: '无损压缩，支持透明通道',
+    jpegDesc: '同 JPG，有损压缩',
+    webpDesc: '现代格式，体积更小',
   },
 
   // ═══════════════ 透明通道 ═══════════════
@@ -292,6 +305,8 @@ const zhCN = {
     bgWhite: '白色',
     bgBlack: '黑色',
     taskName: '转换透明通道',
+    whiteBgDesc: '用白色填充透明区域，适用于大部分训练场景',
+    blackBgDesc: '用黑色填充透明区域',
   },
 
   // ═══════════════ 批量重命名 ═══════════════
@@ -362,6 +377,9 @@ const zhCN = {
     executing: '重命名中...',
     execStart: '开始重命名 {{count}} 对图片...',
     execDone: '完成: 成功 {{ok}}, 失败 {{fail}}',
+    folderAHint: '选择已打标的原图文件夹...',
+    folderBHint: '选择处理后的图片文件夹...',
+    unmatchHint: '这些图片未找到匹配，可尝试调整阈值重新扫描',
   },
 
   // ═══════════════ 模糊/噪点 ═══════════════
@@ -378,6 +396,7 @@ const zhCN = {
     noiseMax: '100 (强噪点)',
     startProcess: '开始处理',
     taskName: '模糊/噪点',
+    tip: '模糊和噪点可以同时使用，也可以只用其中一种（将另一个设为 0）。推荐模糊半径 1.0~3.0，噪点强度 5~25。',
   },
 
   // ═══════════════ 透视变换 ═══════════════
@@ -391,6 +410,7 @@ const zhCN = {
     startMsg: '开始透视变换 | 强度: {{intensity}}',
     startProcess: '开始处理',
     taskName: '透视变换',
+    tip: '透视变换会随机选择一个方向（上/下/左/右）对图片做轻微透视变形。推荐强度 0.05~0.15，过高会导致图片严重变形。',
   },
 
   // ═══════════════ 图片打标 ═══════════════
@@ -457,6 +477,9 @@ const zhCN = {
     startMsg: '开始聚类 | {{algo}} | {{feat}} | {{param}} | {{device}}',
     gpuAuto: 'GPU (自动)',
     taskName: '图片聚类',
+    weightTip: '设为 0 则忽略该特征，权重越大影响越大',
+    minClusterSizeTip: '越小分组越多越细',
+    kmeansTip: '使用 K-Means 需要预先指定分组数量。建议先用较大的 K 值，再根据结果调整。',
   },
 
   // ═══════════════ 图片去重 ═══════════════
@@ -493,6 +516,7 @@ const zhCN = {
     markedDel: '✓ 已选删除',
     selectDel: '选择删除',
     groupOf: '第 {{g}} 组 · {{i}}/{{t}}',
+    emptyHint: '设置参数后点击执行扫描',
   },
 
   // ═══════════════ 标签排序 ═══════════════
@@ -508,6 +532,7 @@ const zhCN = {
     failedFiles: '❌ 失败文件',
     warnFiles: '⚠️ 标签异常文件',
     taskName: '标签排序',
+    promptHint: '使用 {tags} 表示标签占位符',
   },
 
   // ═══════════════ 标签优化 ═══════════════
@@ -529,6 +554,7 @@ const zhCN = {
     refining: '细化中...',
     startMsg: '开始标签细化 | 模型: {{model}} | 并发: {{threads}} | 间隔: {{interval}}',
     taskName: '标签细化',
+    promptHint: '使用 {tags} 表示已有标签占位符',
   },
 
   // ═══════════════ 分桶预览 ═══════════════
@@ -713,6 +739,7 @@ const zhCN = {
     downloadFail: '下载失败',
     tagFileLabel: '标签文件',
     batchSize: '批次',
+    excludeTagsTip: '打标结果中将排除这些标签，多个用逗号分隔',
   },
 
   // ═══════════════ VLM 打标 ═══════════════
@@ -795,6 +822,7 @@ const zhCN = {
 
   // ═══════════════ 标签编辑（三种模式共用） ═══════════════
   tagEditor: {
+    loadToShow: '加载文件夹后显示图片',
     filterAll: '全部',
     filterUntagged: '空标',
     filterTagged: '已标',
@@ -899,6 +927,12 @@ const zhCN = {
     startCrop: '开始裁切',
     startMsg: '开始三分法裁切处理...',
     taskName: '三分法裁切',
+    modelSourceDesc: '动漫专用检测模型，每种裁切类型使用独立的专用模型',
+    fullBodyTip: '使用专用全身检测模型，精确检测动漫角色完整身体并裁切。',
+    halfBodyTip: '使用专用半身检测模型，直接检测上半身区域。',
+    headTip: '检测头部后按缩放系数扩大裁切区域，值越大包含越多周围区域。',
+    eyesTip: '检测眼部后按缩放系数扩大裁切区域，值越大包含越多周围区域。',
+    keepTagsTip: '勾选后会将原图的 .txt 标签内容一并复制到裁切后的标签文件中。',
   },
 
   // ═══════════════ 设置页 ═══════════════
@@ -1030,6 +1064,26 @@ const zhCN = {
     setCachePathFailed: '设置缓存路径失败',
     bingKeyPlaceholder: '输入 Ocp-Apim-Subscription-Key',
     bingRegionPlaceholder: '如 eastasia、global 等，可留空',
+    enableTranslationDesc: '启用后支持标签管理的 Tag 翻译功能',
+    targetLanguageDesc: '影响标签翻译和自动补全中显示的翻译内容',
+    tagDatabaseDesc: '下载 Danbooru 标签数据用于标签管理中的自动补全功能。',
+    proxyLlmDesc: '允许 VLM 接口走代理',
+    resetConfirmMsg: '重置工具箱当前使用的Python环境',
+    workflowToggleDesc: '测试版功能：以节点方式编排多个处理步骤自动执行。功能仍在打磨中，可能存在不稳定之处。',
+    hybridTaggerToggleDesc: '测试版功能：先使用本地模型生成标签，再由 VLM 对照图片进行二次确认与调优。',
+    monitorRealtime: '实时',
+    monitorFast: '较快',
+    monitorDefault: '默认',
+    monitorSave: '节能',
+    monitorLow: '低频',
+    monitorNone: '不检测',
+    proxyNoAuthHint: '无需认证留空',
+    proxyDesc: '代理将应用于所有网络请求，包括翻译 API、VLM 接口、模型下载等。修改后请点击“保存”，新任务将自动使用新配置。',
+    huggingFaceDesc: '用于访问需要授权的 Hugging Face 资源。',
+    baiduAppIdPlaceholder: '输入百度翻译 APP ID',
+    baiduKeyPlaceholder: '输入百度翻译密钥',
+    youdaoAppKeyPlaceholder: '输入有道翻译应用 ID',
+    youdaoAppSecretPlaceholder: '输入有道翻译应用密钥',
   },
 
   pythonEnv: {

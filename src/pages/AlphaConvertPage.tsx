@@ -14,9 +14,9 @@ export default function AlphaConvertPage() {
   const { t } = useTranslation();
   const task = useBatchTask({ event: 'alpha-progress', taskId: 'alpha' });
 
-  const bgOptions: { value: AlphaBackground; label: string }[] = [
-    { value: 'white', label: t('alphaConvert.whiteBg') },
-    { value: 'black', label: t('alphaConvert.blackBg') },
+  const bgOptions: { value: AlphaBackground; label: string; desc: string }[] = [
+    { value: 'white', label: t('alphaConvert.whiteBg'), desc: t('alphaConvert.whiteBgDesc') },
+    { value: 'black', label: t('alphaConvert.blackBg'), desc: t('alphaConvert.blackBgDesc') },
   ];
   const [inputPath, setInputPath] = useState('');
   const [outputPath, setOutputPath] = useState('');
@@ -53,7 +53,10 @@ export default function AlphaConvertPage() {
                 background: opt.value === 'white' ? '#ffffff' : '#1a1a1a',
                 border: '1px solid var(--color-border)',
               }} />
-              <div style={{ fontWeight: 700, fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}>{opt.label}</div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 'var(--font-size-md)', color: 'var(--color-text-primary)' }}>{opt.label}</div>
+                <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)' }}>{opt.desc}</div>
+              </div>
             </ChoiceCard>
           ))}
         </div>

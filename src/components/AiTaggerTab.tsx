@@ -377,6 +377,7 @@ export default function AiTaggerTab() {
           <div style={{ marginBottom: 'var(--space-3)' }}>
             <label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.excludeTags')}</label>
             <input className="form-input" placeholder="tag1, tag2, tag3 ..." value={excludeTags} onChange={e => setExcludeTags(e.target.value)} style={{ width: '100%' }} />
+            <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 4 }}>{t('aiTagger.excludeTagsTip')}</div>
           </div>
           {/* 额外追加标签 */}
           <div>

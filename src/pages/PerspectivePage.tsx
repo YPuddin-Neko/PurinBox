@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Move3D } from 'lucide-react';
+import { Info, Move3D } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { buildPerspectiveOptions, PERSPECTIVE_DEFAULTS } from '../api/commandOptions';
@@ -44,6 +44,10 @@ export default function PerspectivePage() {
           <RangeField label={t('perspective.intensity')} value={intensity} onChange={setIntensity}
             min={0.02} max={0.30} step={0.01} color="#f472b6" format={v => v.toFixed(2)}
             ends={[t('perspective.intensityMin'), t('perspective.intensityMax')]} />
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(244, 114, 182, 0.06)', border: '1px solid rgba(244, 114, 182, 0.1)' }}>
+            <Info style={{ width: 13, height: 13, color: '#f472b6', marginTop: 2, minWidth: 13 }} />
+            <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{t('perspective.tip')}</span>
+          </div>
         </div>
       </div>
     </ToolPageLayout>

@@ -16,7 +16,7 @@ type RecursiveFieldProps =
 
 /** embedded：只渲染两行表单，由外层面板排版；否则自带 tool-panel 外壳 */
 type LayoutProps =
-  | { embedded: true; title?: undefined; headerExtra?: undefined; children?: undefined }
+  | { embedded: true; title?: undefined; headerExtra?: undefined; children?: undefined; footer?: undefined }
   | {
     embedded?: false;
     /** 面板标题，默认 pages.pathSettings */
@@ -25,6 +25,8 @@ type LayoutProps =
     headerExtra?: ReactNode;
     /** 面板内、路径行之后的内容 */
     children?: ReactNode;
+    /** 路径表单之后、独立控制间距的内容 */
+    footer?: ReactNode;
   };
 
 export type PathFieldsProps = OutputFieldProps & RecursiveFieldProps & LayoutProps & {
@@ -72,6 +74,7 @@ export default function PathFields(props: PathFieldsProps) {
         {fields}
         {props.children}
       </div>
+      {props.footer}
     </div>
   );
 }

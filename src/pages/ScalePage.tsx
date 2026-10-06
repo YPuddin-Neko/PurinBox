@@ -50,11 +50,11 @@ export default function ScalePage() {
 
   const scaleCards = [
     {
-      key: 'up', enabled: enableUpscale, setEnabled: setEnableUpscale, Icon: ArrowUpCircle, color: '#4ade80', label: t('scale.upscale'),
+      key: 'up', enabled: enableUpscale, setEnabled: setEnableUpscale, Icon: ArrowUpCircle, color: '#4ade80', colorAlpha: 'rgba(74, 222, 128, ', label: t('scale.upscale'), desc: t('scale.upscaleDesc'),
       width: upWidth, setWidth: setUpWidth, height: upHeight, setHeight: setUpHeight, fallbackWidth: d.upscale_width, fallbackHeight: d.upscale_height,
     },
     {
-      key: 'down', enabled: enableDownscale, setEnabled: setEnableDownscale, Icon: ArrowDownCircle, color: '#60a5fa', label: t('scale.downscale'),
+      key: 'down', enabled: enableDownscale, setEnabled: setEnableDownscale, Icon: ArrowDownCircle, color: '#60a5fa', colorAlpha: 'rgba(96, 165, 250, ', label: t('scale.downscale'), desc: t('scale.downscaleDesc'),
       width: downWidth, setWidth: setDownWidth, height: downHeight, setHeight: setDownHeight, fallbackWidth: d.downscale_width, fallbackHeight: d.downscale_height,
     },
   ];
@@ -73,7 +73,7 @@ export default function ScalePage() {
         <div className="tool-panel-header"><span className="tool-panel-title">{t('scale.scaleOptions')}</span></div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
           {scaleCards.map(card => (
-            <ChoiceCard key={card.key} selected={card.enabled} onSelect={() => card.setEnabled(!card.enabled)} indicator="check" body={
+            <ChoiceCard key={card.key} selected={card.enabled} onSelect={() => card.setEnabled(!card.enabled)} indicator="check" body={<>
               <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', opacity: card.enabled ? 1 : 0.4, pointerEvents: card.enabled ? 'auto' : 'none' }}>
                 <div className="form-group" style={{ flex: 1 }}>
                   <label className="form-label">{t('scale.width')}</label>
@@ -84,7 +84,11 @@ export default function ScalePage() {
                   <NumberInput className="form-input" value={card.height} min={1} onChange={card.setHeight} fallback={card.fallbackHeight} integer />
                 </div>
               </div>
-            }>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: card.colorAlpha + '0.06)', border: '1px solid ' + card.colorAlpha + '0.1)' }}>
+                <Info style={{ width: 14, height: 14, color: card.color, marginTop: 2, minWidth: 14 }} />
+                <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{card.desc}</span>
+              </div>
+            </>}>
               <card.Icon style={{ width: 18, height: 18, color: card.enabled ? card.color : 'var(--color-text-tertiary)' }} />
               <span style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{card.label}</span>
             </ChoiceCard>
@@ -93,7 +97,7 @@ export default function ScalePage() {
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(251, 191, 36, 0.06)', border: '1px solid rgba(251, 191, 36, 0.15)' }}>
             <Info style={{ width: 14, height: 14, color: '#fbbf24', marginTop: 2, minWidth: 14 }} />
             <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-              {t('scale.areaRule')}<br />{t('scale.resizeHint')}
+              {t('scale.resizeHint')}
             </span>
           </div>
         </div>

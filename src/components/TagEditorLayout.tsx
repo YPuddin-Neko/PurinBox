@@ -175,7 +175,7 @@ export function ImagePreviewPane({ path, filename, index, total, onPrev, onNext,
         ) : (
           <div className="tag-preview-empty">
             <ImageIcon style={{ width: 56, height: 56, opacity: 0.2 }} />
-            <span>{total === 0 ? '' : t('tagEditor.selectToPreview')}</span>
+            <span>{total === 0 ? t('tagEditor.loadToShow') : t('tagEditor.selectToPreview')}</span>
           </div>
         )}
       </div>

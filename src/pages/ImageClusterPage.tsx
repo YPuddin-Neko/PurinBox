@@ -132,6 +132,7 @@ export default function ImageClusterPage() {
                 <RangeField key={w.label} inline label={w.label} value={w.value} onChange={w.set}
                   min={0} max={1} step={0.1} color={w.color} format={v => v.toFixed(1)} style={{ marginBottom: 6 }} />
               ))}
+              <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)' }}>{t('imageCluster.weightTip')}</span>
             </div>
           )}
 
@@ -144,6 +145,7 @@ export default function ImageClusterPage() {
             <div className="form-group" style={{ opacity: algorithm === 'hdbscan' ? 1 : 0.4, transition: 'opacity 0.15s' }}>
               <label className="form-label">{t('imageCluster.minClusterSize')}</label>
               <NumberInput className="form-input" min={2} value={minClusterSize} disabled={algorithm !== 'hdbscan'} style={{ height: 36 }} onChange={setMinClusterSize} fallback={5} integer />
+              <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{t('imageCluster.minClusterSizeTip')}</span>
             </div>
             <div className="form-group" style={{ minWidth: 140 }}>
               <label className="form-label">{t('imageCluster.mapTheme')}</label>
@@ -158,14 +160,12 @@ export default function ImageClusterPage() {
             </div>
           </div>
 
-          {algorithm === 'hdbscan' && (
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-sm)', background: 'rgba(167, 139, 250, 0.06)', border: '1px solid rgba(167, 139, 250, 0.1)' }}>
               <Info style={{ width: 13, height: 13, color: '#a78bfa', marginTop: 2, minWidth: 13 }} />
               <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
-                {t('imageCluster.hdbscanTip')}
+                {algorithm === 'kmeans' ? t('imageCluster.kmeansTip') : t('imageCluster.hdbscanTip')}
               </span>
             </div>
-          )}
         </div>
       </div>
     </ToolPageLayout>

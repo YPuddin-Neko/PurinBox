@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { buildSync } from 'esbuild';
@@ -40,8 +40,10 @@ test('all locales contain the same translation keys', () => {
   }
 });
 
-for (const file of ['src/pages/UpscalePage.tsx', 'src/components/HybridTaggerTab.tsx']) {
-  test(`${file} resolves literal translation calls in every locale`, () => {
+test('all pages and components resolve literal translation calls in every locale', () => {
+  const files = ['pages', 'components'].flatMap(dir => readdirSync(new URL(`../../src/${dir}/`, import.meta.url), { recursive: true })
+    .filter(file => file.endsWith('.tsx')).map(file => `src/${dir}/${file}`));
+  for (const file of files) {
     const source = ts.createSourceFile(file, readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
     const keys = new Set();
     const visit = node => {
@@ -52,9 +54,8 @@ for (const file of ['src/pages/UpscalePage.tsx', 'src/components/HybridTaggerTab
       ts.forEachChild(node, visit);
     };
     visit(source);
-    assert.ok(keys.size > 0);
     for (const [lang, values] of Object.entries(locales)) {
-      for (const key of keys) assert.equal(typeof values[key], 'string', `${lang}: ${key}`);
+      for (const key of keys) assert.equal(typeof values[key], 'string', `${file}: ${lang}: ${key}`);
     }
-  });
-}
+  }
+});

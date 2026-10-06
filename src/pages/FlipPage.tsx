@@ -17,10 +17,10 @@ import { useBatchTask, type ProcessResult } from '../hooks/useBatchTask';
 export default function FlipPage() {
   const { t } = useTranslation();
 
-  const flipOptions: { value: FlipDirection; label: string; icon: ReactNode }[] = [
-    { value: 'horizontal', label: t('flip.horizontal'), icon: <FlipHorizontal2 /> },
-    { value: 'vertical', label: t('flip.vertical'), icon: <FlipVertical2 /> },
-    { value: 'both', label: t('flip.both'), icon: <RotateCcw /> },
+  const flipOptions: { value: FlipDirection; label: string; desc: string; icon: ReactNode }[] = [
+    { value: 'horizontal', label: t('flip.horizontal'), desc: t('flip.horizontalDesc'), icon: <FlipHorizontal2 /> },
+    { value: 'vertical', label: t('flip.vertical'), desc: t('flip.verticalDesc'), icon: <FlipVertical2 /> },
+    { value: 'both', label: t('flip.both'), desc: t('flip.bothDesc'), icon: <RotateCcw /> },
   ];
 
   const [inputPath, setInputPath] = useState('');
@@ -65,7 +65,10 @@ export default function FlipPage() {
                 <div style={{ width: 36, height: 36, borderRadius: 'var(--radius-sm)', minWidth: 36, background: selected ? 'rgba(0, 212, 255, 0.12)' : 'rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: selected ? '#00d4ff' : 'var(--color-text-tertiary)' }}>
                   {opt.icon}
                 </div>
-                <div style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{opt.label}</div>
+                <div>
+                  <div style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontSize: 'var(--font-size-md)' }}>{opt.label}</div>
+                  <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--color-text-tertiary)', marginTop: 2 }}>{opt.desc}</div>
+                </div>
               </ChoiceCard>
             );
           })}

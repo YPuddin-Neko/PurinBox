@@ -166,9 +166,9 @@ export default function DedupRenameTab() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflowY: 'auto' }}>
         <div className="tool-panel">
           <label className="form-label" htmlFor={folderAId} style={{ display: 'block', marginBottom: 6 }}>{t('dedupRename.folderA')}</label>
-          <PathInput id={folderAId} size="sm" value={folderA} onChange={setFolderA} style={{ gap: 6, marginBottom: 12 }} />
+          <PathInput id={folderAId} size="sm" placeholder={t('dedupRename.folderAHint')} value={folderA} onChange={setFolderA} style={{ gap: 6, marginBottom: 12 }} />
           <label className="form-label" htmlFor={folderBId} style={{ display: 'block', marginBottom: 6 }}>{t('dedupRename.folderB')}</label>
-          <PathInput id={folderBId} size="sm" value={folderB} onChange={setFolderB} style={{ gap: 6 }} />
+          <PathInput id={folderBId} size="sm" placeholder={t('dedupRename.folderBHint')} value={folderB} onChange={setFolderB} style={{ gap: 6 }} />
         </div>
 
         <div className="tool-panel">
@@ -328,6 +328,7 @@ export default function DedupRenameTab() {
             {exportErrors.map((message, i) => <div key={i}>{message}</div>)}
           </div>
         )}
+        <div style={{ padding: '10px 20px', borderTop: '1px solid var(--color-border)', fontSize: 11, color: 'var(--color-text-tertiary)' }}>{t('dedupRename.unmatchHint')}</div>
       </Modal>
     </div>
   );
