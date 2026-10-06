@@ -19,7 +19,7 @@ export function useBatchRunStats() {
   const onEvent = useCallback((p: UnifiedProgressPayload) => {
     if (!p.filename || !['success', 'warning', 'error'].includes(p.status)) return;
     const next = { ...current.current };
-    if (p.status === 'success' || p.status === 'warning') next.success++;
+    if (p.status === 'success' || (p.status === 'warning' && !p.unwritten)) next.success++;
     if (p.status === 'error') { next.failed++; next.errors = [...next.errors, p.filename]; }
     if (p.status === 'warning') { next.warnings++; next.warningFiles = [...next.warningFiles, p.filename]; }
     current.current = next;

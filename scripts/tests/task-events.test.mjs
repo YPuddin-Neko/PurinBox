@@ -15,7 +15,7 @@ buildSync({
   stdin: { contents: `
     export { RunIdGate, isCancelledDone } from './src/hooks/useUnifiedTaskLogs';
     export { isCancelMessage, taskStatusFromEvent } from './src/components/TaskContext';
-    export { settledTaskStatus } from './src/hooks/useBatchTask';
+    export { settledTaskStatus, processResultHasIssues } from './src/hooks/useBatchTask';
     export { formatSpeed, nextSpeedSample } from './src/components/ProgressLog';
   `, loader: 'ts', resolveDir: root },
   bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', loader: { '.css': 'empty' }, outfile,
@@ -80,6 +80,20 @@ test('a resolved run settles as done, warning or cancelled', () => {
   // 点了取消但后端照常发完 done：以后端为准
   assert.equal(lib.settledTaskStatus({ ...base, cancelRequested: true }), 'done');
   assert.equal(lib.settledTaskStatus({ ...base, cancelRequested: true, doneSeen: false }), 'cancelled');
+});
+
+test('command warning counts settle as warning even before progress events arrive', () => {
+  for (const result of [
+    { success_count: 0, fail_count: 0, warning_count: 1, total: 1 },
+    { success_count: 1, fail_count: 0, warning_count: 1, total: 1 },
+    { success_count: 0, fail_count: 1, total: 1 },
+  ]) {
+    assert.equal(lib.processResultHasIssues(result), true);
+    assert.equal(lib.settledTaskStatus({ cancelled: false, cancelRequested: false, doneSeen: true, failed: lib.processResultHasIssues(result) }), 'warning');
+  }
+  for (const result of [null, undefined, {}, { fail_count: 0 }, { fail_count: 0, warning_count: 0 }, { warning_count: '1' }]) {
+    assert.equal(lib.processResultHasIssues(result), false);
+  }
 });
 
 test('speed is measured from the first counted item, not from the click', () => {

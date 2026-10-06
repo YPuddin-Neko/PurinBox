@@ -97,7 +97,9 @@ pub(crate) enum ChatError {
     /// finish_reason 为 content_filter / safety：服务商的内容安全审核拦下了这次请求。
     /// 默认文案不提具体对象，需要"该图片"之类措辞的调用方自己 match 这一项
     ContentFilter,
-    /// 网络、HTTP 状态、响应解析、空回复等
+    /// 回空、截断或疑似安全拒绝，不能作为标签写入。
+    ReplyWarning(String),
+    /// 网络、HTTP 状态、响应解析等执行错误
     Other(String),
 }
 
@@ -106,8 +108,26 @@ impl std::fmt::Display for ChatError {
         match self {
             ChatError::Cancelled => f.write_str("已取消"),
             ChatError::ContentFilter => f.write_str("LLM 内容安全审核拒绝了该请求"),
-            ChatError::Other(message) => f.write_str(message),
+            ChatError::ReplyWarning(message) | ChatError::Other(message) => f.write_str(message),
         }
+    }
+}
+
+impl ChatError {
+    pub(crate) fn is_warning(&self) -> bool {
+        matches!(self, Self::ContentFilter | Self::ReplyWarning(_))
+    }
+}
+
+impl From<String> for ChatError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl From<&str> for ChatError {
+    fn from(message: &str) -> Self {
+        Self::Other(message.into())
     }
 }
 
@@ -191,6 +211,8 @@ struct ChatChoiceMessage {
     content: Option<serde_json::Value>,
     #[serde(default)]
     reasoning_content: Option<String>,
+    #[serde(default)]
+    refusal: Option<String>,
 }
 
 /// content 的正文：字符串原样取；分段数组拼接其中 type 为 text（或没写 type）的段，跳过思考等其他段
@@ -249,6 +271,13 @@ pub(crate) async fn chat_completion(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
+        // 只按服务商明确的错误码判安全拦截；鉴权、限流和服务故障仍是执行错误。
+        if let Ok(error) = serde_json::from_str::<serde_json::Value>(&body) {
+            let code = error.pointer("/error/code").and_then(serde_json::Value::as_str);
+            if matches!(code, Some("content_filter" | "content_policy_violation" | "ResponsibleAIPolicyViolation" | "safety")) {
+                return Err(ChatError::ContentFilter);
+            }
+        }
         return Err(ChatError::Other(format!("API 错误 ({}): {}", status, body)));
     }
     let parsed: ChatResponse = response
@@ -259,12 +288,15 @@ pub(crate) async fn chat_completion(
         .choices
         .into_iter()
         .next()
-        .ok_or_else(|| ChatError::Other("API 未返回任何结果".to_string()))?;
+        .ok_or_else(|| ChatError::ReplyWarning("API 未返回任何结果".to_string()))?;
 
     if matches!(
         choice.finish_reason.as_deref(),
         Some("content_filter") | Some("safety")
     ) {
+        return Err(ChatError::ContentFilter);
+    }
+    if choice.message.refusal.as_deref().is_some_and(|text| !text.trim().is_empty()) {
         return Err(ChatError::ContentFilter);
     }
 
@@ -278,7 +310,7 @@ pub(crate) async fn chat_completion(
         } else {
             "API 返回空内容"
         };
-        return Err(ChatError::Other(message.to_string()));
+        return Err(ChatError::ReplyWarning(message.to_string()));
     };
 
     Ok(ChatReply {
@@ -393,7 +425,7 @@ pub(crate) fn vision_user_content(text: &str, data_url: &str, detail: &str) -> s
 pub(crate) fn accept_reply<'a>(
     reply: &'a Result<ChatReply, ChatError>,
     subject: &str,
-) -> Result<&'a str, String> {
+) -> Result<&'a str, ChatError> {
     let text = accept_reply_unscreened(reply, subject)?;
     reject_refusal(text, subject)?;
     Ok(text)
@@ -404,19 +436,19 @@ pub(crate) fn accept_reply<'a>(
 pub(crate) fn accept_reply_unscreened<'a>(
     reply: &'a Result<ChatReply, ChatError>,
     subject: &str,
-) -> Result<&'a str, String> {
+) -> Result<&'a str, ChatError> {
     let reply = reply.as_ref().map_err(|error| match error {
-        ChatError::ContentFilter => format!("LLM 内容安全审核拒绝了{}", subject),
-        other => other.to_string(),
+        ChatError::ContentFilter => ChatError::ReplyWarning(format!("LLM 内容安全审核拒绝了{}", subject)),
+        other => other.clone(),
     })?;
     if reply.is_truncated() {
-        return Err(match reply.max_tokens {
+        return Err(ChatError::ReplyWarning(match reply.max_tokens {
             Some(limit) => format!(
                 "回复达到 max_tokens 上限（{}）被截断，已丢弃，请调大 max_tokens",
                 limit
             ),
             None => "回复超出了服务商的输出长度上限，已丢弃".to_string(),
-        });
+        }));
     }
     Ok(&reply.text)
 }
@@ -460,13 +492,13 @@ fn looks_like_refusal(content: &str) -> bool {
 
 /// 像是模型拒绝了（疑似内容安全审核）就返回带摘录的错误：
 /// "LLM 拒绝处理{subject}（疑似内容安全审核）: {前 80 字}"。subject 例如 "该图片"、"该标签文件"
-pub(crate) fn reject_refusal(text: &str, subject: &str) -> Result<(), String> {
+pub(crate) fn reject_refusal(text: &str, subject: &str) -> Result<(), ChatError> {
     if looks_like_refusal(text) {
         let excerpt: String = text.trim().chars().take(80).collect();
-        return Err(format!(
+        return Err(ChatError::ReplyWarning(format!(
             "LLM 拒绝处理{}（疑似内容安全审核）: {}",
             subject, excerpt
-        ));
+        )));
     }
     Ok(())
 }
@@ -501,8 +533,7 @@ pub(crate) fn default_short_reply_threshold() -> u32 {
 
 pub(crate) fn short_reply_warning(count: usize, threshold: u32) -> Option<String> {
     let threshold = threshold.clamp(1, 500) as usize;
-    (count < threshold)
-        .then(|| format!("回复仅 {} 字/词（不足 {}），疑似截断", count, threshold))
+    (count < threshold).then(|| "疑似截断".to_string())
 }
 
 /// 无标记格式的回复：多行时取最长的含逗号行，没有含逗号的行就原样返回
@@ -732,16 +763,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_reply_is_an_error() {
+    async fn empty_reply_is_a_warning() {
         let server = serve_chat_reply(None, "stop");
         assert_eq!(
             ask(&server.url).await,
-            Err(ChatError::Other("API 返回空内容".into()))
+            Err(ChatError::ReplyWarning("API 返回空内容".into()))
         );
         let server = serve_chat_reply(Some(""), "length");
         assert_eq!(
             ask(&server.url).await,
-            Err(ChatError::Other(
+            Err(ChatError::ReplyWarning(
                 "API 返回空内容（输出达到长度上限被截断）".into()
             ))
         );
@@ -760,7 +791,7 @@ mod tests {
         let server = serve_json(json!({"choices": []}));
         assert_eq!(
             ask(&server.url).await,
-            Err(ChatError::Other("API 未返回任何结果".into()))
+            Err(ChatError::ReplyWarning("API 未返回任何结果".into()))
         );
 
         let server = serve_status("200 OK", "application/json", b"not json".to_vec());
@@ -925,32 +956,32 @@ mod tests {
 
         assert_eq!(
             accept_reply(&Err(ChatError::ContentFilter), "该标签文件"),
-            Err("LLM 内容安全审核拒绝了该标签文件".to_string())
+            Err(ChatError::ReplyWarning("LLM 内容安全审核拒绝了该标签文件".into()))
         );
         assert_eq!(
             accept_reply(&Err(ChatError::Cancelled), "该图片"),
-            Err("已取消".to_string())
+            Err(ChatError::Cancelled)
         );
         assert_eq!(
             accept_reply(&Err(ChatError::Other("API 错误 (500)".into())), "该图片"),
-            Err("API 错误 (500)".to_string())
+            Err(ChatError::Other("API 错误 (500)".into()))
         );
 
         assert_eq!(
             accept_reply(&Ok(reply("1girl, so", "length", Some(64))), "该图片"),
-            Err("回复达到 max_tokens 上限（64）被截断，已丢弃，请调大 max_tokens".to_string())
+            Err(ChatError::ReplyWarning("回复达到 max_tokens 上限（64）被截断，已丢弃，请调大 max_tokens".into()))
         );
         assert_eq!(
             accept_reply_unscreened(&Ok(reply("1girl, so", "length", None)), "该图片"),
-            Err("回复超出了服务商的输出长度上限，已丢弃".to_string())
+            Err(ChatError::ReplyWarning("回复超出了服务商的输出长度上限，已丢弃".into()))
         );
 
         let refusal = Ok(reply("I'm sorry, I can't help with that.", "stop", None));
         assert_eq!(
             accept_reply(&refusal, "该图片"),
-            Err(
+            Err(ChatError::ReplyWarning(
                 "LLM 拒绝处理该图片（疑似内容安全审核）: I'm sorry, I can't help with that.".into()
-            )
+            ))
         );
         // 分段解析的调用方自己逐段判定拒绝语
         assert_eq!(
@@ -977,6 +1008,7 @@ mod tests {
         assert_eq!(result.as_ref().unwrap().max_tokens, Some(32));
         assert!(accept_reply(&result, "该图片")
             .unwrap_err()
+            .to_string()
             .contains("max_tokens 上限（32）"));
     }
 
@@ -1003,13 +1035,14 @@ mod tests {
             }
         }
         assert_eq!(response_word_count(&"a".repeat(200)), 1);
-        assert!(short_reply_warning(1, 100).unwrap().contains("疑似截断"));
+        assert_eq!(short_reply_warning(1, 100).as_deref(), Some("疑似截断"));
         for threshold in [1, 200, 500] {
             assert!(short_reply_warning(threshold as usize - 1, threshold).is_some());
             assert!(short_reply_warning(threshold as usize, threshold).is_none());
         }
-        assert!(short_reply_warning(0, 0).unwrap().contains("不足 1"));
-        assert!(short_reply_warning(499, 999).unwrap().contains("不足 500"));
+        assert!(short_reply_warning(0, 0).is_some());
+        assert!(short_reply_warning(1, 0).is_none());
+        assert!(short_reply_warning(499, 999).is_some());
         assert!(short_reply_warning(500, 999).is_none());
     }
 
@@ -1032,12 +1065,14 @@ mod tests {
     fn refusal_is_rejected_with_subject_and_excerpt() {
         assert_eq!(
             reject_refusal("  I'm sorry, I can't help with that.  ", "该图片"),
-            Err(
+            Err(ChatError::ReplyWarning(
                 "LLM 拒绝处理该图片（疑似内容安全审核）: I'm sorry, I can't help with that.".into()
-            )
+            ))
         );
         let long = format!("抱歉{}", "很".repeat(100));
         let err = reject_refusal(&long, "该标签文件").unwrap_err();
+        assert!(err.is_warning());
+        let err = err.to_string();
         assert!(err.starts_with("LLM 拒绝处理该标签文件（疑似内容安全审核）: 抱歉"));
         assert_eq!(err.split(": ").nth(1).unwrap().chars().count(), 80);
         // 逗号多的是标签列表，含拒绝措辞也放行

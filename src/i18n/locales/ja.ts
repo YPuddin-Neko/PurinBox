@@ -632,6 +632,7 @@ const ja = {
     phaseShortRefining: 'VLM 調整中...',
     allDone: 'アシストタグ付けが完了しました',
     doneWithFailures: 'アシストタグ付けが完了しました（失敗 {{n}} 件）',
+    doneWithWarnings: 'アシストタグ付けが完了しました（警告 {{warnings}} 件、失敗 {{failures}} 件）',
   },
   aiTagger: {
     requiresToken: 'ダウンロードには Hugging Face Token が必要です',

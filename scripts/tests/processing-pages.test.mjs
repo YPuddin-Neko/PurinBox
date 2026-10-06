@@ -51,6 +51,7 @@ await build({
     import ResultTable from './src/components/ui/ResultTable';
     import HybridTaggerTab from './src/components/HybridTaggerTab';
     import LlmTaggerTab from './src/components/LlmTaggerTab';
+    import ProgressLog from './src/components/ProgressLog';
     import AestheticPage from './src/pages/AestheticPage';
     import AlphaConvertPage from './src/pages/AlphaConvertPage';
     import BatchRenamePage from './src/pages/BatchRenamePage';
@@ -86,6 +87,7 @@ await build({
       HomePage, SettingsPage, TaggerPage, TagManagerPage, TagSortPage, DatasetBalancerPage, WorkflowPage,
     };
     export const page = name => { const Page = pages[name]; return render(<MemoryRouter><Page /></MemoryRouter>); };
+    export const progressLog = logs => render(<ProgressLog current={1} total={1} logs={logs} isDone hasError={false} />);
     export const modal = props => render(<Modal open onClose={() => {}} title="T" {...props}><p>body</p></Modal>);
     export const thresholds = () => render(<HashThresholdFields dhash={10} onDhash={() => {}} phash={10} onPhash={() => {}} color={0.85} onColor={() => {}} />);
     export const device = props => render(<DeviceToggle onChange={() => {}} {...props} />);
@@ -201,6 +203,16 @@ test('hybrid default prompt matches the restored output format', () => {
   } finally {
     globalThis.localStorage = storage;
   }
+});
+
+test('warning logs keep one status icon and the completion detail', () => {
+  const message = '[完成] a.png | 自然语言描述已补充 29 字/词 | TAG 37 | 5.9s | 疑似截断';
+  const html = lib.progressLog([{ time: '12:00:00', status: 'warning', message }]);
+  assert.equal(count(html, /class="[^"]*log-entry-icon warning[^"]*"/g), 1);
+  assert.equal(count(html, /29 字\/词/g), 1);
+  assert.equal(count(html, /疑似截断/g), 1);
+  assert.ok(html.includes('log-entry-message warning'));
+  assert.ok(!html.includes('⚠'));
 });
 
 test('both tagging tabs restore the warning slider below Top P within 1-500', () => {

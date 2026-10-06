@@ -14,6 +14,8 @@ export interface UnifiedProgressPayload {
   run_id?: number;
   /** 被用户取消的那一轮，终态 done 带 true */
   cancelled?: boolean;
+  /** 已处理但没有写入标签的警告 */
+  unwritten?: boolean;
 }
 
 /**

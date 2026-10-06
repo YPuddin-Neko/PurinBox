@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use super::llm_batch::{self, ItemOutcome};
+use super::llm_batch::{self, ItemOutcome, LlmBatchResult};
 use super::llm_client::{
     self, fmt_elapsed, pick_tag_line, summarize_tags, ChatMessage, ChatParams, RequestThrottle,
 };
 use super::tag_text::{join_tags, split_tags};
-use super::{ProblemArchive, ProcessResult, ProgressEvent};
+use super::{ProblemArchive, ProgressEvent};
 
 const EVENT: &str = "tag-sort-progress";
 
@@ -85,7 +85,7 @@ enum FileResult {
 pub async fn start_tag_sorting(
     app: tauri::AppHandle,
     options: TagSortOptions,
-) -> Result<ProcessResult, String> {
+) -> Result<LlmBatchResult, String> {
     // 互斥：全局取消标志不允许并发运行，后启动的任务会把前一个的取消标志复位
     static SORT_RUNNING: AtomicBool = AtomicBool::new(false);
     let _busy = super::BusyGuard::acquire(&SORT_RUNNING, "标签排序")?;
@@ -101,7 +101,7 @@ async fn sort_dataset<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     options: TagSortOptions,
     client: reqwest::Client,
-) -> Result<ProcessResult, String> {
+) -> Result<LlmBatchResult, String> {
     super::begin_run(EVENT);
     let input_dir = PathBuf::from(&options.input_path);
     let output_dir = PathBuf::from(&options.output_path);

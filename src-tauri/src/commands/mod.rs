@@ -167,6 +167,9 @@ pub struct ProgressEvent {
     /// 用户取消的那一轮的终态 done 为 true；false 时不序列化
     #[serde(skip_serializing_if = "is_false")]
     pub cancelled: bool,
+    /// 回复不可用，本项已处理但没有写入标签。
+    #[serde(skip_serializing_if = "is_false")]
+    pub unwritten: bool,
 }
 
 impl ProgressEvent {
@@ -354,7 +357,6 @@ pub(crate) struct ProblemArchive<'a> {
     input_root: &'a Path,
     output_root: &'a Path,
     recursive: bool,
-    skip_warnings: bool,
 }
 
 impl<'a> ProblemArchive<'a> {
@@ -364,37 +366,21 @@ impl<'a> ProblemArchive<'a> {
             input_root,
             output_root,
             recursive,
-            skip_warnings: false,
         }
-    }
-
-    /// `skip` 为 true 时不复制警告文件，改发一条说明。
-    /// 标签细化就地输出（输出目录就是输入目录）时用：失败文件照常归集
-    pub(crate) fn skip_warnings(mut self, skip: bool) -> Self {
-        self.skip_warnings = skip;
-        self
     }
 
     /// 复制并返回要发的事件，每类非空时一条（current/total 为 0，前端按日志处理，不动进度条）：
     /// - 复制完：info「已将 {n} 个失败文件复制到 Fail/ 文件夹」（警告文件对应 Warn/）；
-    /// - 跳过警告文件：info「输出与输入目录相同，已跳过 Warn/ 复制」；
     /// - 目录建不出来：error，文案为 `copy_files_into_artifact_dir` 的错误。
     ///
     /// 要先给事件标上运行 ID 再发时用它，否则用 `report`。
     pub(crate) fn archive(&self, failed: &[PathBuf], warned: &[PathBuf]) -> Vec<ProgressEvent> {
         let mut events = Vec::new();
-        for (files, dir_name, label, skip) in [
-            (failed, FAIL_DIR_NAME, "失败", false),
-            (warned, WARN_DIR_NAME, "警告", self.skip_warnings),
+        for (files, dir_name, label) in [
+            (failed, FAIL_DIR_NAME, "失败"),
+            (warned, WARN_DIR_NAME, "警告"),
         ] {
             if files.is_empty() {
-                continue;
-            }
-            if skip {
-                events.push(ProgressEvent::new(
-                    "info",
-                    format!("输出与输入目录相同，已跳过 {}/ 复制", dir_name),
-                ));
                 continue;
             }
             events.push(
@@ -1902,11 +1888,11 @@ mod run_and_archive_tests {
     }
 
     #[test]
-    fn problem_archive_skips_warnings_and_reports_errors() {
-        let root = TempDir::new("archive_skip");
+    fn problem_archive_copies_in_place_and_reports_errors() {
+        let root = TempDir::new("archive_in_place");
         std::fs::write(root.join("a.png"), b"a").unwrap();
         std::fs::write(root.join("w.png"), b"w").unwrap();
-        let archive = ProblemArchive::new(&root, &root, false).skip_warnings(true);
+        let archive = ProblemArchive::new(&root, &root, false);
         let events: Vec<_> = archive
             .archive(&[root.join("a.png")], &[root.join("w.png")])
             .into_iter()
@@ -1916,16 +1902,18 @@ mod run_and_archive_tests {
             events,
             [
                 info("已将 1 个失败文件复制到 Fail/ 文件夹"),
-                info("输出与输入目录相同，已跳过 Warn/ 复制"),
+                info("已将 1 个警告文件复制到 Warn/ 文件夹"),
             ]
         );
-        assert!(!root.join("Warn").exists());
-        // 只有警告、但跳过时也只发说明
+        assert_eq!(std::fs::read(root.join("Warn/w.png")).unwrap(), b"w");
+        assert_eq!(std::fs::read(root.join("w.png")).unwrap(), b"w");
+        // 只有警告时也只发一条归集说明。
         assert_eq!(archive.archive(&[], &[root.join("w.png")]).len(), 1);
 
         // 同名普通文件占住了 Warn 目录的位置
-        std::fs::write(root.join("Warn"), b"x").unwrap();
-        let events = ProblemArchive::new(&root, &root, false).archive(&[], &[root.join("w.png")]);
+        let blocked = TempDir::new("archive_blocked");
+        std::fs::write(blocked.join("Warn"), b"x").unwrap();
+        let events = ProblemArchive::new(&root, &blocked, false).archive(&[], &[root.join("w.png")]);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].status, "error");
         assert!(

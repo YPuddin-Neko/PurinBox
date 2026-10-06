@@ -117,7 +117,7 @@ export interface RunOutcome {
   cancelRequested: boolean;
   /** 收到过本轮的 done 事件 */
   doneSeen: boolean;
-  /** 本轮有文件失败（error 事件，或返回值 fail_count > 0） */
+  /** 本轮有文件错误或警告 */
   failed: boolean;
 }
 
@@ -138,8 +138,11 @@ export function settledTaskStatus(run: RunOutcome): TaskStatus {
   return run.failed ? 'warning' : 'done';
 }
 
-function isProcessResultLike(value: unknown): value is Pick<ProcessResult, 'fail_count'> {
-  return typeof value === 'object' && value !== null && 'fail_count' in value && typeof value.fail_count === 'number';
+export function processResultHasIssues(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const result = value as Partial<ProcessResult>;
+  return (typeof result.fail_count === 'number' && result.fail_count > 0)
+    || (typeof result.warning_count === 'number' && result.warning_count > 0);
 }
 
 /**
@@ -211,7 +214,7 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
         setCurrent(payload.current);
         setTotal(payload.total);
       }
-      if (payload.status === 'error') {
+      if (payload.status === 'error' || (payload.status === 'warning' && !!payload.filename)) {
         record.failed = true;
         setHasError(true);
       }
@@ -299,7 +302,7 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
     try {
       const result = await request.exec({ cancelRequested: () => record.cancelRequested });
       record.outcome = 'resolved';
-      if (isProcessResultLike(result) && result.fail_count > 0) {
+      if (processResultHasIssues(result)) {
         record.failed = true;
         setHasError(true);
       }

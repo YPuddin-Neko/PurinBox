@@ -1162,6 +1162,7 @@ export type OptionsCommandCall = {
 export interface ProcessResult {
   success_count: number;
   fail_count: number;
+  warning_count?: number;
   total: number;
   errors: string[];
 }

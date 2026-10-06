@@ -661,6 +661,7 @@ const zhCN = {
     phaseShortRefining: 'VLM 调优中...',
     allDone: '辅助打标完成',
     doneWithFailures: '辅助打标完成，失败 {{n}}',
+    doneWithWarnings: '辅助打标完成，警告 {{warnings}}，失败 {{failures}}',
   },
   aiTagger: {
     requiresToken: '需要 Hugging Face Token 下载',

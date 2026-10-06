@@ -632,6 +632,7 @@ const en = {
     phaseShortRefining: 'Refining with VLM...',
     allDone: 'Assisted tagging finished',
     doneWithFailures: 'Assisted tagging finished, {{n}} failed',
+    doneWithWarnings: 'Assisted tagging finished, {{warnings}} warnings, {{failures}} failed',
   },
   aiTagger: {
     requiresToken: 'A Hugging Face Token is required to download',

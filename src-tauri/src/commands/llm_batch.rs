@@ -8,15 +8,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use super::batch::{finish_run, BatchCounts};
-use super::{ProblemArchive, ProcessResult, ProgressEvent};
+use super::{ProblemArchive, ProgressEvent};
 
 pub(crate) enum ItemOutcome {
     Done { message: String, warning: bool },
+    Warned { filename: String, message: String },
     Failed { filename: String, message: String },
 }
 
 impl ItemOutcome {
-    /// 处理成功的一项：`summary` 后接警告（" ⚠ a; b"，此时按警告计）；
+    pub(crate) fn rejected(filename: String, error: super::llm_client::ChatError) -> Self {
+        if error.is_warning() {
+            Self::Warned { filename, message: error.to_string() }
+        } else {
+            Self::Failed { filename, message: error.to_string() }
+        }
+    }
+    /// 处理成功的一项：`summary` 后接警告原因，图标由日志组件按状态绘制；
     /// 没有警告时再接 `unchanged_note`——结果与原内容相同时由调用方给出，如 " (未变化)"
     pub(crate) fn completed(
         summary: String,
@@ -26,7 +34,7 @@ impl ItemOutcome {
         let warning = !warnings.is_empty();
         let mut message = summary;
         if warning {
-            message.push_str(" ⚠ ");
+            message.push_str(" | ");
             message.push_str(&warnings.join("; "));
         } else if let Some(note) = unchanged_note {
             message.push_str(note);
@@ -39,6 +47,7 @@ impl ItemOutcome {
 pub(crate) struct BatchOutcome {
     pub success: u32,
     pub fail: u32,
+    pub unwritten: u32,
     /// 本批文件总数（含取消后没开始的）
     pub total: u32,
     pub errors: Vec<String>,
@@ -47,12 +56,23 @@ pub(crate) struct BatchOutcome {
     pub cancelled: bool,
 }
 
+/// LLM 任务额外返回警告数；警告可能已保存，也可能因回复不可用而未写入。
+#[derive(Debug, serde::Serialize)]
+pub struct LlmBatchResult {
+    pub success_count: u32,
+    pub fail_count: u32,
+    pub warning_count: u32,
+    pub total: u32,
+    pub errors: Vec<String>,
+}
+
 impl BatchOutcome {
-    /// 交给收尾文案的计数；`ItemOutcome::Done` 里的跳过已计入 success
+    /// 不可用回复没有写入标签，作为已处理但跳过写入计数。
     pub(crate) fn counts(&self) -> BatchCounts {
         BatchCounts {
             success: self.success,
             failed: self.fail,
+            skipped: self.unwritten,
             total: self.total,
             ..Default::default()
         }
@@ -69,18 +89,23 @@ impl BatchOutcome {
         event: &str,
         label: &str,
         archive: &ProblemArchive<'_>,
-    ) -> ProcessResult {
+    ) -> LlmBatchResult {
         archive.report(app, event, &self.error_files, &self.warning_files);
         finish_run(app, event, &self.counts(), self.cancelled, |c| {
-            c.summary(label)
+            if self.unwritten > 0 {
+                format!("{}: 成功 {}, 未写入 {}（警告）, 失败 {}, 共 {}", label, c.success, self.unwritten, c.failed, c.total)
+            } else {
+                c.summary(label)
+            }
         });
         self.into_result()
     }
 
-    fn into_result(self) -> ProcessResult {
-        ProcessResult {
+    fn into_result(self) -> LlmBatchResult {
+        LlmBatchResult {
             success_count: self.success,
             fail_count: self.fail,
+            warning_count: self.warning_files.len() as u32,
             total: self.total,
             errors: self.errors,
         }
@@ -133,7 +158,7 @@ where
                 _ = until_cancelled(cancel) => return None,
             };
             match result {
-                ItemOutcome::Failed { .. } if cancel.load(Ordering::SeqCst) => None,
+                ItemOutcome::Failed { .. } | ItemOutcome::Warned { .. } if cancel.load(Ordering::SeqCst) => None,
                 result => Some(result),
             }
         });
@@ -155,6 +180,7 @@ where
             },
         };
         let filename = super::file_name_lossy(path);
+        let unwritten = matches!(&result, ItemOutcome::Warned { .. });
         let (status, message) = match result {
             ItemOutcome::Done { message, warning } => {
                 out.success += 1;
@@ -169,11 +195,17 @@ where
                 out.errors.push(format!("{}: {}", filename, message));
                 ("error", format!("[错误] {}: {}", filename, message))
             }
+            ItemOutcome::Warned { filename, message } => {
+                out.unwritten += 1;
+                out.warning_files.push(path.clone());
+                ("warning", format!("[未写入] {}: {}", filename, message))
+            }
         };
-        ProgressEvent::new(status, message)
-            .at(out.success + out.fail, files.len() as u32)
-            .file(filename)
-            .emit(app, event);
+        let mut progress = ProgressEvent::new(status, message)
+            .at(out.success + out.fail + out.unwritten, files.len() as u32)
+            .file(filename);
+        progress.unwritten = unwritten;
+        progress.emit(app, event);
     }
     out.cancelled = cancel.load(Ordering::SeqCst);
     out
@@ -218,10 +250,11 @@ mod tests {
         assert_eq!((out.success, out.fail, out.total), (2, 1, 3));
         assert_eq!(out.warning_files, [files[1].clone()]);
         assert_eq!(out.error_files, [files[2].clone()]);
-        let archive = ProblemArchive::new(&root, &root, false).skip_warnings(true);
+        let archive = ProblemArchive::new(&root, &root, false);
         let result = out.finish(app.handle(), EVENT, "标签排序完成", &archive);
         assert_eq!(result.errors, ["c.txt: bad reply"]);
         assert!(root.join("Fail/c.txt").is_file());
+        assert!(root.join("Warn/警告 [完成].txt").is_file());
         let events = events.lock().unwrap();
         let statuses: Vec<_> = events.iter().map(|e| e["status"].clone()).collect();
         assert_eq!(
@@ -238,7 +271,7 @@ mod tests {
     fn completed_appends_warnings_or_unchanged_note() {
         let done = |outcome: ItemOutcome| match outcome {
             ItemOutcome::Done { message, warning } => (message, warning),
-            ItemOutcome::Failed { .. } => panic!("应为完成"),
+            ItemOutcome::Failed { .. } | ItemOutcome::Warned { .. } => panic!("应为完成"),
         };
         let warnings = ["缺失: a".to_string(), "新增: b".to_string()];
         assert_eq!(
@@ -247,7 +280,7 @@ mod tests {
                 &warnings,
                 Some(" (未变化)")
             )),
-            ("[完成] x ⚠ 缺失: a; 新增: b".to_string(), true)
+            ("[完成] x | 缺失: a; 新增: b".to_string(), true)
         );
         assert_eq!(
             done(ItemOutcome::completed(
@@ -261,6 +294,32 @@ mod tests {
             done(ItemOutcome::completed("[完成] x".into(), &[], None)),
             ("[完成] x".to_string(), false)
         );
+    }
+
+    #[tokio::test]
+    async fn unwritten_warnings_are_processed_but_not_successful_or_failed() {
+        static CANCEL: AtomicBool = AtomicBool::new(false);
+        let root = TempDir::new("llm_batch_unwritten");
+        let files = [root.join("a.png"), root.join("b.png")];
+        for file in &files { std::fs::write(file, "image").unwrap(); }
+        let app = tauri::test::mock_app();
+        let events = capture_events(app.handle(), EVENT);
+        let mut out = run_file_batch(app.handle(), EVENT, &files, 1, &CANCEL, |path| async move {
+            ItemOutcome::Warned { filename: super::super::file_name_lossy(&path), message: "API 返回空内容".into() }
+        }).await;
+        assert_eq!((out.success, out.fail, out.unwritten), (0, 0, 2));
+        assert_eq!(out.counts().processed(), 2);
+        out.cancelled = true;
+        let result = out.finish(app.handle(), EVENT, "LLM 打标完成", &ProblemArchive::new(&root, &root, false));
+        assert_eq!((result.success_count, result.fail_count, result.warning_count), (0, 0, 2));
+        assert!(result.errors.is_empty());
+        assert!(!root.join("Fail").exists());
+        let events = events.lock().unwrap();
+        assert_eq!(events[0]["unwritten"], true);
+        assert_eq!(events[1]["current"], 2);
+        assert_eq!(events.last().unwrap()["cancelled"], true);
+        assert_eq!(events.last().unwrap()["current"], 2);
+        assert!(events.last().unwrap()["message"].as_str().unwrap().contains("已处理 2/2"));
     }
 
     #[tokio::test]
@@ -434,17 +493,17 @@ mod tests {
         }
     }
 
-    /// 收尾：问题文件各发一条说明，再发唯一的 done；就地精修不复制 Warn/
+    /// 收尾：同目录也归集问题文件，每类各发一条说明，再发唯一的 done。
     #[test]
     fn finish_archives_problem_files_then_reports_done() {
         let root = TempDir::new("llm_finish");
         let app = tauri::test::mock_app();
         let events = capture_events(app.handle(), EVENT);
-        let archive = ProblemArchive::new(&root, &root, true).skip_warnings(true);
+        let archive = ProblemArchive::new(&root, &root, true);
         let result = problem_files(&root).finish(app.handle(), EVENT, "标签细化完成", &archive);
 
         assert!(root.join("Fail/nested/failed.txt").is_file());
-        assert!(!root.join("Warn").exists());
+        assert!(root.join("Warn/nested/warning.txt").is_file());
         assert_eq!(
             (result.success_count, result.fail_count, result.total),
             (1, 1, 3)
@@ -455,7 +514,7 @@ mod tests {
             *events.lock().unwrap(),
             [
                 info("已将 1 个失败文件复制到 Fail/ 文件夹"),
-                info("输出与输入目录相同，已跳过 Warn/ 复制"),
+                info("已将 1 个警告文件复制到 Warn/ 文件夹"),
                 json!({"current": 3, "total": 3, "filename": "", "status": "done",
                        "message": "标签细化完成: 成功 1, 失败 1, 共 3"}),
             ]

@@ -4,15 +4,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use super::llm_batch::{self, ItemOutcome};
+use super::llm_batch::{self, ItemOutcome, LlmBatchResult};
 use super::llm_client::{
     self, fmt_elapsed, pick_tag_line, reject_refusal, summarize_tags, ChatMessage, ChatParams,
-    RequestThrottle,
+    RequestThrottle, ChatError,
 };
 use super::tag_manager::is_full_json;
 use super::tag_text::{field_tags, split_tags};
 use super::tagger::hybrid;
-use super::{ProblemArchive, ProcessResult, ProgressEvent};
+use super::{ProblemArchive, ProgressEvent};
 use crate::commands::{collect_image_files_with_recursive_excluding, output_path_for_input};
 
 const EVENT: &str = "tag-refine-progress";
@@ -125,6 +125,10 @@ enum FileResult {
         filename: String,
         message: String,
     },
+    Warning {
+        filename: String,
+        message: String,
+    },
 }
 
 #[tauri::command]
@@ -136,7 +140,7 @@ pub fn cancel_tag_refining() {
 pub async fn start_tag_refining(
     app: tauri::AppHandle,
     options: TagRefineOptions,
-) -> Result<ProcessResult, String> {
+) -> Result<LlmBatchResult, String> {
     // 互斥：全局取消标志不允许并发运行（辅助打标与精修页并发会互吞取消）
     static REFINE_RUNNING: AtomicBool = AtomicBool::new(false);
     let _busy = crate::commands::BusyGuard::acquire(&REFINE_RUNNING, "标签精修")?;
@@ -152,7 +156,7 @@ async fn refine_dataset<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     options: TagRefineOptions,
     client: reqwest::Client,
-) -> Result<ProcessResult, String> {
+) -> Result<LlmBatchResult, String> {
     super::begin_run(EVENT);
     let input_dir = PathBuf::from(&options.input_path);
     // 输入可以是单张图片，辅助打标又固定把输入路径当输出路径传进来。
@@ -237,20 +241,7 @@ async fn refine_dataset<R: tauri::Runtime>(
         clear_batch_drafts(app, &files);
     }
 
-    // 单图输入需比较图片所在目录；就地精修不复制警告图片，失败图片仍归集。
-    let input_cmp_dir = crate::commands::dir_of(&input_dir);
-    let same_io_dir = match (
-        std::fs::canonicalize(&output_dir),
-        std::fs::canonicalize(&input_cmp_dir),
-    ) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => {
-            crate::commands::path_key_ci(&output_dir)
-                == crate::commands::path_key_ci(&input_cmp_dir)
-        }
-    };
-    let archive =
-        ProblemArchive::new(&input_dir, &output_dir, recursive).skip_warnings(same_io_dir);
+    let archive = ProblemArchive::new(&input_dir, &output_dir, recursive);
     Ok(outcome.finish(app, EVENT, summary, &archive))
 }
 
@@ -341,6 +332,7 @@ impl FileResult {
                 warning: false,
             },
             Self::Error { filename, message } => ItemOutcome::Failed { filename, message },
+            Self::Warning { filename, message } => ItemOutcome::Warned { filename, message },
         }
     }
 }
@@ -985,10 +977,13 @@ async fn refine_single_file(
     .await
     {
         Ok(output) => output,
+        Err(e) if e.is_warning() => {
+            return FileResult::Warning { filename, message: e.to_string() };
+        }
         Err(e) => {
             return FileResult::Error {
                 filename,
-                message: e,
+                message: e.to_string(),
             }
         }
     };
@@ -1162,7 +1157,7 @@ async fn refine_tags_with_llm(
     tags_display: Option<&str>,
     options: &TagRefineOptions,
     throttle: &RequestThrottle,
-) -> Result<(RefineOutput, usize), String> {
+) -> Result<(RefineOutput, usize), ChatError> {
     if options.nl_only && (options.file_format != "json" || options.caption_mode) {
         return Err("仅补自然语言描述需要 JSON 输出，不能同时启用 TXT 自然语言打标".into());
     }
@@ -1220,7 +1215,7 @@ async fn refine_tags_with_llm(
             Some(description) => description,
             None => {
                 reject_refusal(content, "该图片")?;
-                return Err("未返回有效的自然语言描述（NL），原标签文件未修改".into());
+                return Err(ChatError::ReplyWarning("未返回有效的自然语言描述（NL），原标签文件未修改".into()));
             }
         };
         reject_refusal(&description, "该图片")?;
@@ -1241,10 +1236,10 @@ async fn refine_tags_with_llm(
 fn parse_refine_response(
     content: &str,
     original_tags: &[String],
-) -> Result<(Vec<String>, Option<String>, TagBuckets), String> {
+) -> Result<(Vec<String>, Option<String>, TagBuckets), ChatError> {
     let marker = split_marker_response(content);
 
-    // 拒绝语必须判失败，避免被标签列表启发式写入标签文件。
+    // 拒绝语不能被标签列表启发式写入标签文件。
     let has_markers = marker.buckets.slots().iter().any(|s| s.is_some()) || marker.nl.is_some();
     if !has_markers {
         reject_refusal(content, "该图片")?;
@@ -1274,7 +1269,7 @@ fn parse_refine_response(
     }
 
     if refined_tags.is_empty() {
-        return Err("AI 返回的细化结果为空".to_string());
+        return Err(ChatError::ReplyWarning("AI 返回的标签结果为空".into()));
     }
 
     Ok((refined_tags, marker.nl, marker.buckets))
@@ -1301,7 +1296,7 @@ mod marker_tests {
                 assert!(warning);
                 assert_eq!(
                     message,
-                    "[完成] a b.png | 原TAG 2 → 细化后 3 | 1.5s ⚠ 新增: smile"
+                    "[完成] a b.png | 原TAG 2 → 细化后 3 | 1.5s | 新增: smile"
                 );
             }
             _ => panic!("successful warning expected"),
@@ -2043,10 +2038,12 @@ mod e2e_tests {
                         assert_eq!(message.contains("疑似截断"), count < threshold, "{message}");
                         if count < threshold {
                             assert!(warning);
-                            assert!(message.contains(&format!("仅 {count} 字/词（不足 {threshold}）")), "{message}");
+                            assert!(message.contains(" | 疑似截断"), "{message}");
+                            assert!(!message.contains("回复仅"), "{message}");
+                            assert!(!message.contains('⚠'), "{message}");
                         }
                     }
-                    ItemOutcome::Failed { message, .. } => panic!("{message}"),
+                    ItemOutcome::Failed { message, .. } | ItemOutcome::Warned { message, .. } => panic!("{message}"),
                 }
                 let written = std::fs::read_to_string(img.with_extension(format)).unwrap();
                 if nl_only {
@@ -2064,6 +2061,91 @@ mod e2e_tests {
                     assert!(written.contains('字'));
                 }
                 assert!(!hybrid::draft_path(&img, format).exists());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hybrid_warning_archives_cover_formats_and_input_shapes() {
+        use crate::commands::batch::capture_events;
+        for (format, source, caption_mode, nl_only) in [
+            ("json", FIXTURE_JSON, false, true),
+            ("json", r#"{"count":"1girl","tags":["smile"]}"#, false, true),
+            ("txt", "1girl, smile", true, false),
+            ("txt", "1girl, smile", false, false),
+            ("json", FIXTURE_JSON, false, false),
+            ("json", r#"{"count":"1girl","tags":["smile"]}"#, false, false),
+        ] {
+            for (single, recursive) in [(false, false), (true, false), (false, true)] {
+                for short_reply in [true, false] {
+                    let root = TempDir::new("hybrid_warning_archive");
+                    let relative = if recursive { "nested/a.png" } else { "a.png" };
+                    let img = root.join(relative);
+                    std::fs::create_dir_all(img.parent().unwrap()).unwrap();
+                    image::RgbImage::new(2, 2).save(&img).unwrap();
+                    let original_image = std::fs::read(&img).unwrap();
+                    let count = if short_reply { 29 } else { 30 };
+                    let text = "字".repeat(count);
+                    // 标签调优保持标签不变，避免增删标签的警告干扰长度阈值断言。
+                    let source = if nl_only || caption_mode {
+                        source.to_string()
+                    } else if format == "txt" {
+                        text.clone()
+                    } else if source == FIXTURE_JSON {
+                        serde_json::json!({"ai_output": {"tags": [&text]}}).to_string()
+                    } else {
+                        serde_json::json!({"tags": [&text]}).to_string()
+                    };
+                    std::fs::write(img.with_extension(format), source).unwrap();
+                    for artifact in ["Warn", "Fail"] {
+                        let dir = root.join(artifact);
+                        std::fs::create_dir_all(&dir).unwrap();
+                        image::RgbImage::new(2, 2).save(dir.join("previous.png")).unwrap();
+                    }
+                    let input = if single { img.clone() } else { root.to_path_buf() };
+                    let prepared = hybrid::prepare_sources(&input, recursive, format).unwrap();
+                    assert_eq!((prepared.copied, prepared.unlabeled), (1, 0));
+                    let reply = if nl_only { format!("NL: {text}") } else { text.clone() };
+                    let server = serve_chat_reply(Some(&reply), "stop");
+                    let mut options = make_options(server.url.clone());
+                    options.input_path = input.to_string_lossy().into_owned();
+                    options.output_path = options.input_path.clone();
+                    options.file_format = format.into();
+                    options.hybrid_mode = true;
+                    options.caption_mode = caption_mode;
+                    options.nl_only = nl_only;
+                    options.recursive = recursive;
+                    options.short_reply_threshold = 30;
+                    let app = tauri::test::mock_app();
+                    let events = capture_events(app.handle(), EVENT);
+                    let result = refine_dataset(app.handle(), options, client()).await.unwrap();
+                    assert_eq!((result.success_count, result.fail_count, result.total), (1, 0, 1));
+                    assert_eq!(std::fs::read(&img).unwrap(), original_image);
+                    assert!(std::fs::read_to_string(img.with_extension(format)).unwrap().contains(&text));
+                    assert!(!hybrid::draft_path(&img, format).exists());
+                    let archived = root.join("Warn").join(relative);
+                    assert_eq!(archived.exists(), short_reply, "{format}, {single}, {recursive}");
+                    if short_reply {
+                        assert_eq!(std::fs::read(archived).unwrap(), original_image);
+                    }
+                    assert!(!root.join("Fail").join(relative).exists());
+                    let files = collect_image_files_with_recursive_excluding(&input, recursive, Some(&root)).unwrap();
+                    assert_eq!(files, [img], "archive copies must not be scanned again");
+                    let events = events.lock().unwrap();
+                    let warnings: Vec<_> = events.iter().filter(|e| e["status"] == "warning").collect();
+                    assert_eq!(warnings.len(), usize::from(short_reply));
+                    if short_reply {
+                        let message = warnings[0]["message"].as_str().unwrap();
+                        assert!(message.contains(" | 疑似截断"), "{message}");
+                        assert!(!message.contains('⚠') && !message.contains("回复仅"), "{message}");
+                        if nl_only || caption_mode {
+                            assert_eq!(message.matches("29 字/词").count(), 1, "{message}");
+                        }
+                    }
+                    assert_eq!(events.iter().filter(|e| e["message"] == "已将 1 个警告文件复制到 Warn/ 文件夹").count(), usize::from(short_reply));
+                    assert!(events.iter().all(|e| !e["message"].as_str().unwrap().contains("已跳过 Warn/")));
+                    assert_eq!(events.iter().filter(|e| e["status"] == "done").count(), 1);
+                }
             }
         }
     }
@@ -2092,7 +2174,7 @@ mod e2e_tests {
                 )
                 .await;
                 assert!(
-                    matches!(result, FileResult::Error { .. }),
+                    matches!(result, FileResult::Warning { .. }),
                     "{reply:?}: {result:?}"
                 );
                 assert_eq!(
@@ -2101,6 +2183,72 @@ mod e2e_tests {
                 );
                 assert!(!hybrid::draft_path(&img, "json").exists());
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn hybrid_unusable_replies_go_to_warn_and_api_errors_go_to_fail() {
+        use crate::commands::batch::capture_events;
+        use crate::commands::llm_client::test_support::serve_status;
+        let mut evidence = Vec::new();
+        for (format, source, caption, nl_only) in [
+            ("txt", "1girl, smile", false, false),
+            ("txt", "1girl, smile", true, false),
+            ("json", FIXTURE_JSON, false, false),
+            ("json", r#"{"tags":["smile"],"nl":"old"}"#, false, false),
+            ("json", FIXTURE_JSON, false, true),
+            ("json", r#"{"tags":["smile"],"nl":"old"}"#, false, true),
+        ] {
+            for (case, text, reason) in [
+                ("回空", None, "stop"),
+                ("截断", Some("NL: A partial description"), "length"),
+                ("截断回空", None, "length"),
+                ("安全拦截", None, "content_filter"),
+                ("拒绝回复", Some("I'm sorry, I cannot describe this image."), "stop"),
+                ("请求失败", None, "http"),
+                ("疑似截断", Some("NL: A girl smiling."), "stop"),
+            ] {
+                let (root, img) = setup_dir("hybrid_reply_classification");
+                std::fs::write(img.with_extension(format), source).unwrap();
+                hybrid::prepare_sources(&root, false, format).unwrap();
+                let server = if reason == "http" {
+                    serve_status("503 Service Unavailable", "text/plain", b"unavailable".to_vec())
+                } else { serve_chat_reply(text, reason) };
+                let mut options = make_options(server.url.clone());
+                options.input_path = img.to_string_lossy().into_owned();
+                options.output_path = options.input_path.clone();
+                options.hybrid_mode = true;
+                options.file_format = format.into();
+                options.caption_mode = caption;
+                options.nl_only = nl_only;
+                let app = tauri::test::mock_app();
+                let events = capture_events(app.handle(), EVENT);
+                let result = refine_dataset(app.handle(), options, client()).await.unwrap();
+                let warning = reason != "http";
+                let saved = case == "疑似截断";
+                assert_eq!((result.success_count, result.fail_count, result.warning_count, result.total),
+                    (u32::from(saved), u32::from(!warning), u32::from(warning), 1), "{case}/{format}/{nl_only}/{caption}");
+                assert!(!hybrid::draft_path(&img, format).exists());
+                let written = std::fs::read_to_string(img.with_extension(format)).unwrap();
+                if !saved { assert_eq!(written, source); }
+                else if nl_only || caption { assert!(written.contains("A girl smiling.")); }
+                let folder = if warning { "Warn" } else { "Fail" };
+                assert_eq!(std::fs::read(root.join(folder).join("a.png")).unwrap(), std::fs::read(&img).unwrap());
+                assert!(!root.join(if warning { "Fail" } else { "Warn" }).exists());
+                let events = events.lock().unwrap();
+                let items: Vec<_> = events.iter().filter(|e| e["filename"] == "a.png").collect();
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0]["status"], if warning { "warning" } else { "error" });
+                assert_eq!(items[0]["unwritten"] == true, warning && !saved);
+                assert_eq!(events.iter().filter(|e| e["status"] == "done").count(), 1);
+                assert_eq!(events.iter().filter(|e| e["message"].as_str().unwrap().contains("复制到")).count(), 1);
+                if nl_only && source != FIXTURE_JSON {
+                    evidence.push(serde_json::json!({"case": case, "events": *events, "result": result, "archive": folder}));
+                }
+            }
+        }
+        if let Ok(path) = std::env::var("PURINBOX_TEST_HYBRID_LOG_EVIDENCE") {
+            std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
         }
     }
 
@@ -2115,7 +2263,7 @@ mod e2e_tests {
     }
 
     #[tokio::test]
-    async fn hybrid_nl_refusals_keep_detection_logs_and_failure_archive() {
+    async fn hybrid_nl_refusals_keep_detection_logs_and_warning_archive() {
         use crate::commands::batch::capture_events;
         for source in [FIXTURE_JSON, r#"{"count":"1girl","tags":["smile"],"nl":"old"}"#] {
             for (reply, reason, expected) in [
@@ -2156,21 +2304,23 @@ mod e2e_tests {
                     .unwrap();
                 assert_eq!(
                     (result.success_count, result.fail_count, result.total),
-                    (0, 1, 1)
+                    (0, 0, 1)
                 );
+                assert_eq!(result.warning_count, 1);
+                assert!(result.errors.is_empty());
                 assert_eq!(
                     std::fs::read_to_string(img.with_extension("json")).unwrap(),
                     source
                 );
                 assert_eq!(
-                    std::fs::read(root.join("Fail/a.png")).unwrap(),
+                    std::fs::read(root.join("Warn/a.png")).unwrap(),
                     std::fs::read(&img).unwrap()
                 );
                 assert!(!hybrid::draft_path(&img, "json").exists());
                 let events = events.lock().unwrap();
                 let errors: Vec<&str> = events
                     .iter()
-                    .filter(|event| event["status"] == "error")
+                    .filter(|event| event["status"] == "warning")
                     .map(|event| event["message"].as_str().unwrap())
                     .collect();
                 assert_eq!(errors.len(), 1, "{events:?}");
@@ -2180,10 +2330,12 @@ mod e2e_tests {
                     assert!(errors[0].contains(text.strip_prefix("NL: ").unwrap_or(text)));
                 }
                 assert!(events.iter().all(|event| event["status"] != "success"));
-                assert!(events.iter().all(|event| event["status"] != "warning"));
+                assert!(events.iter().all(|event| event["status"] != "error"));
+                assert!(!root.join("Fail").exists());
+                assert!(events.iter().any(|e| e["unwritten"] == true && e["current"] == 1));
                 assert_eq!(
                     events.last().unwrap()["message"],
-                    "自然语言描述补充完成: 成功 0, 失败 1, 共 1"
+                    "自然语言描述补充完成: 成功 0, 未写入 1（警告）, 失败 0, 共 1"
                 );
             }
         }
@@ -2329,7 +2481,7 @@ mod e2e_tests {
                 &RequestThrottle::new(-1),
             )
             .await;
-            assert!(matches!(result, FileResult::Error { .. }), "{result:?}");
+            assert!(matches!(result, FileResult::Warning { .. }), "{result:?}");
             assert!(!has_labels(&img));
             assert!(!source.exists(), "失败时草稿也要删除");
 
@@ -2885,7 +3037,7 @@ mod e2e_tests {
             )
             .await;
             match result {
-                FileResult::Error { message, .. } => {
+                FileResult::Warning { message, .. } => {
                     assert!(message.contains(expected), "{message}");
                     assert!(!message.contains("max_tokens"));
                 }

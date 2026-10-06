@@ -68,7 +68,7 @@ const loadCustomPresets = (): PromptPreset[] => {
   } catch { return []; }
 };
 
-const processResult = (value: unknown): Pick<ProcessResult, 'fail_count'> | null =>
+const processResult = (value: unknown): Pick<ProcessResult, 'fail_count' | 'warning_count'> | null =>
   typeof value === 'object' && value !== null && typeof (value as ProcessResult).fail_count === 'number' ? value as ProcessResult : null;
 
 export default function HybridTaggerTab() {
@@ -264,9 +264,14 @@ export default function HybridTaggerTab() {
     cancelRequestedRef.current = false;
     cancelledRef.current = null;
     let failures = 0;
+    let warnings = 0;
     // 任务面板已落定完成、警告或出错
     let settled = false;
-    const count = (result: unknown) => { failures += processResult(result)?.fail_count ?? 0; };
+    const count = (result: unknown) => {
+      const counts = processResult(result);
+      failures += counts?.fail_count ?? 0;
+      warnings += counts?.warning_count ?? 0;
+    };
     const stopped = () => cancelRequestedRef.current || cancelledRef.current !== null;
     // 事件回调随时会写入 cancelledRef，经函数读取，类型才不会被上面的置空收窄成 null
     const cancelSummary = () => cancelledRef.current?.summary;
@@ -343,13 +348,15 @@ export default function HybridTaggerTab() {
       // 与批处理页同一规则：命令可能先于 done 事件返回，点过取消又没收到这一阶段的 done 时按取消收尾
       const status = settledTaskStatus({
         cancelled: cancelledRef.current !== null, cancelRequested: cancelRequestedRef.current,
-        doneSeen: phaseDoneRef.current, failed: failures > 0,
+        doneSeen: phaseDoneRef.current, failed: failures > 0 || warnings > 0,
       });
       if (status === 'cancelled') return;
 
       settled = true;
       if (status === 'warning') {
-        const message = t('hybridTagger.doneWithFailures', { n: failures });
+        const message = warnings > 0
+          ? t('hybridTagger.doneWithWarnings', { warnings, failures })
+          : t('hybridTagger.doneWithFailures', { n: failures });
         setHasErr(true);
         taskLogs.appendLog(message, 'warning');
         updateTask('hybrid-tagger', { status: 'warning', message });

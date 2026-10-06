@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use super::{ProcessResult, ProgressEvent};
-use crate::commands::llm_batch::{self, ItemOutcome};
-use crate::commands::llm_client::{self, ChatMessage, ChatParams, RequestThrottle};
+use super::ProgressEvent;
+use crate::commands::llm_batch::{self, ItemOutcome, LlmBatchResult};
+use crate::commands::llm_client::{self, ChatError, ChatMessage, ChatParams, RequestThrottle};
 use crate::commands::{collect_image_files_with_recursive, file_name_lossy, ProblemArchive};
 
 const EVENT: &str = "llm-tagger-progress";
@@ -76,7 +76,7 @@ pub fn cancel_llm_tagging() {
 pub async fn start_llm_tagging(
     app: tauri::AppHandle,
     options: LlmTaggerOptions,
-) -> Result<ProcessResult, String> {
+) -> Result<LlmBatchResult, String> {
     static LLM_RUNNING: AtomicBool = AtomicBool::new(false);
     let _busy = crate::commands::BusyGuard::acquire(&LLM_RUNNING, "LLM 打标")?;
     LLM_CANCELLED.store(false, Ordering::SeqCst);
@@ -89,7 +89,7 @@ async fn run_llm_tagging<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     options: LlmTaggerOptions,
     client: reqwest::Client,
-) -> Result<ProcessResult, String> {
+) -> Result<LlmBatchResult, String> {
     let input_dir = PathBuf::from(&options.input_path);
     let files = collect_image_files_with_recursive(&input_dir, options.recursive)?;
     let total = files.len() as u32;
@@ -162,7 +162,7 @@ async fn tag_file(
                 .collect();
         // 回复到达前用户点了取消：不再写盘
         if LLM_CANCELLED.load(Ordering::SeqCst) {
-            return Err("已取消".to_string());
+            return Err(ChatError::Cancelled);
         }
         let output = path.with_extension(if options.output_format == "json" {
             "json"
@@ -171,7 +171,7 @@ async fn tag_file(
         });
         crate::commands::config_paths::write_file_atomic(&output, content.as_bytes())
             .map(|()| warnings)
-            .map_err(|e| format!("写入失败 {}", e))
+            .map_err(|e| ChatError::Other(format!("写入失败 {}", e)))
     }
     .await;
     let elapsed = llm_client::fmt_elapsed(start.elapsed().as_millis());
@@ -181,10 +181,7 @@ async fn tag_file(
             &warnings,
             None,
         ),
-        Err(message) => ItemOutcome::Failed {
-            filename,
-            message: format!("{} ({})", message, elapsed),
-        },
+        Err(error) => ItemOutcome::rejected(filename, error),
     }
 }
 
@@ -216,7 +213,7 @@ async fn tag_with_llm(
     img_path: &Path,
     options: &LlmTaggerOptions,
     throttle: &RequestThrottle,
-) -> Result<String, String> {
+) -> Result<String, ChatError> {
     let data_url = llm_client::load_image_data_url(img_path, options.image_size).await?;
     let params = ChatParams {
         endpoint: &options.api_endpoint,
@@ -398,10 +395,12 @@ mod tests {
                         assert_eq!(warning, count < threshold, "{message}");
                         assert_eq!(message.contains("疑似截断"), count < threshold, "{message}");
                         if count < threshold {
-                            assert!(message.contains(&format!("仅 {count} 字/词（不足 {threshold}）")), "{message}");
+                            assert!(message.ends_with(" | 疑似截断"), "{message}");
+                            assert!(!message.contains("回复仅"), "{message}");
+                            assert!(!message.contains('⚠'), "{message}");
                         }
                     }
-                    ItemOutcome::Failed { message, .. } => panic!("{message}"),
+                    ItemOutcome::Failed { message, .. } | ItemOutcome::Warned { message, .. } => panic!("{message}"),
                 }
                 assert_eq!(
                     std::fs::read_to_string(path.with_extension(format)).unwrap(),
@@ -433,7 +432,8 @@ mod tests {
             let error = tag_with_llm(&client(), &path, &opts, &RequestThrottle::new(-1))
                 .await
                 .unwrap_err();
-            assert!(error.contains(expected), "{error}");
+            assert!(error.is_warning());
+            assert!(error.to_string().contains(expected), "{error}");
             assert!(!path.with_extension("json").exists());
         }
         let server = serve_chat_reply(Some("a complete description"), "stop");
@@ -445,6 +445,90 @@ mod tests {
                 .unwrap(),
             "a complete description"
         );
+    }
+
+    #[tokio::test]
+    async fn reply_warnings_and_execution_errors_archive_separately_in_place() {
+        use crate::commands::llm_client::test_support::{serve_json, serve_status};
+        let mut evidence = Vec::new();
+        for (format, simplified) in [("txt", false), ("json", false), ("json", true)] {
+            for input in ["directory", "file", "recursive"] {
+                for case in ["empty", "empty_choices", "length", "empty_length", "safety", "refusal", "refusal_field", "safety_http", "short", "http", "auth", "protocol", "read", "write"] {
+                    let root = TempDir::new("llm_warning_archive");
+                    let relative = if input == "recursive" { "nested/image.png" } else { "image.png" };
+                    let path = root.join(relative);
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    image::RgbImage::new(2, 2).save(&path).unwrap();
+                    if case == "read" { std::fs::write(&path, "broken image").unwrap(); }
+                    let label = path.with_extension(format);
+                    let original = if format == "txt" { "original tags" } else { r#"{"tags":["original"],"nl":"original"}"# };
+                    if case == "write" {
+                        std::fs::create_dir(&label).unwrap();
+                    } else {
+                        std::fs::write(&label, original).unwrap();
+                    }
+                    // Old archive copies must never become another input on recursive reruns.
+                    for folder in ["Warn", "Fail"] {
+                        std::fs::create_dir_all(root.join(folder)).unwrap();
+                        std::fs::write(root.join(folder).join("previous.png"), "old").unwrap();
+                    }
+                    let server = match case {
+                        "empty" => serve_chat_reply(None, "stop"),
+                        "empty_choices" => serve_json(json!({"choices": []})),
+                        "length" => serve_chat_reply(Some("A partial description"), "length"),
+                        "empty_length" => serve_chat_reply(None, "length"),
+                        "safety" => serve_chat_reply(None, "safety"),
+                        "refusal" => serve_chat_reply(Some("I cannot assist with this request"), "stop"),
+                        "refusal_field" => serve_json(json!({"choices":[{"message":{"content":null,"refusal":"blocked"},"finish_reason":"stop"}]})),
+                        "safety_http" => serve_status("400 Bad Request", "application/json", br#"{"error":{"code":"content_filter"}}"#.to_vec()),
+                        "http" => serve_status("503 Service Unavailable", "text/plain", b"unavailable".to_vec()),
+                        "auth" => serve_status("403 Forbidden", "application/json", br#"{"error":{"code":"permission_denied"}}"#.to_vec()),
+                        "protocol" => serve_status("200 OK", "application/json", b"invalid json".to_vec()),
+                        _ => serve_chat_reply(Some("A girl smiling."), "stop"),
+                    };
+                    let warning = !matches!(case, "http" | "auth" | "protocol" | "read" | "write");
+                    let mut opts = options();
+                    opts.input_path = if input == "file" { &path } else { &*root }.to_string_lossy().into_owned();
+                    opts.recursive = input == "recursive";
+                    opts.api_endpoint = server.url.clone();
+                    opts.output_format = format.into();
+                    opts.json_simplified = simplified;
+                    let app = tauri::test::mock_app();
+                    let events = capture_events(app.handle(), EVENT);
+                    let result = run_llm_tagging(app.handle(), opts, client()).await.unwrap();
+                    assert_eq!(result.total, 1, "{case}/{input}/{format}");
+                    assert_eq!(result.success_count, u32::from(case == "short"));
+                    assert_eq!(result.warning_count, u32::from(warning));
+                    assert_eq!(result.fail_count, u32::from(!warning));
+                    let folder = if warning { "Warn" } else { "Fail" };
+                    assert_eq!(std::fs::read(root.join(folder).join(relative)).unwrap(), std::fs::read(&path).unwrap());
+                    let other = if warning { "Fail" } else { "Warn" };
+                    assert!(!root.join(other).join(relative).exists());
+                    if case == "short" {
+                        assert!(std::fs::read_to_string(&label).unwrap().contains("A girl smiling."));
+                    } else if case == "write" {
+                        assert!(label.is_dir());
+                    } else {
+                        assert_eq!(std::fs::read_to_string(&label).unwrap(), original);
+                    }
+                    let events = events.lock().unwrap();
+                    let items: Vec<_> = events.iter().filter(|e| e["filename"] == "image.png").collect();
+                    assert_eq!(items.len(), 1);
+                    assert_eq!(items[0]["status"], if warning { "warning" } else { "error" });
+                    assert_eq!(items[0]["current"], 1);
+                    assert_eq!(items[0]["unwritten"] == true, warning && case != "short");
+                    assert!(!items[0]["message"].as_str().unwrap().contains('⚠'));
+                    assert_eq!(events.iter().filter(|e| e["status"] == "done").count(), 1);
+                    assert_eq!(events.iter().filter(|e| e["message"].as_str().unwrap().contains("复制到")).count(), 1);
+                    if format == "json" && simplified && input == "directory" {
+                        evidence.push(json!({"case": case, "result": result, "events": *events, "archive": folder}));
+                    }
+                }
+            }
+        }
+        if let Ok(path) = std::env::var("PURINBOX_TEST_LOG_EVIDENCE") {
+            std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+        }
     }
 
     /// 一轮：跳过已有标签的、成功的写出规范化 JSON、失败的进 Fail/，终态 done 只有一条
