@@ -1,11 +1,12 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
+import postcss from 'postcss';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const output = mkdtempSync(join(tmpdir(), 'purin-shared-ui-'));
@@ -37,6 +38,22 @@ buildSync({
   bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', loader: { '.css': 'empty' }, outfile,
 });
 const ui = createRequire(import.meta.url)(outfile);
+
+test('the sidebar version label stays unframed in expanded and collapsed layouts', () => {
+  const css = postcss.parse(readFileSync(join(root, 'src/styles/sidebar.css'), 'utf8'));
+  const versionRules = [];
+  css.walkRules(rule => {
+    if (rule.selectors.some(selector => /\.sidebar-version$/.test(selector))) versionRules.push(rule);
+  });
+  assert.equal(versionRules.length, 2);
+  for (const rule of versionRules) {
+    rule.walkDecls(decl => {
+      assert.doesNotMatch(decl.prop, /^(?:background(?:-color|-image)?|border(?:-color|-style|-width)?|box-shadow)$/);
+    });
+  }
+  const dot = css.nodes.find(rule => rule.selector === '.sidebar-version-dot');
+  assert.ok(dot.nodes.some(decl => decl.prop === 'animation' && decl.value === 'pulse 2s infinite'));
+});
 
 test('formatBytes keeps one decimal below 100 and steps up at 1024', () => {
   assert.equal(ui.formatBytes(0), '0 B');
