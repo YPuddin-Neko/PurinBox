@@ -18,6 +18,8 @@ interface ModalProps {
    * 内容底部的操作栏可用负外边距贴到两侧边缘（见 tags.css 的 .tag-batch-actions）
    */
   sectioned?: boolean;
+  /** 无装饰的紧凑弹窗，用于 TXT 标签批量操作 */
+  plain?: boolean;
   headerExtra?: ReactNode;
   bodyStyle?: CSSProperties;
   /** 合并进对话框外框的样式，如 { borderRadius: 12, maxHeight: '85vh' } */
@@ -30,7 +32,7 @@ interface ModalProps {
 }
 
 export function Modal({
-  open, onClose, title, children, variant = 'info', maxWidth = 480, width, sectioned = false,
+  open, onClose, title, children, variant = 'info', maxWidth = 480, width, sectioned = false, plain = false,
   headerExtra, bodyStyle, dialogStyle, titleStyle, className, headerIcon,
 }: ModalProps) {
   const { t } = useTranslation();
@@ -54,37 +56,38 @@ export function Modal({
       style={{
         position: 'fixed', inset: 0, zIndex: 99998,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)',
-        animation: 'fadeIn 0.15s ease',
+        background: 'rgba(0,0,0,0.5)', backdropFilter: plain ? undefined : 'blur(4px)',
+        animation: plain ? undefined : 'fadeIn 0.15s ease',
       }}>
       <div role="dialog" className={className} aria-modal="true" aria-label={title || t('modal.hint')} style={{
         background: sectioned ? 'var(--color-bg-card)' : 'var(--color-bg-secondary)', border: '1px solid var(--color-border)',
-        borderRadius: sectioned ? 16 : 12, padding: sectioned ? 0 : '20px 24px',
-        width, minWidth: 320, maxWidth: `min(${maxWidth}px, calc(100vw - 32px))`,
+        borderRadius: sectioned ? 16 : 12, padding: sectioned ? 0 : plain ? 20 : '20px 24px',
+        width, minWidth: plain ? undefined : 320, maxWidth: plain ? '90vw' : `min(${maxWidth}px, calc(100vw - 32px))`,
         maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
-        boxShadow: '0 16px 48px rgba(0,0,0,0.3)', animation: 'slideUp 0.2s ease',
+        boxShadow: plain ? undefined : '0 16px 48px rgba(0,0,0,0.3)', animation: plain ? undefined : 'slideUp 0.2s ease',
         ...dialogStyle,
       }}>
         <div style={sectioned
           ? { display: 'flex', alignItems: 'center', gap: 10, padding: '16px 20px', borderBottom: '1px solid var(--color-border)' }
-          : { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          : { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: plain ? 14 : 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, ...(sectioned ? { flex: 1 } : null) }}>
-            {headerIcon ?? (variant === 'error' || variant === 'warning'
+            {!plain && (headerIcon ?? (variant === 'error' || variant === 'warning'
               ? <AlertTriangle style={{ width: 18, height: 18, color: iconColor }} />
-              : <Info style={{ width: 18, height: 18, color: iconColor }} />)}
+              : <Info style={{ width: 18, height: 18, color: iconColor }} />))}
             <span style={{
-              fontSize: sectioned ? 13 : 14, fontWeight: sectioned ? 700 : 600, color: 'var(--color-text-primary)', overflowWrap: 'anywhere',
+              fontSize: sectioned ? 13 : 14, fontWeight: sectioned || plain ? 700 : 600, color: 'var(--color-text-primary)', overflowWrap: 'anywhere',
               ...titleStyle,
             }}>{title || t('modal.hint')}</span>
           </div>
           {headerExtra}
-          <button type="button" aria-label={t('common.close')} onClick={onClose} style={{
+          {!plain && <button type="button" aria-label={t('common.close')} onClick={onClose} style={{
             background: 'none', border: 'none', cursor: 'pointer', padding: 4, borderRadius: 6,
             color: 'var(--color-text-tertiary)', display: 'flex',
-          }}><X style={{ width: 16, height: 16 }} /></button>
+          }}><X style={{ width: 16, height: 16 }} /></button>}
         </div>
         <div style={{
-          fontSize: 13, lineHeight: 1.6, color: 'var(--color-text-secondary)', whiteSpace: 'pre-wrap', overflow: 'auto', minHeight: 0,
+          fontSize: plain ? undefined : 13, lineHeight: plain ? undefined : 1.6, color: plain ? undefined : 'var(--color-text-secondary)',
+          whiteSpace: plain ? undefined : 'pre-wrap', overflow: 'auto', minHeight: 0,
           ...(sectioned ? { padding: '16px 20px' } : null), ...bodyStyle,
         }}>
           {children}

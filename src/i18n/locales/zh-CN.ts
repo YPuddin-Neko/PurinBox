@@ -40,6 +40,7 @@ const zhCN = {
     selectToEdit: '选择图片以编辑描述',
     translation: '翻译',
     translate: '翻译',
+    clickToTranslate: '点击翻译按钮查看翻译结果',
     enableTranslationFirst: '请先在设置中启用翻译功能',
   },
 

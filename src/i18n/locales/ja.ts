@@ -39,6 +39,7 @@ const ja = {
     selectToEdit: '画像を選択して説明を編集',
     translation: '翻訳',
     translate: '翻訳',
+    clickToTranslate: '翻訳ボタンをクリックして結果を表示',
     enableTranslationFirst: '設定で翻訳を有効にしてください',
   },
 

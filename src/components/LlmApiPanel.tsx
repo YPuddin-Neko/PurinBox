@@ -10,6 +10,7 @@ interface LlmApiPanelProps {
   api: LlmApiConfigController;
   /** 不显示“API 端点”“API 地址”两行标签，用于和其他面板并排的窄布局（辅助打标） */
   compact?: boolean;
+  equalPresetWidths?: boolean;
   /** 合并到面板根节点（.tool-panel）上 */
   style?: CSSProperties;
   /** 渲染在模型选择之后、同一面板内的表单行，如请求间隔、并发数、温度 */
@@ -21,7 +22,7 @@ const OK_COLOR = '#4ade80';
 const FAIL_COLOR = '#f87171';
 
 /** LLM API 设置面板：预设端点、自定义地址、API Key、模型选择，以及保存配置 */
-export default function LlmApiPanel({ api, compact = false, style, children }: LlmApiPanelProps) {
+export default function LlmApiPanel({ api, compact = false, equalPresetWidths = true, style, children }: LlmApiPanelProps) {
   const { t } = useTranslation();
   const [showKey, setShowKey] = useState(false);
   const { saveResult, fetchResult } = api;
@@ -57,7 +58,7 @@ export default function LlmApiPanel({ api, compact = false, style, children }: L
           <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
             {presetButtons.map(p => (
               <button key={p.id} className={`btn btn-sm ${api.preset === p.id ? 'btn-primary' : 'btn-secondary'}`}
-                onClick={() => api.setPreset(p.id)} style={{ flex: 1, fontSize: 11 }}>{p.label}</button>
+                onClick={() => api.setPreset(p.id)} style={{ flex: equalPresetWidths ? 1 : undefined, fontSize: 11 }}>{p.label}</button>
             ))}
           </div>
           {api.preset === 'custom' ? (

@@ -39,6 +39,7 @@ const en = {
     selectToEdit: 'Select an image to edit caption',
     translation: 'Translation',
     translate: 'Translate',
+    clickToTranslate: 'Click translate button to see results',
     enableTranslationFirst: 'Please enable translation in Settings first',
   },
 

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useMemo } from 'react';
+import { useState, useRef, useCallback, useMemo, useId } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
@@ -20,7 +20,7 @@ import TagChipList from '../components/TagChipList';
 import ImageGridColumn from '../components/ImageGridColumn';
 import TagStatsPanel from '../components/TagStatsPanel';
 import ScopeToggle from '../components/ScopeToggle';
-import { ImagePreviewPane, OptionChips, PanelSaveButton, ResizeHandle, TagPanelHeader, TagStatsActions, ToolSidebar } from '../components/TagEditorLayout';
+import { ImagePreviewPane, PanelSaveButton, ResizeHandle, TagPanelHeader, TagStatsActions, ToolSidebar } from '../components/TagEditorLayout';
 import SegmentedTabs from '../components/ui/SegmentedTabs';
 import PageHeader from '../components/ui/PageHeader';
 import { Modal, AlertModal } from '../components/Modal';
@@ -43,6 +43,7 @@ const spinner14 = { width: 14, height: 14, animation: 'spin 1s linear infinite' 
 
 export default function TagManagerPage() {
   const { t } = useTranslation();
+  const positionGroup = useId();
   const [mode, setMode] = useState<'danbooru' | 'natural' | 'json'>('danbooru');
   const [images, setImages] = useState<ImageItem[]>([]);
   const [nlImages, setNlImages] = useState<CaptionItem[]>([]);
@@ -431,13 +432,19 @@ export default function TagManagerPage() {
         <JsonTagTab ref={jsonTabRef} recursive={recursive} onDirtyChange={setJsonDirtyCount} onLoadingChange={setJsonLoading} onSavingChange={setJsonSaving} />
       </div>
 
-      <Modal open={showAddModal} onClose={() => setShowAddModal(false)} title={t('tagEditor.batchAddTitle')} width={380}>
+      <Modal open={showAddModal} onClose={() => setShowAddModal(false)} title={t('tagEditor.batchAddTitle')} width={380} plain>
         <label style={modalLabel}>{t('tagEditor.tagContent')}</label>
         <input className="form-input" placeholder="1girl, solo, smile" value={addTagInput} onChange={e => setAddTagInput(e.target.value)}
           style={{ fontSize: 12, marginBottom: 12 }} />
-        <OptionChips legend={t('tagEditor.position')} value={addPosition} onChange={setAddPosition} color="#4ade80"
-          options={[{ value: 'start', label: t('tagEditor.prepend') }, { value: 'end', label: t('tagEditor.append') }]} />
-        <ScopeToggle value={addScope} onChange={setAddScope} hasCurrent={!!cur} />
+        <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+          {(['start', 'end'] as const).map(position => (
+            <label key={position} style={{ fontSize: 11, color: 'var(--color-text-secondary)', display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+              <input type="radio" name={positionGroup} checked={addPosition === position} onChange={() => setAddPosition(position)} />
+              {t(position === 'start' ? 'tagEditor.prepend' : 'tagEditor.append')}
+            </label>
+          ))}
+        </div>
+        <ScopeToggle value={addScope} onChange={setAddScope} hasCurrent={!!cur} appearance="radio" />
         <Checkbox checked={addOverwrite} onChange={setAddOverwrite} size={14} label={t('tagManager.overwriteIfExist')}
           style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginBottom: 16 }} />
         <div style={modalActions}>
@@ -447,7 +454,7 @@ export default function TagManagerPage() {
           </button>
         </div>
       </Modal>
-      <Modal open={showDeleteModal} onClose={() => setShowDeleteModal(false)} title={t('tagEditor.batchDeleteTitle')} width={380}>
+      <Modal open={showDeleteModal} onClose={() => setShowDeleteModal(false)} title={t('tagEditor.batchDeleteTitle')} width={380} plain>
         <div style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginBottom: 10 }}>
           {t('tagEditor.deleteTagsHint', { n: selectedTags.size })}
         </div>
@@ -457,7 +464,7 @@ export default function TagManagerPage() {
               background: 'rgba(248,113,113,0.06)', color: 'var(--color-text-secondary)' }}>{tag}</span>
           ))}
         </div>
-        <ScopeToggle value={deleteScope} onChange={setDeleteScope} hasCurrent={!!cur} color={RED} />
+        <ScopeToggle value={deleteScope} onChange={setDeleteScope} hasCurrent={!!cur} appearance="radio" style={{ marginBottom: 16 }} />
         <div style={modalActions}>
           <button className="btn btn-secondary" style={modalButton} onClick={() => setShowDeleteModal(false)}>{t('common.cancel')}</button>
           <button className="btn btn-primary" style={{ ...modalButton, background: '#ef4444', borderColor: '#ef4444' }} onClick={handleBatchDelete}
@@ -466,7 +473,7 @@ export default function TagManagerPage() {
           </button>
         </div>
       </Modal>
-      <Modal open={showReplaceModal} onClose={() => setShowReplaceModal(false)} title={t('tagManager.replaceTitle')} width={380}>
+      <Modal open={showReplaceModal} onClose={() => setShowReplaceModal(false)} title={t('tagManager.replaceTitle')} width={380} plain>
         <label style={modalLabel}>{t('tagManager.originalTag')}</label>
         <div style={{ position: 'relative', marginBottom: 10 }}>
           <input className="form-input" placeholder={t('tagManager.searchAndSelect')} value={replaceDropOpen ? replaceSearch : replaceFrom}

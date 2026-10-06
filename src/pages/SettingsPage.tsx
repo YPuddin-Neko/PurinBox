@@ -878,8 +878,8 @@ export default function SettingsPage() {
                   <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{pythonInfo?.available ? t('settings.resetConfirmMsg') : t('settings.deployPythonDesc')}</div>
                 </div>
                 {pythonInfo?.available ? (
-                  <button className="btn btn-danger" onClick={() => setResetPythonConfirmOpen(true)} disabled={resettingPython}
-                    style={{ fontSize: 12, padding: '6px 14px', gap: 6 }}>
+                  <button className="btn" onClick={() => setResetPythonConfirmOpen(true)} disabled={resettingPython}
+                    style={{ background: 'rgba(248,113,113,0.1)', color: '#f87171', border: '1px solid rgba(248,113,113,0.3)', fontSize: 12, padding: '6px 14px', gap: 6 }}>
                     {resettingPython ? <Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> : <RotateCcw style={{ width: 14, height: 14 }} />}
                     {t('settings.cacheReset')}
                   </button>
@@ -900,7 +900,7 @@ export default function SettingsPage() {
             <PanelHeader icon={Info} color="var(--color-text-tertiary)" title={t('settings.about')} />
             <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)', lineHeight: 1.8 }}>
               <p><strong>PurinBox</strong> · v{appVersion}</p>
-              <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Tauri 2 + React + TypeScript</p>
+              <p>Tauri 2 + React + TypeScript</p>
               <p style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <a href="https://github.com/YPuddin-Neko/PurinBox" target="_blank" rel="noreferrer"
                   style={{ color: '#60a5fa', display: 'inline-flex', alignItems: 'center', gap: 4 }}>

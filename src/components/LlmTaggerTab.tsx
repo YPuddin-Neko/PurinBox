@@ -101,7 +101,7 @@ export default function LlmTaggerTab() {
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
         <DatasetPathPanel value={inputPath} onChange={setInputPath} recursive={recursive} onRecursive={setRecursive} />
 
-        <LlmApiPanel api={api} />
+        <LlmApiPanel api={api} equalPresetWidths={false} />
 
         <div className="tool-panel">
           <div className="tool-panel-header"><span className="tool-panel-title">{t('llmTagger.modelSettings')}</span></div>

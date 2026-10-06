@@ -426,7 +426,7 @@ export default function HybridTaggerTab() {
           </div>
         </div>
 
-        <LlmApiPanel api={api} compact style={{ marginBottom: 0 }} />
+        <LlmApiPanel api={api} compact equalPresetWidths={false} style={{ marginBottom: 0 }} />
       </div>
 
       {/* 调优设置聚合：提示词 + 参数 + 输出格式 */}

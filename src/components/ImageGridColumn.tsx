@@ -52,7 +52,7 @@ export default function ImageGridColumn<T extends Item>({ width, items, total, t
         {!total ? (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8,
             fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-            <FolderOpen size={32} />{t('tagEditor.loadFolderHint')}
+            <FolderOpen size={32} style={{ opacity: 0.2 }} /><span style={{ opacity: 0.6 }}>{t('tagEditor.loadFolderHint')}</span>
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 4 }}>

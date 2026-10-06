@@ -118,7 +118,7 @@ export default function NaturalLangTab({ images, setImages, onRefresh, onError }
           </TagPanelHeader>
           <div style={{ flex: 1, padding: '12px 14px', overflowY: 'auto', fontSize: 12, lineHeight: 1.7, color: 'var(--color-text-primary)',
             whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-            {translatedText}
+            {translatedText || <span style={{ color: 'var(--color-text-tertiary)', fontStyle: 'italic' }}>{t('naturalLang.clickToTranslate')}</span>}
           </div>
         </div>
       </div>
