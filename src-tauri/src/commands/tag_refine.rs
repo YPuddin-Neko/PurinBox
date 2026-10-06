@@ -2126,7 +2126,8 @@ mod e2e_tests {
                     let archived = root.join("Warn").join(relative);
                     assert_eq!(archived.exists(), short_reply, "{format}, {single}, {recursive}");
                     if short_reply {
-                        assert_eq!(std::fs::read(archived).unwrap(), original_image);
+                        assert_eq!(std::fs::read(&archived).unwrap(), original_image);
+                        assert_eq!(std::fs::read(archived.with_extension(format)).unwrap(), std::fs::read(img.with_extension(format)).unwrap());
                     }
                     assert!(!root.join("Fail").join(relative).exists());
                     let files = collect_image_files_with_recursive_excluding(&input, recursive, Some(&root)).unwrap();
@@ -2234,6 +2235,7 @@ mod e2e_tests {
                 else if nl_only || caption { assert!(written.contains("A girl smiling.")); }
                 let folder = if warning { "Warn" } else { "Fail" };
                 assert_eq!(std::fs::read(root.join(folder).join("a.png")).unwrap(), std::fs::read(&img).unwrap());
+                assert_eq!(std::fs::read(root.join(folder).join(format!("a.{format}"))).unwrap(), written.as_bytes());
                 assert!(!root.join(if warning { "Fail" } else { "Warn" }).exists());
                 let events = events.lock().unwrap();
                 let items: Vec<_> = events.iter().filter(|e| e["filename"] == "a.png").collect();

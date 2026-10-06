@@ -317,8 +317,9 @@ pub fn dir_of(path: &Path) -> std::path::PathBuf {
 }
 
 /// 把出问题的源文件复制到 `<root>/<dir_name>/`，递归模式下保留相对子目录结构。
+/// 图片同时带上现存的同名标签；数量只计源文件，不计附带的标签副本。
 /// 源文件本来就在目标位置（拿上次的 Fail/ 当输入重跑）时不复制，照样计数。
-/// 返回归集成功的数量；目录建不出来则返回 Err，单个文件复制失败只是不计数。
+/// 返回归集成功的数量；目录或标签复制失败返回 Err，单个源文件复制失败不计数。
 fn copy_files_into_artifact_dir(
     input_root: &Path,
     root: &Path,
@@ -332,6 +333,7 @@ fn copy_files_into_artifact_dir(
         .map_err(|e| format!("创建 {} 文件夹失败: {}", dir_name, e))?;
 
     let mut copied = 0u32;
+    let mut sidecar_errors = Vec::new();
     for src in files {
         let Some(name) = src.file_name().map(|n| n.to_string_lossy().to_string()) else {
             continue;
@@ -342,7 +344,17 @@ fn copy_files_into_artifact_dir(
         };
         if copy_file_safe(src, &dest).is_ok() {
             copied += 1;
+            if is_supported_image_file(src) {
+                for (ext, sidecar) in tag_sidecars(src).filter(|(_, path)| path.is_file()) {
+                    if let Err(error) = copy_file_safe(&sidecar, &dest.with_extension(ext)) {
+                        sidecar_errors.push(format!("{}: {}", sidecar.display(), error));
+                    }
+                }
+            }
         }
+    }
+    if !sidecar_errors.is_empty() {
+        return Err(format!("归集标签文件失败: {}", sidecar_errors.join("; ")));
     }
     Ok(copied)
 }
@@ -1234,6 +1246,68 @@ mod artifact_dir_tests {
         // 复制进去的副本下一轮扫描依然被剪掉，不会自我增殖
         let files = collect_image_files_with_recursive(&root, true).unwrap();
         assert_eq!(names(&files), vec!["a.png", "d.png"]);
+    }
+
+    #[test]
+    fn artifact_copies_keep_images_and_all_existing_tag_sidecars_together() {
+        for folder in [FAIL_DIR_NAME, WARN_DIR_NAME] {
+            for single in [false, true] {
+                let root = TempDir::new("artifact_labels");
+                std::fs::create_dir_all(root.join("sub")).unwrap();
+                let image = root.join("sub/a.PNG");
+                std::fs::write(&image, b"image").unwrap();
+                for (ext, sidecar) in tag_sidecars(&image) {
+                    std::fs::write(sidecar, format!("original {ext}")).unwrap();
+                }
+                let private = tagger::hybrid::draft_path(&image, "json");
+                std::fs::write(&private, b"private draft").unwrap();
+                let input = if single { image.clone() } else { root.to_path_buf() };
+                let dest_root = if single { root.join("sub") } else { root.to_path_buf() };
+                let dest = dest_root.join(folder).join(if single { "a.PNG" } else { "sub/a.PNG" });
+                assert_eq!(copy_files_into_artifact_dir(&input, &input, &[image.clone()], folder, !single).unwrap(), 1);
+                assert_eq!(std::fs::read(&dest).unwrap(), b"image");
+                for (ext, sidecar) in tag_sidecars(&image) {
+                    assert_eq!(std::fs::read(dest.with_extension(ext)).unwrap(), std::fs::read(sidecar).unwrap());
+                }
+                assert!(!tagger::hybrid::draft_path(&dest, "json").exists());
+                assert!(private.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn archive_labels_are_optional_and_self_copy_preserves_them() {
+        let root = TempDir::new("artifact_optional_labels");
+        let input = root.join("Warn");
+        std::fs::create_dir_all(&input).unwrap();
+        let image = input.join("a.png");
+        std::fs::write(&image, b"image").unwrap();
+        std::fs::write(image.with_extension("txt"), b"existing tags").unwrap();
+        assert_eq!(copy_files_into_artifact_dir(&input, &root, &[image.clone()], WARN_DIR_NAME, false).unwrap(), 1);
+        assert_eq!(std::fs::read(image.with_extension("txt")).unwrap(), b"existing tags");
+        assert!(!image.with_extension("json").exists());
+        let unlabeled = input.join("b.png");
+        std::fs::write(&unlabeled, b"unlabeled").unwrap();
+        assert_eq!(copy_files_into_artifact_dir(&input, &root, &[unlabeled], FAIL_DIR_NAME, false).unwrap(), 1);
+        assert!(!root.join("Fail/b.txt").exists());
+        assert!(!root.join("Fail/b.json").exists());
+    }
+
+    #[test]
+    fn archive_reports_label_copy_failures_without_stopping_other_copies() {
+        let root = TempDir::new("artifact_label_failure");
+        for name in ["a", "b"] {
+            std::fs::write(root.join(format!("{name}.png")), b"image").unwrap();
+            std::fs::write(root.join(format!("{name}.txt")), b"tags").unwrap();
+        }
+        std::fs::create_dir_all(root.join("Warn/a.txt")).unwrap();
+        let events = ProblemArchive::new(&root, &root, false)
+            .archive(&[], &[root.join("a.png"), root.join("b.png")]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].status, "error");
+        assert!(events[0].message.contains("a.txt"));
+        assert_eq!(std::fs::read(root.join("Warn/b.txt")).unwrap(), b"tags");
+        assert_eq!(std::fs::read(root.join("a.txt")).unwrap(), b"tags");
     }
 
     /// 拿上次的 Fail/ 当输入、输出选回数据集根目录重跑：归集目标就是源文件自己，

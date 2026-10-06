@@ -511,6 +511,12 @@ mod tests {
                     } else {
                         assert_eq!(std::fs::read_to_string(&label).unwrap(), original);
                     }
+                    let archived_label = root.join(folder).join(relative).with_extension(format);
+                    if case == "write" {
+                        assert!(!archived_label.exists());
+                    } else {
+                        assert_eq!(std::fs::read(archived_label).unwrap(), std::fs::read(&label).unwrap());
+                    }
                     let events = events.lock().unwrap();
                     let items: Vec<_> = events.iter().filter(|e| e["filename"] == "image.png").collect();
                     assert_eq!(items.len(), 1);
