@@ -746,6 +746,8 @@ const ja = {
     fetchFail: '取得失敗',
     modelPlaceholder: 'モデル名...',
     temperature: '温度',
+    shortReplyThreshold: '途切れ警告のしきい値',
+    shortReplyThresholdTip: 'この長さ未満の応答で警告。中国語は文字数、英語は単語数で計算',
     interval: '間隔（秒）',
     intervalTip: '-1は間隔なし',
     concurrencyTip: '同時処理ファイル数',

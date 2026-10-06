@@ -471,6 +471,40 @@ pub(crate) fn reject_refusal(text: &str, subject: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 汉字逐字计数，其余字母和数字按词计数；空白、标点不计入长度。
+pub(crate) fn response_word_count(text: &str) -> usize {
+    let mut count = 0;
+    let mut in_word = false;
+    for ch in text.chars() {
+        let is_han = matches!(ch,
+            '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}'
+            | '\u{20000}'..='\u{2ffff}' | '\u{30000}'..='\u{323af}'
+        );
+        if is_han {
+            count += 1;
+            in_word = false;
+        } else if ch.is_alphanumeric() {
+            if !in_word {
+                count += 1;
+            }
+            in_word = true;
+        } else if !matches!(ch, '\'' | '\u{2019}') {
+            in_word = false;
+        }
+    }
+    count
+}
+
+pub(crate) fn default_short_reply_threshold() -> u32 {
+    100
+}
+
+pub(crate) fn short_reply_warning(count: usize, threshold: u32) -> Option<String> {
+    let threshold = threshold.clamp(1, 500) as usize;
+    (count < threshold)
+        .then(|| format!("回复仅 {} 字/词（不足 {}），疑似截断", count, threshold))
+}
+
 /// 无标记格式的回复：多行时取最长的含逗号行，没有含逗号的行就原样返回
 pub(crate) fn pick_tag_line(text: &str) -> &str {
     if !text.contains('\n') {
@@ -944,6 +978,39 @@ mod tests {
         assert!(accept_reply(&result, "该图片")
             .unwrap_err()
             .contains("max_tokens 上限（32）"));
+    }
+
+    #[test]
+    fn short_replies_count_han_characters_and_english_words() {
+        for (text, expected) in [
+            ("中文描述", 4),
+            ("A girl smiles outdoors.", 4),
+            ("女孩wears a red裙子。", 7),
+            ("don't, can't; girl\u{2019}s", 3),
+            (" \n\t，。!?", 0),
+            ("\u{20000}\u{30000}", 2),
+        ] {
+            assert_eq!(response_word_count(text), expected, "{text}");
+        }
+        for count in [99, 100, 101] {
+            for text in [
+                "字".repeat(count),
+                "word ".repeat(count),
+                format!("{}{}", "字".repeat(49), "word ".repeat(count - 49)),
+            ] {
+                assert_eq!(response_word_count(&text), count);
+                assert_eq!(short_reply_warning(count, 100).is_some(), count < 100);
+            }
+        }
+        assert_eq!(response_word_count(&"a".repeat(200)), 1);
+        assert!(short_reply_warning(1, 100).unwrap().contains("疑似截断"));
+        for threshold in [1, 200, 500] {
+            assert!(short_reply_warning(threshold as usize - 1, threshold).is_some());
+            assert!(short_reply_warning(threshold as usize, threshold).is_none());
+        }
+        assert!(short_reply_warning(0, 0).unwrap().contains("不足 1"));
+        assert!(short_reply_warning(499, 999).unwrap().contains("不足 500"));
+        assert!(short_reply_warning(500, 999).is_none());
     }
 
     #[test]

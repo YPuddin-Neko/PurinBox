@@ -777,6 +777,8 @@ const zhCN = {
     fetchFail: '获取失败',
     modelPlaceholder: '模型名称...',
     temperature: '温度',
+    shortReplyThreshold: '截断警告阈值',
+    shortReplyThresholdTip: '回复低于此字/词数时警告；中文按字，英文按词',
     interval: '请求间隔（秒）',
     intervalTip: '-1 表示无间隔',
     concurrencyTip: '同时处理的文件数',

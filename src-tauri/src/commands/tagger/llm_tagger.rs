@@ -29,6 +29,8 @@ pub struct LlmTaggerOptions {
     /// Top P 采样参数（0~1，为 0 或负数时不发送）
     #[serde(default)]
     pub top_p: f64,
+    #[serde(default = "llm_client::default_short_reply_threshold")]
+    pub short_reply_threshold: u32,
     /// 是否跳过已有 .txt/.json 描述文件的图片
     #[serde(default)]
     pub skip_existing: bool,
@@ -154,6 +156,10 @@ async fn tag_file(
     let written = async {
         let text = tag_with_llm(client, path, options, throttle).await?;
         let content = format_output(&text, options)?;
+        let warnings: Vec<String> =
+            llm_client::short_reply_warning(llm_client::response_word_count(&text), options.short_reply_threshold)
+                .into_iter()
+                .collect();
         // 回复到达前用户点了取消：不再写盘
         if LLM_CANCELLED.load(Ordering::SeqCst) {
             return Err("已取消".to_string());
@@ -164,15 +170,17 @@ async fn tag_file(
             "txt"
         });
         crate::commands::config_paths::write_file_atomic(&output, content.as_bytes())
+            .map(|()| warnings)
             .map_err(|e| format!("写入失败 {}", e))
     }
     .await;
     let elapsed = llm_client::fmt_elapsed(start.elapsed().as_millis());
     match written {
-        Ok(()) => ItemOutcome::Done {
-            message: format!("[完成] {} ({})", filename, elapsed),
-            warning: false,
-        },
+        Ok(warnings) => ItemOutcome::completed(
+            format!("[完成] {} ({})", filename, elapsed),
+            &warnings,
+            None,
+        ),
         Err(message) => ItemOutcome::Failed {
             filename,
             message: format!("{} ({})", message, elapsed),
@@ -369,6 +377,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn short_replies_warn_and_are_saved_in_all_output_formats() {
+        for (format, simplified) in [("txt", false), ("json", false), ("json", true)] {
+            for (count, threshold) in [(99, 100), (100, 100), (1, 1), (1, 2), (499, 500), (500, 500)] {
+                let root = TempDir::new("llm_tagger_short_reply");
+                let path = root.join("a.png");
+                image::RgbImage::new(2, 2).save(&path).unwrap();
+                let han_count = count.min(49);
+                let text = format!("{}{}", "字".repeat(han_count), "word ".repeat(count - han_count));
+                let server = serve_chat_reply(Some(&text), "stop");
+                let mut opts = options();
+                assert_eq!(opts.short_reply_threshold, 100);
+                opts.short_reply_threshold = threshold as u32;
+                opts.api_endpoint = server.url.clone();
+                opts.output_format = format.into();
+                opts.json_simplified = simplified;
+                let result = tag_file(&client(), &path, &opts, &RequestThrottle::new(-1)).await;
+                match result {
+                    ItemOutcome::Done { message, warning } => {
+                        assert_eq!(warning, count < threshold, "{message}");
+                        assert_eq!(message.contains("疑似截断"), count < threshold, "{message}");
+                        if count < threshold {
+                            assert!(message.contains(&format!("仅 {count} 字/词（不足 {threshold}）")), "{message}");
+                        }
+                    }
+                    ItemOutcome::Failed { message, .. } => panic!("{message}"),
+                }
+                assert_eq!(
+                    std::fs::read_to_string(path.with_extension(format)).unwrap(),
+                    format_output(text.trim(), &opts).unwrap()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn rejects_truncated_filtered_and_refused_responses() {
         let temp = TempDir::new("llm_tagger_responses");
         let path = temp.join("image.wrong_extension");
@@ -445,7 +488,11 @@ mod tests {
             "空 txt 不算已有标签"
         );
         assert!(!root.join("Fail/a_good.png").exists());
+        assert!(root.join("Warn/a_good.png").exists());
         let events = events.lock().unwrap();
+        let warnings: Vec<_> = events.iter().filter(|e| e["status"] == "warning").collect();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0]["message"].as_str().unwrap().contains("疑似截断"));
         let done: Vec<_> = events.iter().filter(|e| e["status"] == "done").collect();
         assert_eq!(done.len(), 1);
         assert_eq!(done[0]["message"], "LLM 打标完成: 成功 2, 失败 2, 共 4");
@@ -454,7 +501,7 @@ mod tests {
             .any(|e| e["message"] == "[跳过] b_skipped.png (已有描述)"));
         assert!(events
             .iter()
-            .filter(|e| e["status"] == "success" || e["status"] == "error")
+            .filter(|e| matches!(e["status"].as_str(), Some("success" | "warning" | "error")))
             .all(|e| e["total"] == 4));
     }
 }

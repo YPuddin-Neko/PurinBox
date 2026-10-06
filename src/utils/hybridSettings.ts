@@ -17,6 +17,7 @@ export interface HybridSettings {
   modelName?: string;
   temperature?: string;
   topP?: string;
+  shortReplyThreshold?: string;
   imageSize?: string;
   imageDetail?: string;
   concurrency?: string;

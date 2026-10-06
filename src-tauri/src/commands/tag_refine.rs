@@ -35,6 +35,8 @@ pub struct TagRefineOptions {
     pub image_size: u32,
     #[serde(default)]
     pub top_p: f64,
+    #[serde(default = "llm_client::default_short_reply_threshold")]
+    pub short_reply_threshold: u32,
     #[serde(default = "default_interval")]
     pub request_interval_ms: i64,
     #[serde(default = "default_concurrency")]
@@ -63,6 +65,9 @@ pub struct TagRefineOptions {
     /// 不指望模型遵守"不要增删"的嘱咐
     #[serde(default)]
     pub preserve_tags: bool,
+    /// 仅 JSON：只补写自然语言字段，不应用回复中的标签更改。
+    #[serde(default)]
+    pub nl_only: bool,
     /// 辅助打标的调优阶段：标签从本地打标的草稿读（见 `hybrid::source_path`），
     /// 草稿读过之后无论成败都删除
     #[serde(default)]
@@ -92,7 +97,15 @@ enum FileResult {
         filename: String,
         original_count: usize,
         refined_count: usize,
+        nl_written: bool,
         changed: bool,
+        warnings: Vec<String>,
+        elapsed_ms: u128,
+    },
+    DescriptionAdded {
+        filename: String,
+        tag_count: usize,
+        word_count: usize,
         warnings: Vec<String>,
         elapsed_ms: u128,
     },
@@ -101,6 +114,7 @@ enum FileResult {
         filename: String,
         original_count: usize,
         word_count: usize,
+        warnings: Vec<String>,
         elapsed_ms: u128,
     },
     Skipped {
@@ -161,9 +175,26 @@ async fn refine_dataset<R: tauri::Runtime>(
 
     let concurrency = std::cmp::max(1, options.concurrency) as usize;
 
+    let action = if options.nl_only {
+        "补充自然语言描述"
+    } else if options.hybrid_mode {
+        "辅助打标（VLM 调优）"
+    } else {
+        "标签细化"
+    };
+    let summary = if options.nl_only {
+        "自然语言描述补充完成"
+    } else if options.hybrid_mode {
+        "VLM 调优完成"
+    } else {
+        "标签细化完成"
+    };
     ProgressEvent::new(
         "info",
-        format!("找到 {} 张图片，{} 线程开始标签细化...", total, concurrency),
+        format!(
+            "找到 {} 张图片，{} 线程开始{}...",
+            total, concurrency, action
+        ),
     )
     .at(0, total)
     .emit(app, EVENT);
@@ -196,7 +227,7 @@ async fn refine_dataset<R: tauri::Runtime>(
                     &throttle,
                 )
                 .await
-                .into_outcome()
+                .into_outcome(options.hybrid_mode)
             }
         },
     )
@@ -220,7 +251,7 @@ async fn refine_dataset<R: tauri::Runtime>(
     };
     let archive =
         ProblemArchive::new(&input_dir, &output_dir, recursive).skip_warnings(same_io_dir);
-    Ok(outcome.finish(app, EVENT, "标签细化完成", &archive))
+    Ok(outcome.finish(app, EVENT, summary, &archive))
 }
 
 /// 辅助打标收尾：本批每张图的草稿都删除，取消后没轮到的图也删（下次运行会重新准备草稿）；
@@ -240,41 +271,71 @@ fn clear_batch_drafts<R: tauri::Runtime>(app: &tauri::AppHandle<R>, images: &[Pa
 }
 
 impl FileResult {
-    fn into_outcome(self) -> ItemOutcome {
+    fn into_outcome(self, hybrid_mode: bool) -> ItemOutcome {
         match self {
             Self::Success {
                 filename,
                 original_count,
                 refined_count,
+                nl_written,
                 changed,
+                warnings,
+                elapsed_ms,
+            } => {
+                let detail = if hybrid_mode {
+                    format!(
+                        "TAG {} → {}{}",
+                        original_count,
+                        refined_count,
+                        if nl_written {
+                            " | 自然语言描述已补充"
+                        } else {
+                            ""
+                        },
+                    )
+                } else {
+                    format!("原TAG {} → 细化后 {}", original_count, refined_count)
+                };
+                ItemOutcome::completed(
+                    format!(
+                        "[完成] {} | {} | {}",
+                        filename, detail, fmt_elapsed(elapsed_ms)
+                    ),
+                    &warnings,
+                    (!changed).then_some(" (未变化)"),
+                )
+            }
+            Self::DescriptionAdded {
+                filename,
+                tag_count,
+                word_count,
                 warnings,
                 elapsed_ms,
             } => ItemOutcome::completed(
                 format!(
-                    "[完成] {} | 原TAG {} → 细化后 {} | {}",
-                    filename,
-                    original_count,
-                    refined_count,
-                    fmt_elapsed(elapsed_ms)
+                    "[完成] {} | 自然语言描述已补充 {} 字/词 | TAG {} | {}",
+                    filename, word_count, tag_count, fmt_elapsed(elapsed_ms),
                 ),
                 &warnings,
-                (!changed).then_some(" (未变化)"),
+                None,
             ),
             Self::Captioned {
                 filename,
                 original_count,
                 word_count,
+                warnings,
                 elapsed_ms,
-            } => ItemOutcome::Done {
-                message: format!(
-                    "[完成] {} | 参考 {} 个标签 → 描述 {} 词 | {}",
+            } => ItemOutcome::completed(
+                format!(
+                    "[完成] {} | 参考 {} 个标签 → 描述 {} 字/词 | {}",
                     filename,
                     original_count,
                     word_count,
                     fmt_elapsed(elapsed_ms)
                 ),
-                warning: false,
-            },
+                &warnings,
+                None,
+            ),
             Self::Skipped { filename, reason } => ItemOutcome::Done {
                 message: format!("[跳过] {} ({})", filename, reason),
                 warning: false,
@@ -507,8 +568,7 @@ fn apply_refined_tags_to_json(data: &mut serde_json::Value, refined: &[String]) 
     append_tags(data, layout.added_to, added);
 }
 
-/// 一次 LLM 调用的产出。两条路径互斥：
-/// 标签路径解析出标签/nl/字段归属；自然语言打标路径只有一整段文本。
+/// 一次 LLM 调用的产出：标签调优、TXT 描述或仅补 JSON 描述。
 enum RefineOutput {
     Tags {
         tags: Vec<String>,
@@ -516,6 +576,7 @@ enum RefineOutput {
         buckets: TagBuckets,
     },
     Caption(String),
+    Description(String),
 }
 
 /// LLM 按字段归类返回的结果。
@@ -913,7 +974,7 @@ async fn refine_single_file(
     let json_data = parsed.filter(|_| is_json);
 
     // 调用 LLM 细化（tags_display：JSON 回退时带字段标签的展示文本）
-    let output = match refine_tags_with_llm(
+    let (output, response_count) = match refine_tags_with_llm(
         client,
         img_path,
         &original_tags,
@@ -931,6 +992,13 @@ async fn refine_single_file(
             }
         }
     };
+    let short_warnings: Vec<String> = if options.hybrid_mode {
+        llm_client::short_reply_warning(response_count, options.short_reply_threshold)
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
     let elapsed_ms = start.elapsed().as_millis();
     let original_count = original_tags.len();
     let output_path = match output_path() {
@@ -944,15 +1012,43 @@ async fn refine_single_file(
     };
 
     let (output_content, done) = match output {
+        RefineOutput::Description(description) => {
+            let Some(mut data) = json_data else {
+                return FileResult::Error {
+                    filename,
+                    message: "仅补自然语言描述需要 JSON 标签".into(),
+                };
+            };
+            set_json_nl(&mut data, &description);
+            set_json_trigger(&mut data, &options.trigger_word);
+            let content = match serde_json::to_string_pretty(&data) {
+                Ok(content) => content,
+                Err(error) => {
+                    return FileResult::Error {
+                        filename,
+                        message: format!("序列化 JSON 失败: {}", error),
+                    }
+                }
+            };
+            let done = FileResult::DescriptionAdded {
+                filename: filename.clone(),
+                tag_count: flatten_json_tags(&data).len(),
+                word_count: llm_client::response_word_count(&description),
+                warnings: short_warnings,
+                elapsed_ms,
+            };
+            (content, done)
+        }
         // 自然语言打标：整段描述直接落盘，标签只是刚才喂给 LLM 的参考
         RefineOutput::Caption(caption) => {
+            let word_count = llm_client::response_word_count(&caption);
             // 触发词由后端保证在最前，不依赖 LLM 遵守提示词
             let caption = ensure_trigger_prefix(&caption, &options.trigger_word);
-            let word_count = caption.split_whitespace().count();
             let done = FileResult::Captioned {
                 filename: filename.clone(),
                 original_count,
                 word_count,
+                warnings: short_warnings,
                 elapsed_ms,
             };
             (caption, done)
@@ -1007,7 +1103,7 @@ async fn refine_single_file(
             } else {
                 written_tags != original_tags
             };
-            let mut warnings = Vec::new();
+            let mut warnings = short_warnings;
             // 比较实际写回的集合，缺段保留、非重排字段不会被误报为移除。
             if !preserving {
                 let original: HashSet<&str> = original_tags.iter().map(String::as_str).collect();
@@ -1021,6 +1117,7 @@ async fn refine_single_file(
                 filename: filename.clone(),
                 original_count,
                 refined_count,
+                nl_written: is_json && nl.is_some(),
                 changed,
                 warnings,
                 elapsed_ms,
@@ -1065,7 +1162,10 @@ async fn refine_tags_with_llm(
     tags_display: Option<&str>,
     options: &TagRefineOptions,
     throttle: &RequestThrottle,
-) -> Result<RefineOutput, String> {
+) -> Result<(RefineOutput, usize), String> {
+    if options.nl_only && (options.file_format != "json" || options.caption_mode) {
+        return Err("仅补自然语言描述需要 JSON 输出，不能同时启用 TXT 自然语言打标".into());
+    }
     let data_url = llm_client::load_image_data_url(img_path, options.image_size).await?;
 
     // JSON 回退时展示文本带字段标签和含义（count: 1girl / appearance: ...），
@@ -1107,13 +1207,31 @@ async fn refine_tags_with_llm(
     // 自然语言打标：回复整段就是标签文件内容，不进标签解析
     if options.caption_mode {
         let caption = llm_client::accept_reply(&reply, "该图片")?;
-        return Ok(RefineOutput::Caption(caption.to_string()));
+        return Ok((
+            RefineOutput::Caption(caption.to_string()),
+            llm_client::response_word_count(caption),
+        ));
     }
 
     // 拒绝语由 parse_refine_response 按段判定：标记格式的 NL 段里，正常句子也可能含拒绝措辞
     let content = llm_client::accept_reply_unscreened(&reply, "该图片")?;
+    if options.nl_only {
+        let description = match split_marker_response(content).nl {
+            Some(description) => description,
+            None => {
+                reject_refusal(content, "该图片")?;
+                return Err("未返回有效的自然语言描述（NL），原标签文件未修改".into());
+            }
+        };
+        reject_refusal(&description, "该图片")?;
+        let count = llm_client::response_word_count(&description);
+        return Ok((RefineOutput::Description(description), count));
+    }
     let (tags, nl, buckets) = parse_refine_response(content, tags)?;
-    Ok(RefineOutput::Tags { tags, nl, buckets })
+    Ok((
+        RefineOutput::Tags { tags, nl, buckets },
+        llm_client::response_word_count(content),
+    ))
 }
 
 /// 把 LLM 的原始回复解析成 (最终标签, nl, 字段归属)。
@@ -1172,11 +1290,12 @@ mod marker_tests {
             filename: "a b.png".into(),
             original_count: 2,
             refined_count: 3,
+            nl_written: false,
             changed: true,
             warnings: vec!["新增: smile".into()],
             elapsed_ms: 1500,
         }
-        .into_outcome();
+        .into_outcome(false);
         match result {
             ItemOutcome::Done { message, warning } => {
                 assert!(warning);
@@ -1191,15 +1310,16 @@ mod marker_tests {
             filename: "a b.png".into(),
             original_count: 2,
             word_count: 4,
+            warnings: Vec::new(),
             elapsed_ms: 500,
         }
-        .into_outcome();
+        .into_outcome(false);
         match result {
             ItemOutcome::Done { message, warning } => {
                 assert!(!warning);
                 assert_eq!(
                     message,
-                    "[完成] a b.png | 参考 2 个标签 → 描述 4 词 | 500ms"
+                    "[完成] a b.png | 参考 2 个标签 → 描述 4 字/词 | 500ms"
                 );
             }
             _ => panic!("caption expected"),
@@ -1752,6 +1872,7 @@ mod e2e_tests {
             temperature: 0.3,
             image_size: 512,
             top_p: 0.0,
+            short_reply_threshold: 100,
             request_interval_ms: -1,
             concurrency: 1,
             recursive: false,
@@ -1760,6 +1881,7 @@ mod e2e_tests {
             caption_mode: false,
             trigger_word: String::new(),
             preserve_tags: false,
+            nl_only: false,
             hybrid_mode: false,
             skip_existing_labels: false,
         }
@@ -1781,6 +1903,336 @@ mod e2e_tests {
         "ai_output": {"count": "1girl", "appearance": "long hair, blue eyes",
                       "tags": ["smile"], "environment": [], "nl": "keep me"}
     }"#;
+
+    fn nl_only_options(endpoint: String) -> TagRefineOptions {
+        let mut value = serde_json::to_value(make_options(endpoint)).unwrap();
+        value["file_format"] = serde_json::json!("json");
+        value["hybrid_mode"] = serde_json::json!(true);
+        value["nl_only"] = serde_json::json!(true);
+        value["prompt"] = serde_json::json!(
+            "Write a natural language description. Do NOT modify tags.\nExisting tags: {tags}\nReply: NL: <description>"
+        );
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[tokio::test]
+    async fn hybrid_nl_only_writes_description_without_changing_either_json_layout() {
+        use crate::commands::batch::capture_events;
+        let full: serde_json::Value = serde_json::from_str(FIXTURE_JSON).unwrap();
+        let mut full_without_nl = full.clone();
+        full_without_nl["ai_output"].as_object_mut().unwrap().remove("nl");
+        for source in [
+            full,
+            full_without_nl,
+            serde_json::json!({"count": "1girl", "appearance": ["long hair"], "tags": ["smile"]}),
+            serde_json::json!({
+                "quality": "newest, safe", "artist": "original artist", "character": "example",
+                "count": "1girl", "appearance": ["long hair", "blue eyes"],
+                "tags": ["smile"], "environment": ["outdoors"], "nl": "old description",
+                "custom": {"keep": true}
+            }),
+        ] {
+            for reply in [
+                "NL: A girl smiles outdoors.",
+                "COUNT: 2boys\nAPPEARANCE: short hair\nTAGS: running\nENVIRONMENT: indoors\nNL: A girl smiles outdoors.",
+            ] {
+                let (root, img) = setup_dir("hybrid_nl_only");
+                std::fs::write(img.with_extension("json"), source.to_string()).unwrap();
+                let prepared = hybrid::prepare_sources(&root, false, "json").unwrap();
+                assert_eq!((prepared.copied, prepared.unlabeled), (1, 0));
+                let server = serve_chat_reply(Some(reply), "stop");
+                let mut options = nl_only_options(server.url.clone());
+                options.input_path = root.to_string_lossy().into_owned();
+                options.output_path = options.input_path.clone();
+                let app = tauri::test::mock_app();
+                let events = capture_events(app.handle(), EVENT);
+                let result = refine_dataset(app.handle(), options, client())
+                    .await
+                    .unwrap();
+                assert_eq!((result.success_count, result.fail_count), (1, 0));
+                let written: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(img.with_extension("json")).unwrap())
+                        .unwrap();
+                let mut expected = source.clone();
+                set_json_nl(&mut expected, "A girl smiles outdoors.");
+                assert_eq!(written, expected, "only nl may change");
+                assert!(!hybrid::draft_path(&img, "json").exists());
+                let request = server
+                    .requests
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+                let body = request.json();
+                let text = body["messages"][0]["content"][0]["text"]
+                    .as_str()
+                    .unwrap();
+                assert!(text.contains("Do NOT modify tags."));
+                assert!(text.contains("long hair"));
+                assert!(!text.contains("{tags}"));
+                let events = events.lock().unwrap();
+                let warnings: Vec<_> = events
+                    .iter()
+                    .filter(|event| event["status"] == "warning")
+                    .collect();
+                assert_eq!(warnings.len(), 1, "{events:?}");
+                assert!(warnings[0]["message"].as_str().unwrap().contains("疑似截断"));
+                assert!(events.iter().all(|event| event["status"] != "error"));
+                let messages: Vec<&str> = events
+                    .iter()
+                    .map(|event| event["message"].as_str().unwrap())
+                    .collect();
+                assert!(
+                    messages.iter().all(|message| !message.contains("细化")),
+                    "{messages:?}"
+                );
+                assert!(
+                    messages.iter().any(|message| message.contains("自然语言描述已补充 4 字/词")),
+                    "{messages:?}"
+                );
+                assert_eq!(
+                    messages.first(),
+                    Some(&"找到 1 张图片，1 线程开始补充自然语言描述...")
+                );
+                assert_eq!(
+                    messages.last(),
+                    Some(&"自然语言描述补充完成: 成功 1, 失败 0, 共 1")
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hybrid_short_replies_warn_but_keep_results_for_txt_and_both_json_layouts() {
+        for (format, source, caption_mode, nl_only) in [
+            ("json", FIXTURE_JSON, false, true),
+            ("json", r#"{"count":"1girl","tags":["smile"]}"#, false, true),
+            ("txt", "1girl, smile", true, false),
+            ("txt", "1girl, smile", false, false),
+            ("json", FIXTURE_JSON, false, false),
+            ("json", r#"{"count":"1girl","tags":["smile"]}"#, false, false),
+        ] {
+            for (count, threshold) in [(99, 100), (100, 100), (1, 1), (1, 2), (499, 500), (500, 500)] {
+                let (root, img) = setup_dir("hybrid_short_reply");
+                std::fs::write(img.with_extension(format), source).unwrap();
+                hybrid::prepare_sources(&root, false, format).unwrap();
+                let han_count = count.min(49);
+                let text = format!("{}{}", "字".repeat(han_count), "word ".repeat(count - han_count));
+                let reply = if nl_only {
+                    format!("NL: {text}")
+                } else {
+                    text.clone()
+                };
+                let server = serve_chat_reply(Some(&reply), "stop");
+                let mut options = make_options(server.url.clone());
+                options.hybrid_mode = true;
+                options.file_format = format.into();
+                options.caption_mode = caption_mode;
+                options.nl_only = nl_only;
+                options.short_reply_threshold = threshold as u32;
+                options.trigger_word = "trigger ".repeat(110);
+                let result = process_single_file(
+                    &client(),
+                    &img,
+                    &root,
+                    &root,
+                    &options,
+                    &RequestThrottle::new(-1),
+                )
+                .await;
+                match result.into_outcome(true) {
+                    ItemOutcome::Done { message, warning } => {
+                        assert_eq!(message.contains("疑似截断"), count < threshold, "{message}");
+                        if count < threshold {
+                            assert!(warning);
+                            assert!(message.contains(&format!("仅 {count} 字/词（不足 {threshold}）")), "{message}");
+                        }
+                    }
+                    ItemOutcome::Failed { message, .. } => panic!("{message}"),
+                }
+                let written = std::fs::read_to_string(img.with_extension(format)).unwrap();
+                if nl_only {
+                    let actual: serde_json::Value = serde_json::from_str(&written).unwrap();
+                    let mut expected: serde_json::Value = serde_json::from_str(source).unwrap();
+                    set_json_nl(&mut expected, text.trim());
+                    set_json_trigger(&mut expected, &options.trigger_word);
+                    assert_eq!(actual, expected);
+                } else if caption_mode {
+                    assert_eq!(
+                        written,
+                        ensure_trigger_prefix(text.trim(), &options.trigger_word)
+                    );
+                } else {
+                    assert!(written.contains('字'));
+                }
+                assert!(!hybrid::draft_path(&img, format).exists());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hybrid_nl_only_missing_description_is_not_success_and_preserves_original() {
+        for source in [FIXTURE_JSON, r#"{"count":"1girl","tags":["smile"],"nl":"old"}"#] {
+            for (reply, reason) in [
+                (Some("TAGS: 1girl, smile"), "stop"),
+                (Some("NL:"), "stop"),
+                (Some("NL: I'm sorry, I cannot describe this image."), "stop"),
+                (Some("NL: A girl"), "length"),
+                (None, "stop"),
+            ] {
+                let (root, img) = setup_dir("hybrid_nl_missing");
+                std::fs::write(img.with_extension("json"), source).unwrap();
+                hybrid::prepare_sources(&root, false, "json").unwrap();
+                let server = serve_chat_reply(reply, reason);
+                let result = process_single_file(
+                    &client(),
+                    &img,
+                    &root,
+                    &root,
+                    &nl_only_options(server.url.clone()),
+                    &RequestThrottle::new(-1),
+                )
+                .await;
+                assert!(
+                    matches!(result, FileResult::Error { .. }),
+                    "{reply:?}: {result:?}"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(img.with_extension("json")).unwrap(),
+                    source
+                );
+                assert!(!hybrid::draft_path(&img, "json").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn old_options_keep_tag_refining_as_default() {
+        let mut value = serde_json::to_value(make_options("unused".into())).unwrap();
+        value.as_object_mut().unwrap().remove("nl_only");
+        value.as_object_mut().unwrap().remove("short_reply_threshold");
+        let options: TagRefineOptions = serde_json::from_value(value).unwrap();
+        assert!(!options.nl_only);
+        assert_eq!(options.short_reply_threshold, 100);
+    }
+
+    #[tokio::test]
+    async fn hybrid_nl_refusals_keep_detection_logs_and_failure_archive() {
+        use crate::commands::batch::capture_events;
+        for source in [FIXTURE_JSON, r#"{"count":"1girl","tags":["smile"],"nl":"old"}"#] {
+            for (reply, reason, expected) in [
+                (
+                    Some("I'm sorry, I cannot describe this image."),
+                    "stop",
+                    "疑似内容安全审核",
+                ),
+                (
+                    Some("NL: I'm sorry, I cannot describe this image."),
+                    "stop",
+                    "疑似内容安全审核",
+                ),
+                (
+                    Some("抱歉，我无法处理这张图片。"),
+                    "stop",
+                    "疑似内容安全审核",
+                ),
+                (
+                    Some("NL: 抱歉，我无法处理这张图片。"),
+                    "stop",
+                    "疑似内容安全审核",
+                ),
+                (None, "content_filter", "LLM 内容安全审核拒绝了该图片"),
+                (None, "safety", "LLM 内容安全审核拒绝了该图片"),
+            ] {
+                let (root, img) = setup_dir("hybrid_nl_refusal");
+                std::fs::write(img.with_extension("json"), source).unwrap();
+                hybrid::prepare_sources(&root, false, "json").unwrap();
+                let server = serve_chat_reply(reply, reason);
+                let mut options = nl_only_options(server.url.clone());
+                options.input_path = root.to_string_lossy().into_owned();
+                options.output_path = options.input_path.clone();
+                let app = tauri::test::mock_app();
+                let events = capture_events(app.handle(), EVENT);
+                let result = refine_dataset(app.handle(), options, client())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    (result.success_count, result.fail_count, result.total),
+                    (0, 1, 1)
+                );
+                assert_eq!(
+                    std::fs::read_to_string(img.with_extension("json")).unwrap(),
+                    source
+                );
+                assert_eq!(
+                    std::fs::read(root.join("Fail/a.png")).unwrap(),
+                    std::fs::read(&img).unwrap()
+                );
+                assert!(!hybrid::draft_path(&img, "json").exists());
+                let events = events.lock().unwrap();
+                let errors: Vec<&str> = events
+                    .iter()
+                    .filter(|event| event["status"] == "error")
+                    .map(|event| event["message"].as_str().unwrap())
+                    .collect();
+                assert_eq!(errors.len(), 1, "{events:?}");
+                assert!(errors[0].contains(expected), "{errors:?}");
+                assert!(!errors[0].contains("未返回有效的自然语言描述"));
+                if let Some(text) = reply {
+                    assert!(errors[0].contains(text.strip_prefix("NL: ").unwrap_or(text)));
+                }
+                assert!(events.iter().all(|event| event["status"] != "success"));
+                assert!(events.iter().all(|event| event["status"] != "warning"));
+                assert_eq!(
+                    events.last().unwrap()["message"],
+                    "自然语言描述补充完成: 成功 0, 失败 1, 共 1"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn nl_only_keeps_explicit_trigger_and_existing_label_skip() {
+        let (root, img) = setup_dir("hybrid_nl_trigger");
+        std::fs::write(img.with_extension("json"), FIXTURE_JSON).unwrap();
+        hybrid::prepare_sources(&root, false, "json").unwrap();
+        let server = serve_chat_reply(Some("NL: A girl smiles."), "stop");
+        let mut options = nl_only_options(server.url.clone());
+        options.trigger_word = "test_trigger".into();
+        let result = process_single_file(
+            &client(),
+            &img,
+            &root,
+            &root,
+            &options,
+            &RequestThrottle::new(-1),
+        )
+        .await;
+        assert!(matches!(result, FileResult::DescriptionAdded { .. }));
+        let written = std::fs::read_to_string(img.with_extension("json")).unwrap();
+        let mut expected: serde_json::Value = serde_json::from_str(FIXTURE_JSON).unwrap();
+        set_json_nl(&mut expected, "A girl smiles.");
+        set_json_trigger(&mut expected, "test_trigger");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&written).unwrap(),
+            expected
+        );
+
+        options.skip_existing_labels = true;
+        options.api_endpoint = "http://127.0.0.1:1".into();
+        let result = process_single_file(
+            &client(),
+            &img,
+            &root,
+            &root,
+            &options,
+            &RequestThrottle::new(-1),
+        )
+        .await;
+        assert!(matches!(result, FileResult::Skipped { .. }));
+        assert_eq!(
+            std::fs::read_to_string(img.with_extension("json")).unwrap(),
+            written
+        );
+    }
 
     #[tokio::test]
     async fn hybrid_intermediate_labels_reach_vlm_and_only_success_is_published() {
@@ -2240,11 +2692,11 @@ mod e2e_tests {
         assert_eq!(
             summary,
             [
-                ("info", "找到 2 张图片，1 线程开始标签细化..."),
+                ("info", "找到 2 张图片，1 线程开始辅助打标（VLM 调优）..."),
                 ("error", "[错误] a.png: 本地标签为空，已跳过 VLM 打标"),
                 ("success", "[跳过] b.png (无可用的本地标签)"),
                 ("info", "已将 1 个失败文件复制到 Fail/ 文件夹"),
-                ("done", "标签细化完成: 成功 1, 失败 1, 共 2"),
+                ("done", "VLM 调优完成: 成功 1, 失败 1, 共 2"),
             ]
         );
     }

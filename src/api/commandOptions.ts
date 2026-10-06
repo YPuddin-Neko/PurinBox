@@ -901,6 +901,8 @@ export interface PrepareHybridTagsOptions {
   recursive?: boolean;
 }
 
+export const SHORT_REPLY_THRESHOLD = { min: 1, max: 500, default: 100 } as const;
+
 /** tagger/llm_tagger.rs → start_llm_tagging */
 export interface LlmTaggerOptions {
   input_path: string;
@@ -916,6 +918,7 @@ export interface LlmTaggerOptions {
   image_size?: number;
   /** 默认 0；≤0 时请求里不带 top_p */
   top_p?: number;
+  short_reply_threshold?: number;
   skip_existing?: boolean;
   /** 默认 'txt' */
   output_format?: TagFileFormat;
@@ -938,6 +941,7 @@ export const LLM_TAGGER_DEFAULTS: Readonly<Omit<LlmTaggerSettings, 'system_promp
   max_tokens: -1,
   image_size: 1024,
   top_p: 0,
+  short_reply_threshold: SHORT_REPLY_THRESHOLD.default,
   skip_existing: false,
   output_format: 'txt',
   json_simplified: false,
@@ -971,6 +975,7 @@ export function buildLlmTaggerOptions(
     max_tokens: int(settings.max_tokens, d.max_tokens, -1, I32_MAX),
     image_size: int(settings.image_size, d.image_size, 1, U32_MAX),
     top_p: num(settings.top_p, d.top_p, 0, 1),
+    short_reply_threshold: int(settings.short_reply_threshold, d.short_reply_threshold, SHORT_REPLY_THRESHOLD.min, SHORT_REPLY_THRESHOLD.max),
     skip_existing: bool(settings.skip_existing, d.skip_existing),
     output_format: outputFormat,
     json_simplified: simplified,
@@ -993,6 +998,7 @@ export interface TagRefineOptions {
   image_size?: number;
   /** 默认 0；≤0 时请求里不带 top_p */
   top_p?: number;
+  short_reply_threshold?: number;
   /** i64，默认 -1；≤0 表示无间隔 */
   request_interval_ms?: number;
   /** 默认 1 */
@@ -1008,6 +1014,8 @@ export interface TagRefineOptions {
   trigger_word?: string;
   /** 仅 JSON：只重新归类，标签集合保持不变 */
   preserve_tags?: boolean;
+  /** 仅 JSON：只补写 nl，未返回描述时报错并保留原文件 */
+  nl_only?: boolean;
   hybrid_mode?: boolean;
   skip_existing_labels?: boolean;
 }

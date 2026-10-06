@@ -50,6 +50,7 @@ await build({
     import DeviceToggle from './src/components/ui/DeviceToggle';
     import ResultTable from './src/components/ui/ResultTable';
     import HybridTaggerTab from './src/components/HybridTaggerTab';
+    import LlmTaggerTab from './src/components/LlmTaggerTab';
     import AestheticPage from './src/pages/AestheticPage';
     import AlphaConvertPage from './src/pages/AlphaConvertPage';
     import BatchRenamePage from './src/pages/BatchRenamePage';
@@ -81,7 +82,7 @@ await build({
     export const pages = {
       AestheticPage, AlphaConvertPage, BatchRenamePage, BlurNoisePage, BucketPreviewPage, CropPage, FileKeeperPage,
       FilterPage, FlipPage, FormatConvertPage, ImageClusterPage, ImageDedupPage, PersonCropPage, PerspectivePage,
-      ResolutionAnalyzePage, ScalePage, SdMetadataPage, UpscalePage, HybridTaggerTab,
+      ResolutionAnalyzePage, ScalePage, SdMetadataPage, UpscalePage, HybridTaggerTab, LlmTaggerTab,
       HomePage, SettingsPage, TaggerPage, TagManagerPage, TagSortPage, DatasetBalancerPage, WorkflowPage,
     };
     export const page = name => { const Page = pages[name]; return render(<MemoryRouter><Page /></MemoryRouter>); };
@@ -180,6 +181,48 @@ test('hybrid trigger word disables native autocomplete but retains the saved val
     assert.match(input, /class="form-input"/);
     assert.match(html, /<label\b[^>]*\bfor="hybrid-trigger-word"/);
     assert.doesNotMatch(input, /\b(?:readonly|disabled)=/);
+  } finally {
+    globalThis.localStorage = storage;
+  }
+});
+
+test('hybrid default prompt matches the restored output format', () => {
+  const storage = globalThis.localStorage;
+  try {
+    for (const outputFormat of ['txt', 'json', 'json_simplified']) {
+      globalThis.localStorage = {
+        getItem: key => key === 'hybrid_tagger_settings_v1' ? JSON.stringify({ outputFormat }) : null,
+        setItem: () => {},
+      };
+      const prompt = lib.page('HybridTaggerTab').match(/<textarea\b[^>]*\bid="hybrid-prompt"[^>]*>([\s\S]*?)<\/textarea>/)?.[1];
+      assert.ok(prompt, outputFormat);
+      assert.equal(prompt.includes('NL: &lt;natural language description&gt;'), outputFormat !== 'txt', outputFormat);
+    }
+  } finally {
+    globalThis.localStorage = storage;
+  }
+});
+
+test('both tagging tabs restore the warning slider below Top P within 1-500', () => {
+  const storage = globalThis.localStorage;
+  try {
+    for (const [saved, expected] of [[null, 100], ['1', 1], ['250', 250], ['500', 500], ['9999', 500], ['bad', 100]]) {
+      globalThis.localStorage = {
+        getItem: key => key === 'hybrid_tagger_settings_v1' ? JSON.stringify({ shortReplyThreshold: saved })
+          : key === 'llm_tagger_short_reply_threshold' ? saved : null,
+        setItem: () => {},
+      };
+      for (const page of ['HybridTaggerTab', 'LlmTaggerTab']) {
+        const html = lib.page(page);
+        const slider = html.match(/<input\b[^>]*\bid="[^"]+-short-reply-threshold"[^>]*>/)?.[0];
+        assert.ok(slider, page);
+        for (const attribute of ['type="range"', 'min="1"', 'max="500"', 'step="1"', `value="${expected}"`]) {
+          assert.ok(slider.includes(attribute), `${page}: ${attribute}`);
+        }
+        assert.ok(html.indexOf('-topP') < html.indexOf('-short-reply-threshold'));
+        assert.match(html, /截断警告阈值/);
+      }
+    }
   } finally {
     globalThis.localStorage = storage;
   }

@@ -28,7 +28,7 @@ import {
   applyTriggerWord,
 } from '../utils/llmPrompts';
 import {
-  IMAGE_DETAILS, buildTaggerOptions, isOneOf,
+  IMAGE_DETAILS, SHORT_REPLY_THRESHOLD, buildTaggerOptions, isOneOf,
   type PrepareHybridTagsOptions, type ProcessResult, type TagRefineOptions,
 } from '../api/commandOptions';
 
@@ -52,6 +52,8 @@ interface PromptPreset {
   captionMode?: boolean;
   /** 只归类不增删：标签集合由后端保证恒定，LLM 的回复只当归属映射 */
   preserveTags?: boolean;
+  /** 仅补 JSON 的自然语言字段，不改标签或字段归属 */
+  nlOnly?: boolean;
 }
 
 // 触发词按项目变，不写死在预设里；提示词用 {trigger} 占位
@@ -79,6 +81,7 @@ export default function HybridTaggerTab() {
   if (savedRef.current === undefined) savedRef.current = loadHybridSettings();
   const saved = savedRef.current;
   const sv = saved ?? {};
+  const initialFormat = isOneOf(OUTPUT_CHOICES, sv.outputFormat) ? sv.outputFormat : 'txt';
 
   // ── 本地打标 ──
   const { models, selectedModel, setSelectedModel, genTh, setGenTh, charTh, setCharTh,
@@ -98,8 +101,10 @@ export default function HybridTaggerTab() {
 
   // ── VLM 调优 ──
   const api = useLlmApiConfig({ initialModelName: sv.modelName });
-  const [prompt, setPrompt] = useState(HYBRID_PROMPT_TXT);
+  const [prompt, setPrompt] = useState(() => defaultPromptFor(initialFormat));
   const [presetId, setPresetId] = useState('builtin_full');
+  const [shortReplyThreshold, setShortReplyThreshold] = useState(() =>
+    storedCount(sv.shortReplyThreshold, SHORT_REPLY_THRESHOLD.default, SHORT_REPLY_THRESHOLD.max));
   const [customPresets, setCustomPresets] = useState<PromptPreset[]>(loadCustomPresets);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [newPresetName, setNewPresetName] = useState('');
@@ -114,7 +119,7 @@ export default function HybridTaggerTab() {
     concurrency: storedCount(sv.concurrency, LLM_SAMPLING_DEFAULTS.concurrency, MAX_CONCURRENCY),
     intervalSec: storedNumber(sv.intervalSec, LLM_SAMPLING_DEFAULTS.intervalSec),
   }));
-  const [outputFormat, setOutputFormat] = useState<TagOutputChoice>(isOneOf(OUTPUT_CHOICES, sv.outputFormat) ? sv.outputFormat : 'txt');
+  const [outputFormat, setOutputFormat] = useState<TagOutputChoice>(initialFormat);
 
   // ── 执行状态 ──
   const [processing, setProcessing] = useState(false);
@@ -144,11 +149,12 @@ export default function HybridTaggerTab() {
       enabledCats: [...enabledCats],
       modelName: api.modelName,
       temperature: String(sampling.temperature), topP: String(sampling.topP), imageSize: String(sampling.imageSize),
+      shortReplyThreshold: String(shortReplyThreshold),
       imageDetail: sampling.imageDetail, concurrency: String(sampling.concurrency), intervalSec: String(sampling.intervalSec),
       outputFormat,
     });
   }, [selectedModel, genTh, charTh, useGpu, replaceUnderscore, escapeParentheses, preferExisting, skipExisting,
-    enabledCats, api.modelName, sampling, outputFormat]);
+    enabledCats, api.modelName, sampling, outputFormat, shortReplyThreshold]);
 
   // 准备与本地打标走 tagger-progress，VLM 调优走 tag-refine-progress，统一进日志与进度条
   useEffect(() => {
@@ -184,7 +190,7 @@ export default function HybridTaggerTab() {
     { id: 'builtin_full', name: isJson ? t('hybridTagger.presetFull') : t('hybridTagger.presetTagsOnly'), prompt: defaultPromptFor(outputFormat) },
     ...(isJson ? [
       { id: 'builtin_sort', name: t('hybridTagger.presetSortOnly'), prompt: HYBRID_PROMPT_SORT_ONLY, preserveTags: true },
-      { id: 'builtin_nl', name: t('hybridTagger.presetNlOnly'), prompt: HYBRID_PROMPT_NL_ONLY },
+      { id: 'builtin_nl', name: t('hybridTagger.presetNlOnly'), prompt: HYBRID_PROMPT_NL_ONLY, nlOnly: true },
     ] : []),
     ...(!isJson ? [{ id: 'builtin_caption', name: t('hybridTagger.presetDetailedCaption'), prompt: HYBRID_PROMPT_DETAILED_CAPTION, captionMode: true }] : []),
   ];
@@ -193,6 +199,7 @@ export default function HybridTaggerTab() {
   const activePreset = allPresets.find(p => p.id === presetId);
   const captionMode = !!activePreset?.captionMode;
   const preserveTags = !!activePreset?.preserveTags;
+  const nlOnly = !!activePreset?.nlOnly;
 
   const applyPreset = (id: string) => {
     setPresetId(id);
@@ -212,8 +219,8 @@ export default function HybridTaggerTab() {
     const id = existing ? existing.id : `u_${Date.now()}`;
     // captionMode 随当前预设继承：基于「详细自然语言打标」改的提示词，产出的仍是整段描述
     persistPresets(existing
-      ? customPresets.map(p => (p.id === existing.id ? { ...p, prompt, captionMode, preserveTags } : p))
-      : [...customPresets, { id, name, prompt, captionMode, preserveTags }]);
+      ? customPresets.map(p => (p.id === existing.id ? { ...p, prompt, captionMode, preserveTags, nlOnly } : p))
+      : [...customPresets, { id, name, prompt, captionMode, preserveTags, nlOnly }]);
     setPresetId(id);
     setShowSaveModal(false);
     setNewPresetName('');
@@ -315,6 +322,7 @@ export default function HybridTaggerTab() {
           image_size: sampling.imageSize,
           image_detail: sampling.imageDetail,
           top_p: sampling.topP,
+          short_reply_threshold: shortReplyThreshold,
           request_interval_ms: toIntervalMs(sampling.intervalSec),
           concurrency: sampling.concurrency,
           recursive,
@@ -327,6 +335,7 @@ export default function HybridTaggerTab() {
           trigger_word: triggerWord,
           // 只归类不增删：标签集合由后端保证恒定（仅 JSON 有字段结构）
           preserve_tags: isJson && preserveTags,
+          nl_only: isJson && nlOnly,
           hybrid_mode: true,
           skip_existing_labels: preferExisting && skipExisting,
         } satisfies TagRefineOptions,
@@ -440,7 +449,8 @@ export default function HybridTaggerTab() {
               style={{ fontSize: 11, fontFamily: 'monospace', lineHeight: 1.6, resize: 'vertical', flex: 1, minHeight: 200 }} />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            <LlmSamplingFields layout="compact" image maxConcurrency={MAX_CONCURRENCY} value={sampling} onChange={setSampling} extra={
+            <LlmSamplingFields layout="compact" image maxConcurrency={MAX_CONCURRENCY} value={sampling} onChange={setSampling}
+              shortReplyWarning={{ value: shortReplyThreshold, onChange: setShortReplyThreshold }} extra={
               <div style={{ flex: 1, minWidth: 0 }}>
                 <label className="form-label">{t('hybridTagger.outputFormat')}</label>
                 <CustomSelect

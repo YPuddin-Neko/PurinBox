@@ -120,6 +120,7 @@ test('VLM tagging uses the page defaults, omits top_p unless set, and fills prom
   assert.equal(options.user_prompt, prompts.user);
   assert.equal(options.temperature, 0.2);
   assert.equal(options.top_p, 0);
+  assert.equal(options.short_reply_threshold, 100);
   assert.equal(options.request_interval_ms, -1);
   assert.equal(options.concurrency, 1);
   assert.equal(api.buildLlmTaggerOptions(io, llmApi, { system_prompt: '' }).system_prompt, '');
@@ -128,6 +129,9 @@ test('VLM tagging uses the page defaults, omits top_p unless set, and fills prom
   assert.equal(odd.concurrency, 1);
   assert.equal(odd.image_size, 1024);
   assert.equal(odd.image_detail, '');
+  for (const [value, expected] of [[1, 1], [250, 250], [500, 500], [0, 1], [501, 500], [NaN, 100]]) {
+    assert.equal(api.buildLlmTaggerOptions(io, llmApi, { short_reply_threshold: value }).short_reply_threshold, expected);
+  }
 });
 
 test('rename only sends a seed when shuffling', () => {

@@ -12,9 +12,11 @@ import Switch from './ui/Switch';
 import { useLlmBatchRun } from '../hooks/useLlmBatchRun';
 import { useTaggerJsonSimplified } from '../hooks/useTaggerJsonSimplified';
 import { getDefaultPrompts, switchDefaultPrompts } from '../utils/llmPrompts';
-import { LLM_TAGGER_DEFAULTS, buildLlmTaggerOptions, type TagFileFormat } from '../api/commandOptions';
+import { LLM_TAGGER_DEFAULTS, SHORT_REPLY_THRESHOLD, buildLlmTaggerOptions, type TagFileFormat } from '../api/commandOptions';
+import { storedCount } from '../utils/hybridSettings';
 
 const ICON = { width: 13, height: 13, color: 'var(--color-text-tertiary)' } as const;
+const SHORT_REPLY_KEY = 'llm_tagger_short_reply_threshold';
 
 export default function LlmTaggerTab() {
   const { t } = useTranslation();
@@ -23,12 +25,22 @@ export default function LlmTaggerTab() {
   const [recursive, setRecursive] = useState(false);
   const [sampling, setSampling] = useState<LlmSampling>({ ...LLM_SAMPLING_DEFAULTS, temperature: LLM_TAGGER_DEFAULTS.temperature });
   const [maxTokens, setMaxTokens] = useState(LLM_TAGGER_DEFAULTS.max_tokens);
+  const [shortReplyThreshold, setShortReplyThreshold] = useState(() => {
+    try {
+      return storedCount(localStorage.getItem(SHORT_REPLY_KEY), SHORT_REPLY_THRESHOLD.default, SHORT_REPLY_THRESHOLD.max);
+    } catch {
+      return SHORT_REPLY_THRESHOLD.default;
+    }
+  });
   const [skipExisting, setSkipExisting] = useState(false);
   const [outputFormat, setOutputFormat] = useState<TagFileFormat>('txt');
   const [jsonSimplified, setJsonSimplified] = useTaggerJsonSimplified();
   const [prompts, setPrompts] = useState(() => getDefaultPrompts('txt', false));
   const run = useLlmBatchRun({ event: 'llm-tagger-progress', taskId: 'llm-tagger' });
   const { api } = run;
+  useEffect(() => {
+    try { localStorage.setItem(SHORT_REPLY_KEY, String(shortReplyThreshold)); } catch { /* 配额满等，忽略 */ }
+  }, [shortReplyThreshold]);
 
   // 输出格式变化（包括在 Tagger 打标子页改了简化格式）时，仍是默认值的提示词换成新格式的默认值
   useEffect(() => {
@@ -55,6 +67,7 @@ export default function LlmTaggerTab() {
           image_size: sampling.imageSize,
           image_detail: sampling.imageDetail,
           top_p: sampling.topP,
+          short_reply_threshold: shortReplyThreshold,
           skip_existing: skipExisting,
           output_format: outputFormat,
           json_simplified: jsonSimplified,
@@ -94,6 +107,7 @@ export default function LlmTaggerTab() {
           <div className="tool-panel-header"><span className="tool-panel-title">{t('llmTagger.modelSettings')}</span></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
             <LlmSamplingFields value={sampling} onChange={setSampling} image samplingFirst extra={maxTokensField}
+              shortReplyWarning={{ value: shortReplyThreshold, onChange: setShortReplyThreshold }}
               imageSizePlaceholder={t('llmTagger.imageSizePlaceholder')} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <Switch id={`${ids}-skip`} checked={skipExisting} onChange={setSkipExisting} />

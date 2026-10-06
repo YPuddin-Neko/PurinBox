@@ -746,6 +746,8 @@ const en = {
     fetchFail: 'Fetch failed',
     modelPlaceholder: 'Model name...',
     temperature: 'Temperature',
+    shortReplyThreshold: 'Truncation warning threshold',
+    shortReplyThresholdTip: 'Warn below this length; count Chinese characters and English words',
     interval: 'Interval (s)',
     intervalTip: '-1 means no interval',
     concurrencyTip: 'Files processed simultaneously',

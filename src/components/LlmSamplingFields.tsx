@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { Focus, ImageIcon, Layers, Thermometer, Timer } from 'lucide-react';
 import NumberInput from './ui/NumberInput';
 import CustomSelect from './CustomSelect';
-import { IMAGE_DETAILS, isOneOf, type ImageDetail } from '../api/commandOptions';
+import { IMAGE_DETAILS, SHORT_REPLY_THRESHOLD, isOneOf, type ImageDetail } from '../api/commandOptions';
 import { IMAGE_DETAIL_OPTIONS } from '../utils/imageDetail';
 
 /** LLM 请求参数的界面值（请求间隔按秒，负数表示无间隔） */
@@ -44,6 +44,7 @@ interface Props {
   maxConcurrency?: number;
   /** 图片发送尺寸输入框清空时的占位文字 */
   imageSizePlaceholder?: string;
+  shortReplyWarning?: { value: number; onChange: (value: number) => void };
 }
 
 const ICON = { width: 13, height: 13, color: 'var(--color-text-tertiary)' } as const;
@@ -56,7 +57,7 @@ const COMPACT_ROW = { display: 'flex', gap: 'var(--space-2)' } as const;
 
 /** LLM 请求的间隔、并发、温度、Top P，以及可选的图片发送尺寸与图像细节 */
 export default function LlmSamplingFields({
-  value, onChange, layout = 'panel', image = false, samplingFirst = false, extra, maxConcurrency = 32, imageSizePlaceholder,
+  value, onChange, layout = 'panel', image = false, samplingFirst = false, extra, maxConcurrency = 32, imageSizePlaceholder, shortReplyWarning,
 }: Props) {
   const { t } = useTranslation();
   const id = useId();
@@ -84,6 +85,17 @@ export default function LlmSamplingFields({
       onChange={e => set(key)(Number(e.target.value))} style={RANGE} />
   );
   const temperatureLabel = <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Thermometer style={ICON} /> {t('llmApi.temperature')}</span>;
+  const shortReplyField = shortReplyWarning && (
+    <div style={layout === 'panel' ? { marginTop: 'var(--space-3)' } : undefined}>
+      <label className="form-label" htmlFor={`${id}-short-reply-threshold`} title={t('llmApi.shortReplyThresholdTip')}
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+        <span>{t('llmApi.shortReplyThreshold')}</span>
+        <span style={VALUE}>{shortReplyWarning.value}</span>
+      </label>
+      <input id={`${id}-short-reply-threshold`} type="range" min={SHORT_REPLY_THRESHOLD.min} max={SHORT_REPLY_THRESHOLD.max}
+        step={1} value={shortReplyWarning.value} onChange={e => shortReplyWarning.onChange(Number(e.target.value))} style={RANGE} />
+    </div>
+  );
 
   if (layout === 'compact') {
     return <>
@@ -101,6 +113,7 @@ export default function LlmSamplingFields({
         </label>
         {range('topP', 1)}
       </div>
+      {shortReplyField}
       <div style={COMPACT_ROW}>
         {image && (
           <div style={{ flex: 1 }}>
@@ -164,6 +177,7 @@ export default function LlmSamplingFields({
           <span style={VALUE}>{value.topP}</span>
         </label>
         {range('topP', 1)}
+        {shortReplyField}
       </div>
     </div>
   );
