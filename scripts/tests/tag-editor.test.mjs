@@ -264,6 +264,14 @@ test('sampling fields keep the interval tooltip and only use existing keys', () 
   }
 });
 
+test('the panel warning slider follows the sampling row in the left half column', () => {
+  const html = m.sampling({ samplingFirst: true, image: true, shortReplyWarning: { value: 30, onChange: () => {} } });
+  assert.match(html, /<\/div><\/div><div class="form-group" style="width:calc\(\(100% - var\(--space-3\)\) \/ 2\)"><label[^>]*short-reply-threshold/);
+  assert.match(html, /short-reply-threshold" type="range" min="1" max="500" step="1"/);
+  const compact = m.sampling({ layout: 'compact', shortReplyWarning: { value: 30, onChange: () => {} } });
+  assert.ok(!compact.includes('width:calc('));
+});
+
 test('the preview pane hides navigation until images are loaded', () => {
   assert.doesNotMatch(m.preview({}), /tag-preview-nav/);
   const html = m.preview({ total: 3, index: 0, path: '/x/a.png', filename: 'a.png' });

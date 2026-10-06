@@ -86,7 +86,8 @@ export default function LlmSamplingFields({
   );
   const temperatureLabel = <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}><Thermometer style={ICON} /> {t('llmApi.temperature')}</span>;
   const shortReplyField = shortReplyWarning && (
-    <div style={layout === 'panel' ? { marginTop: 'var(--space-3)' } : undefined}>
+    <div className={layout === 'panel' ? 'form-group' : undefined}
+      style={layout === 'panel' ? { width: 'calc((100% - var(--space-3)) / 2)' } : undefined}>
       <label className="form-label" htmlFor={`${id}-short-reply-threshold`} title={t('llmApi.shortReplyThresholdTip')}
         style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
         <span>{t('llmApi.shortReplyThreshold')}</span>
@@ -177,7 +178,6 @@ export default function LlmSamplingFields({
           <span style={VALUE}>{value.topP}</span>
         </label>
         {range('topP', 1)}
-        {shortReplyField}
       </div>
     </div>
   );
@@ -200,6 +200,6 @@ export default function LlmSamplingFields({
   );
 
   return samplingFirst
-    ? <>{samplingRow}{imageRow}{requestRow}</>
-    : <>{requestRow}{samplingRow}{imageRow}</>;
+    ? <>{samplingRow}{shortReplyField}{imageRow}{requestRow}</>
+    : <>{requestRow}{samplingRow}{shortReplyField}{imageRow}</>;
 }

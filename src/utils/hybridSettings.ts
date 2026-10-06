@@ -23,6 +23,8 @@ export interface HybridSettings {
   concurrency?: string;
   intervalSec?: string;
   outputFormat?: TagOutputChoice;
+  presetId?: string;
+  prompt?: string;
 }
 
 /** 没有保存过设置（或内容无法解析）时返回 null */

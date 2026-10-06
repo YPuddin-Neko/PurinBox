@@ -24,9 +24,10 @@ import { useLlmApiConfig } from '../hooks/useLlmApiConfig';
 import { isTaggerCategory, splitOutputFormat, toIntervalMs, type TagOutputChoice } from '../utils/taggerOptions';
 import { initialSkipExisting, loadHybridSettings, saveHybridSettings, storedCount, storedNumber } from '../utils/hybridSettings';
 import {
-  HYBRID_PROMPT_DETAILED_CAPTION, HYBRID_PROMPT_JSON, HYBRID_PROMPT_NL_ONLY, HYBRID_PROMPT_SORT_ONLY, HYBRID_PROMPT_TXT,
-  applyTriggerWord,
-} from '../utils/llmPrompts';
+  applyHybridPreset, compatibleHybridFormat, defaultHybridPrompt, hybridBuiltinPreset, parseHybridPresets,
+  restoreHybridSelection, saveHybridPreset, type HybridPromptPreset, type HybridVlmValues,
+} from '../utils/hybridPresets';
+import { HYBRID_PROMPT_JSON, HYBRID_PROMPT_TXT, applyTriggerWord } from '../utils/llmPrompts';
 import {
   IMAGE_DETAILS, SHORT_REPLY_THRESHOLD, buildTaggerOptions, isOneOf,
   type PrepareHybridTagsOptions, type ProcessResult, type TagRefineOptions,
@@ -42,29 +43,12 @@ const U32_MAX = 0xffffffff;
 /** 各阶段的取消命令：准备和本地打标共用打标进程 */
 const cancelCommandFor = (phase: Phase) => phase === 'refining' ? 'cancel_tag_refining' : 'force_cancel_tagging';
 
-const defaultPromptFor = (format: TagOutputChoice) => format === 'txt' ? HYBRID_PROMPT_TXT : HYBRID_PROMPT_JSON;
-
-interface PromptPreset {
-  id: string;
-  name: string;
-  prompt: string;
-  /** 产出整段自然语言描述（直接落盘为 txt 内容），不是标签 */
-  captionMode?: boolean;
-  /** 只归类不增删：标签集合由后端保证恒定，LLM 的回复只当归属映射 */
-  preserveTags?: boolean;
-  /** 仅补 JSON 的自然语言字段，不改标签或字段归属 */
-  nlOnly?: boolean;
-}
-
-// 触发词按项目变，不写死在预设里；提示词用 {trigger} 占位
 const TRIGGER_WORD_KEY = 'hybrid_trigger_word';
 const CUSTOM_PRESETS_KEY = 'hybrid_prompt_presets';
 
-const loadCustomPresets = (): PromptPreset[] => {
+const loadCustomPresets = (): HybridPromptPreset[] => {
   try {
-    const raw = localStorage.getItem(CUSTOM_PRESETS_KEY);
-    const list = raw ? JSON.parse(raw) : [];
-    return Array.isArray(list) ? list.filter((p: PromptPreset) => p?.id && p?.name) : [];
+    return parseHybridPresets(localStorage.getItem(CUSTOM_PRESETS_KEY));
   } catch { return []; }
 };
 
@@ -81,7 +65,9 @@ export default function HybridTaggerTab() {
   if (savedRef.current === undefined) savedRef.current = loadHybridSettings();
   const saved = savedRef.current;
   const sv = saved ?? {};
-  const initialFormat = isOneOf(OUTPUT_CHOICES, sv.outputFormat) ? sv.outputFormat : 'txt';
+  const [customPresets, setCustomPresets] = useState<HybridPromptPreset[]>(loadCustomPresets);
+  const [restored] = useState(() => restoreHybridSelection(sv, customPresets));
+  const initialFormat = restored.outputFormat;
 
   // ── 本地打标 ──
   const { models, selectedModel, setSelectedModel, genTh, setGenTh, charTh, setCharTh,
@@ -101,16 +87,18 @@ export default function HybridTaggerTab() {
 
   // ── VLM 调优 ──
   const api = useLlmApiConfig({ initialModelName: sv.modelName });
-  const [prompt, setPrompt] = useState(() => defaultPromptFor(initialFormat));
-  const [presetId, setPresetId] = useState('builtin_full');
+  const [prompt, setPrompt] = useState(restored.prompt);
+  const [presetId, setPresetId] = useState(restored.presetId);
   const [shortReplyThreshold, setShortReplyThreshold] = useState(() =>
     storedCount(sv.shortReplyThreshold, SHORT_REPLY_THRESHOLD.default, SHORT_REPLY_THRESHOLD.max));
-  const [customPresets, setCustomPresets] = useState<PromptPreset[]>(loadCustomPresets);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [newPresetName, setNewPresetName] = useState('');
   const [triggerWord, setTriggerWord] = useState(() => {
     try { return localStorage.getItem(TRIGGER_WORD_KEY) || ''; } catch { return ''; }
   });
+  useEffect(() => {
+    try { localStorage.setItem(TRIGGER_WORD_KEY, triggerWord); } catch { /* 配额满等，忽略 */ }
+  }, [triggerWord]);
   const [sampling, setSampling] = useState<LlmSampling>(() => ({
     temperature: storedNumber(sv.temperature, 0.3),
     topP: storedNumber(sv.topP, LLM_SAMPLING_DEFAULTS.topP),
@@ -151,10 +139,10 @@ export default function HybridTaggerTab() {
       temperature: String(sampling.temperature), topP: String(sampling.topP), imageSize: String(sampling.imageSize),
       shortReplyThreshold: String(shortReplyThreshold),
       imageDetail: sampling.imageDetail, concurrency: String(sampling.concurrency), intervalSec: String(sampling.intervalSec),
-      outputFormat,
+      outputFormat, presetId, prompt,
     });
   }, [selectedModel, genTh, charTh, useGpu, replaceUnderscore, escapeParentheses, preferExisting, skipExisting,
-    enabledCats, api.modelName, sampling, outputFormat, shortReplyThreshold]);
+    enabledCats, api.modelName, sampling, outputFormat, shortReplyThreshold, presetId, prompt]);
 
   // 准备与本地打标走 tagger-progress，VLM 调优走 tag-refine-progress，统一进日志与进度条
   useEffect(() => {
@@ -186,13 +174,14 @@ export default function HybridTaggerTab() {
 
   // 内置预设随输出格式变化：完整调优在 txt 下只调标签（txt 没有 nl 字段），JSON 下兼补 nl；
   // 归类字段与仅补 nl 依赖 JSON 的字段结构，详细自然语言打标只用于 txt
-  const builtinPresets: PromptPreset[] = [
-    { id: 'builtin_full', name: isJson ? t('hybridTagger.presetFull') : t('hybridTagger.presetTagsOnly'), prompt: defaultPromptFor(outputFormat) },
+  const builtin = (id: string, name: string): HybridPromptPreset => ({ ...hybridBuiltinPreset(id, outputFormat)!, name });
+  const builtinPresets: HybridPromptPreset[] = [
+    builtin('builtin_full', isJson ? t('hybridTagger.presetFull') : t('hybridTagger.presetTagsOnly')),
     ...(isJson ? [
-      { id: 'builtin_sort', name: t('hybridTagger.presetSortOnly'), prompt: HYBRID_PROMPT_SORT_ONLY, preserveTags: true },
-      { id: 'builtin_nl', name: t('hybridTagger.presetNlOnly'), prompt: HYBRID_PROMPT_NL_ONLY, nlOnly: true },
+      builtin('builtin_sort', t('hybridTagger.presetSortOnly')),
+      builtin('builtin_nl', t('hybridTagger.presetNlOnly')),
     ] : []),
-    ...(!isJson ? [{ id: 'builtin_caption', name: t('hybridTagger.presetDetailedCaption'), prompt: HYBRID_PROMPT_DETAILED_CAPTION, captionMode: true }] : []),
+    ...(!isJson ? [builtin('builtin_caption', t('hybridTagger.presetDetailedCaption'))] : []),
   ];
   const allPresets = [...builtinPresets, ...customPresets];
   const isCustomPreset = customPresets.some(p => p.id === presetId);
@@ -201,51 +190,64 @@ export default function HybridTaggerTab() {
   const preserveTags = !!activePreset?.preserveTags;
   const nlOnly = !!activePreset?.nlOnly;
 
+  const vlmValues: HybridVlmValues = { prompt, triggerWord, shortReplyThreshold, sampling, outputFormat, skipExisting };
+
   const applyPreset = (id: string) => {
-    setPresetId(id);
+    if (processing) return;
     const preset = allPresets.find(p => p.id === id);
-    if (preset) setPrompt(preset.prompt);
+    if (!preset) return;
+    const next = applyHybridPreset(preset, vlmValues, preferExisting);
+    setPresetId(id);
+    setPrompt(next.prompt);
+    setTriggerWord(next.triggerWord);
+    setShortReplyThreshold(next.shortReplyThreshold);
+    setSampling(next.sampling);
+    setOutputFormat(next.outputFormat);
+    setSkipExisting(next.skipExisting);
   };
 
-  const persistPresets = (list: PromptPreset[]) => {
-    setCustomPresets(list);
-    try { localStorage.setItem(CUSTOM_PRESETS_KEY, JSON.stringify(list)); } catch { /* 配额满等，忽略 */ }
+  const persistPresets = (list: HybridPromptPreset[]) => {
+    try {
+      localStorage.setItem(CUSTOM_PRESETS_KEY, JSON.stringify(list));
+      setCustomPresets(list);
+      return true;
+    } catch (error) {
+      taskLogs.appendCatchError(errorText(error), t('pages.errorPrefix'));
+      return false;
+    }
   };
 
   const handleSavePreset = () => {
     const name = newPresetName.trim();
-    if (!name) return;
+    if (!name || processing) return;
     const existing = customPresets.find(p => p.name === name);
     const id = existing ? existing.id : `u_${Date.now()}`;
-    // captionMode 随当前预设继承：基于「详细自然语言打标」改的提示词，产出的仍是整段描述
-    persistPresets(existing
-      ? customPresets.map(p => (p.id === existing.id ? { ...p, prompt, captionMode, preserveTags, nlOnly } : p))
-      : [...customPresets, { id, name, prompt, captionMode, preserveTags, nlOnly }]);
+    if (!persistPresets(saveHybridPreset(customPresets, name, id, vlmValues, { captionMode, preserveTags, nlOnly }))) return;
     setPresetId(id);
     setShowSaveModal(false);
     setNewPresetName('');
   };
 
   const handleDeletePreset = () => {
-    persistPresets(customPresets.filter(p => p.id !== presetId));
+    if (processing) return;
+    if (!persistPresets(customPresets.filter(p => p.id !== presetId))) return;
     setPresetId('builtin_full');
-    // 编辑框内容保留不动：删错了立刻再存一次就回来了，省一个确认弹窗
+    setPrompt(defaultHybridPrompt(outputFormat));
   };
 
   // 切换输出格式时联动默认提示词（JSON 模式要求标记格式以补写 nl 字段）；
-  // 用户改过提示词或选了自定义预设则不动
+  // 格式与模式兼容时保留用户编辑的提示词。
   const handleFormatChange = (value: string) => {
-    if (!isOneOf(OUTPUT_CHOICES, value)) return;
+    if (processing || !isOneOf(OUTPUT_CHOICES, value)) return;
     setOutputFormat(value);
-    // 只适用于某一种格式的内置预设，切到另一种格式时退回完整调优
-    if (((presetId === 'builtin_nl' || presetId === 'builtin_sort') && value === 'txt')
-      || (presetId === 'builtin_caption' && value !== 'txt')) {
+    // 内置和自定义预设都不能把 JSON 专用模式用于 TXT，反之亦然。
+    if (activePreset && compatibleHybridFormat(activePreset, value) !== value) {
       setPresetId('builtin_full');
-      setPrompt(defaultPromptFor(value));
+      setPrompt(defaultHybridPrompt(value));
       return;
     }
     if (presetId === 'builtin_full') {
-      setPrompt(prev => prev === HYBRID_PROMPT_TXT || prev === HYBRID_PROMPT_JSON ? defaultPromptFor(value) : prev);
+      setPrompt(prev => prev === HYBRID_PROMPT_TXT || prev === HYBRID_PROMPT_JSON ? defaultHybridPrompt(value) : prev);
     }
   };
 
@@ -477,10 +479,7 @@ export default function HybridTaggerTab() {
                   <Hash style={{ width: 12, height: 12, color: 'var(--color-text-tertiary)' }} /> {t('hybridTagger.triggerWord')}
                 </label>
                 <input id="hybrid-trigger-word" className="form-input" autoComplete="off" value={triggerWord}
-                  onChange={e => {
-                    setTriggerWord(e.target.value);
-                    try { localStorage.setItem(TRIGGER_WORD_KEY, e.target.value); } catch { /* 配额满等，忽略 */ }
-                  }} />
+                  onChange={e => setTriggerWord(e.target.value)} />
               </div>
               <span title={preferExisting ? undefined : t('hybridTagger.skipExistingRequiresReuse')} style={{ display: 'flex', alignItems: 'center', minHeight: 34 }}>
                 <Checkbox checked={skipExisting} onChange={setSkipExisting} disabled={processing || !preferExisting} size={14} label={t('hybridTagger.skipExisting')} />
