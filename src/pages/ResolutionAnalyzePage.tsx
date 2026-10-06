@@ -92,16 +92,20 @@ export default function ResolutionAnalyzePage() {
   const [aggExporting, setAggExporting] = useState(false);
   const [resultExporting, setResultExporting] = useState(false);
   const [enableAggExport, setEnableAggExport] = useState(false);
-  /** 多成员组的目标分辨率选择（key = 组序号，value = "宽x高"） */
+  /** 各组的目标分辨率选择（key = 组序号，value = "宽x高"） */
   const [clusterTargets, setClusterTargets] = useState<Record<number, string>>({});
 
   const clusters = useMemo(
     () => (result ? buildClusters(result.groups, arTolerance, alignStep) : []),
     [result, arTolerance, alignStep],
   );
-  const multiClusters = useMemo(() => clusters.filter(c => c.members.length > 1), [clusters]);
   const rareGroups = useMemo(() => (result ? result.groups.filter(g => g.is_rare) : []), [result]);
-  const singleClusters = useMemo(() => clusters.filter(c => c.members.length === 1), [clusters]);
+  const exportGroups = useMemo(() => clusters.map((cluster, i) => ({
+    cluster,
+    target: clusterTargets[i] ?? (cluster.members.length === 1
+      ? resKey(cluster.members[0].width, cluster.members[0].height)
+      : resKey(cluster.computed.w, cluster.computed.h)),
+  })), [clusters, clusterTargets]);
 
   useEffect(() => {
     try { localStorage.setItem(ALIGN_STEP_KEY, String(alignStep)); } catch { /* 忽略 */ }
@@ -149,16 +153,10 @@ export default function ResolutionAnalyzePage() {
     if (!result || !inputPath || !aggExportPath || clusters.length === 0 || task.processing) return;
     setAggExporting(true);
     try {
-      const plan: AggregatePlanEntry[] = [
-        ...multiClusters.map((c, i) => ({
-          folder: clusterTargets[i] ?? resKey(c.computed.w, c.computed.h),
-          resolutions: c.members.map((m): [number, number] => [m.width, m.height]),
-        })),
-        ...singleClusters.map(c => ({
-          folder: resKey(c.members[0].width, c.members[0].height),
-          resolutions: [[c.members[0].width, c.members[0].height] as [number, number]],
-        })),
-      ];
+      const plan: AggregatePlanEntry[] = exportGroups.map(({ cluster, target }) => ({
+        folder: target,
+        resolutions: cluster.members.map((m): [number, number] => [m.width, m.height]),
+      }));
       const msg = await task.run({
         taskName: t('resolutionAnalyze.aggregationTitle'),
         startLog: t('resolutionAnalyze.aggregationTitle'),
@@ -368,80 +366,75 @@ export default function ResolutionAnalyzePage() {
           <div className="tool-panel-header">
             <span className="tool-panel-title">{t('resolutionAnalyze.aggregationTitle')}</span>
             <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>
-              {multiClusters.length > 0
-                ? t('resolutionAnalyze.groupCount', { n: multiClusters.length })
-                : t('resolutionAnalyze.noSimilarGroups')}
+              {t('resolutionAnalyze.groupCount', { n: clusters.length })}
             </span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
             <p style={{ fontSize: 11, color: 'var(--color-text-tertiary)', margin: 0, lineHeight: 1.6 }}>
               {t('resolutionAnalyze.aggregationDesc')}
-              {singleClusters.length > 0 && ` ${t('resolutionAnalyze.singlesNote', { n: singleClusters.length })}`}
             </p>
 
-            {multiClusters.length > 0 && (
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
-                gap: 8,
-              }}>
-                {multiClusters.map((c, i) => {
-                  const computedKey = resKey(c.computed.w, c.computed.h);
-                  const memberOptions = c.members.map(m => ({
-                    value: resKey(m.width, m.height),
-                    label: t('resolutionAnalyze.memberOption', { res: `${m.width}×${m.height}`, count: m.count }),
-                  }));
-                  const options = memberOptions.some(o => o.value === computedKey)
-                    ? memberOptions
-                    : [{ value: computedKey, label: t('resolutionAnalyze.recommendedComputed', { res: `${c.computed.w}×${c.computed.h}` }) }, ...memberOptions];
-                  return (
-                    <div key={`${computedKey}-${i}`} style={{
-                      padding: '8px 10px',
-                      borderRadius: 'var(--radius-sm)',
-                      border: '1px solid var(--color-border)',
-                      background: 'var(--color-bg-input)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 6,
-                    }}>
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-                          {t('resolutionAnalyze.groupLabel', { n: i + 1 })}
-                        </span>
-                        <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
-                          {t('resolutionAnalyze.totalInGroup', { count: c.totalCount })}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                        {c.members.map(m => (
-                          <span key={resKey(m.width, m.height)} style={{
-                            fontSize: 10, padding: '1px 6px', borderRadius: 4,
-                            background: 'var(--color-bg-secondary)',
-                            border: '1px solid var(--color-border)',
-                            color: 'var(--color-text-secondary)',
-                            fontFamily: 'monospace',
-                          }}>
-                            {m.width}×{m.height} · {m.count}
-                          </span>
-                        ))}
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>
-                          {t('resolutionAnalyze.targetResolution')}
-                        </span>
-                        <CustomSelect
-                          compact
-                          style={{ flex: 1, minWidth: 0 }}
-                          value={clusterTargets[i] ?? computedKey}
-                          options={options}
-                          onChange={(v) => setClusterTargets(prev => ({ ...prev, [i]: v }))}
-                        />
-                      </div>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
+              gap: 8,
+            }}>
+              {exportGroups.map(({ cluster: c, target }, i) => {
+                const computedKey = resKey(c.computed.w, c.computed.h);
+                const memberOptions = c.members.map(m => ({
+                  value: resKey(m.width, m.height),
+                  label: t('resolutionAnalyze.memberOption', { res: `${m.width}×${m.height}`, count: m.count }),
+                }));
+                const options = memberOptions.some(o => o.value === computedKey)
+                  ? memberOptions
+                  : [{ value: computedKey, label: t('resolutionAnalyze.recommendedComputed', { res: `${c.computed.w}×${c.computed.h}` }) }, ...memberOptions];
+                return (
+                  <div key={`${computedKey}-${i}`} style={{
+                    padding: '8px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--color-border)',
+                    background: 'var(--color-bg-input)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>
+                        {t('resolutionAnalyze.groupLabel', { n: i + 1 })}
+                      </span>
+                      <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>
+                        {t('resolutionAnalyze.totalInGroup', { count: c.totalCount })}
+                      </span>
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {c.members.map(m => (
+                        <span key={resKey(m.width, m.height)} style={{
+                          fontSize: 10, padding: '1px 6px', borderRadius: 4,
+                          background: 'var(--color-bg-secondary)',
+                          border: '1px solid var(--color-border)',
+                          color: 'var(--color-text-secondary)',
+                          fontFamily: 'monospace',
+                        }}>
+                          {m.width}×{m.height} · {m.count}
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>
+                        {t('resolutionAnalyze.targetResolution')}
+                      </span>
+                      <CustomSelect
+                        compact
+                        style={{ flex: 1, minWidth: 0 }}
+                        value={target}
+                        options={options}
+                        onChange={(v) => setClusterTargets(prev => ({ ...prev, [i]: v }))}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
 
             <ExportBar enabled={enableAggExport} onChange={setEnableAggExport} label={t('resolutionAnalyze.exportAggregation')} disabled={aggExporting}>
               <PathInput kind="output" size="sm" value={aggExportPath} onChange={setAggExportPath} style={{ flex: 1 }} />

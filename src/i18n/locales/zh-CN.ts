@@ -245,7 +245,7 @@ const zhCN = {
     alignStep: '对齐倍数',
     alignStepOption: '{{n}} 倍',
     aggregationTitle: '分辨率聚合',
-    groupCount: '{{n}} 组可聚合',
+    groupCount: '共 {{n}} 组',
     noSimilarGroups: '无相近比例的分组',
     aggregationDesc: '为每组选择目标分辨率后导出：组内图片将被复制到输出目录下以目标分辨率命名的文件夹',
     groupLabel: '第 {{n}} 组',
