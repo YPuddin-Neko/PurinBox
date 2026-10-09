@@ -1,6 +1,6 @@
 [package]
 name = "purinbox"
-version = "0.4.1"
+version = "0.4.2"
 description = "PurinBox - AI训练数据处理工具箱"
 edition = "2021"
 
