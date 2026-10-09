@@ -11,6 +11,7 @@ import { packageAppVersion, type UpdateCheckResult } from '../utils/appVersion';
 import { formatBytes } from '../utils/format';
 import { isCancelMessage } from '../components/TaskContext';
 import { RunIdGate, type UnifiedProgressPayload } from '../hooks/useUnifiedTaskLogs';
+import { notifyHuggingFaceConfigChanged } from '../hooks/useTaggerModels';
 
 import SystemMonitor from '../components/SystemMonitor';
 import PageHeader from '../components/ui/PageHeader';
@@ -463,7 +464,10 @@ export default function SettingsPage() {
   };
 
   const handleSaveHuggingFace = () => {
-    huggingFaceSave.run(() => invoke('save_huggingface_config', { token: huggingFaceToken }), 'settings.huggingFaceSaved');
+    huggingFaceSave.run(async () => {
+      await invoke('save_huggingface_config', { token: huggingFaceToken });
+      notifyHuggingFaceConfigChanged();
+    }, 'settings.huggingFaceSaved');
   };
 
   const loadCachePath = async () => {

@@ -71,7 +71,7 @@ export default function HybridTaggerTab() {
 
   // ── 本地打标 ──
   const { models, selectedModel, setSelectedModel, genTh, setGenTh, charTh, setCharTh,
-    enabled: enabledCats, setEnabled: setEnabledCats, cur } = useTaggerModels({
+    enabled: enabledCats, setEnabled: setEnabledCats, cur, needsDownloadToken } = useTaggerModels({
     initialId: sv.modelId, general: sv.genTh ?? 0.35, character: sv.charTh,
     categories: sv.enabledCats?.filter(isTaggerCategory),
   });
@@ -411,7 +411,7 @@ export default function HybridTaggerTab() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
             <TaggerModelSelect models={models} value={selectedModel} onChange={setSelectedModel}
               formatLabel={m => m.name + (m.is_downloaded ? ' ✓' : ' ⬇')} />
-            {cur?.requires_token && <div style={{ fontSize: 11, color: 'var(--color-warning)' }}>{t('aiTagger.requiresToken')}</div>}
+            {needsDownloadToken && <div style={{ fontSize: 11, color: 'var(--color-warning)' }}>{t('aiTagger.requiresToken')}</div>}
             <TaggerCategoryGrid enabled={enabledCats} onChange={setEnabledCats} supported={cur?.supported_categories} />
             <ThresholdSliders general={genTh} character={charTh} onGeneral={setGenTh} onCharacter={setCharTh} />
             <div style={{ display: 'flex', gap: 'var(--space-4)', flexWrap: 'wrap' }}>
