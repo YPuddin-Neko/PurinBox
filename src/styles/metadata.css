@@ -1,5 +1,26 @@
 .metadata-detail-content { display: flex; gap: 20px; }
 .metadata-detail-preview { flex: 0 0 280px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.metadata-editor { display: flex; flex-direction: column; gap: var(--space-4); white-space: normal; min-width: 0; }
+.metadata-edit-toolbar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.metadata-edit-toolbar .form-label { margin: 0; }
+.metadata-edit-toolbar select { flex: 1; min-width: 120px; width: auto; }
+.metadata-edit-group { display: flex; flex-direction: column; gap: var(--space-3); }
+.metadata-edit-group-title { font-size: var(--font-size-xs); font-weight: 600; overflow-wrap: anywhere; }
+.metadata-edit-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.metadata-edit-field { display: flex; flex-direction: column; min-width: 0; }
+.metadata-edit-field .form-label { overflow-wrap: anywhere; }
+.metadata-edit-field-wide { grid-column: 1 / -1; }
+.metadata-edit-field textarea { resize: vertical; min-height: 80px; line-height: 1.6; }
+.metadata-edit-field .metadata-edit-raw { font-family: monospace; font-size: var(--font-size-xs); min-height: 220px; tab-size: 2; }
+.metadata-edit-error { color: var(--color-danger, #ef4444); font-size: var(--font-size-xs); overflow-wrap: anywhere; }
+.metadata-edit-status { display: flex; align-items: center; gap: var(--space-2); }
+.metadata-edit-footer { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; padding: var(--space-3) 0; border-top: 1px solid var(--color-border); position: sticky; bottom: -20px; background: var(--color-bg-card); z-index: 1; }
+.metadata-edit-full-params summary { cursor: pointer; font-size: var(--font-size-xs); padding: var(--space-2) 0; }
+.metadata-edit-save-note { flex: 1 1 160px; color: var(--color-text-secondary); font-size: var(--font-size-xs); }
+.metadata-edit-hint { color: var(--color-text-secondary); font-size: var(--font-size-xs); }
+.metadata-discard { display: flex; flex-direction: column; gap: var(--space-2); color: var(--color-warning); white-space: normal; }
+.metadata-discard-actions { display: flex; gap: var(--space-2); }
+.metadata-spin { animation: spin 1s linear infinite; }
 @media (max-width: 800px) {
   .metadata-detail-modal[role='dialog'] { width: calc(100vw - 32px) !important; }
   .metadata-detail-content { flex-direction: column; }

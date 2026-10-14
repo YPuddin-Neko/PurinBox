@@ -767,6 +767,25 @@ export interface SdImageMeta {
   source: string;
 }
 
+export interface SdMetadataEntry {
+  index: number;
+  keyword: string;
+  text: string;
+}
+
+export interface SdMetadataDocument {
+  path: string;
+  revision: string;
+  entries: SdMetadataEntry[];
+  metadata: SdImageMeta | null;
+}
+
+export interface SaveSdMetadataArgs {
+  filePath: string;
+  revision: string;
+  edits: { index: number; text: string }[];
+}
+
 /** scan_sd_metadata 的返回值 */
 export interface SdScanResult {
   items: SdImageMeta[];

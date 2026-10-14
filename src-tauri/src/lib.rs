@@ -37,6 +37,7 @@ use commands::resolution_analyze::{
 };
 use commands::resolution_filter::{cancel_filter, filter_by_resolution};
 use commands::sd_metadata::{export_sd_tags, read_single_sd_metadata, scan_sd_metadata};
+use commands::sd_metadata_edit::{read_sd_metadata_document, save_sd_metadata_document};
 use commands::tag_db::{
     cancel_tag_db_download, cancel_tag_db_translation, check_tag_db_update, clear_tag_db,
     download_danbooru_tags, get_tag_db_stats, is_tag_db_busy, search_tags, translate_tag_db,
@@ -173,6 +174,8 @@ pub fn run() {
             scan_sd_metadata,
             export_sd_tags,
             read_single_sd_metadata,
+            read_sd_metadata_document,
+            save_sd_metadata_document,
             check_for_updates,
             frontend_ready,
             get_tag_db_stats,

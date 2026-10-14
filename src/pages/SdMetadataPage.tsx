@@ -5,9 +5,10 @@ import { getCurrentWebview } from '@tauri-apps/api/webview';
 import ThumbImage from '../components/ThumbImage';
 import {
   FileCode2, FolderOpen, Loader2, Eye, Download,
-  ImageUp, Clipboard, Check,
+  ImageUp, Clipboard, Check, Pencil,
 } from 'lucide-react';
-import type { ExportTagsOptions, ExportTagsResult, ScanSdMetadataArgs, SdImageMeta, SdScanResult } from '../api/commandOptions';
+import type { ExportTagsOptions, ExportTagsResult, ScanSdMetadataArgs, SdImageMeta, SdMetadataDocument, SdScanResult } from '../api/commandOptions';
+import SdMetadataEditor from '../components/SdMetadataEditor';
 import ProgressLog from '../components/ProgressLog';
 import { useBatchTask } from '../hooks/useBatchTask';
 import { Modal } from '../components/Modal';
@@ -66,11 +67,55 @@ export default function SdMetadataPage() {
   const [modalItem, setModalItem] = useState<SdImageMeta | null>(null);
   const [showNoMeta, setShowNoMeta] = useState(false);
   const [noMetaFiles, setNoMetaFiles] = useState<string[]>([]);
+  const [clearedMetadata, setClearedMetadata] = useState<Record<string, string>>({});
+  const scannedPathsRef = useRef(new Set<string>());
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [exportMode, setExportMode] = useState<ExportTagsOptions['mode']>('same');
   const [destFolder, setDestFolder] = useState('');
   const [exporting, setExporting] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editorState, setEditorState] = useState({ dirty: false, busy: false });
+  const [discardAction, setDiscardAction] = useState<'close' | 'cancel' | null>(null);
+  const detailOpenRef = useRef(false);
+  const processingRef = useRef(false);
+  detailOpenRef.current = modalItem !== null;
+  processingRef.current = task.processing;
+
+  const finishEditing = () => { setEditing(false); setEditorState({ dirty: false, busy: false }); setDiscardAction(null); };
+  const closeDetail = () => {
+    if (editing && editorState.busy) return;
+    if (editing && editorState.dirty) { setDiscardAction('close'); return; }
+    finishEditing(); setModalItem(null);
+  };
+  const cancelEditing = () => {
+    if (editorState.busy) return;
+    if (editorState.dirty) { setDiscardAction('cancel'); return; }
+    finishEditing();
+  };
+  const handleMetadataSaved = (document: SdMetadataDocument) => {
+    const updatedItems = items.filter(item => item.path !== document.path);
+    if (scannedPathsRef.current.has(document.path)) {
+      if (document.metadata) {
+        const position = items.findIndex(item => item.path === document.path);
+        updatedItems.splice(position < 0 ? updatedItems.length : position, 0, document.metadata);
+      }
+      setClearedMetadata(previous => {
+        const next = { ...previous };
+        if (document.metadata) delete next[document.path];
+        else next[document.path] = modalItem?.filename ?? document.path;
+        return next;
+      });
+    }
+    setItems(updatedItems);
+    setSourceCounts(updatedItems.reduce<Record<string, number>>((counts, item) => {
+      counts[item.source] = (counts[item.source] ?? 0) + 1; return counts;
+    }, {}));
+    setPage(previous => Math.min(previous, Math.max(0, Math.ceil(updatedItems.length / PER_PAGE) - 1)));
+    setModalItem(previous => document.metadata ?? (previous ? { ...previous, positive: '', negative: '', params: '', source: 'unknown' } : null));
+    finishEditing();
+    logger.appendLog(t('sdMetadata.metadataSaved', { name: modalItem?.filename }), 'success');
+  };
 
   // 拖放事件来自整个窗口：页面切走后仍保持挂载，只在本页显示时处理，否则在别的页面拖图也会弹出元数据框
   useEffect(() => {
@@ -79,7 +124,7 @@ export default function SdMetadataPage() {
     const isVisible = () => (pageRef.current?.getClientRects().length ?? 0) > 0;
     const unlisten = getCurrentWebview().onDragDropEvent(async (e) => {
       if (!active) return;
-      if (!isVisible()) {
+      if (!isVisible() || processingRef.current) {
         setDragging(false);
         return;
       }
@@ -89,11 +134,13 @@ export default function SdMetadataPage() {
         setDragging(false);
       } else if (e.payload.type === 'drop') {
         setDragging(false);
+        if (detailOpenRef.current) return;
         const paths = e.payload.paths;
         if (!paths || paths.length === 0) return;
         const filePath = paths[0];
         try {
           const result = await invoke<SdImageMeta | null>('read_single_sd_metadata', { filePath });
+          if (!active || !isVisible() || detailOpenRef.current || processingRef.current) return;
           if (result) {
             setModalItem(result);
             logger.appendLog(t('sdMetadata.dropFound', { name: result.filename, source: result.source }), 'success');
@@ -114,7 +161,7 @@ export default function SdMetadataPage() {
   const handleScan = async () => {
     if (!inputPath || task.processing) return;
     setScanning(true); setPage(0);
-    setItems([]); setSourceCounts({}); setNoMetaFiles([]);
+    setItems([]); setSourceCounts({}); setNoMetaFiles([]); setClearedMetadata({}); scannedPathsRef.current.clear();
     try {
       const result = await task.run({
         taskName: t('sidebar.sdMetadata'),
@@ -124,6 +171,7 @@ export default function SdMetadataPage() {
       });
       if (result) {
         setItems(result.items);
+        scannedPathsRef.current = new Set(result.items.map(item => item.path));
         setNoMetaFiles(result.no_meta_files || []);
         setSourceCounts(result.source_counts);
         logger.appendLog(t('sdMetadata.scanDone', {
@@ -166,7 +214,8 @@ export default function SdMetadataPage() {
 
   // 后端每个文件只会落入 items 或 no_meta_files 之一，计数直接由两者长度得出
   const hasMeta = items.length;
-  const noMeta = noMetaFiles.length;
+  const noMetaFileList = [...noMetaFiles, ...Object.values(clearedMetadata)];
+  const noMeta = noMetaFileList.length;
   const totalImages = hasMeta + noMeta;
   const totalPages = Math.ceil(items.length / PER_PAGE);
   const pageItems = items.slice(page * PER_PAGE, (page + 1) * PER_PAGE);
@@ -193,7 +242,7 @@ export default function SdMetadataPage() {
           </div>
 
           <button className="btn btn-primary" style={{ width: '100%', height: 44 }}
-            onClick={handleScan} disabled={!inputPath || task.processing}>
+            onClick={handleScan} disabled={!inputPath || task.processing || modalItem !== null}>
             {scanning ? <><Loader2 style={{ width: 16, height: 16, animation: 'spin 1s linear infinite' }} /> {t('sdMetadata.scanning')}</>
               : <><Eye style={{ width: 16, height: 16 }} /> {t('sdMetadata.scan')}</>}
           </button>
@@ -218,7 +267,7 @@ export default function SdMetadataPage() {
                 </div>
               )}
               <button className="btn btn-primary" style={{ width: '100%', height: 40, marginTop: 'var(--space-2)' }}
-                onClick={handleExport} disabled={task.processing || items.length === 0 || (exportMode === 'custom' && !destFolder)}>
+                onClick={handleExport} disabled={task.processing || modalItem !== null || items.length === 0 || (exportMode === 'custom' && !destFolder)}>
                 {exporting ? <><Loader2 style={{ width: 14, height: 14, animation: 'spin 1s linear infinite' }} /> {t('sdMetadata.exporting')}</>
                   : <><Download style={{ width: 14, height: 14 }} /> {t('sdMetadata.exportTags')} ({items.length})</>}
               </button>
@@ -298,10 +347,13 @@ export default function SdMetadataPage() {
       </div>
 
       {modalItem && (
-        <Modal open onClose={() => setModalItem(null)} title={modalItem.filename} width="min(80vw, 960px)" maxWidth={960}
+        <Modal open onClose={closeDetail} title={modalItem.filename} width="min(80vw, 960px)" maxWidth={960}
           sectioned className="metadata-detail-modal" headerIcon={false} bodyStyle={{ padding: 20 }}
           dialogStyle={{ borderRadius: 12, maxHeight: '85vh' }} titleStyle={{ fontSize: 14, fontWeight: 600 }}
-          headerExtra={<span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: `${sourceColor(modalItem.source)}22`, color: sourceColor(modalItem.source) }}>{modalItem.source.toUpperCase()}</span>}>
+          headerExtra={<>
+            {!editing && <button className="btn btn-secondary btn-sm" disabled={task.processing} onClick={() => { setEditorState({ dirty: false, busy: false }); setEditing(true); }}><Pencil size={13} />{t('sdMetadata.editMetadata')}</button>}
+            <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: `${sourceColor(modalItem.source)}22`, color: sourceColor(modalItem.source) }}>{modalItem.source.toUpperCase()}</span>
+          </>}>
           <div className="metadata-detail-content">
             <div className="metadata-detail-preview">
               <div style={{ borderRadius: 'var(--radius-md)', overflow: 'hidden', border: '1px solid var(--color-border)', background: 'rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 200 }}>
@@ -311,20 +363,29 @@ export default function SdMetadataPage() {
               <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', overflowWrap: 'anywhere', fontFamily: 'monospace' }}>{modalItem.path}</div>
             </div>
             <div style={{ flex: '2 1 280px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {discardAction && <div className="metadata-discard" role="alert">
+                <span>{t('sdMetadata.discardChanges')}</span>
+                <div className="metadata-discard-actions">
+                  <button className="btn btn-secondary btn-sm" disabled={editorState.busy} onClick={() => setDiscardAction(null)}>{t('sdMetadata.keepEditing')}</button>
+                  <button className="btn btn-danger btn-sm" disabled={editorState.busy} onClick={() => { const close = discardAction === 'close'; finishEditing(); if (close) setModalItem(null); }}>{t('sdMetadata.discard')}</button>
+                </div>
+              </div>}
+              {editing ? <SdMetadataEditor key={modalItem.path} path={modalItem.path} onSaved={handleMetadataSaved} onCancel={cancelEditing} onStateChange={setEditorState} /> : <>
               <PromptBlock label={t('sdMetadata.positive')} text={modalItem.positive} color="#4ade80"
                 copied={copiedField === 'positive'} onCopy={() => copyText(modalItem.positive, 'positive')} />
               <PromptBlock label={t('sdMetadata.negative')} text={modalItem.negative} color="#ef4444"
                 copied={copiedField === 'negative'} onCopy={() => copyText(modalItem.negative, 'negative')} />
               {modalItem.params && <PromptBlock label={t('sdMetadata.params')} text={modalItem.params} color="#60a5fa" monospace
                 copied={copiedField === 'params'} onCopy={() => copyText(modalItem.params, 'params')} />}
+              </>}
             </div>
           </div>
         </Modal>
       )}
-      <Modal open={showNoMeta && noMetaFiles.length > 0} onClose={() => setShowNoMeta(false)}
+      <Modal open={showNoMeta && noMetaFileList.length > 0} onClose={() => setShowNoMeta(false)}
         title={t('sdMetadata.noMetaFilesTitle')} maxWidth={520}>
-        {noMetaFiles.map((file, i) => (
-          <div key={file} style={{ padding: '6px 0', fontSize: 12, overflowWrap: 'anywhere', fontFamily: 'monospace' }}>
+        {noMetaFileList.map((file, i) => (
+          <div key={`${file}:${i}`} style={{ padding: '6px 0', fontSize: 12, overflowWrap: 'anywhere', fontFamily: 'monospace' }}>
             {i + 1}. {file}
           </div>
         ))}

@@ -37,6 +37,7 @@ pub(crate) mod python_task;
 pub mod resolution_analyze;
 pub mod resolution_filter;
 pub mod sd_metadata;
+pub mod sd_metadata_edit;
 pub mod tag_db;
 pub mod tag_manager;
 pub mod tag_refine;

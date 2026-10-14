@@ -1,6 +1,4 @@
-use flate2::read::ZlibDecoder;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use super::batch::{BatchCounts, RunEvents};
@@ -272,83 +270,37 @@ impl RawMeta {
     }
 }
 
-fn read_png_metadata(path: &PathBuf) -> Option<RawMeta> {
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf).ok()?;
+fn read_png_metadata(path: &Path) -> Option<RawMeta> {
+    let text_chunks = super::sd_metadata_edit::read_text_chunks(path).ok()?;
+    parse_text_metadata(&text_chunks)
+}
 
-    // Verify PNG signature
-    if buf.len() < 8 || &buf[0..8] != b"\x89PNG\r\n\x1a\n" {
-        return None;
-    }
+pub(super) fn summarize_text_metadata(
+    path: &Path,
+    text_chunks: &[(String, String)],
+) -> Option<SdImageMeta> {
+    parse_text_metadata(text_chunks).map(|meta| {
+        meta.into_meta(
+            path.to_string_lossy().into_owned(),
+            super::file_name_lossy(path),
+        )
+    })
+}
 
-    let mut text_chunks: Vec<(String, String)> = Vec::new();
-    let mut pos = 8usize;
-
-    while pos + 12 <= buf.len() {
-        let length =
-            u32::from_be_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
-        let chunk_type = &buf[pos + 4..pos + 8];
-        let data_start = pos + 8;
-        let data_end = data_start + length;
-
-        if data_end > buf.len() {
-            break;
-        }
-
-        // tEXt chunk (uncompressed)
-        if chunk_type == b"tEXt" {
-            let data = &buf[data_start..data_end];
-            if let Some(null_pos) = data.iter().position(|&b| b == 0) {
-                let key = String::from_utf8_lossy(&data[..null_pos]).to_string();
-                let value = String::from_utf8_lossy(&data[null_pos + 1..]).to_string();
-                text_chunks.push((key, value));
-            }
-        }
-        // zTXt chunk (compressed text)
-        else if chunk_type == b"zTXt" {
-            let data = &buf[data_start..data_end];
-            if let Some(null_pos) = data.iter().position(|&b| b == 0) {
-                let key = String::from_utf8_lossy(&data[..null_pos]).to_string();
-                // byte after null is compression method (0 = zlib), then compressed data
-                if null_pos + 2 <= data.len() {
-                    let compressed = &data[null_pos + 2..];
-                    let mut decoder = ZlibDecoder::new(compressed);
-                    let mut decompressed = String::new();
-                    if decoder.read_to_string(&mut decompressed).is_ok() {
-                        text_chunks.push((key, decompressed));
-                    }
-                }
-            }
-        }
-        // iTXt chunk (UTF-8 international text)
-        else if chunk_type == b"iTXt" {
-            if let Some(meta) = parse_itxt_chunk(&buf[data_start..data_end]) {
-                text_chunks.push(meta);
-            }
-        }
-
-        // IEND = end of PNG
-        if chunk_type == b"IEND" {
-            break;
-        }
-
-        pos = data_end + 4; // skip CRC
-    }
-
+fn parse_text_metadata(text_chunks: &[(String, String)]) -> Option<RawMeta> {
     if text_chunks.is_empty() {
         return None;
     }
 
     // Try A1111 format: key="parameters"
-    for (key, value) in &text_chunks {
+    for (key, value) in text_chunks {
         if key == "parameters" && !value.is_empty() {
             return Some(parse_a1111(value));
         }
     }
 
     // Try ComfyUI format: key="prompt" (JSON)
-    for (key, value) in &text_chunks {
+    for (key, value) in text_chunks {
         if key == "prompt" && value.trim_start().starts_with('{') {
             if let Some(meta) = parse_comfyui(value) {
                 return Some(meta);
@@ -357,7 +309,7 @@ fn read_png_metadata(path: &PathBuf) -> Option<RawMeta> {
     }
 
     // Try NovelAI format: key="Comment" (JSON) or "Description"
-    for (key, value) in &text_chunks {
+    for (key, value) in text_chunks {
         if key == "Comment" && value.trim_start().starts_with('{') {
             let source_ver = text_chunks
                 .iter()
@@ -371,7 +323,7 @@ fn read_png_metadata(path: &PathBuf) -> Option<RawMeta> {
     }
 
     // Fallback: "Description" key
-    for (key, value) in &text_chunks {
+    for (key, value) in text_chunks {
         if key == "Description" && !value.is_empty() {
             return Some(RawMeta {
                 positive: value.clone(),
@@ -383,43 +335,6 @@ fn read_png_metadata(path: &PathBuf) -> Option<RawMeta> {
     }
 
     None
-}
-
-fn parse_itxt_chunk(data: &[u8]) -> Option<(String, String)> {
-    // iTXt format:
-    // keyword \0 compression_flag(1) compression_method(1) language_tag \0 translated_keyword \0 text
-    let null1 = data.iter().position(|&b| b == 0)?;
-    let key = String::from_utf8_lossy(&data[..null1]).to_string();
-
-    let rest = &data[null1 + 1..];
-    if rest.len() < 2 {
-        return None;
-    }
-
-    let comp_flag = rest[0];
-    let _comp_method = rest[1];
-    let rest = &rest[2..];
-
-    // language tag (may be empty) terminated by \0
-    let null2 = rest.iter().position(|&b| b == 0)?;
-    let rest = &rest[null2 + 1..];
-
-    // translated keyword (may be empty) terminated by \0
-    let null3 = rest.iter().position(|&b| b == 0)?;
-    let text_data = &rest[null3 + 1..];
-
-    let text = if comp_flag == 1 {
-        // Compressed: decompress with zlib
-        let mut decoder = ZlibDecoder::new(text_data);
-        let mut decompressed = String::new();
-        decoder.read_to_string(&mut decompressed).ok()?;
-        decompressed
-    } else {
-        // Uncompressed
-        String::from_utf8_lossy(text_data).to_string()
-    };
-
-    Some((key, text))
 }
 
 // ── Format parsers ──
@@ -465,6 +380,7 @@ fn parse_comfyui(prompt_json: &str) -> Option<RawMeta> {
 
     let mut positive_parts: Vec<String> = Vec::new();
     let mut negative_parts: Vec<String> = Vec::new();
+    let mut param_parts = Vec::new();
 
     for (_node_id, node) in obj {
         let Some(class_type) = node.get("class_type").and_then(|v| v.as_str()) else {
@@ -495,6 +411,26 @@ fn parse_comfyui(prompt_json: &str) -> Option<RawMeta> {
             let Some(inputs) = node.get("inputs").and_then(|v| v.as_object()) else {
                 continue;
             };
+            for (key, label) in [
+                ("steps", "Steps"),
+                ("sampler_name", "Sampler"),
+                ("scheduler", "Scheduler"),
+                ("cfg", "CFG"),
+                ("seed", "Seed"),
+                ("noise_seed", "Seed"),
+                ("denoise", "Denoise"),
+            ] {
+                if let Some(value) = inputs.get(key).filter(|v| v.is_string() || v.is_number()) {
+                    let value = value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string());
+                    let part = format!("{label}: {value}");
+                    if !param_parts.contains(&part) {
+                        param_parts.push(part);
+                    }
+                }
+            }
             if let Some(neg_link) = inputs.get("negative").and_then(|v| v.as_array()) {
                 if let Some(neg_id) = neg_link.first() {
                     let neg_id_str = if neg_id.is_string() {
@@ -519,14 +455,14 @@ fn parse_comfyui(prompt_json: &str) -> Option<RawMeta> {
         }
     }
 
-    if positive_parts.is_empty() && negative_parts.is_empty() {
+    if positive_parts.is_empty() && negative_parts.is_empty() && param_parts.is_empty() {
         return None;
     }
 
     Some(RawMeta {
         positive: positive_parts.join(", "),
         negative: negative_parts.join(", "),
-        params: String::new(),
+        params: param_parts.join(", "),
         source: "comfyui".to_string(),
     })
 }
