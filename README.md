@@ -6,7 +6,7 @@
 
 一个AI图片训练数据集处理工具箱
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![Version](https://img.shields.io/github/v/tag/YPuddin-Neko/PurinBox?label=Version)
 ![Rust](https://img.shields.io/badge/Rust-Tauri%202-orange)
@@ -169,7 +169,9 @@ PurinBox/
 
 ## 许可证
 
-本项目基于 [GNU General Public License v3.0](LICENSE) 许可证开源。
+本项目采用 [PolyForm Noncommercial License 1.0.0](LICENSE)，以源码可用的方式提供，允许协议规定的非商业用途。商业用途需要另行获得授权。
+
+第三方依赖和模型遵循各自的许可证。
 
 ## 贡献
 

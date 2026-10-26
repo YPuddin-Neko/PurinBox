@@ -31,7 +31,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "licenseFile": "../LICENSE",
     "resources": [
+      "../LICENSE",
       "scripts/tagger_inference.py",
       "scripts/person_crop.py",
       "scripts/realesrgan_upscale.py",
