@@ -1,3 +1,4 @@
+import GbcEnvironment from '../components/GbcEnvironment';
 import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, Terminal, RefreshCw as RefreshIcon, Database, Download, Upload, X, Play, KeyRound, FlaskConical, type LucideIcon } from 'lucide-react';
 import { useAppSettings } from '../components/ThemeProvider';
 import { useState, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
@@ -896,6 +897,7 @@ export default function SettingsPage() {
                   </button>
                 )}
               </div>
+              <GbcEnvironment />
             </div>
           </div>
 

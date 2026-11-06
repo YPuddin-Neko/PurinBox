@@ -108,6 +108,7 @@ export const PAGES: PageDef[] = [
     tasks: [
       { id: 'tagger', events: ['tagger-progress'] },
       { id: 'llm-tagger', events: ['llm-tagger-progress'] },
+      { id: 'gbc-refine', events: ['gbc-refine-progress'] },
       { id: 'hybrid-tagger', events: [] },
     ] },
   { path: '/tag-manager', i18nKey: 'sidebar.tagManager', icon: List, section: 'dataset', persistent: true },

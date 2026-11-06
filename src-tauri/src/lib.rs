@@ -43,7 +43,7 @@ use commands::tag_db::{
     download_danbooru_tags, get_tag_db_stats, is_tag_db_busy, search_tags, translate_tag_db,
 };
 use commands::tag_manager::{
-    load_caption_dataset, load_json_dataset, load_tag_dataset, save_all_caption_files,
+    load_image_regions, load_caption_dataset, load_json_dataset, load_tag_dataset, save_all_caption_files,
     save_all_json_files, save_all_tag_files, save_caption_file, save_single_json_file,
     save_single_tag_file,
 };
@@ -117,6 +117,9 @@ pub fn run() {
             deploy_python_env,
             get_python_env_info,
             start_llm_tagging,
+            commands::tagger::gbc::get_gbc_local_paths,
+            commands::tagger::gbc::setup_gbc_environment,
+            commands::tagger::gbc::cancel_gbc_setup,
             fetch_llm_models,
             cancel_llm_tagging,
             get_system_stats,
@@ -126,6 +129,7 @@ pub fn run() {
             save_caption_file,
             save_all_caption_files,
             load_caption_dataset,
+            load_image_regions,
             load_json_dataset,
             save_single_json_file,
             save_all_json_files,

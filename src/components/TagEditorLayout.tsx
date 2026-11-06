@@ -1,10 +1,12 @@
-import { useId, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from 'react';
-import { convertFileSrc } from '@tauri-apps/api/core';
+import { useEffect, useId, useState, type CSSProperties, type MouseEvent, type ReactNode, type Ref } from 'react';
+import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { ChevronLeft, ChevronRight, Image as ImageIcon, Languages, Loader2, Save, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { useTagStats } from '../hooks/useTagStats';
 import type { useTagTranslation } from '../hooks/useTagTranslation';
+import BboxImage from './BboxImage';
 import ThumbImage from './ThumbImage';
+import { bboxRegions, type BboxRegion } from '../utils/bboxRegions';
 import ImageLightbox from './ImageLightbox';
 import '../styles/tags.css';
 
@@ -152,10 +154,21 @@ export function ImagePreviewPane({ path, filename, index, total, onPrev, onNext,
 }) {
   const { t } = useTranslation();
   const [zoomed, setZoomed] = useState(false);
+  const [regionState, setRegionState] = useState<{ path?: string; regions: BboxRegion[] }>({ regions: [] });
+  const [showRegions, setShowRegions] = useState(true);
+  const regions = regionState.path === path ? regionState.regions : [];
+  useEffect(() => {
+    let alive = true;
+    if (path) void invoke<unknown>('load_image_regions', { path }).then(value => {
+      if (alive) setRegionState({ path, regions: bboxRegions(value) });
+    }).catch(() => { if (alive) setRegionState({ path, regions: [] }); });
+    return () => { alive = false; };
+  }, [path]);
   return (
     <div ref={ref} className="tag-card" style={style}>
       <TagPanelHeader icon={ImageIcon} color="#7c5cfc" title={t('tagEditor.preview')}
         extra={<>{filename && <span className="tag-panel-note">{filename}</span>}{badge}</>}>
+        {regions.length > 0 && <button type="button" className="btn btn-ghost btn-sm" aria-pressed={showRegions} onClick={() => setShowRegions(v => !v)}>{t('gbc.regionBoxes')}</button>}
         {total > 0 && (
           <div className="tag-preview-nav">
             <button type="button" className="btn btn-ghost btn-sm" onClick={onPrev} disabled={index <= 0}>
@@ -170,6 +183,7 @@ export function ImagePreviewPane({ path, filename, index, total, onPrev, onNext,
       </TagPanelHeader>
       <div className="tag-preview-body">
         {path ? (
+          regions.length ? <BboxImage key={path} src={convertFileSrc(path)} alt={filename ?? ''} regions={showRegions ? regions : []} onClick={() => setZoomed(true)} /> :
           <ThumbImage path={path} maxEdge={1024} alt={filename} draggable={false} onClick={() => setZoomed(true)}
             style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', cursor: 'zoom-in' }} />
         ) : (
@@ -179,7 +193,7 @@ export function ImagePreviewPane({ path, filename, index, total, onPrev, onNext,
           </div>
         )}
       </div>
-      {zoomed && path && <ImageLightbox src={convertFileSrc(path)} filename={filename ?? ''} onClose={() => setZoomed(false)} />}
+      {zoomed && path && <ImageLightbox src={convertFileSrc(path)} filename={filename ?? ''} regions={showRegions ? regions : []} onClose={() => setZoomed(false)} />}
     </div>
   );
 }

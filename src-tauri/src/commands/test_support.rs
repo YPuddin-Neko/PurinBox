@@ -112,6 +112,48 @@ where
     }
 }
 
+pub(crate) fn serve_n<F>(count: usize, mut respond: F) -> TestServer
+where
+    F: FnMut(&mut TcpStream, &Request, &StopSignal) + Send + 'static,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").expect("绑定本地端口");
+    listener.set_nonblocking(true).expect("设置非阻塞监听");
+    let url = format!("http://{}", listener.local_addr().expect("本地地址"));
+    let (request_tx, requests) = mpsc::channel();
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let stop = StopSignal(stop_rx);
+        for _ in 0..count {
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stop.stopped_within(Duration::from_millis(10)) {
+                        return;
+                    }
+                }
+                Err(_) => return,
+            }
+        };
+        // macOS 上 accept 出来的连接会继承监听端的非阻塞标志
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+        let Some(request) = read_request(&mut stream) else {
+            return;
+        };
+        let _ = request_tx.send(request.clone());
+        respond(&mut stream, &request, &stop);
+        }
+    });
+    TestServer {
+        url,
+        requests,
+        stop: Some(stop_tx),
+        thread: Some(thread),
+    }
+}
+
 /// 写一个完整的响应（带 Content-Length，写完关闭连接）
 pub(crate) fn write_response(
     stream: &mut TcpStream,

@@ -1,14 +1,17 @@
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import BboxImage from './BboxImage';
+import type { BboxRegion } from '../utils/bboxRegions';
 import { X } from 'lucide-react';
 
 interface ImageLightboxProps {
   src: string;
   filename: string;
   onClose: () => void;
+  regions?: BboxRegion[];
 }
 
-export default function ImageLightbox({ src, filename, onClose }: ImageLightboxProps) {
+export default function ImageLightbox({ src, filename, onClose, regions = [] }: ImageLightboxProps) {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
@@ -84,6 +87,8 @@ export default function ImageLightbox({ src, filename, onClose }: ImageLightboxP
         <div
           onClick={event => event.stopPropagation()}
           style={{
+            width: regions.length ? '100%' : undefined,
+            height: regions.length ? '100%' : undefined,
             maxWidth: 'calc(100vw - 56px)',
             maxHeight: 'calc(100vh - 96px)',
             display: 'flex',
@@ -91,7 +96,7 @@ export default function ImageLightbox({ src, filename, onClose }: ImageLightboxP
             justifyContent: 'center',
           }}
         >
-          <img
+          {regions.length ? <BboxImage src={src} alt={filename} regions={regions} /> : <img
             src={src}
             alt={filename}
             draggable={false}
@@ -104,7 +109,7 @@ export default function ImageLightbox({ src, filename, onClose }: ImageLightboxP
               border: '1px solid rgba(255, 255, 255, 0.14)',
               boxShadow: '0 24px 90px rgba(0, 0, 0, 0.48)',
             }}
-          />
+          />}
         </div>
       </div>
     </div>,

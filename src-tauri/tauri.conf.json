@@ -35,6 +35,9 @@
     "resources": [
       "../LICENSE",
       "scripts/tagger_inference.py",
+      "scripts/gbc_worker.py",
+      "scripts/gbc_setup.py",
+      "scripts/gbc_export.py",
       "scripts/person_crop.py",
       "scripts/realesrgan_upscale.py",
       "scripts/image_cluster.py",

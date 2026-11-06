@@ -951,6 +951,11 @@ export interface LlmTaggerOptions {
   image_detail?: ImageDetail;
 }
 
+export interface GbcRefineOptions extends LlmTaggerOptions {
+  refine_existing: true;
+  gbc: import('../utils/gbcSettings').GbcOptions;
+}
+
 export type LlmTaggerSettings = Required<Omit<LlmTaggerOptions, keyof InputIO | 'api_endpoint' | 'api_key'>>;
 
 /** 提示词随输出格式变化，不在这里：缺省时取 getDefaultPrompts(output_format, json_simplified) */
@@ -1006,6 +1011,7 @@ export function buildLlmTaggerOptions(
 
 /** tag_refine.rs → start_tag_refining */
 export interface TagRefineOptions {
+  gbc?: import('../utils/gbcSettings').GbcOptions;
   input_path: string;
   output_path: string;
   api_endpoint: string;

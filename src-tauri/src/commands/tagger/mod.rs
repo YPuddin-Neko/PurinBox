@@ -1,3 +1,4 @@
+pub mod gbc;
 pub mod download;
 pub mod hybrid;
 pub mod inference;

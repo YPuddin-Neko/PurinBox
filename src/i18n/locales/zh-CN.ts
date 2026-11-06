@@ -523,7 +523,6 @@ const zhCN = {
   // ═══════════════ 标签排序 ═══════════════
   tagSort: {
     inputDir: '输入目录（含 .txt 标签文件）',
-    inputPlaceholder: '选择标签文件所在文件夹...',
     outputDir: '输出目录',
     outputPlaceholder: '选择排序后输出文件夹...',
     promptTitle: '模型提示词',
@@ -547,7 +546,6 @@ const zhCN = {
   // ═══════════════ 标签细化 ═══════════════
   tagRefine: {
     inputDir: '图片文件夹（含图片和 .txt 标签文件）',
-    inputPlaceholder: '选择图片和标签所在的文件夹...',
     outputDir: '输出目录',
     outputPlaceholder: '选择输出文件夹...',
     promptTitle: '细化提示词',
@@ -745,6 +743,30 @@ const zhCN = {
   },
 
   // ═══════════════ VLM 打标 ═══════════════
+  gbc: {
+    refineTab: "GBC 细化",
+    analysisSettings: "GBC 分析设置",
+    refineButton: "开始细化",
+    refining: "正在细化…",
+    refineStart: "开始 GBC 细化，模型：{{model}}",
+
+    max_nodes: '最多节点',
+    max_depth: '探索深度',
+    max_nodesHelp: '控制每张图用于描述整图和对象区域的节点预算。节点可以是一张整图，也可以是人物、衣服等局部对象；不是标签词数或最终框数。默认 20，调大可能增加细节、耗时和 API 用量。',
+    max_depthHelp: '控制局部区域向下探索的层数。整图为第 0 层，例如人物为第 1 层，人物的衣服为第 2 层。默认 3；越深越可能补充局部细节，也会增加耗时和 API 用量。',
+
+    environment: 'GBC 自然语言细化',
+    notInstalled: '未安装',
+    modelsMissing: '环境已安装，缺少本地模型',
+    ready: '环境和模型已就绪',
+    enhance: '使用 GBC 细化自然语言',
+    naturalPresetRequired: '请先选择生成自然语言的预设',
+    regionBoxes: '区域框',
+    install: "安装独立环境",
+    installing: "正在安装依赖…",
+    cancelInstall: "取消安装",
+    structuredReadonly: 'GBC / Layout · 只读',
+  },
   llmTagger: {
     systemPrompt: '系统提示词',
     userPrompt: '用户提示词',

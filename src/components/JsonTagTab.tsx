@@ -25,7 +25,7 @@ import { Modal, AlertModal } from './Modal';
 
 /** parse_failed：JSON 存在但解析失败，data 只是空默认值。保存时会跳过这类条目，
  *  单图编辑和批量增删也跳过它们，免得被标成未保存却永远存不进文件。 */
-interface JsonImageItem { path: string; filename: string; data: JsonTagData; has_json: boolean; parse_failed?: boolean; dirty?: boolean; }
+interface JsonImageItem { path: string; filename: string; data: JsonTagData; has_json: boolean; parse_failed?: boolean; structured?: boolean; dirty?: boolean; }
 interface JsonDataset { folder: string; images: JsonImageItem[]; detected_format: string; }
 
 const sections = [
@@ -234,10 +234,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   const parseFailedBadge = cur?.parse_failed && (
     <span style={{ fontSize: 10, color: RED, fontWeight: 600, padding: '1px 6px', borderRadius: 4,
       background: 'rgba(248,113,113,0.12)', border: '1px solid rgba(248,113,113,0.3)' }}>
-      {t('jsonTag.parseFailed')}
+      {t(cur.structured ? 'gbc.structuredReadonly' : 'jsonTag.parseFailed')}
     </span>
   );
-  const formatBadge = images.length > 0 && (
+  const formatBadge = images.length > 0 && !cur?.structured && (
     <span style={{ fontSize: 9, padding: '2px 8px', borderRadius: 10, fontWeight: 700,
       background: simplified ? 'rgba(34,197,94,0.15)' : 'rgba(99,102,241,0.15)', color: simplified ? '#22c55e' : '#818cf8',
       border: `1px solid ${simplified ? 'rgba(34,197,94,0.25)' : 'rgba(99,102,241,0.25)'}` }}>

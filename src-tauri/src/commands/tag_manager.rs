@@ -39,6 +39,13 @@ fn scan_dataset<T>(
 /// 写与图片同名、换了扩展名的旁路文件
 fn write_sidecar(image: &Path, ext: &str, content: &str) -> Result<(), String> {
     let path = image.with_extension(ext);
+    if ext == "json" {
+        if let Ok(existing) = std::fs::read_to_string(&path) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&existing) {
+                if is_structured_caption(&value) { return Err("GBC / Layout 文件只读，请使用精细描述重新导出".into()); }
+            }
+        }
+    }
     std::fs::write(&path, content).map_err(|e| format!("写入失败 {}: {}", path.display(), e))
 }
 
@@ -293,6 +300,7 @@ pub struct JsonImageItem {
     /// JSON 存在但解析失败：data 是空默认值，前端必须排除在批量操作/保存之外
     #[serde(default)]
     pub parse_failed: bool,
+    pub structured: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +308,27 @@ pub struct JsonDataset {
     pub images: Vec<JsonImageItem>,
     /// "full" | "simplified" | "unknown"
     pub detected_format: String,
+}
+
+pub(crate) fn is_structured_caption(v: &serde_json::Value) -> bool {
+    v.get("vertices").is_some() || v.get("graph").and_then(|g| g.get("vertices")).is_some()
+        || (v.get("items").is_some() && v.get("summary").is_some())
+}
+
+/// 优先使用主标签中的区域；自然语言标签可复用同名 GBC 原始图。
+#[tauri::command]
+pub fn load_image_regions(path: String) -> Option<serde_json::Value> {
+    let image = std::path::Path::new(&path);
+    for extension in ["json", "gbc.json"] {
+        if let Ok(content) = std::fs::read_to_string(image.with_extension(extension)) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
+                if is_structured_caption(&value) {
+                    return Some(value);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// 加载 JSON 标签数据集
@@ -310,6 +339,11 @@ pub fn load_json_dataset(folder: String, recursive: Option<bool>) -> Result<Json
         let (data, has_json, fmt, parse_failed) =
             match std::fs::read_to_string(p.with_extension("json")) {
                 Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(v) if is_structured_caption(&v) => {
+                        let mut data = JsonTagData::default();
+                        data.ai_output.nl = Some(serde_json::to_string_pretty(&v).unwrap_or_default());
+                        (data, true, "structured", true)
+                    },
                     Ok(v) if is_full_json(&v) => match serde_json::from_value::<JsonTagData>(v) {
                         Ok(d) => (d, true, "full", false),
                         Err(_) => (JsonTagData::default(), true, "unknown", true),
@@ -337,6 +371,7 @@ pub fn load_json_dataset(folder: String, recursive: Option<bool>) -> Result<Json
             data,
             has_json,
             parse_failed,
+            structured: fmt == "structured",
         }
     })?;
 
@@ -836,6 +871,21 @@ mod save_tests {
     }
 
     #[test]
+    fn structured_captions_are_read_only() {
+        for document in [json!({"vertices": []}), json!({"summary": {"caption":"scene"}, "items": []})] {
+            let root = TempDir::new("structured_caption");
+            let img = image(&root, "a.png");
+            let original = document.to_string();
+            std::fs::write(root.join("a.json"), &original).unwrap();
+            let dataset = load_json_dataset(root.to_string_lossy().into_owned(), None).unwrap();
+            assert!(dataset.images[0].structured);
+            assert!(dataset.images[0].parse_failed);
+            assert!(save_single_json_file(img, JsonTagData::default(), false).is_err());
+            assert_eq!(std::fs::read_to_string(root.join("a.json")).unwrap(), original);
+        }
+    }
+
+    #[test]
     fn single_tag_save_trims_and_drops_blank_tags() {
         let root = TempDir::new("save_single_tags");
         let img = image(&root, "a.png");
@@ -889,6 +939,20 @@ mod save_tests {
 #[cfg(test)]
 mod json_extra_tests {
     use super::*;
+
+    #[test]
+    fn image_regions_prefer_layout_and_fall_back_to_raw_graph() {
+        let root = crate::commands::test_support::TempDir::new("image_regions");
+        let image = root.join("sample.png").to_string_lossy().into_owned();
+        let graph = serde_json::json!({"vertices": []});
+        let layout = serde_json::json!({"summary": {}, "items": []});
+        assert!(load_image_regions(image.clone()).is_none());
+        std::fs::write(root.join("sample.gbc.json"), graph.to_string()).unwrap();
+        std::fs::write(root.join("sample.json"), r#"{"nl":"A scene."}"#).unwrap();
+        assert_eq!(load_image_regions(image.clone()), Some(graph));
+        std::fs::write(root.join("sample.json"), layout.to_string()).unwrap();
+        assert_eq!(load_image_regions(image), Some(layout));
+    }
 
     #[test]
     fn full_json_requires_structured_fields() {

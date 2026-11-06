@@ -24,6 +24,8 @@ static TAG_REFINE_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TagRefineOptions {
+    #[serde(default)]
+    pub gbc: Option<super::tagger::gbc::GbcSettings>,
     pub input_path: String,
     pub output_path: String,
     pub api_endpoint: String,
@@ -134,6 +136,7 @@ enum FileResult {
 #[tauri::command]
 pub fn cancel_tag_refining() {
     TAG_REFINE_CANCELLED.store(true, Ordering::SeqCst);
+    super::tagger::gbc::cancel_refine();
 }
 
 #[tauri::command]
@@ -177,7 +180,19 @@ async fn refine_dataset<R: tauri::Runtime>(
 
     std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {}", e))?;
 
-    let concurrency = std::cmp::max(1, options.concurrency) as usize;
+    let analyzer = if options.gbc.is_some() {
+        let (worker_app, config) = (app.clone(), options.clone());
+        match tauri::async_runtime::spawn_blocking(move || super::tagger::gbc::Analyzer::start(&worker_app, &config, &TAG_REFINE_CANCELLED)).await.map_err(|e| e.to_string()).and_then(|v| v) {
+            Ok(value) => Some(Arc::new(std::sync::Mutex::new(value))),
+            Err(error) => {
+                if options.hybrid_mode { clear_batch_drafts(app, &files); }
+                return Err(error);
+            }
+        }
+    } else { None };
+    // 单个检测引擎依次分析图片；图内 VLM 请求仍使用配置的并发数。
+    let concurrency = if analyzer.is_some() { 1 } else { std::cmp::max(1, options.concurrency) as usize };
+
 
     let action = if options.nl_only {
         "补充自然语言描述"
@@ -214,6 +229,7 @@ async fn refine_dataset<R: tauri::Runtime>(
         concurrency,
         &TAG_REFINE_CANCELLED,
         move |file_path| {
+            let analyzer = analyzer.clone();
             let (client, options, input_root, output_dir, throttle) = (
                 client.clone(),
                 options.clone(),
@@ -222,13 +238,14 @@ async fn refine_dataset<R: tauri::Runtime>(
                 throttle.clone(),
             );
             async move {
-                process_single_file(
+                process_single_file_with_gbc(
                     &client,
                     &file_path,
                     &input_root,
                     &output_dir,
                     &options,
                     &throttle,
+                    analyzer,
                 )
                 .await
                 .into_outcome(options.hybrid_mode)
@@ -826,6 +843,7 @@ fn split_marker_response(content: &str) -> MarkerResponse<'_> {
 
 /// 处理单个文件：读取图片 + 对应标签 → LLM 细化。
 /// 辅助打标时这张图的草稿读过之后无论成败都删除；删不掉的由整批收尾时再清理并报告
+#[cfg(test)]
 async fn process_single_file(
     client: &reqwest::Client,
     img_path: &Path,
@@ -834,8 +852,20 @@ async fn process_single_file(
     options: &TagRefineOptions,
     throttle: &RequestThrottle,
 ) -> FileResult {
+    process_single_file_with_gbc(client, img_path, input_root, output_dir, options, throttle, None).await
+}
+
+async fn process_single_file_with_gbc(
+    client: &reqwest::Client,
+    img_path: &Path,
+    input_root: &Path,
+    output_dir: &Path,
+    options: &TagRefineOptions,
+    throttle: &RequestThrottle,
+    analyzer: Option<Arc<std::sync::Mutex<super::tagger::gbc::Analyzer>>>,
+) -> FileResult {
     let result =
-        refine_single_file(client, img_path, input_root, output_dir, options, throttle).await;
+        refine_single_file(client, img_path, input_root, output_dir, options, throttle, analyzer).await;
     if options.hybrid_mode {
         let _ = hybrid::clear_drafts(img_path);
     }
@@ -849,6 +879,7 @@ async fn refine_single_file(
     output_dir: &Path,
     options: &TagRefineOptions,
     throttle: &RequestThrottle,
+    analyzer: Option<Arc<std::sync::Mutex<super::tagger::gbc::Analyzer>>>,
 ) -> FileResult {
     let start = std::time::Instant::now();
     let filename = super::file_name_lossy(img_path);
@@ -966,7 +997,7 @@ async fn refine_single_file(
     let json_data = parsed.filter(|_| is_json);
 
     // 调用 LLM 细化（tags_display：JSON 回退时带字段标签的展示文本）
-    let (output, response_count) = match refine_tags_with_llm(
+    let (mut output, mut response_count) = match refine_tags_with_llm(
         client,
         img_path,
         &original_tags,
@@ -987,6 +1018,19 @@ async fn refine_single_file(
             }
         }
     };
+    if let Some(analyzer) = analyzer {
+        let caption = match &mut output {
+            RefineOutput::Caption(text) | RefineOutput::Description(text) => text,
+            RefineOutput::Tags { nl: Some(text), .. } => text,
+            _ => return FileResult::Error { filename, message: "当前输出未包含自然语言描述，无法进行 GBC 细化".into() },
+        };
+        let params = ChatParams { endpoint: &options.api_endpoint, api_key: &options.api_key, model: &options.model_name, temperature: options.temperature, max_tokens: -1, top_p: options.top_p };
+        match super::tagger::gbc::refine_caption(analyzer, client, img_path, caption, &params, throttle, &TAG_REFINE_CANCELLED, options.image_size, &options.image_detail).await {
+            Ok(refined) => { *caption = refined; response_count = llm_client::response_word_count(caption); },
+            Err(e) if e.is_warning() => return FileResult::Warning { filename, message: e.to_string() },
+            Err(e) => return FileResult::Error { filename, message: e.to_string() },
+        }
+    }
     let short_warnings: Vec<String> = if options.hybrid_mode {
         llm_client::short_reply_warning(response_count, options.short_reply_threshold)
             .into_iter()
@@ -1858,6 +1902,7 @@ mod e2e_tests {
 
     fn make_options(endpoint: String) -> TagRefineOptions {
         TagRefineOptions {
+            gbc: None,
             input_path: String::new(),
             output_path: String::new(),
             api_endpoint: endpoint,
@@ -1908,6 +1953,64 @@ mod e2e_tests {
             "Write a natural language description. Do NOT modify tags.\nExisting tags: {tags}\nReply: NL: <description>"
         );
         serde_json::from_value(value).unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires env/gbc; uses only cached graphs and a local mock VLM"]
+    async fn gbc_hybrid_uses_graph_and_keeps_caption_writeback_contracts() {
+        let project = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let python = project.join(if cfg!(windows) { "env/gbc/Scripts/python.exe" } else { "env/gbc/bin/python" });
+        for format in ["txt", "full", "simplified"] {
+            let (root, img) = setup_dir("hybrid_gbc");
+            let is_json = format != "txt";
+            let source = if format == "full" { FIXTURE_JSON } else if is_json { r#"{"tags":["smile"],"nl":"old description","custom":true}"# } else { "1girl, smile" };
+            let extension = if is_json { "json" } else { "txt" };
+            std::fs::write(img.with_extension(extension), source).unwrap();
+            hybrid::prepare_sources(&root, false, extension).unwrap();
+            let mut calls = 0;
+            let server = crate::commands::test_support::serve_n(2, move |stream, _, _| {
+                let content = if calls == 0 { if is_json { "NL: A smiling girl." } else { "A smiling girl." } } else { "A smiling girl next to a blue cup." };
+                calls += 1;
+                let body = serde_json::json!({"choices":[{"message":{"content":content},"finish_reason":"stop"}]}).to_string();
+                crate::commands::test_support::write_response(stream, "200 OK", "application/json", body.as_bytes());
+            });
+            let mut options = make_options(server.url.clone());
+            options.input_path = root.to_string_lossy().into_owned();
+            options.output_path = options.input_path.clone();
+            options.hybrid_mode = true;
+            options.caption_mode = !is_json;
+            options.nl_only = is_json;
+            options.file_format = extension.into();
+            options.gbc = Some(serde_json::from_value(serde_json::json!({"python_path":python,"detector_path":"missing","embedder_path":"missing","device":"cpu","content_type":"caption","caption_prompt":"","max_nodes":20,"max_depth":3,"max_requests":64})).unwrap());
+            let setup = r#"import json,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from gbc_worker import analysis_identity
+options=json.loads(sys.argv[2]);options.update(options.pop('gbc'));options['max_tokens']=-1
+p=Path(sys.argv[3])
+g={'vertices':[{'vertex_id':'','label':'image','bbox':{'left':0,'top':0,'right':1,'bottom':1},'descs':[{'label':'detail','text':'GBC fixture: a blue cup.'}],'out_edges':[],'in_edges':[]}], 'img_size':[64,64]}
+g['_purinbox']=analysis_identity(p,options)
+p.with_suffix('.gbc.json').write_text(json.dumps(g))
+"#;
+            assert!(std::process::Command::new(&python).arg("-c").arg(setup).arg(project.join("src-tauri/scripts")).arg(serde_json::to_value(&options).unwrap().to_string()).arg(&img).status().unwrap().success());
+            TAG_REFINE_CANCELLED.store(false, Ordering::SeqCst);
+            let app = tauri::test::mock_app();
+            let result = refine_dataset(app.handle(), options, client()).await.unwrap();
+            assert_eq!(result.success_count, 1, "{result:?}");
+            let request = server.requests.recv_timeout(std::time::Duration::from_secs(5)).unwrap().json();
+            let text = request["messages"][0]["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("smile") && !text.contains("GBC fixture"));
+            let request = server.requests.recv_timeout(std::time::Duration::from_secs(5)).unwrap().json();
+            let text = request["messages"][0]["content"][0]["text"].as_str().unwrap();
+            assert!(text.contains("GBC fixture: a blue cup.") && text.contains("A smiling girl."));
+            let written = std::fs::read_to_string(img.with_extension(extension)).unwrap();
+            if is_json {
+                let mut expected: serde_json::Value = serde_json::from_str(source).unwrap();
+                set_json_nl(&mut expected, "A smiling girl next to a blue cup.");
+                assert_eq!(serde_json::from_str::<serde_json::Value>(&written).unwrap(), expected);
+            } else { assert_eq!(written.trim(), "A smiling girl next to a blue cup."); }
+            assert!(!hybrid::draft_path(&img, extension).exists());
+        }
     }
 
     #[tokio::test]

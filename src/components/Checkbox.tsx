@@ -47,6 +47,7 @@ export default function Checkbox({
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
+          boxSizing: 'border-box',
           width: size,
           height: size,
           borderRadius: size * 0.25,
@@ -62,13 +63,15 @@ export default function Checkbox({
           width={size * 0.6}
           height={size * 0.6}
           style={{
+            display: 'block',
+            flexShrink: 0,
             opacity: checked ? 1 : 0,
             transform: checked ? 'scale(1)' : 'scale(0.5)',
             transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
           }}
         >
           <polyline
-            points="2.5 6.5 5 9 9.5 4"
+            points="2.5 6 5 8.5 9.5 3.5"
             fill="none"
             stroke="#fff"
             strokeWidth="1.8"

@@ -5,6 +5,7 @@ const SETTINGS_KEY = 'hybrid_tagger_settings_v1';
 
 /** 数值项沿用字符串存储，与早先版本保存的设置互相兼容 */
 export interface HybridSettings {
+  gbcEnabled?: boolean;
   modelId?: string;
   genTh?: number;
   charTh?: number;

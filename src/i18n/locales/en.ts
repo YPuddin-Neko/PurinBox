@@ -499,7 +499,6 @@ const en = {
 
   tagSort: {
     inputDir: 'Input Directory (with .txt tag files)',
-    inputPlaceholder: 'Select folder with tag files...',
     outputDir: 'Output Directory',
     outputPlaceholder: 'Select output folder for sorted tags...',
     promptTitle: 'Model Prompt',
@@ -521,7 +520,6 @@ const en = {
 
   tagRefine: {
     inputDir: 'Image folder (with images and .txt tag files)',
-    inputPlaceholder: 'Select folder containing images and tags...',
     outputDir: 'Output directory',
     outputPlaceholder: 'Select output folder...',
     promptTitle: 'Refine prompt',
@@ -715,6 +713,30 @@ const en = {
     excludeTagsTip: 'Exclude these tags from results, comma separated',
   },
 
+  gbc: {
+    refineTab: "GBC refinement",
+    analysisSettings: "GBC analysis settings",
+    refineButton: "Start refinement",
+    refining: "Refining…",
+    refineStart: "Starting GBC refinement, model: {{model}}",
+
+    max_nodes: 'Maximum nodes',
+    max_depth: 'Exploration depth',
+    max_nodesHelp: 'Budget for full-image and object-region description nodes. A node may describe the whole image, a person or clothing; this is not the tag count or final box count. Default: 20. Higher values may add detail, processing time and API usage.',
+    max_depthHelp: 'Limit how many levels of subregions are explored. The full image is level 0; a person may be level 1 and their clothing level 2. Default: 3. Deeper exploration may add local detail, processing time and API usage.',
+
+    environment: 'GBC caption refinement',
+    notInstalled: 'Not installed',
+    modelsMissing: 'Environment installed; local models missing',
+    ready: 'Environment and models ready',
+    enhance: 'Refine captions with GBC',
+    naturalPresetRequired: 'Select a preset that generates natural-language captions',
+    regionBoxes: 'Region boxes',
+    install: "Install separate environment",
+    installing: "Installing dependencies…",
+    cancelInstall: "Cancel installation",
+    structuredReadonly: 'GBC / Layout · Read only',
+  },
   llmTagger: {
     systemPrompt: 'System Prompt',
     userPrompt: 'User Prompt',

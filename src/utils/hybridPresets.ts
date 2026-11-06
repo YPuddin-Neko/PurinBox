@@ -16,6 +16,7 @@ export interface HybridPromptMode {
 }
 
 export interface HybridVlmValues {
+  gbcEnabled?: boolean;
   prompt: string;
   triggerWord: string;
   shortReplyThreshold: number;
@@ -65,6 +66,7 @@ export function applyHybridPreset(preset: HybridPromptPreset, current: HybridVlm
   const sampling = preset.sampling;
   const format = isOneOf(OUTPUT_CHOICES, preset.outputFormat) ? preset.outputFormat : current.outputFormat;
   return {
+    gbcEnabled: typeof preset.gbcEnabled === 'boolean' ? preset.gbcEnabled : current.gbcEnabled ?? false,
     prompt: preset.prompt,
     triggerWord: typeof preset.triggerWord === 'string' ? preset.triggerWord : current.triggerWord,
     shortReplyThreshold: storedCount(preset.shortReplyThreshold, current.shortReplyThreshold, SHORT_REPLY_THRESHOLD.max),
@@ -86,7 +88,7 @@ export function saveHybridPreset(
 ): HybridPromptPreset[] {
   const existing = presets.find(p => p.name === name);
   const preset: HybridPromptPreset = {
-    id: existing?.id ?? id, name,
+    id: existing?.id ?? id, name, gbcEnabled: values.gbcEnabled ?? false,
     prompt: values.prompt, triggerWord: values.triggerWord, shortReplyThreshold: values.shortReplyThreshold,
     sampling: { ...values.sampling }, outputFormat: compatibleHybridFormat(mode, values.outputFormat),
     skipExisting: values.skipExisting,

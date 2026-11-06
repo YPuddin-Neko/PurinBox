@@ -214,3 +214,7 @@
   .tagger-category, .tag-chip, .tag-chip-remove, .tag-chip-add, .tag-stat-row,
   .tag-stat-bar, .tag-image-grid-item, .tag-option { transition: none; }
 }
+
+.bbox-overlay { position: absolute; pointer-events: none; overflow: hidden; }
+.bbox-region { position: absolute; border-width: 2px; box-sizing: border-box; }
+.bbox-label { position: absolute; left: -2px; top: -2px; width: max-content; padding: 1px 4px; color: #101820; font-size: 12px; font-weight: 700; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

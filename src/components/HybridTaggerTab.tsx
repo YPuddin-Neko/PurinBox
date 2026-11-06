@@ -1,3 +1,5 @@
+import GbcAnalysisFields, { useGbcAnalysisLimits } from './GbcAnalysisFields';
+import { useGbcOptions } from '../hooks/useGbcOptions';
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Hash, Save, Trash2 } from 'lucide-react';
@@ -65,6 +67,7 @@ export default function HybridTaggerTab() {
   if (savedRef.current === undefined) savedRef.current = loadHybridSettings();
   const saved = savedRef.current;
   const sv = saved ?? {};
+  const [gbcEnabled, setGbcEnabled] = useState(sv.gbcEnabled ?? false);
   const [customPresets, setCustomPresets] = useState<HybridPromptPreset[]>(loadCustomPresets);
   const [restored] = useState(() => restoreHybridSelection(sv, customPresets));
   const initialFormat = restored.outputFormat;
@@ -76,6 +79,8 @@ export default function HybridTaggerTab() {
     categories: sv.enabledCats?.filter(isTaggerCategory),
   });
   const [useGpu, setUseGpu] = useState(sv.useGpu ?? true);
+  const [gbcLimits, setGbcLimits] = useGbcAnalysisLimits();
+  const gbc = { ...useGbcOptions(useGpu), ...gbcLimits };
   const [replaceUnderscore, setReplaceUnderscore] = useState(sv.replaceUnderscore ?? true);
   const [escapeParentheses, setEscapeParentheses] = useState(sv.escapeParentheses ?? false);
   const [preferExisting, setPreferExisting] = useState(sv.preferExisting ?? true);
@@ -139,10 +144,10 @@ export default function HybridTaggerTab() {
       temperature: String(sampling.temperature), topP: String(sampling.topP), imageSize: String(sampling.imageSize),
       shortReplyThreshold: String(shortReplyThreshold),
       imageDetail: sampling.imageDetail, concurrency: String(sampling.concurrency), intervalSec: String(sampling.intervalSec),
-      outputFormat, presetId, prompt,
+      outputFormat, presetId, prompt, gbcEnabled,
     });
   }, [selectedModel, genTh, charTh, useGpu, replaceUnderscore, escapeParentheses, preferExisting, skipExisting,
-    enabledCats, api.modelName, sampling, outputFormat, shortReplyThreshold, presetId, prompt]);
+    enabledCats, api.modelName, sampling, outputFormat, shortReplyThreshold, presetId, prompt, gbcEnabled]);
 
   // 准备与本地打标走 tagger-progress，VLM 调优走 tag-refine-progress，统一进日志与进度条
   useEffect(() => {
@@ -170,7 +175,6 @@ export default function HybridTaggerTab() {
   useTaggerDownloadLog(() => phaseRef.current === 'converting' || phaseRef.current === 'tagging', taskLogs);
 
   const isJson = outputFormat !== 'txt';
-  const canStart = !!inputPath && !!selectedModel && api.ready && enabledCats.size > 0;
 
   // 内置预设随输出格式变化：完整调优在 txt 下只调标签（txt 没有 nl 字段），JSON 下兼补 nl；
   // 归类字段与仅补 nl 依赖 JSON 的字段结构，详细自然语言打标只用于 txt
@@ -189,8 +193,11 @@ export default function HybridTaggerTab() {
   const captionMode = !!activePreset?.captionMode;
   const preserveTags = !!activePreset?.preserveTags;
   const nlOnly = !!activePreset?.nlOnly;
+  const supportsNaturalLanguage = captionMode || (isJson && !preserveTags);
+  const refineWithGbc = gbcEnabled && supportsNaturalLanguage;
+  const canStart = !!inputPath && !!selectedModel && api.ready && enabledCats.size > 0;
 
-  const vlmValues: HybridVlmValues = { prompt, triggerWord, shortReplyThreshold, sampling, outputFormat, skipExisting };
+  const vlmValues: HybridVlmValues = { prompt, triggerWord, shortReplyThreshold, sampling, outputFormat, skipExisting, gbcEnabled };
 
   const applyPreset = (id: string) => {
     if (processing) return;
@@ -198,6 +205,7 @@ export default function HybridTaggerTab() {
     if (!preset) return;
     const next = applyHybridPreset(preset, vlmValues, preferExisting);
     setPresetId(id);
+    setGbcEnabled(next.gbcEnabled ?? false);
     setPrompt(next.prompt);
     setTriggerWord(next.triggerWord);
     setShortReplyThreshold(next.shortReplyThreshold);
@@ -343,6 +351,7 @@ export default function HybridTaggerTab() {
           // 只归类不增删：标签集合由后端保证恒定（仅 JSON 有字段结构）
           preserve_tags: isJson && preserveTags,
           nl_only: isJson && nlOnly,
+          ...(refineWithGbc ? { gbc } : {}),
           hybrid_mode: true,
           skip_existing_labels: preferExisting && skipExisting,
         } satisfies TagRefineOptions,
@@ -433,7 +442,8 @@ export default function HybridTaggerTab() {
       <div className="tool-panel">
         <div className="tool-panel-header">
           <span className="tool-panel-title">{t('hybridTagger.llmPhase')}</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
+            <span style={{ display: 'inline-flex', marginRight: 'var(--space-3)' }} title={!supportsNaturalLanguage ? t('gbc.naturalPresetRequired') : undefined}><Checkbox checked={refineWithGbc} onChange={setGbcEnabled} disabled={processing || !supportsNaturalLanguage} label={t('gbc.enhance')} size={14} style={{ lineHeight: '20px' }} /></span>
             <CustomSelect compact value={presetId} onChange={applyPreset}
               options={allPresets.map(p => ({ value: p.id, label: p.name }))} style={{ width: 190 }} />
             <button className="btn btn-ghost btn-sm" style={{ fontSize: 10, padding: '4px 6px' }}
@@ -473,6 +483,7 @@ export default function HybridTaggerTab() {
                 />
               </div>
             } />
+            {refineWithGbc && <GbcAnalysisFields value={gbcLimits} onChange={setGbcLimits} disabled={processing} />}
             <div style={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
               <div style={{ flex: '1 1 100px', minWidth: 0 }}>
                 <label htmlFor="hybrid-trigger-word" className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>

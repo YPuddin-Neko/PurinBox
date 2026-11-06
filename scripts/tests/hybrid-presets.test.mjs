@@ -27,6 +27,7 @@ await build({
   plugins: [{
     name: 'hybrid-fixture',
     setup(build) {
+      build.onLoad({ filter: /\/useGbcOptions\.ts$/ }, () => ({ contents: `export const useGbcOptions = useGpu => ({ python_path: '/fixture/python', detector_path: '/fixture/owl', embedder_path: '/fixture/embed', device: useGpu ? 'cuda' : 'cpu', content_type: 'caption', caption_prompt: '', max_nodes: 20, max_depth: 3, max_requests: 64 });`, loader: 'ts' }));
       build.onLoad({ filter: /\/HybridTaggerTab\.tsx$/ }, ({ path }) => {
         const source = readFileSync(path, 'utf8');
         const initializer = "const [inputPath, setInputPath] = useState('');";
@@ -69,11 +70,13 @@ Object.defineProperty(globalThis, 'localStorage', {
 });
 const lib = require(outfile);
 const base = {
+  gbcEnabled: false,
   prompt: 'Original prompt', triggerWord: 'original', shortReplyThreshold: 100,
   sampling: { temperature: 0.3, topP: 0, imageSize: 1024, imageDetail: '', concurrency: 1, intervalSec: -1 },
   outputFormat: 'txt', skipExisting: false,
 };
 const configured = {
+  gbcEnabled: false,
   prompt: 'Return NL: description', triggerWord: 'saved', shortReplyThreshold: 37,
   sampling: { temperature: 1.25, topP: 0.65, imageSize: 2048, imageDetail: 'original', concurrency: 4, intervalSec: 3 },
   outputFormat: 'json_simplified', skipExisting: true,
@@ -251,4 +254,33 @@ test('restored presets produce the actual expected invoke options for every outp
     globalThis.window = oldWindow;
     delete globalThis.hybridFixture;
   }
+});
+
+test('GBC checkbox survives preset round-trip and explicit disabling', () => {
+ const [saved] = lib.saveHybridPreset([], 'GBC', 'gbc', {...configured, gbcEnabled:true}, {nlOnly:true});
+ assert.equal(lib.applyHybridPreset(saved, base, true).gbcEnabled,true);
+ assert.equal(lib.applyHybridPreset({...saved,gbcEnabled:false},{...base,gbcEnabled:true},true).gbcEnabled,false);
+ assert.equal(lib.applyHybridPreset({id:'old',name:'old',prompt:'old'},{...base,gbcEnabled:true},true).gbcEnabled,true);
+});
+
+test('GBC checkbox reaches the real refine command only for natural-language output modes', async () => {
+ const oldStorage=globalThis.localStorage, oldWindow=globalThis.window;
+ try {
+  globalThis.window={dispatchEvent(){}};
+  for (const useGpu of [false, true]) for (const [presetId,outputFormat,enabled] of [['builtin_caption','txt',true],['builtin_nl','json',true],['builtin_full','json',true],['builtin_full','txt',false],['builtin_sort','json',false]]) {
+   const store=new Map([['hybrid_tagger_settings_v1',JSON.stringify({modelId:'fixture-local',presetId,outputFormat,gbcEnabled:true,useGpu})], ['gbc_analysis_limits',JSON.stringify({max_nodes:12,max_depth:2})]]);
+   globalThis.localStorage={getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)};
+   globalThis.hybridFixture={calls:[]};lib.render();await globalThis.hybridFixture.start();
+   const options=globalThis.hybridFixture.calls.find(c=>c.command==='start_tag_refining').args.options;
+   assert.equal(Boolean(options.gbc),enabled,presetId+'/'+outputFormat);
+   if(enabled) {
+    assert.equal(options.gbc.detector_path,'/fixture/owl');
+    assert.equal(options.gbc.device,useGpu ? 'cuda' : 'cpu');
+    assert.equal(options.gbc.content_type,'caption');
+    assert.equal(options.gbc.max_nodes,12);
+    assert.equal(options.gbc.max_depth,2);
+    assert.equal(options.gbc.max_requests,64);
+   }
+  }
+ } finally {globalThis.localStorage=oldStorage;globalThis.window=oldWindow;delete globalThis.hybridFixture;}
 });

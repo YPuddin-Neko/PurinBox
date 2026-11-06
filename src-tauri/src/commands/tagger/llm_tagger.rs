@@ -11,10 +11,14 @@ use crate::commands::{collect_image_files_with_recursive, file_name_lossy, Probl
 
 const EVENT: &str = "llm-tagger-progress";
 
-static LLM_CANCELLED: AtomicBool = AtomicBool::new(false);
+pub(super) static LLM_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmTaggerOptions {
+    #[serde(default)]
+    pub refine_existing: bool,
+    #[serde(default)]
+    pub gbc: Option<super::gbc::GbcSettings>,
     pub input_path: String,
     pub api_endpoint: String,
     pub api_key: String,
@@ -54,6 +58,48 @@ pub struct LlmTaggerOptions {
     pub image_detail: String,
 }
 
+impl LlmTaggerOptions {
+    pub(super) fn event(&self) -> &'static str {
+        if self.refine_existing { "gbc-refine-progress" } else { EVENT }
+    }
+}
+
+fn existing_input(path: &Path, format: &str) -> Result<(String, Option<serde_json::Value>, String), String> {
+    let original = std::fs::read_to_string(path.with_extension(format)).map_err(|e| format!("无法读取已有标签：{}", e))?;
+    if original.trim().is_empty() { return Err("已有标签为空".into()); }
+    if format == "txt" { return Ok((original.clone(), None, original)); }
+    let value: serde_json::Value = serde_json::from_str(&original).map_err(|e| format!("JSON 标签无效：{}", e))?;
+    if !value.is_object() || crate::commands::tag_manager::is_structured_caption(&value) {
+        return Err("请选择包含自然语言或标签的 JSON 文件".into());
+    }
+    let body = if value.get("ai_output").is_some() {
+        value.get("ai_output").filter(|v| v.is_object()).ok_or("ai_output 必须是 JSON 对象")?
+    } else { &value };
+    let caption = body.get("nl").and_then(|v| v.as_str()).filter(|v| !v.trim().is_empty());
+    let reference = if let Some(caption) = caption { caption.to_owned() }
+        else if body.get("tags").is_some_and(|v| match v { serde_json::Value::Array(a) => !a.is_empty(), serde_json::Value::Object(o) => !o.is_empty(), serde_json::Value::String(s) => !s.trim().is_empty(), _ => false }) {
+            format!("Existing image tags: {}", body["tags"])
+        } else { return Err("JSON 中没有可细化的自然语言或标签".into()); };
+    Ok((reference, Some(value), original))
+}
+
+fn existing_format(image: &Path) -> Option<&'static str> {
+    if image.with_extension("json").is_file() { Some("json") }
+    else if image.with_extension("txt").is_file() { Some("txt") }
+    else { None }
+}
+
+fn existing_files(options: &LlmTaggerOptions) -> Result<Vec<PathBuf>, String> {
+    let input = PathBuf::from(&options.input_path);
+    let files: Vec<_> = collect_image_files_with_recursive(&input, options.recursive)?.into_iter().filter(|p| existing_format(p).is_some()).collect();
+    let mut targets = HashSet::new();
+    for path in &files {
+        if !targets.insert(path.with_extension(existing_format(path).unwrap())) { return Err("存在共用同一标签文件的重名图片，请先区分文件名".into()); }
+    }
+    if files.is_empty() { return Err("未找到带有同名 TXT 或 JSON 标签的图片".into()); }
+    Ok(files)
+}
+
 fn default_image_size() -> u32 {
     1024
 }
@@ -70,6 +116,7 @@ fn default_concurrency() -> u32 {
 #[tauri::command]
 pub fn cancel_llm_tagging() {
     LLM_CANCELLED.store(true, Ordering::SeqCst);
+    super::gbc::cancel();
 }
 
 #[tauri::command]
@@ -80,7 +127,13 @@ pub async fn start_llm_tagging(
     static LLM_RUNNING: AtomicBool = AtomicBool::new(false);
     let _busy = crate::commands::BusyGuard::acquire(&LLM_RUNNING, "LLM 打标")?;
     LLM_CANCELLED.store(false, Ordering::SeqCst);
-    crate::commands::begin_run(EVENT);
+    if options.refine_existing && options.gbc.as_ref().is_none_or(|g| g.content_type != "caption") {
+        return Err("GBC 细化需要自然语言分析配置".into());
+    }
+    crate::commands::begin_run(options.event());
+    if options.gbc.as_ref().is_some_and(|g| g.content_type != "caption") {
+        return tauri::async_runtime::spawn_blocking(move || super::gbc::run(app, options)).await.map_err(|e| e.to_string())?;
+    }
     let client = llm_client::llm_http_client()?;
     run_llm_tagging(&app, options, client).await
 }
@@ -90,15 +143,17 @@ async fn run_llm_tagging<R: tauri::Runtime>(
     options: LlmTaggerOptions,
     client: reqwest::Client,
 ) -> Result<LlmBatchResult, String> {
-    let input_dir = PathBuf::from(&options.input_path);
-    let files = collect_image_files_with_recursive(&input_dir, options.recursive)?;
+    let event = options.event();
+    let input = PathBuf::from(&options.input_path);
+    let input_dir = if input.is_file() { input.parent().unwrap().to_path_buf() } else { input.clone() };
+    let files = if options.refine_existing { existing_files(&options)? } else { collect_image_files_with_recursive(&input, options.recursive)? };
     let total = files.len() as u32;
     ProgressEvent::new("info", format!("读取到 {} 张图片", total))
         .at(0, total)
-        .emit(app, EVENT);
+        .emit(app, event);
 
     // 开始前一次定下要跳过的图片：本轮写出的标签不影响其他图片的判断
-    let skipped: Arc<HashSet<PathBuf>> = Arc::new(if options.skip_existing {
+    let skipped: Arc<HashSet<PathBuf>> = Arc::new(if options.skip_existing && !options.refine_existing {
         files
             .iter()
             .filter(|path| super::has_labels(path))
@@ -107,17 +162,23 @@ async fn run_llm_tagging<R: tauri::Runtime>(
     } else {
         HashSet::new()
     });
+    let analyzer = if options.gbc.is_some() {
+        let (app, config) = (app.clone(), options.clone());
+        Some(Arc::new(std::sync::Mutex::new(tauri::async_runtime::spawn_blocking(move || super::gbc::Analyzer::start_llm(&app, &config)).await.map_err(|e| e.to_string())??)))
+    } else { None };
     let recursive = options.recursive;
-    let concurrency = options.concurrency.max(1) as usize;
+    let concurrency = if analyzer.is_some() { 1 } else { options.concurrency.max(1) as usize };
     let throttle = Arc::new(RequestThrottle::new(options.request_interval_ms));
+    let completion = if options.refine_existing { "GBC 细化完成" } else { "LLM 打标完成" };
     let options = Arc::new(options);
     let outcome = llm_batch::run_file_batch(
         app,
-        EVENT,
+        event,
         &files,
         concurrency,
         &LLM_CANCELLED,
         move |path| {
+            let analyzer = analyzer.clone();
             let (client, options, throttle, skipped) = (
                 client.clone(),
                 options.clone(),
@@ -131,15 +192,21 @@ async fn run_llm_tagging<R: tauri::Runtime>(
                         warning: false,
                     };
                 }
-                tag_file(&client, &path, &options, &throttle).await
+                if options.refine_existing {
+                    let mut current = (*options).clone();
+                    current.output_format = existing_format(&path).unwrap_or("txt").into();
+                    tag_file(&client, &path, &current, &throttle, analyzer).await
+                } else {
+                    tag_file(&client, &path, &options, &throttle, analyzer).await
+                }
             }
         },
     )
     .await;
     Ok(outcome.finish(
         app,
-        EVENT,
-        "LLM 打标完成",
+        event,
+        completion,
         &ProblemArchive::new(&input_dir, &input_dir, recursive),
     ))
 }
@@ -150,14 +217,32 @@ async fn tag_file(
     path: &Path,
     options: &LlmTaggerOptions,
     throttle: &RequestThrottle,
+    analyzer: Option<super::gbc::SharedAnalyzer>,
 ) -> ItemOutcome {
     let filename = file_name_lossy(path);
     let start = std::time::Instant::now();
     let written = async {
-        let text = tag_with_llm(client, path, options, throttle).await?;
-        let content = format_output(&text, options)?;
+        let existing = if options.refine_existing { Some(existing_input(path, &options.output_format)?) } else { None };
+        let text = if let Some((reference, _, _)) = &existing { reference.clone() } else { tag_with_llm(client, path, options, throttle).await? };
+        let mut content = if let Some((_, _, original)) = &existing { original.clone() } else { format_output(&text, options)? };
+        let mut warning_text = text.clone();
+        if let Some(analyzer) = analyzer {
+            let mut json = if options.output_format == "json" { Some(serde_json::from_str::<serde_json::Value>(&content).map_err(|e| e.to_string())?) } else { None };
+            let simple = if options.refine_existing { json.as_ref().is_none_or(|v| v.get("ai_output").is_none()) } else { options.json_simplified };
+            let caption = if options.refine_existing { text.as_str() } else { match &json {
+                Some(value) => if options.json_simplified { value["nl"].as_str() } else { value["ai_output"]["nl"].as_str() }.unwrap_or(""),
+                None => &content,
+            } };
+            let params = ChatParams { endpoint: &options.api_endpoint, api_key: &options.api_key, model: &options.model_name, temperature: options.temperature, max_tokens: options.max_tokens, top_p: options.top_p };
+            let refined = super::gbc::refine_caption(analyzer, client, path, caption, &params, throttle, &LLM_CANCELLED, options.image_size, &options.image_detail).await?;
+            warning_text = refined.clone();
+            if let Some(value) = &mut json {
+                if simple { value["nl"] = refined.into(); } else { value["ai_output"]["nl"] = refined.into(); }
+                content = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
+            } else { content = refined; }
+        }
         let warnings: Vec<String> =
-            llm_client::short_reply_warning(llm_client::response_word_count(&text), options.short_reply_threshold)
+            llm_client::short_reply_warning(llm_client::response_word_count(&warning_text), options.short_reply_threshold)
                 .into_iter()
                 .collect();
         // 回复到达前用户点了取消：不再写盘
@@ -169,6 +254,11 @@ async fn tag_file(
         } else {
             "txt"
         });
+        if let Some((_, _, original)) = existing {
+            if std::fs::read_to_string(&output).map_err(|e| e.to_string())? != original {
+                return Err("标签文件在处理期间发生变化，未覆盖".into());
+            }
+        }
         crate::commands::config_paths::write_file_atomic(&output, content.as_bytes())
             .map(|()| warnings)
             .map_err(|e| ChatError::Other(format!("写入失败 {}", e)))
@@ -263,6 +353,155 @@ mod tests {
 
     fn parse(text: &str, opts: &LlmTaggerOptions) -> serde_json::Value {
         serde_json::from_str(&format_output(text, opts).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires env/gbc; uses cached graphs and a local mock VLM"]
+    async fn gbc_caption_refinement_preserves_json_tags_and_failed_outputs() {
+        let project = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let python = project.join(if cfg!(windows) { "env/gbc/Scripts/python.exe" } else { "env/gbc/bin/python" });
+        for (format, simple) in [("txt", false), ("json", false), ("json", true)] {
+            for fail in [false, true] {
+                let root = TempDir::new("gbc_caption_refine");
+                let image = root.join("image.png");
+                image::RgbImage::new(32, 16).save(&image).unwrap();
+                std::fs::write(image.with_extension(format), "original sidecar").unwrap();
+                let first = if format == "txt" { "A girl." } else { r#"{"tags":["solo"],"nl":"A girl."}"# };
+                let mut calls = 0;
+                let server = crate::commands::test_support::serve_n(2, move |stream, _, _| {
+                    let content = if calls == 0 { first } else if fail { "" } else { "A girl next to a blue cup." };
+                    calls += 1;
+                    let body = json!({"choices":[{"message":{"content":content},"finish_reason":"stop"}]}).to_string();
+                    crate::commands::test_support::write_response(stream, "200 OK", "application/json", body.as_bytes());
+                });
+                let mut opts = options();
+                opts.input_path = root.to_string_lossy().into_owned();
+                opts.api_endpoint = server.url.clone();
+                opts.output_format = format.into(); opts.json_simplified = simple;
+                opts.gbc = Some(serde_json::from_value(json!({"python_path":python,"detector_path":"missing","embedder_path":"missing","device":"cpu","content_type":"caption","caption_prompt":"","max_nodes":20,"max_depth":3,"max_requests":64})).unwrap());
+                let setup = r#"import json,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from gbc_worker import analysis_identity
+options=json.loads(sys.argv[2]);options.update(options.pop('gbc'))
+p=Path(sys.argv[3])
+g={'vertices':[{'vertex_id':'','label':'image','bbox':{'left':0,'top':0,'right':1,'bottom':1},'descs':[{'label':'detail','text':'GBC fixture: a blue cup.'}],'out_edges':[],'in_edges':[]}], 'img_size':[32,16]}
+g['_purinbox']=analysis_identity(p,options)
+p.with_suffix('.gbc.json').write_text(json.dumps(g))
+"#;
+                assert!(std::process::Command::new(&python).arg("-c").arg(setup).arg(project.join("src-tauri/scripts")).arg(serde_json::to_value(&opts).unwrap().to_string()).arg(&image).status().unwrap().success());
+                LLM_CANCELLED.store(false, Ordering::SeqCst);
+                let app = tauri::test::mock_app();
+                let result = run_llm_tagging(app.handle(), opts.clone(), client()).await.unwrap();
+                let written = std::fs::read_to_string(image.with_extension(format)).unwrap();
+                if fail { assert_eq!(result.success_count, 0); assert_eq!(written, "original sidecar"); }
+                else if format == "txt" { assert_eq!(written, "A girl next to a blue cup."); }
+                else {
+                    let mut expected = parse(first, &opts);
+                    if simple { expected["nl"] = json!("A girl next to a blue cup."); } else { expected["ai_output"]["nl"] = json!("A girl next to a blue cup."); }
+                    assert_eq!(serde_json::from_str::<serde_json::Value>(&written).unwrap(), expected);
+                }
+                let _first = server.requests.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+                let second = server.requests.recv_timeout(std::time::Duration::from_secs(5)).unwrap().json();
+                let text = second["messages"][0]["content"][0]["text"].as_str().unwrap();
+                assert!(text.contains("A girl.") && text.contains("GBC fixture: a blue cup."));
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires env/gbc; uses cached graphs and a local mock VLM"]
+    async fn gbc_existing_refines_without_initial_generation() {
+        let project = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let python = project.join(if cfg!(windows) { "env/gbc/Scripts/python.exe" } else { "env/gbc/bin/python" });
+        for (format, simple) in [("txt", false), ("json", false), ("json", true)] {
+            for fail in [false, true] {
+                let root = TempDir::new("gbc_caption_refine");
+                let image = root.join("image.png");
+                image::RgbImage::new(32, 16).save(&image).unwrap();
+                let original = if format == "txt" { "A girl.".to_owned() } else if simple { r#"{"tags":["solo"],"nl":"A girl.","custom":{"keep":true}}"#.to_owned() } else { r#"{"ai_output":{"tags":["solo"],"nl":"A girl."},"custom":{"keep":true}}"#.to_owned() };
+                std::fs::write(image.with_extension(format), &original).unwrap();
+                let server = crate::commands::test_support::serve_n(1, move |stream, _, _| {
+                    let content = if fail { "" } else { "A girl next to a blue cup." };
+                    let body = json!({"choices":[{"message":{"content":content},"finish_reason":"stop"}]}).to_string();
+                    crate::commands::test_support::write_response(stream, "200 OK", "application/json", body.as_bytes());
+                });
+                let mut opts = options();
+                opts.refine_existing = true;
+                opts.input_path = image.to_string_lossy().into_owned();
+                opts.api_endpoint = server.url.clone();
+                opts.output_format = format.into(); opts.json_simplified = simple;
+                opts.gbc = Some(serde_json::from_value(json!({"python_path":python,"detector_path":"missing","embedder_path":"missing","device":"cpu","content_type":"caption","caption_prompt":"","max_nodes":20,"max_depth":3,"max_requests":64})).unwrap());
+                let setup = r#"import json,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from gbc_worker import analysis_identity
+options=json.loads(sys.argv[2]);options.update(options.pop('gbc'))
+p=Path(sys.argv[3])
+g={'vertices':[{'vertex_id':'','label':'image','bbox':{'left':0,'top':0,'right':1,'bottom':1},'descs':[{'label':'detail','text':'GBC fixture: a blue cup.'}],'out_edges':[],'in_edges':[]}], 'img_size':[32,16]}
+g['_purinbox']=analysis_identity(p,options)
+p.with_suffix('.gbc.json').write_text(json.dumps(g))
+"#;
+                assert!(std::process::Command::new(&python).arg("-c").arg(setup).arg(project.join("src-tauri/scripts")).arg(serde_json::to_value(&opts).unwrap().to_string()).arg(&image).status().unwrap().success());
+                LLM_CANCELLED.store(false, Ordering::SeqCst);
+                let app = tauri::test::mock_app();
+                let result = run_llm_tagging(app.handle(), opts.clone(), client()).await.unwrap();
+                let written = std::fs::read_to_string(image.with_extension(format)).unwrap();
+                if fail { assert_eq!(result.success_count, 0); assert_eq!(written, original); }
+                else if format == "txt" { assert_eq!(written, "A girl next to a blue cup."); }
+                else {
+                    let mut expected: serde_json::Value = serde_json::from_str(&original).unwrap();
+                    if simple { expected["nl"] = json!("A girl next to a blue cup."); } else { expected["ai_output"]["nl"] = json!("A girl next to a blue cup."); }
+                    assert_eq!(serde_json::from_str::<serde_json::Value>(&written).unwrap(), expected);
+                }
+                let second = server.requests.recv_timeout(std::time::Duration::from_secs(5)).unwrap().json();
+                let text = second["messages"][0]["content"][0]["text"].as_str().unwrap();
+                assert!(text.contains("A girl.") && text.contains("GBC fixture: a blue cup."));
+                assert!(server.requests.try_recv().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn existing_labels_validate_and_preserve_source_structure() {
+        let root = TempDir::new("gbc_existing_sources");
+        let image = root.join("sample.png");
+        image::RgbImage::new(8, 8).save(&image).unwrap();
+        let source = image.with_extension("json");
+        for value in [json!({"tags":["girl","red dress"],"custom":42}), json!({"ai_output":{"tags":["girl"]},"custom":42})] {
+            let raw = value.to_string();
+            std::fs::write(&source, &raw).unwrap();
+            let (reference, parsed, original) = existing_input(&image, "json").unwrap();
+            assert!(reference.contains("girl"));
+            assert_eq!(parsed, Some(value)); assert_eq!(original, raw);
+        }
+        for raw in ["{", "{}", r#"{"vertices":[]}"#, r#"{"ai_output":null}"#, r#"{"nl":"","tags":[]}"#] {
+            std::fs::write(&source, raw).unwrap();
+            assert!(existing_input(&image, "json").is_err());
+        }
+        let mut opts = options(); opts.refine_existing = true;
+        opts.input_path = image.to_string_lossy().into_owned();
+        assert_eq!(existing_files(&mut opts).unwrap(), vec![image.clone()]);
+        assert_eq!(opts.event(), "gbc-refine-progress");
+        std::fs::write(image.with_extension("txt"), "also present").unwrap();
+        assert_eq!(existing_format(&image), Some("json"));
+        let txt_image = root.join("txt_only.png");
+        image::RgbImage::new(8, 8).save(&txt_image).unwrap();
+        std::fs::write(txt_image.with_extension("txt"), "A tree.").unwrap();
+        assert_eq!(existing_format(&txt_image), Some("txt"));
+        opts.input_path = root.to_string_lossy().into_owned();
+        let mixed = existing_files(&opts).unwrap();
+        assert!(mixed.contains(&image) && mixed.contains(&txt_image));
+        std::fs::remove_file(&txt_image).unwrap();
+        opts.input_path = image.to_string_lossy().into_owned();
+        image::RgbImage::new(8, 8).save(image.with_extension("jpg")).unwrap();
+        assert_eq!(existing_files(&opts).unwrap(), vec![image.clone()]);
+        opts.input_path = root.to_string_lossy().into_owned();
+        assert!(existing_files(&mut opts).is_err());
+        std::fs::remove_file(&image).unwrap();
+        std::fs::remove_file(image.with_extension("jpg")).unwrap();
+        opts.input_path = image.to_string_lossy().into_owned();
+        assert!(existing_files(&mut opts).is_err());
     }
 
     #[test]
@@ -389,7 +628,7 @@ mod tests {
                 opts.api_endpoint = server.url.clone();
                 opts.output_format = format.into();
                 opts.json_simplified = simplified;
-                let result = tag_file(&client(), &path, &opts, &RequestThrottle::new(-1)).await;
+                let result = tag_file(&client(), &path, &opts, &RequestThrottle::new(-1), None).await;
                 match result {
                     ItemOutcome::Done { message, warning } => {
                         assert_eq!(warning, count < threshold, "{message}");

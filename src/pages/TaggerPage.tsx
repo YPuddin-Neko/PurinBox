@@ -1,3 +1,4 @@
+import GbcRefineTab from '../components/GbcRefineTab';
 import { useState } from 'react';
 import SegmentedTabs from '../components/ui/SegmentedTabs';
 import PageHeader from '../components/ui/PageHeader';
@@ -16,6 +17,7 @@ export default function TaggerPage() {
   const tabs = [
     { id: 'ai', label: t('tagger.aiTab') },
     { id: 'llm', label: t('tagger.llmTab') },
+    { id: 'gbc', label: t('gbc.refineTab') },
     ...(hybridTaggerEnabled ? [{ id: 'hybrid', label: t('tagger.hybridTab') }] : []),
   ];
 
@@ -28,6 +30,7 @@ export default function TaggerPage() {
       <SegmentedTabs tabs={tabs} value={tab} onChange={setActiveTab} style={{ marginBottom: 'var(--space-4)' }} />
       <div style={{ display: tab === 'ai' ? 'block' : 'none' }}><AiTaggerTab /></div>
       <div style={{ display: tab === 'llm' ? 'block' : 'none' }}><LlmTaggerTab /></div>
+      <div style={{ display: tab === 'gbc' ? 'block' : 'none' }}><GbcRefineTab /></div>
       <div style={{ display: tab === 'hybrid' ? 'block' : 'none' }}><HybridTaggerTab /></div>
     </div>
   );

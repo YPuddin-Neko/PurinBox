@@ -499,7 +499,6 @@ const ja = {
 
   tagSort: {
     inputDir: '入力ディレクトリ（.txtタグファイル含む）',
-    inputPlaceholder: 'タグファイルのあるフォルダを選択...',
     outputDir: '出力ディレクトリ',
     outputPlaceholder: 'ソート後の出力フォルダを選択...',
     promptTitle: 'モデルプロンプト',
@@ -521,7 +520,6 @@ const ja = {
 
   tagRefine: {
     inputDir: '画像フォルダ（画像と .txt タグファイル含む）',
-    inputPlaceholder: '画像とタグのフォルダを選択...',
     outputDir: '出力ディレクトリ',
     outputPlaceholder: '出力フォルダを選択...',
     promptTitle: '細化プロンプト',
@@ -715,6 +713,30 @@ const ja = {
     excludeTagsTip: 'これらのタグを結果から除外、カンマ区切り',
   },
 
+  gbc: {
+    refineTab: "GBC 詳細化",
+    analysisSettings: "GBC 解析設定",
+    refineButton: "詳細化を開始",
+    refining: "詳細化中…",
+    refineStart: "GBC 詳細化を開始、モデル：{{model}}",
+
+    max_nodes: '最大ノード数',
+    max_depth: '探索の深さ',
+    max_nodesHelp: '画像全体と対象領域の説明ノード数の目安です。ノードは画像全体、人物、衣服などを表し、タグ数や最終的な枠数ではありません。既定値は 20。増やすと詳細、処理時間、API 使用量が増える場合があります。',
+    max_depthHelp: '局所領域を何階層まで探索するかを指定します。画像全体が第 0 層、例えば人物が第 1 層、その衣服が第 2 層です。既定値は 3。深くすると細部の情報、処理時間、API 使用量が増える場合があります。',
+
+    environment: 'GBC 自然言語の詳細化',
+    notInstalled: '未インストール',
+    modelsMissing: '環境はインストール済みです。ローカルモデルがありません',
+    ready: '環境とモデルの準備完了',
+    enhance: 'GBC で自然言語を詳細化',
+    naturalPresetRequired: '自然言語を生成するプリセットを選択してください',
+    regionBoxes: '領域枠',
+    install: "独立環境をインストール",
+    installing: "依存関係をインストール中…",
+    cancelInstall: "インストールを中止",
+    structuredReadonly: 'GBC / Layout · 読み取り専用',
+  },
   llmTagger: {
     systemPrompt: 'システムプロンプト',
     userPrompt: 'ユーザープロンプト',
