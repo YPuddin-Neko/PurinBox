@@ -118,8 +118,6 @@ pub fn run() {
             get_python_env_info,
             start_llm_tagging,
             commands::tagger::gbc::get_gbc_local_paths,
-            commands::tagger::gbc::setup_gbc_environment,
-            commands::tagger::gbc::cancel_gbc_setup,
             fetch_llm_models,
             cancel_llm_tagging,
             get_system_stats,

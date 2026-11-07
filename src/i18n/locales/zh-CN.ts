@@ -4,6 +4,24 @@
 export type I18nShape<T> = { [K in keyof T]: T[K] extends object ? I18nShape<T[K]> : string };
 
 const zhCN = {
+  queuedTasks: {
+    delete_dedup_files: '删除重复图片',
+    analyze_buckets: '分桶分析',
+    recommend_bucket_params: '推荐分桶参数',
+    export_buckets: '导出分桶结果',
+    scan_concept_folders: '扫描概念文件夹',
+    apply_concept_repeats: '应用重复次数',
+    deploy_python_env: '部署 Python 环境',
+    reset_python_env: '重置 Python 环境',
+    download_danbooru_tags: '下载标签库',
+    translate_tag_db: '翻译标签库',
+    download_person_crop_model: '下载裁切模型',
+    load_tag_dataset: '加载标签数据集',
+    load_caption_dataset: '加载描述数据集',
+    save_all_tag_files: '保存标签',
+    save_all_caption_files: '保存描述',
+  },
+
   // ═══════════════ 通用 ═══════════════
   common: {
     cancel: '取消',
@@ -522,6 +540,7 @@ const zhCN = {
 
   // ═══════════════ 标签排序 ═══════════════
   tagSort: {
+    inputPlaceholder: '选择标签文件夹...',
     inputDir: '输入目录（含 .txt 标签文件）',
     outputDir: '输出目录',
     outputPlaceholder: '选择排序后输出文件夹...',
@@ -545,6 +564,7 @@ const zhCN = {
 
   // ═══════════════ 标签细化 ═══════════════
   tagRefine: {
+    inputPlaceholder: '选择图片文件夹...',
     inputDir: '图片文件夹（含图片和 .txt 标签文件）',
     outputDir: '输出目录',
     outputPlaceholder: '选择输出文件夹...',

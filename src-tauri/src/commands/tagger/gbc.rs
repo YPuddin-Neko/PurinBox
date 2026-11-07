@@ -17,7 +17,6 @@ use std::{
 
 const EVENT: &str = "llm-tagger-progress";
 static BUSY: AtomicBool = AtomicBool::new(false);
-static SETUP_CANCELLED: AtomicBool = AtomicBool::new(false);
 static PROCESS: Mutex<Option<u32>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,12 +51,14 @@ fn validate_environment(settings: &GbcSettings) -> Result<PathBuf, String> {
         PathBuf::from(&settings.python_path)
     };
     if !python.is_file() {
-        return Err("未找到 GBC 环境，请在设置 → 环境设置中安装".into());
+        return Err("GBC 环境不可用".into());
     }
     Ok(python)
 }
 
 pub fn cancel() {
+    crate::commands::python_env::cancel_setup_for("llm-tagger-progress");
+    crate::commands::python_env::cancel_setup_for("gbc-refine-progress");
     python_proc::kill_registered_pid(&PROCESS);
 }
 
@@ -65,8 +66,9 @@ pub fn run<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     options: LlmTaggerOptions,
 ) -> Result<LlmBatchResult, String> {
-    let _busy = crate::commands::BusyGuard::acquire(&BUSY, "GBC")?;
-    let settings = options.gbc.as_ref().ok_or("缺少 GBC 配置")?;
+    let _busy = crate::commands::BusyGuard::acquire_enforced(&BUSY, "GBC")?;
+    let ready = prepare_environment(&app, options.gbc.as_ref().ok_or("缺少 GBC 配置")?, &LLM_CANCELLED, EVENT, &PROCESS)?;
+    let settings = &ready;
     let python = validate_environment(settings)?;
     let input = PathBuf::from(&options.input_path);
     let files = collect_image_files_with_recursive(&input, options.recursive)?;
@@ -241,6 +243,7 @@ pub fn run<R: tauri::Runtime>(
 static REFINE_PROCESS: Mutex<Option<u32>> = Mutex::new(None);
 
 pub(crate) fn cancel_refine() {
+    crate::commands::python_env::cancel_setup_for("tag-refine-progress");
     python_proc::kill_registered_pid(&REFINE_PROCESS);
 }
 
@@ -264,7 +267,9 @@ impl Analyzer {
     }
 
     fn from_options<R: tauri::Runtime>(app: &tauri::AppHandle<R>, mut init: serde_json::Value, settings: &GbcSettings, cancel: &'static AtomicBool, event: &'static str, process: &'static Mutex<Option<u32>>) -> Result<Self, String> {
-        let busy = crate::commands::BusyGuard::acquire(&BUSY, "GBC")?;
+        let busy = crate::commands::BusyGuard::acquire_enforced(&BUSY, "GBC")?;
+        let ready = prepare_environment(app, settings, cancel, event, process)?;
+        let settings = &ready;
         let python = validate_environment(settings)?;
         if settings.max_requests < 3 { return Err("GBC 自然语言细化至少需要 3 次单图请求额度".into()); }
         let map = init.as_object_mut().unwrap();
@@ -335,63 +340,47 @@ pub fn get_gbc_local_paths() -> serde_json::Value {
     })
 }
 
-#[tauri::command]
-pub fn cancel_gbc_setup() {
-    SETUP_CANCELLED.store(true, Ordering::SeqCst);
-}
-
-#[tauri::command]
-pub async fn setup_gbc_environment() -> Result<String, String> {
-    let _busy = crate::commands::BusyGuard::acquire(&BUSY, "GBC")?;
-    SETUP_CANCELLED.store(false, Ordering::SeqCst);
-    tauri::async_runtime::spawn_blocking(|| {
-        let base = crate::commands::python_env::get_venv_python();
-        let python = if base.is_file() {
-            base
-        } else {
-            PathBuf::from(if cfg!(windows) { "python" } else { "python3" })
-        };
-        let target = config_paths::app_data_root().join("env/gbc");
-        let script = python_proc::find_script("gbc_setup.py")?;
-        let output = python_proc::output_cancellable(
-            PythonCommand::new(python)
-                .arg(script)
-                .arg("--env")
-                .arg(&target),
-            &SETUP_CANCELLED,
-        )
-        .map_err(|e| {
-            format!(
-                "GBC 环境安装失败，请确认已安装 Python 3.11 或更新版本: {}",
-                e
-            )
+fn prepare_environment<R: tauri::Runtime>(app: &tauri::AppHandle<R>, settings: &GbcSettings, cancel: &'static AtomicBool, event: &'static str, process: &'static Mutex<Option<u32>>) -> Result<GbcSettings, String> {
+    if cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
+    let root = config_paths::app_data_root();
+    let target = root.join("env/gbc");
+    let managed_python = target.join(if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" });
+    let mut ready = settings.clone();
+    // 显式指定的解释器供自定义环境使用；应用默认环境由当前任务负责准备。
+    if !ready.python_path.is_empty() && PathBuf::from(&ready.python_path) != managed_python {
+        validate_environment(&ready)?;
+        return Ok(ready);
+    }
+    ProgressEvent::new("info", "正在检查 GBC 环境和模型").emit(app, event);
+    let base = if managed_python.is_file() { managed_python.clone() } else {
+        ProgressEvent::new("info", "正在准备 GBC 所需 Python 环境").emit(app, event);
+        PathBuf::from(tauri::async_runtime::block_on(crate::commands::python_env::setup_python_env(app, event))?)
+    };
+    if cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
+    let mut command = PythonCommand::new(base).arg(python_proc::find_script("gbc_setup.py")?).arg("--env").arg(&target).arg("--device").arg(&ready.device);
+    let models = root.join("models/gbc");
+    let detector = models.join("owlv2-base-patch16-ensemble");
+    let embedder = models.join("all-MiniLM-L6-v2");
+    if ready.detector_path.is_empty() || ready.embedder_path.is_empty()
+        || PathBuf::from(&ready.detector_path) == detector || PathBuf::from(&ready.embedder_path) == embedder {
+        command = command.arg("--models").arg(&models);
+        if ready.detector_path.is_empty() { ready.detector_path = detector.to_string_lossy().into_owned(); }
+        if ready.embedder_path.is_empty() { ready.embedder_path = embedder.to_string_lossy().into_owned(); }
+    }
+    let token = crate::commands::huggingface_config::load_huggingface_token_internal();
+    if !token.is_empty() { command = command.env("HF_TOKEN", token); }
+    let exit = python_proc::run_json_lines_script_with(command, None, process, cancel,
+        python_proc::stderr_warnings(app, event, StderrNoise::Runtime, None),
+        |message| {
+            if message["type"] == "error" { return Err(message["message"].as_str().unwrap_or("GBC 准备失败").to_owned()); }
+            ProgressEvent::python_log(&message, 0, 0).emit(app, event);
+            Ok(())
         })?;
-        if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "GBC 依赖安装失败: {}",
-                error
-                    .lines()
-                    .rev()
-                    .take(6)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ));
-        }
-        Ok(target
-            .join(if cfg!(windows) {
-                "Scripts/python.exe"
-            } else {
-                "bin/python"
-            })
-            .to_string_lossy()
-            .into_owned())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    if exit.cancelled || cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
+    if exit.code != Some(0) { return Err(python_proc::abnormal_exit("GBC 环境准备", &exit)); }
+    ready.python_path = managed_python.to_string_lossy().into_owned();
+    validate_environment(&ready)?;
+    Ok(ready)
 }
 
 #[cfg(test)]
@@ -399,6 +388,31 @@ mod tests {
     use super::*;
     use crate::commands::test_support::TempDir;
     use serde_json::json;
+
+    #[test]
+    fn initialization_failure_and_cancel_release_busy_for_retry() {
+        static CANCEL: AtomicBool = AtomicBool::new(false);
+        static SLOT: Mutex<Option<u32>> = Mutex::new(None);
+        let root = TempDir::new("gbc_missing_environment");
+        let app = tauri::test::mock_app();
+        let settings = GbcSettings {
+            python_path: root.join("missing-python").to_string_lossy().into_owned(),
+            detector_path: String::new(), embedder_path: String::new(),
+            device: "cpu".into(), content_type: "gbc".into(), caption_prompt: String::new(),
+            max_nodes: 20, max_depth: 3, max_requests: 64,
+        };
+        for cancelled in [false, false, true, false] {
+            CANCEL.store(cancelled, Ordering::SeqCst);
+            let error = Analyzer::from_options(app.handle(), json!({}), &settings, &CANCEL, "gbc-test-progress", &SLOT).err().expect("initialization must fail");
+            assert_eq!(error, if cancelled { "已取消" } else { "GBC 环境不可用" });
+            assert!(!BUSY.load(Ordering::SeqCst));
+        }
+        let busy = crate::commands::BusyGuard::acquire_enforced(&BUSY, "GBC").unwrap();
+        assert!(Analyzer::from_options(app.handle(), json!({}), &settings, &CANCEL, "gbc-test-progress", &SLOT).is_err());
+        assert!(BUSY.load(Ordering::SeqCst));
+        drop(busy);
+        assert!(!BUSY.load(Ordering::SeqCst));
+    }
 
     #[test]
     #[ignore = "requires the separate env/gbc Python environment"]

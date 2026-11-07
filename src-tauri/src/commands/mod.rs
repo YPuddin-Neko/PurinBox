@@ -530,11 +530,15 @@ impl BusyGuard {
         flag: &'static std::sync::atomic::AtomicBool,
         what: &str,
     ) -> Result<Self, String> {
-        use std::sync::atomic::Ordering;
         // 并行单测会撞闸；互斥不是单测的被测对象，测试构型直接放行
         if cfg!(test) {
             return Ok(BusyGuard(flag));
         }
+        Self::acquire_enforced(flag, what)
+    }
+
+    pub(crate) fn acquire_enforced(flag: &'static std::sync::atomic::AtomicBool, what: &str) -> Result<Self, String> {
+        use std::sync::atomic::Ordering;
         if flag
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()

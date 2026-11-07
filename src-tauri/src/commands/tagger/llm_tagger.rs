@@ -127,6 +127,7 @@ pub async fn start_llm_tagging(
     static LLM_RUNNING: AtomicBool = AtomicBool::new(false);
     let _busy = crate::commands::BusyGuard::acquire(&LLM_RUNNING, "LLM 打标")?;
     LLM_CANCELLED.store(false, Ordering::SeqCst);
+    crate::commands::python_env::clear_pending_cancel(options.event());
     if options.refine_existing && options.gbc.as_ref().is_none_or(|g| g.content_type != "caption") {
         return Err("GBC 细化需要自然语言分析配置".into());
     }

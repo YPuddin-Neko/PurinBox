@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useMemo, useId } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { useQueuedInvoke } from '../hooks/useQueuedInvoke';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import {
@@ -42,6 +42,7 @@ const topButton = { gap: 6, height: 34, fontSize: 12 } as const;
 const spinner14 = { width: 14, height: 14, animation: 'spin 1s linear infinite' } as const;
 
 export default function TagManagerPage() {
+  const invoke = useQueuedInvoke();
   const { t } = useTranslation();
   const positionGroup = useId();
   const [mode, setMode] = useState<'danbooru' | 'natural' | 'json'>('danbooru');

@@ -3,6 +3,24 @@ import type zhCN from './zh-CN';
 import type { I18nShape } from './zh-CN';
 
 const ja = {
+  queuedTasks: {
+    delete_dedup_files: '重複画像を削除',
+    analyze_buckets: 'バケット分析',
+    recommend_bucket_params: 'バケット設定の推奨',
+    export_buckets: 'バケットをエクスポート',
+    scan_concept_folders: '概念フォルダーをスキャン',
+    apply_concept_repeats: '繰り返し回数を適用',
+    deploy_python_env: 'Python 環境をセットアップ',
+    reset_python_env: 'Python 環境をリセット',
+    download_danbooru_tags: 'タグデータベースをダウンロード',
+    translate_tag_db: 'タグデータベースを翻訳',
+    download_person_crop_model: '切り抜きモデルをダウンロード',
+    load_tag_dataset: 'タグデータセットを読み込む',
+    load_caption_dataset: 'キャプションデータセットを読み込む',
+    save_all_tag_files: 'タグを保存',
+    save_all_caption_files: 'キャプションを保存',
+  },
+
   // ═══════════════ 共通 ═══════════════
   common: {
     cancel: 'キャンセル',
@@ -498,6 +516,7 @@ const ja = {
   },
 
   tagSort: {
+    inputPlaceholder: 'タグフォルダーを選択...',
     inputDir: '入力ディレクトリ（.txtタグファイル含む）',
     outputDir: '出力ディレクトリ',
     outputPlaceholder: 'ソート後の出力フォルダを選択...',
@@ -519,6 +538,7 @@ const ja = {
   },
 
   tagRefine: {
+    inputPlaceholder: '画像フォルダーを選択...',
     inputDir: '画像フォルダ（画像と .txt タグファイル含む）',
     outputDir: '出力ディレクトリ',
     outputPlaceholder: '出力フォルダを選択...',

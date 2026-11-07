@@ -137,9 +137,7 @@ npm run tauri build
 
 在「图片打标 → 辅助打标」的 VLM 调优中，勾选「使用 GBC 细化自然语言」。程序先结合 Tagger 标签和当前调优提示词生成结果，再通过整图、局部区域和对象关系细化自然语言。JSON 只替换自然语言字段，保留标签；辅助打标的预设、标签写回规则和触发词继续生效。只输出标签的预设不启用自然语言细化。
 
-在「设置 → 环境设置」中安装 GBC 独立环境，也可使用 Python 3.11 或更新版本，在项目根目录运行 `python src-tauri/scripts/gbc_setup.py`。依赖安装到 `env/gbc`；首次从固定源码安装数据包需要 Rust 编译环境。安装器固定使用 KohakuGBC `d90f360dbf561f63270522e44fa0e74ebed59c12`。
-
-程序读取 `models/gbc/owlv2-base-patch16-ensemble` 和 `models/gbc/all-MiniLM-L6-v2` 下的本地模型，任务运行时不自动下载。辅助打标中的 GBC 检测跟随原有 CPU／GPU 选择，VLM 通过 API 生成描述。GPU 在 macOS 使用 Apple MPS，其他平台使用 CUDA；嵌入模型在 CPU 上运行。
+启用 GBC 后，开始任务时自动准备独立环境和所需模型，进度显示在当前任务中。环境安装到 `env/gbc`，模型保存到 `models/gbc`，后续任务复用已有文件。辅助打标中的 GBC 检测跟随原有 CPU／GPU 选择；嵌入模型在 CPU 上运行。
 
 自然语言保存为同名 TXT，或更新完整／简化 JSON 中的自然语言字段。分析结果另存为 `.gbc.json`。取消会结束当前工作进程，保留已经保存的结果。标签编辑的图片预览会叠加彩色区域框和对应名称，点击图片可放大查看，通过「区域框」开关可对照原图。GBC 和 Layout JSON 在标签编辑中只读展示。
 

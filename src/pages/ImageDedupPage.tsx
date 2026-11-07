@@ -1,4 +1,5 @@
-import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import { useQueuedInvoke } from '../hooks/useQueuedInvoke';
 import {
   Check,
   ChevronLeft, ChevronRight,
@@ -24,9 +25,10 @@ import { useBatchTask } from '../hooks/useBatchTask';
 import { ensureAssetScope } from '../utils/assetScope';
 
 export default function ImageDedupPage() {
+  const invoke = useQueuedInvoke();
   const { t } = useTranslation();
   const folderId = useId();
-  const task = useBatchTask({ event: 'dedup_progress', logDone: false });
+  const task = useBatchTask({ event: 'dedup_progress', taskId: 'image-dedup', logDone: false });
   const [inputPath, setInputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
   const [dhashThreshold, setDhashThreshold] = useState(10);
@@ -45,6 +47,7 @@ export default function ImageDedupPage() {
   const handleStart = async () => {
     setDupGroups([]); setSelectedForDelete(new Set()); setTotalImages(0); setCurrentPage(0); setLightbox(null);
     const result = await task.run({
+      taskName: t('imageDedup.title'),
       startLog: t('imageDedup.scanStart'),
       exec: async () => {
         await ensureAssetScope(inputPath);

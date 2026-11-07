@@ -1,4 +1,3 @@
-import GbcEnvironment from '../components/GbcEnvironment';
 import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, ExternalLink, Loader2, Zap, FolderOpen, RotateCcw, Globe, Save, Terminal, RefreshCw as RefreshIcon, Database, Download, Upload, X, Play, KeyRound, FlaskConical, type LucideIcon } from 'lucide-react';
 import { useAppSettings } from '../components/ThemeProvider';
 import { useState, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
@@ -6,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { errorText, hasTauriRuntime, listen } from '../utils/tauriRuntime';
 import { ConfirmModal, AlertModal } from '../components/Modal';
 import CustomSelect from '../components/CustomSelect';
-import { invoke } from '@tauri-apps/api/core';
+import { useQueuedInvoke } from '../hooks/useQueuedInvoke';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { packageAppVersion, type UpdateCheckResult } from '../utils/appVersion';
 import { formatBytes } from '../utils/format';
@@ -164,6 +163,7 @@ interface ProviderField {
 }
 
 export default function SettingsPage() {
+  const invoke = useQueuedInvoke();
   const { t } = useTranslation();
   const {
     monitorInterval,
@@ -897,7 +897,6 @@ export default function SettingsPage() {
                   </button>
                 )}
               </div>
-              <GbcEnvironment />
             </div>
           </div>
 

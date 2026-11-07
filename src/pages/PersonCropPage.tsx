@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { useQueuedInvoke } from '../hooks/useQueuedInvoke';
 import {
   CircleUser,
   Download,
@@ -28,6 +28,7 @@ interface CropModelInfo { crop_type: string; downloaded: boolean; }
 const GPU_STORAGE_KEY = 'person_crop_gpu';
 
 export default function PersonCropPage() {
+  const invoke = useQueuedInvoke();
   const { t } = useTranslation();
   const task = useBatchTask({
     event: 'person-crop-progress', taskId: 'person-crop', pythonEnv: true,

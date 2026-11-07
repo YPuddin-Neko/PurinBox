@@ -23,7 +23,7 @@ export function useLlmBatchRun({ event, taskId }: { event: string; taskId: strin
   const { t } = useTranslation();
   const api = useLlmApiConfig();
   const stats = useBatchRunStats();
-  const task = useBatchTask({ event, taskId, onEvent: stats.onEvent });
+  const task = useBatchTask({ event, taskId, onEvent: stats.onEvent, pythonEnv: taskId === 'gbc-refine' });
 
   const start = async <T>({ taskName, startLogKey, intervalSec, concurrency, exec }: LlmBatchStart<T>) => {
     if (task.processing || !api.ready) return;

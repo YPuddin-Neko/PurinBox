@@ -1,3 +1,4 @@
+import { useTaskQueue, type TaskStatus } from '../components/TaskContext';
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import {
   ReactFlow,
@@ -43,6 +44,7 @@ const idleData = (data: WorkflowNodeData): WorkflowNodeData => ({
 });
 
 function WorkflowEditor() {
+  const { addTask, updateTask } = useTaskQueue();
   const { t } = useTranslation();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<WorkflowNodeData>>([]);
@@ -217,6 +219,9 @@ function WorkflowEditor() {
     const engine = new WorkflowEngine(t);
     engineRef.current = engine;
 
+    addTask('workflow', t('workflow.title'));
+    let outcome: TaskStatus = 'cancelled';
+    let summary = '';
     const runPromise = engine.execute(nodes, edges, {
       onNodeStatusChange: updateNodeStatus,
       onProgress: updateNodeProgress,
@@ -224,14 +229,20 @@ function WorkflowEditor() {
         if (!isCurrent()) return;
         const node = nodes.find(n => n.id === _nodeId);
         const name = node ? t(getNodeDef(node.data.type)?.nameKey || '') : '';
-        setRunningMessage(t('workflow.runStep', { name, current: step + 1, total }));
+        const message = t('workflow.runStep', { name, current: step + 1, total });
+        setRunningMessage(message);
+        updateTask('workflow', { current: step, total, message });
       },
       onComplete: (elapsed) => {
+        outcome = 'done';
+        summary = t('workflow.runDone', { time: `${(elapsed / 1000).toFixed(1)}s` });
         if (!isCurrent()) return;
         const secs = (elapsed / 1000).toFixed(1);
         setRunningMessage(t('workflow.runDone', { time: `${secs}s` }));
       },
       onError: (_nodeId, error) => {
+        outcome = 'error';
+        summary = t('workflow.runError', { error });
         if (!isCurrent()) return;
         setRunningMessage(t('workflow.runError', { error }));
       },
@@ -239,7 +250,11 @@ function WorkflowEditor() {
     execPromiseRef.current = runPromise;
     try {
       await runPromise;
+    } catch (error) {
+      outcome = 'error';
+      summary = errorText(error);
     } finally {
+      updateTask('workflow', task => ({ status: outcome, message: summary || t('workflow.statusCancelled'), ...(outcome === 'done' ? { current: task.total } : {}) }));
       if (execPromiseRef.current === runPromise) execPromiseRef.current = null;
       if (engineRef.current === engine) engineRef.current = null;
       if (isCurrent()) {
@@ -247,7 +262,7 @@ function WorkflowEditor() {
         setIsRunning(false);
       }
     }
-  }, [nodes, edges, setNodes, t]);
+  }, [nodes, edges, setNodes, t, addTask, updateTask]);
 
   const currentSelected = useMemo(() => {
     if (!selectedNodeId) return null;

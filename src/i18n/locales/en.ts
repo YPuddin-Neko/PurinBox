@@ -3,6 +3,24 @@ import type zhCN from './zh-CN';
 import type { I18nShape } from './zh-CN';
 
 const en = {
+  queuedTasks: {
+    delete_dedup_files: 'Delete duplicate images',
+    analyze_buckets: 'Analyze buckets',
+    recommend_bucket_params: 'Recommend bucket parameters',
+    export_buckets: 'Export buckets',
+    scan_concept_folders: 'Scan concept folders',
+    apply_concept_repeats: 'Apply repeat counts',
+    deploy_python_env: 'Set up Python environment',
+    reset_python_env: 'Reset Python environment',
+    download_danbooru_tags: 'Download tag database',
+    translate_tag_db: 'Translate tag database',
+    download_person_crop_model: 'Download crop model',
+    load_tag_dataset: 'Load tag dataset',
+    load_caption_dataset: 'Load caption dataset',
+    save_all_tag_files: 'Save tags',
+    save_all_caption_files: 'Save captions',
+  },
+
   // ═══════════════ Common ═══════════════
   common: {
     cancel: 'Cancel',
@@ -498,6 +516,7 @@ const en = {
   },
 
   tagSort: {
+    inputPlaceholder: 'Select tag folder...',
     inputDir: 'Input Directory (with .txt tag files)',
     outputDir: 'Output Directory',
     outputPlaceholder: 'Select output folder for sorted tags...',
@@ -519,6 +538,7 @@ const en = {
   },
 
   tagRefine: {
+    inputPlaceholder: 'Select image folder...',
     inputDir: 'Image folder (with images and .txt tag files)',
     outputDir: 'Output directory',
     outputPlaceholder: 'Select output folder...',

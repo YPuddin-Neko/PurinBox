@@ -1,4 +1,5 @@
 import type { ElementType } from 'react';
+import { QUEUED_COMMANDS } from './queuedCommands';
 import {
   Home,
   Crop,
@@ -124,15 +125,16 @@ export const PAGES: PageDef[] = [
     tasks: [{ id: 'upscale', events: ['upscale-progress'] }] },
   { path: '/image-cluster', i18nKey: 'sidebar.imageCluster', icon: Network, section: 'advanced', persistent: true,
     tasks: [{ id: 'image-cluster', events: ['cluster-progress'] }] },
-  { path: '/image-dedup', i18nKey: 'sidebar.imageDedup', icon: Copy, section: 'advanced', persistent: true },
+  { path: '/image-dedup', i18nKey: 'sidebar.imageDedup', icon: Copy, section: 'advanced', persistent: true,
+    tasks: [{ id: 'image-dedup', events: ['dedup_progress'] }] },
   { path: '/dataset-balancer', i18nKey: 'sidebar.datasetBalancer', icon: Scale, section: 'advanced', persistent: true },
   { path: '/sd-metadata', i18nKey: 'sidebar.sdMetadata', icon: FileCode2, section: 'advanced', persistent: true,
     tasks: [{ id: 'sd-metadata', events: ['sd-metadata-progress'] }] },
 
   // ─── 自动化 ───
-  { path: '/workflow', i18nKey: 'sidebar.workflow', icon: Workflow, section: 'automation', persistent: true, experimental: true },
+  { path: '/workflow', i18nKey: 'sidebar.workflow', icon: Workflow, section: 'automation', persistent: true, experimental: true, tasks: [{ id: 'workflow', events: [] }] },
 
-  { path: '/settings', i18nKey: 'sidebar.settings', icon: Settings, persistent: false },
+  { path: '/settings', i18nKey: 'sidebar.settings', icon: Settings, persistent: true },
 ];
 
 // ═══════════════ 派生映射 ═══════════════
@@ -155,7 +157,8 @@ export const EVENT_TASK_MAP: Record<string, string> = Object.fromEntries(
 
 /** 任务 ID → 路由路径（任务面板点击跳转用） */
 export const TASK_ROUTE_MAP: Record<string, string> = Object.fromEntries(
-  PAGES.flatMap(p => (p.tasks ?? []).map(task => [task.id, p.path])),
+  [...PAGES.flatMap(p => (p.tasks ?? []).map(task => [task.id, p.path])),
+    ...Object.entries(QUEUED_COMMANDS).map(([command, task]) => [command, task.route])],
 );
 
 /** 侧边栏分组导航（home/settings 由 Sidebar 单独渲染） */

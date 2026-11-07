@@ -149,6 +149,7 @@ pub async fn start_tag_refining(
     let _busy = crate::commands::BusyGuard::acquire(&REFINE_RUNNING, "标签精修")?;
 
     TAG_REFINE_CANCELLED.store(false, Ordering::SeqCst);
+    crate::commands::python_env::clear_pending_cancel(EVENT);
     let client = llm_client::llm_http_client()?;
     refine_dataset(&app, options, client).await
 }

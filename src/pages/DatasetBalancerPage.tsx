@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Scale, Plus, Trash2, RotateCcw, LayoutGrid, PieChart as PieIcon, AlignLeft, AlertTriangle, FolderOpen, RefreshCw, Wand2, Check } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { invoke } from '@tauri-apps/api/core';
+import { useQueuedInvoke } from '../hooks/useQueuedInvoke';
 import { open } from '@tauri-apps/plugin-dialog';
 import CustomSelect from '../components/CustomSelect';
 import { ConfirmModal } from '../components/Modal';
@@ -22,6 +22,7 @@ function VizBtn({ active, onClick, icon, title }: { active: boolean; onClick: ()
 }
 
 export default function DatasetBalancerPage() {
+  const invoke = useQueuedInvoke();
   const { t } = useTranslation();
   const [folders, setFolders] = useState<ConceptFolder[]>(() => [mkFolder('character'), mkFolder('outfit')]);
   const [mode, setMode] = useState<'by_epoch' | 'by_steps'>('by_epoch');

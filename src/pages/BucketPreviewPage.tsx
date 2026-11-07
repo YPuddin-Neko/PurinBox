@@ -1,5 +1,5 @@
 import { useId, useState, useEffect, useMemo, useRef, type CSSProperties } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { useQueuedInvoke } from '../hooks/useQueuedInvoke';
 import { listen } from '../utils/tauriRuntime';
 import ThumbImage from '../components/ThumbImage';
 import {
@@ -118,6 +118,7 @@ const fieldInputStyle = (invalid = false): CSSProperties => ({
 });
 
 export default function BucketPreviewPage() {
+  const invoke = useQueuedInvoke();
   const { t } = useTranslation();
   const d = BUCKET_DEFAULTS;
   const datasetId = useId();
