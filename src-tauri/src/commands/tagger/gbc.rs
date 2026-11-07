@@ -6,6 +6,8 @@ use crate::commands::{
     ProblemArchive, ProgressEvent,
 };
 use serde::{Deserialize, Serialize};
+use tauri::Emitter;
+use crate::commands::http_download::DownloadProgress;
 use std::{
     path::PathBuf,
     sync::{
@@ -340,6 +342,24 @@ pub fn get_gbc_local_paths() -> serde_json::Value {
     })
 }
 
+fn forward_setup_message<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &str, message: &serde_json::Value) -> Result<(), String> {
+    match message["type"].as_str() {
+        Some("error") => return Err(message["message"].as_str().unwrap_or("GBC 准备失败").to_owned()),
+        Some("download") => {
+            let mut progress = DownloadProgress::new(
+                "downloading",
+                message["percent"].as_f64().unwrap_or(0.0).clamp(0.0, 100.0) as f32,
+                message["message"].as_str().unwrap_or_default(),
+            ).with_filename(message["filename"].as_str().unwrap_or_default());
+            progress.speed_mbps = message["speed_mbps"].as_f64().unwrap_or(0.0).max(0.0);
+            let _ = app.emit("python-env-download", progress);
+        }
+        Some("log") => ProgressEvent::python_log(message, 0, 0).emit(app, event),
+        _ => {},
+    }
+    Ok(())
+}
+
 fn prepare_environment<R: tauri::Runtime>(app: &tauri::AppHandle<R>, settings: &GbcSettings, cancel: &'static AtomicBool, event: &'static str, process: &'static Mutex<Option<u32>>) -> Result<GbcSettings, String> {
     if cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
     let root = config_paths::app_data_root();
@@ -371,11 +391,10 @@ fn prepare_environment<R: tauri::Runtime>(app: &tauri::AppHandle<R>, settings: &
     if !token.is_empty() { command = command.env("HF_TOKEN", token); }
     let exit = python_proc::run_json_lines_script_with(command, None, process, cancel,
         python_proc::stderr_warnings(app, event, StderrNoise::Runtime, None),
-        |message| {
-            if message["type"] == "error" { return Err(message["message"].as_str().unwrap_or("GBC 准备失败").to_owned()); }
-            ProgressEvent::python_log(&message, 0, 0).emit(app, event);
-            Ok(())
-        })?;
+        |message| forward_setup_message(app, event, &message));
+    // 取消或子进程失败也要移除安装进度，错误由当前任务统一收尾。
+    let _ = app.emit("python-env-download", DownloadProgress::done(""));
+    let exit = exit?;
     if exit.cancelled || cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
     if exit.code != Some(0) { return Err(python_proc::abnormal_exit("GBC 环境准备", &exit)); }
     ready.python_path = managed_python.to_string_lossy().into_owned();
@@ -388,6 +407,25 @@ mod tests {
     use super::*;
     use crate::commands::test_support::TempDir;
     use serde_json::json;
+
+    #[test]
+    fn setup_downloads_use_shared_progress_without_raw_log_rows() {
+        let app = tauri::test::mock_app();
+        let downloads = crate::commands::batch::capture_raw_events(app.handle(), "python-env-download");
+        let logs = crate::commands::batch::capture_raw_events(app.handle(), "gbc-log-test");
+        forward_setup_message(app.handle(), "gbc-log-test", &json!({
+            "type": "download", "message": "@pythonEnv.installingDep|torch|2|3",
+            "percent": 33.3, "speed_mbps": 0, "filename": "torch"
+        })).unwrap();
+        assert!(logs.lock().unwrap().is_empty());
+        assert_eq!(downloads.lock().unwrap()[0]["status"], "downloading");
+        assert_eq!(downloads.lock().unwrap()[0]["filename"], "torch");
+        forward_setup_message(app.handle(), "gbc-log-test", &json!({"type":"log", "message":"GBC 环境已就绪"})).unwrap();
+        assert_eq!(logs.lock().unwrap().len(), 1);
+        let error = forward_setup_message(app.handle(), "gbc-log-test", &json!({"type":"error", "message":"安装失败"}));
+        assert_eq!(error.unwrap_err(), "安装失败");
+        assert_eq!(logs.lock().unwrap().len(), 1);
+    }
 
     #[test]
     fn initialization_failure_and_cancel_release_busy_for_retry() {

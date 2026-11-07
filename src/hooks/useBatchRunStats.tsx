@@ -38,9 +38,9 @@ export function useBatchRunStats() {
     if (warningFiles.length) logger.appendLog(`${t('tagSort.warnFiles')}: ${warningFiles.join(', ')}`, 'warning');
   }, [t]);
   const headerExtra = <span style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 12 }}>
-    <span title={t('common.success')} style={{ color: 'var(--color-success)', display: 'flex', gap: 4 }}><CheckCircle2 size={13} />{stats.success}</span>
-    <span title={t('common.failed')} style={{ color: 'var(--color-error)', display: 'flex', gap: 4 }}><XCircle size={13} />{stats.failed}</span>
-    {stats.warnings > 0 && <span title={t('common.warning')} style={{ color: 'var(--color-warning)', display: 'flex', gap: 4 }}><AlertTriangle size={13} />{stats.warnings}</span>}
+    <span title={t('common.success')} style={{ color: 'var(--color-success)', display: 'inline-flex', alignItems: 'center', gap: 4, lineHeight: 1 }}><CheckCircle2 size={13} />{stats.success}</span>
+    <span title={t('common.failed')} style={{ color: 'var(--color-error)', display: 'inline-flex', alignItems: 'center', gap: 4, lineHeight: 1 }}><XCircle size={13} />{stats.failed}</span>
+    {stats.warnings > 0 && <span title={t('common.warning')} style={{ color: 'var(--color-warning)', display: 'inline-flex', alignItems: 'center', gap: 4, lineHeight: 1 }}><AlertTriangle size={13} />{stats.warnings}</span>}
   </span>;
   return { reset, onEvent, summarize, headerExtra };
 }

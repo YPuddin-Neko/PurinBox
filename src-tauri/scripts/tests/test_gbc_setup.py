@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock, ANY
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gbc_setup as setup
 
@@ -44,7 +44,7 @@ class SetupTests(unittest.TestCase):
                 def restore(**kwargs): (root / name / files[0]).write_bytes(b'x')
                 hub.snapshot_download.side_effect = restore
                 setup.download_models(root)
-                hub.snapshot_download.assert_called_once_with(repo_id=repo, revision=revision, local_dir=str(root / name), allow_patterns=files)
+                hub.snapshot_download.assert_called_once_with(repo_id=repo, revision=revision, local_dir=str(root / name), allow_patterns=files, tqdm_class=ANY)
 
     def test_child_json_logs_are_not_double_encoded(self):
         process = Mock()
@@ -52,7 +52,43 @@ class SetupTests(unittest.TestCase):
         process.wait.return_value = 0
         context = Mock(); context.__enter__ = Mock(return_value=process); context.__exit__ = Mock(return_value=False)
         output = io.StringIO()
-        with patch.object(setup.subprocess, 'Popen', return_value=context), patch('sys.stdout', output): setup.run(['python'])
-        self.assertEqual([json.loads(line)['message'] for line in output.getvalue().splitlines()], ['下载模型', 'pip message'])
+        with patch.object(setup.subprocess, 'Popen', return_value=context), patch('sys.stdout', output): setup.run(['python'], forward_events=True)
+        self.assertEqual([json.loads(line)['message'] for line in output.getvalue().splitlines()], ['下载模型'])
+
+    def test_successful_pip_output_is_not_written_to_task_logs(self):
+        output = io.StringIO()
+        command = [sys.executable, '-c', 'print("Collecting torch"); print("Requirement already satisfied: pip"); print("Looking in indexes: https://example.test")']
+        with patch('sys.stdout', output): setup.run(command)
+        self.assertEqual(output.getvalue(), '')
+
+    def test_pip_failure_preserves_reason_without_streaming_output(self):
+        output = io.StringIO()
+        command = [sys.executable, '-c', 'print("Collecting torch"); print("ERROR: No matching distribution found for torch"); raise SystemExit(1)']
+        with patch('sys.stdout', output), self.assertRaisesRegex(RuntimeError, 'No matching distribution found for torch'):
+            setup.run(command)
+        self.assertEqual(output.getvalue(), '')
+
+    def test_child_download_events_keep_progress_and_error_is_reported_once(self):
+        output = io.StringIO()
+        event = dict(type='download', status='downloading', message='model', percent=42, speed_mbps=3.5)
+        error = dict(type='error', message='GBC 模型文件不完整')
+        code = f'import json; print(json.dumps({event!r})); print(json.dumps({error!r})); raise SystemExit(1)'
+        with patch('sys.stdout', output), self.assertRaisesRegex(RuntimeError, 'GBC 模型文件不完整'):
+            setup.run([sys.executable, '-c', code], forward_events=True)
+        self.assertEqual([json.loads(line) for line in output.getvalue().splitlines()], [event])
+
+    def test_model_progress_uses_download_protocol_without_terminal_bars(self):
+        output, terminal = io.StringIO(), io.StringIO()
+        with patch('sys.stdout', output), patch('sys.stderr', terminal):
+            progress = setup.model_progress('model')
+            with progress(total=100, unit='B') as bar:
+                bar.update(50)
+                bar.display()
+            with progress(total=10, unit='it') as count:
+                count.update(1)
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertTrue(any(event['percent'] == 50 for event in events))
+        self.assertTrue(all(event['type'] == 'download' for event in events))
+        self.assertEqual(terminal.getvalue(), '')
 
 if __name__ == '__main__': unittest.main()
