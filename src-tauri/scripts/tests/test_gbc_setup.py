@@ -9,6 +9,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gbc_setup as setup
 
 class SetupTests(unittest.TestCase):
+    def test_host_cli_repair_supports_existing_windows_and_unix_environments(self):
+        source = """import sys
+from togeari.cli.commands.serve import add_balancer_args, serve_until_signal
+from togeari.plugins.telemetry import Telemetry
+from togeari.serve import Service
+def serve(args):
+    parts = build_parts(*args.configs)
+def main(argv=None):
+    for name in ('host', 'serve'):
+        if name == 'serve':
+            add_balancer_args(p)
+    return 'host ready'
+"""
+        for package in ('Lib/site-packages', 'lib/python3.12/site-packages'):
+            with self.subTest(package=package), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                cli = root / package / 'kohakugbc/cli/main.py'
+                cli.parent.mkdir(parents=True)
+                cli.write_text(source, encoding='utf-8')
+                setup.repair_host_cli(root)
+                repaired = cli.read_text(encoding='utf-8')
+                namespace = {}
+                exec(compile(repaired, str(cli), 'exec'), namespace)
+                self.assertEqual(namespace['main'](['host']), 'host ready')
+                setup.repair_host_cli(root)
+                self.assertEqual(cli.read_text(encoding='utf-8'), repaired)
+
     def test_ready_environment_does_not_install(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
