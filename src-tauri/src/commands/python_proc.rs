@@ -297,6 +297,12 @@ fn is_runtime_noise(line: &str) -> bool {
     if line.contains("[W:onnxruntime:") || line.contains("[I:onnxruntime:") {
         return true;
     }
+    if (line.contains("redirects.py:") && line.contains("NOTE: Redirects are currently not supported in"))
+        || line.starts_with("[transformers] The `use_fast` parameter is deprecated")
+        || line.starts_with("Loading weights:")
+    {
+        return true;
+    }
     let lower = line.to_lowercase();
     RUNTIME_NOISE_KEYWORDS.iter().any(|k| lower.contains(k))
 }
@@ -2615,6 +2621,9 @@ mod stderr_warning_tests {
         let runtime_noise = "[W:onnxruntime:, x.cc:1] warn".to_string();
         let library_noise =
             "/env/lib/python3.12/site-packages/umap/umap_.py:1952: UserWarning: n_jobs".to_string();
+        runtime_only("W1107 redirects.py:29] NOTE: Redirects are currently not supported in Windows or MacOs.".into());
+        runtime_only("[transformers] The `use_fast` parameter is deprecated".into());
+        runtime_only("Loading weights: 100%| 418/418".into());
         runtime_only(runtime_noise.clone());
         runtime_only(library_noise.clone());
         runtime_only("Traceback (most recent call last):".into());

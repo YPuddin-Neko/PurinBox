@@ -44,7 +44,7 @@ def make_config(options):
                     'structured': 'prompt', 'model': options['model_name'],
                     'sampling': sampling, 'endpoints': [endpoint_spec]},
             'detect': {'entry': 'torch', 'model': options['detector_path'],
-                       'devices': [options['device']], 'dtype': 'float32'},
+                       'devices': ['cuda:0' if options['device'] == 'cuda' else options['device']], 'dtype': 'float32'},
             'embed': {'entry': 'torch', 'model': options['embedder_path'],
                       'impl': 'st', 'devices': ['cpu'], 'dtype': 'float32'},
         },

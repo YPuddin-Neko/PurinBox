@@ -8,6 +8,23 @@ import unittest
 
 @unittest.skipUnless(os.environ.get('PURINBOX_GBC_HOST_SMOKE') == '1', 'requires local GBC models and dependencies')
 class HostSmokeTests(unittest.TestCase):
+    def test_host_thread_failure_reports_error_and_exits_immediately(self):
+        code = """
+import threading, time
+from kohakugbc.cli.main import _purinbox_host_thread_error
+threading.excepthook = _purinbox_host_thread_error
+def fail():
+    raise ValueError('injected CUDA initialization failure')
+threading.Thread(target=fail, name='torch-cuda:0-all').start()
+time.sleep(60)
+"""
+        result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 1)
+        import json
+        event = json.loads(result.stdout)
+        self.assertEqual(event['type'], 'error')
+        self.assertIn('injected CUDA initialization failure', event['message'])
+
     def test_real_detector_and_embedder_host_starts_and_stops(self):
         root = Path(__file__).resolve().parents[2]
         code = '''
