@@ -51,6 +51,7 @@ export interface UnifiedDownloadPayload {
   downloaded?: number;
   total?: number;
   percent: number;
+  indeterminate?: boolean;
   speed_mbps: number;
   status: string;
   message: string;
@@ -152,6 +153,7 @@ export function useUnifiedTaskLogs(setLogs: SetLogs) {
         message: payload.message,
         status: 'download',
         dlPercent: payload.percent,
+        dlIndeterminate: payload.indeterminate,
         dlSpeed: avgSpeed,
       };
       if (idx >= 0) {

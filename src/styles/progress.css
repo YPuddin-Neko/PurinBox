@@ -182,3 +182,16 @@
 [data-theme="light"] .log-entry-message.warning {
   color: #d97706;
 }
+
+.log-download-active {
+  animation: log-download-activity 1.5s ease-in-out infinite alternate;
+}
+
+@keyframes log-download-activity {
+  from { transform: translateX(0); }
+  to { transform: translateX(185.7%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .log-download-active { animation: none; }
+}

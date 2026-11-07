@@ -9,6 +9,7 @@ export interface LogEntry {
   status: 'success' | 'error' | 'processing' | 'info' | 'download' | 'warning';
   /** 下载专用字段 */
   dlPercent?: number;
+  dlIndeterminate?: boolean;
   dlSpeed?: string;
 }
 
@@ -210,14 +211,16 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-2)' }}>
                   <span className="log-entry-time">{log.time}</span>
                   {statusIcon(log.status)}
-                  <span className="log-entry-message info">{log.message}</span>
+                  <span className="log-entry-message info" style={{ flex: 1, minWidth: 0 }}>{log.message}</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 'auto', flexShrink: 0, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                  {log.dlSpeed && <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>{log.dlSpeed}</span>}
+                  {!log.dlIndeterminate && <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#60a5fa', fontSize: 10, minWidth: 36, textAlign: 'right', flexShrink: 0 }}>{log.dlPercent!.toFixed(1)}%</span>}
+                  </span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 90 }}>
                   <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #7c5cfc, #60a5fa)', width: `${log.dlPercent}%`, transition: 'width 0.3s ease' }} />
+                    <div className={log.dlIndeterminate ? 'log-download-active' : undefined} style={{ height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #7c5cfc, #60a5fa)', width: log.dlIndeterminate ? '35%' : '100%', transformOrigin: 'left', transform: log.dlIndeterminate ? undefined : `scaleX(${Math.min(100, Math.max(0, log.dlPercent)) / 100})`, transition: log.dlIndeterminate ? undefined : 'transform 0.25s linear' }} />
                   </div>
-                  <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#60a5fa', fontSize: 10, minWidth: 36, textAlign: 'right', flexShrink: 0 }}>{log.dlPercent!.toFixed(1)}%</span>
-                  {log.dlSpeed && <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>{log.dlSpeed}</span>}
                 </div>
               </div>
             ) : (

@@ -61,7 +61,7 @@ def model_progress(name):
 
     class ModelProgress(tqdm):
         def __init__(self, *args, **kwargs):
-            kwargs.update(file=io.StringIO(), disable=False, mininterval=0.25)
+            kwargs.update(file=io.StringIO(), disable=False, mininterval=0.25, miniters=1)
             super().__init__(*args, **kwargs)
 
         def display(self, *args, **kwargs):

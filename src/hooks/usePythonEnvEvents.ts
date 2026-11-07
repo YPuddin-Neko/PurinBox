@@ -66,7 +66,7 @@ export function usePythonEnvEvents(active: boolean, logger: PythonEnvLogger) {
     const u2 = listen<UnifiedDownloadPayload>('python-env-download', (e) => {
       if (!mounted || !activeRef.current) return;
       const d = e.payload;
-      loggerRef.current.appendDownloadLog({ ...d, message: translateMessage(d.message) }, { appendDone: false });
+      loggerRef.current.appendDownloadLog({ ...d, indeterminate: d.message.startsWith('@pythonEnv.installingDep|'), message: translateMessage(d.message) }, { appendDone: false });
     });
 
     return () => {
