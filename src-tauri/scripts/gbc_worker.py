@@ -120,6 +120,114 @@ def parse_graph_result(record):
     return graph_document(json.loads(raw))
 
 
+class AnalysisReplies:
+    def __init__(self, adapter, options, failures=None):
+        self.failures = failures if failures is not None else []
+        self.options = options
+        self.prepare_original = adapter.prepare
+        self.decode_original = adapter.decode
+        self.count = 0
+        self.invalid_reply = ''
+        self.schemas = {}
+
+    def reset(self):
+        self.count = 0
+        self.invalid_reply = ''
+        self.schemas.clear()
+        self.failures.clear()
+
+    def prepare(self, inputs, protocol):
+        self.count += 1
+        if self.count > self.options['max_requests']:
+            raise ValueError('已达到单图请求上限')
+        prepared = self.prepare_original(inputs, protocol)
+        self.schemas[prepared.headers['X-GBC-Request']] = inputs['request'].get('schema')
+        # A negative limit means no cap, including the upstream query defaults.
+        if self.options['max_tokens'] <= 0:
+            prepared.json.pop('max_tokens', None)
+        if self.options.get('image_detail'):
+            for message in prepared.json.get('messages', []):
+                if isinstance(message.get('content'), list):
+                    for part in message['content']:
+                        if part.get('type') == 'image_url':
+                            part['image_url']['detail'] = self.options['image_detail']
+        return prepared
+
+    def decode(self, raw, protocol):
+        from kohakugbc.nodes.specs import chat, parse
+        raw.raise_for_status()
+        data = raw.json()
+        choice = (data.get('choices') or [{}])[0]
+        message = choice.get('message') or {}
+        if message.get('refusal') or choice.get('finish_reason') == 'content_filter':
+            raise ValueError('模型拒绝了本次图像分析请求')
+        text = self.decode_original(raw, protocol)
+        reason = ''
+        if choice.get('finish_reason') == 'length':
+            reason = '模型分析回复达到 Tokens 上限，内容被截断'
+        elif not isinstance(text, str) or not text.strip():
+            reason = '模型分析回复正文为空'
+        else:
+            schema_name = self.schemas.get(raw.request.headers.get('X-GBC-Request'))
+            if schema_name and not parse.reply_ok(text, schema_name, chat.schema(schema_name)):
+                reason = '模型分析回复不符合 GBC 所需的 JSON 格式'
+            elif schema_name == 'image.json' and not any(desc[0].strip() for desc in parse.image(text)['descs']):
+                reason = '模型分析回复缺少有效的整图描述'
+        if reason:
+            self.invalid_reply = reason
+            raise ValueError(reason)
+        return text
+
+
+def build_analysis_parts(config):
+    from kohakugbc.machine.build import build_parts
+    from kohakugbc.nodes import registry
+    failures = []
+
+    def no_reply(err):
+        # GBC deliberately turns failed requests into empty replies; retain their cause.
+        message = err.get('message', err.get('kind', '请求失败')) if isinstance(err, dict) else str(err)
+        failures.append(str(message))
+        return ''
+
+    original = registry.NODES[:]
+    try:
+        registry.NODES[:] = [(no_reply if fn.__name__ == 'no_reply' else fn, outputs, flags)
+                            for fn, outputs, flags in original]
+        return build_parts(config), failures
+    finally:
+        registry.NODES[:] = original
+
+
+def analyze_graph(machine, source, replies, filename):
+    replies.reset()
+    for attempt in range(2):
+        replies.invalid_reply = ''
+        sink = Capture()
+        machine.run([source], sink)
+        try:
+            return parse_graph_result(sink.record)
+        except ValueError:
+            if replies.invalid_reply and attempt == 0 and replies.count < replies.options['max_requests']:
+                emit(type='log', message=f"{filename}：{replies.invalid_reply}，正在重试（1/1）")
+                continue
+            if replies.invalid_reply:
+                raise ValueError(replies.invalid_reply)
+            if replies.failures:
+                raise ValueError('GBC 模型请求失败：' + replies.failures[-1])
+            raise
+
+
+class BatchStages:
+    def __init__(self):
+        self.seen = set()
+
+    def log(self, message):
+        if message not in self.seen:
+            self.seen.add(message)
+            emit(type='log', message=message)
+
+
 def valid_existing(path, options):
     try:
         text = path.read_text(encoding='utf-8')
@@ -153,7 +261,8 @@ def main():
     from PIL import Image, ImageOps
     config = make_config(options)
     machine = None
-    request_count = [0]
+    replies = None
+    stages = BatchStages()
     with contextlib.ExitStack() as stack, tempfile.TemporaryDirectory(prefix='purinbox-gbc-') as scratch:
         emit(type='ready')
         for line in sys.stdin:
@@ -182,40 +291,24 @@ def main():
                     if machine is None:
                         emit(type='log', message='正在加载检测与嵌入模型')
                         from togeari import SourceItem
-                        from kohakugbc.machine.build import build_parts
-                        parts = build_parts(config)
+                        parts, failures = build_analysis_parts(config)
                         adapter = parts.slots['vlm'].adapter
-                        prepare = adapter.prepare
-                        def bounded_prepare(inputs, protocol):
-                            request_count[0] += 1
-                            if request_count[0] > options['max_requests']:
-                                raise ValueError('已达到单图请求上限')
-                            prepared = prepare(inputs, protocol)
-                            if options.get('image_detail'):
-                                for message in prepared.json.get('messages', []):
-                                    if isinstance(message.get('content'), list):
-                                        for part in message['content']:
-                                            if part.get('type') == 'image_url':
-                                                part['image_url']['detail'] = options['image_detail']
-                            return prepared
-                        adapter.prepare = bounded_prepare
+                        replies = AnalysisReplies(adapter, options, failures)
+                        adapter.prepare = replies.prepare
+                        adapter.decode = replies.decode
                         machine = stack.enter_context(parts.machine)
                     working = str(Path(scratch) / 'image.png')
                     image.save(working)
-                    emit(type='log', message='正在分析全图、区域和对象关系')
-                    sink = Capture()
-                    machine.run([SourceItem(request['path'], {'image': {'path': working, 'key':request['path']}, 'controls': config['controls']})], sink)
-                    record = sink.record
-                    graph = parse_graph_result(record)
+                    stages.log('正在分析全图、区域和对象关系')
+                    source = SourceItem(request['path'], {'image': {'path': working, 'key':request['path']}, 'controls': config['controls']})
+                    graph = analyze_graph(machine, source, replies, path.name)
                     graph['img_size'] = list(image.size)
                     graph['img_path'] = str(path)
                     graph['_purinbox'] = identity
                     emit(type='graph', graph=graph)
                 else:
-                    emit(type='log', message='复用已有 GBC 原始图')
-                if request_count[0] >= options['max_requests'] and options['content_type'] != 'gbc':
-                    raise ValueError('已达到单图请求上限；原始图已保留')
-                emit(type='log', message='正在整理描述与导出内容')
+                    stages.log('复用已有 GBC 原始图')
+                stages.log('正在整理描述与导出内容')
                 content = render(graph, image, options)
                 if analysis_identity(path, options) != identity:
                     raise ValueError('图片已发生变化，请重新运行')
