@@ -65,6 +65,12 @@ impl LlmTaggerOptions {
 }
 
 fn existing_input(path: &Path, format: &str) -> Result<(String, Option<serde_json::Value>, String), String> {
+    if !path.with_extension(format).is_file() && path.with_extension("gbc.json").is_file() {
+        let original = std::fs::read_to_string(path.with_extension("gbc.json")).map_err(|e| e.to_string())?;
+        let value: serde_json::Value = serde_json::from_str(&original).map_err(|e| format!("GBC 数据无效：{}", e))?;
+        if !crate::commands::tag_manager::is_structured_caption(&value) { return Err("GBC 数据中没有图结构".into()); }
+        return Ok((format!("Describe this image using its GBC scene graph: {}", original), None, original));
+    }
     let original = std::fs::read_to_string(path.with_extension(format)).map_err(|e| format!("无法读取已有标签：{}", e))?;
     if original.trim().is_empty() { return Err("已有标签为空".into()); }
     if format == "txt" { return Ok((original.clone(), None, original)); }
@@ -85,7 +91,7 @@ fn existing_input(path: &Path, format: &str) -> Result<(String, Option<serde_jso
 
 fn existing_format(image: &Path) -> Option<&'static str> {
     if image.with_extension("json").is_file() { Some("json") }
-    else if image.with_extension("txt").is_file() { Some("txt") }
+    else if image.with_extension("txt").is_file() || image.with_extension("gbc.json").is_file() { Some("txt") }
     else { None }
 }
 
@@ -96,7 +102,7 @@ fn existing_files(options: &LlmTaggerOptions) -> Result<Vec<PathBuf>, String> {
     for path in &files {
         if !targets.insert(path.with_extension(existing_format(path).unwrap())) { return Err("存在共用同一标签文件的重名图片，请先区分文件名".into()); }
     }
-    if files.is_empty() { return Err("未找到带有同名 TXT 或 JSON 标签的图片".into()); }
+    if files.is_empty() { return Err("未找到带有同名 TXT、JSON 标签或 GBC 数据的图片".into()); }
     Ok(files)
 }
 
@@ -256,7 +262,8 @@ async fn tag_file(
             "txt"
         });
         if let Some((_, _, original)) = existing {
-            if std::fs::read_to_string(&output).map_err(|e| e.to_string())? != original {
+            let source = if output.is_file() { output.clone() } else { path.with_extension("gbc.json") };
+            if std::fs::read_to_string(&source).map_err(|e| e.to_string())? != original {
                 return Err("标签文件在处理期间发生变化，未覆盖".into());
             }
         }
@@ -461,6 +468,18 @@ p.with_suffix('.gbc.json').write_text(json.dumps(g))
                 assert!(server.requests.try_recv().is_err());
             }
         }
+    }
+
+    #[test]
+    fn existing_gbc_without_caption_can_continue_to_txt() {
+        let root = crate::commands::test_support::TempDir::new("gbc_only_input");
+        let image = root.join("sample.png");
+        std::fs::write(image.with_extension("gbc.json"), r#"{"vertices":[]}"#).unwrap();
+        assert_eq!(existing_format(&image), Some("txt"));
+        let (reference, json, _) = existing_input(&image, "txt").unwrap();
+        assert!(reference.contains("GBC scene graph"));
+        assert!(json.is_none());
+        assert!(!image.with_extension("txt").exists());
     }
 
     #[test]

@@ -1,5 +1,6 @@
+import { useLocation } from 'react-router-dom';
 import GbcRefineTab from '../components/GbcRefineTab';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import SegmentedTabs from '../components/ui/SegmentedTabs';
 import PageHeader from '../components/ui/PageHeader';
 import { Tags } from 'lucide-react';
@@ -12,7 +13,9 @@ import { useAppSettings } from '../components/ThemeProvider';
 export default function TaggerPage() {
   const { t } = useTranslation();
   const { hybridTaggerEnabled } = useAppSettings();
-  const [activeTab, setActiveTab] = useState('ai');
+  const location = useLocation();
+  const [activeTab, setActiveTab] = useState(location.state?.gbcImage ? 'gbc' : 'ai');
+  useEffect(() => { if (location.state?.gbcImage) setActiveTab('gbc'); }, [location.key, location.state]);
 
   const tabs = [
     { id: 'ai', label: t('tagger.aiTab') },

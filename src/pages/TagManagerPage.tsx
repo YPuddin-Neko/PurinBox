@@ -1,3 +1,4 @@
+import GbcTagTab, { type GbcTagTabHandle } from '../components/GbcTagTab';
 import { useState, useRef, useCallback, useMemo, useId } from 'react';
 import { useQueuedInvoke } from '../hooks/useQueuedInvoke';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -45,7 +46,7 @@ export default function TagManagerPage() {
   const invoke = useQueuedInvoke();
   const { t } = useTranslation();
   const positionGroup = useId();
-  const [mode, setMode] = useState<'danbooru' | 'natural' | 'json'>('danbooru');
+  const [mode, setMode] = useState<'danbooru' | 'natural' | 'json' | 'gbc'>('danbooru');
   const [images, setImages] = useState<ImageItem[]>([]);
   const [nlImages, setNlImages] = useState<CaptionItem[]>([]);
 
@@ -61,6 +62,10 @@ export default function TagManagerPage() {
   const [recursive, setRecursive] = useState(false);
 
   const [folderPath, setFolderPath] = useState('');
+  const gbcTabRef = useRef<GbcTagTabHandle>(null);
+  const [gbcDirtyCount, setGbcDirtyCount] = useState(0);
+  const [gbcLoading, setGbcLoading] = useState(false);
+  const [gbcSaving, setGbcSaving] = useState(false);
   const jsonTabRef = useRef<JsonTagTabHandle>(null);
   const [jsonDirtyCount, setJsonDirtyCount] = useState(0);
   // JsonTagTab 的 loading/saving 通过回调上报为 state（渲染期读 ref 不会触发重渲染，按钮禁用态会陈旧）
@@ -326,7 +331,9 @@ export default function TagManagerPage() {
 
   const dirtyCount = images.filter(i => i.dirty).length;
 
-  const topBar = mode === 'json'
+  const topBar = mode === 'gbc'
+    ? { loading: gbcLoading, saving: gbcSaving, dirty: gbcDirtyCount, onLoad: () => gbcTabRef.current?.loadFolder(), onSave: () => gbcTabRef.current?.saveAll() }
+    : mode === 'json'
     ? { loading: jsonLoading, saving: jsonSaving, dirty: jsonDirtyCount, onLoad: () => jsonTabRef.current?.loadFolder(), onSave: () => jsonTabRef.current?.saveAll() }
     : mode === 'natural'
       ? { loading, saving, dirty: nlImages.filter(i => i.dirty).length, onLoad: handleLoadFolder, onSave: handleSaveAllCaptions }
@@ -343,6 +350,7 @@ export default function TagManagerPage() {
           { id: 'danbooru', label: t('tagManager.danbooruTab') },
           { id: 'natural', label: t('tagManager.naturalTab') },
           { id: 'json', label: t('tagManager.jsonTab') },
+          { id: 'gbc', label: 'GBC' },
         ]} />
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <RecursiveScanToggle checked={recursive} onChange={setRecursive} style={{ height: 34 }} />
@@ -428,6 +436,10 @@ export default function TagManagerPage() {
       {mode === 'natural' && (
         <NaturalLangTab images={nlImages} setImages={setNlImages} onRefresh={folderPath ? handleRefresh : undefined} onError={setAlertMsg} />
       )}
+
+      <div style={{ display: mode === 'gbc' ? 'flex' : 'none', flex: 1, overflow: 'hidden', minHeight: 0 }}>
+        <GbcTagTab ref={gbcTabRef} recursive={recursive} onDirtyChange={setGbcDirtyCount} onLoadingChange={setGbcLoading} onSavingChange={setGbcSaving} />
+      </div>
 
       <div style={{ display: mode === 'json' ? 'flex' : 'none', flex: 1, overflow: 'hidden', minHeight: 0 }}>
         <JsonTagTab ref={jsonTabRef} recursive={recursive} onDirtyChange={setJsonDirtyCount} onLoadingChange={setJsonLoading} onSavingChange={setJsonSaving} />

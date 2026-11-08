@@ -2,7 +2,7 @@ import GbcAnalysisFields, { useGbcAnalysisLimits } from './GbcAnalysisFields';
 import { useGbcOptions } from '../hooks/useGbcOptions';
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Hash, Save, Trash2 } from 'lucide-react';
+import { Hash, Save, Trash2, RotateCcw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { errorText, listen } from '../utils/tauriRuntime';
 import { Modal } from './Modal';
@@ -11,6 +11,7 @@ import ProcessButton from './ProcessButton';
 import CustomSelect from './CustomSelect';
 import TaggerModelSelect from './TaggerModelSelect';
 import Checkbox from './Checkbox';
+import Switch from './ui/Switch';
 import DatasetPathPanel from './DatasetPathPanel';
 import LlmApiPanel from './LlmApiPanel';
 import LlmSamplingFields, { LLM_SAMPLING_DEFAULTS, type LlmSampling } from './LlmSamplingFields';
@@ -67,6 +68,9 @@ export default function HybridTaggerTab() {
   if (savedRef.current === undefined) savedRef.current = loadHybridSettings();
   const saved = savedRef.current;
   const sv = saved ?? {};
+  const [editingPrompt, setEditingPrompt] = useState(false);
+  const [promptDraft, setPromptDraft] = useState('');
+  const [saveGraph, setSaveGraph] = useState(false);
   const [gbcEnabled, setGbcEnabled] = useState(sv.gbcEnabled ?? false);
   const [customPresets, setCustomPresets] = useState<HybridPromptPreset[]>(loadCustomPresets);
   const [restored] = useState(() => restoreHybridSelection(sv, customPresets));
@@ -80,7 +84,7 @@ export default function HybridTaggerTab() {
   });
   const [useGpu, setUseGpu] = useState(sv.useGpu ?? true);
   const [gbcLimits, setGbcLimits] = useGbcAnalysisLimits();
-  const gbc = { ...useGbcOptions(useGpu), ...gbcLimits };
+  const gbc = { ...useGbcOptions(useGpu), ...gbcLimits, save_graph: saveGraph };
   const [replaceUnderscore, setReplaceUnderscore] = useState(sv.replaceUnderscore ?? true);
   const [escapeParentheses, setEscapeParentheses] = useState(sv.escapeParentheses ?? false);
   const [preferExisting, setPreferExisting] = useState(sv.preferExisting ?? true);
@@ -438,69 +442,82 @@ export default function HybridTaggerTab() {
         <LlmApiPanel api={api} compact equalPresetWidths={false} style={{ marginBottom: 0 }} />
       </div>
 
-      {/* 调优设置聚合：提示词 + 参数 + 输出格式 */}
+      <div className="hybrid-tuning-grid">
       <div className="tool-panel">
         <div className="tool-panel-header">
           <span className="tool-panel-title">{t('hybridTagger.llmPhase')}</span>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
-            <span style={{ display: 'inline-flex', marginRight: 'var(--space-3)' }} title={!supportsNaturalLanguage ? t('gbc.naturalPresetRequired') : undefined}><Checkbox checked={refineWithGbc} onChange={setGbcEnabled} disabled={processing || !supportsNaturalLanguage} label={t('gbc.enhance')} size={14} style={{ lineHeight: '20px' }} /></span>
+
+          <div className="hybrid-prompt-row">
             <CustomSelect compact value={presetId} onChange={applyPreset}
-              options={allPresets.map(p => ({ value: p.id, label: p.name }))} style={{ width: 190 }} />
-            <button className="btn btn-ghost btn-sm" style={{ fontSize: 10, padding: '4px 6px' }}
-              title={t('hybridTagger.savePreset')}
+              options={allPresets.map(p => ({ value: p.id, label: p.name }))} style={{ width: 180, minWidth: 0 }} />
+            <button className="btn btn-ghost btn-sm"
+              aria-label={t('hybridTagger.savePreset')} title={t('hybridTagger.savePreset')}
               onClick={() => { setNewPresetName(isCustomPreset ? (activePreset?.name || '') : ''); setShowSaveModal(true); }}>
               <Save style={{ width: 13, height: 13 }} />
             </button>
-            {/* 常驻显示，内置预设时置灰——藏起来会让人以为没有删除功能 */}
             <button className="btn btn-ghost btn-sm" disabled={!isCustomPreset}
-              style={{ fontSize: 10, padding: '4px 6px', color: isCustomPreset ? '#f87171' : undefined, opacity: isCustomPreset ? 1 : 0.35 }}
+              aria-label={t('hybridTagger.deletePreset')}
               title={t('hybridTagger.deletePreset')} onClick={handleDeletePreset}>
               <Trash2 style={{ width: 13, height: 13 }} />
             </button>
-            <button className="btn btn-ghost btn-sm" style={{ fontSize: 10 }}
-              onClick={() => applyPreset(presetId)}>{t('llmApi.resetDefault')}</button>
+            <button className="btn btn-ghost btn-sm" title={t('llmApi.resetDefault')} aria-label={t('llmApi.resetDefault')}
+              onClick={() => applyPreset(presetId)}><RotateCcw size={14} /></button>
+
           </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 'var(--space-4)', alignItems: 'stretch' }}>
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
-            <label className="form-label" htmlFor="hybrid-prompt">{t('hybridTagger.promptLabel')}</label>
-            <textarea id="hybrid-prompt" className="form-input" value={prompt} onChange={e => setPrompt(e.target.value)}
-              style={{ fontSize: 11, fontFamily: 'monospace', lineHeight: 1.6, resize: 'vertical', flex: 1, minHeight: 200 }} />
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-            <LlmSamplingFields layout="compact" image maxConcurrency={MAX_CONCURRENCY} value={sampling} onChange={setSampling}
-              shortReplyWarning={{ value: shortReplyThreshold, onChange: setShortReplyThreshold }} extra={
-              <div style={{ flex: 1, minWidth: 0 }}>
+        <div>
+          <section className="hybrid-settings-section">
+            <div className="hybrid-settings-heading">
+              <h3 className="hybrid-settings-title">{t('llmTagger.modelSettings')}</h3>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setPromptDraft(prompt); setEditingPrompt(true); }}>{t('gbc.editPrompt')}</button>
+            </div>
+            <LlmSamplingFields layout="panel" samplingFirst image maxConcurrency={MAX_CONCURRENCY} value={sampling} onChange={setSampling} />
+          </section>
+          <section className="hybrid-settings-section">
+            <div className="hybrid-settings-heading">
+              <h3 className="hybrid-settings-title">{t('gbc.analysisSettings')}</h3>
+              <label className="hybrid-gbc-switch" title={!supportsNaturalLanguage ? t('gbc.naturalPresetRequired') : undefined}><span>{t('gbc.enhance')}</span><Switch checked={refineWithGbc} onChange={setGbcEnabled} disabled={processing || !supportsNaturalLanguage} aria-label={t('gbc.enhance')} size="sm" /></label>
+            </div>
+            {refineWithGbc && <>
+              <GbcAnalysisFields value={gbcLimits} onChange={setGbcLimits} disabled={processing} />
+              <Checkbox checked={saveGraph} onChange={setSaveGraph} disabled={processing} label={t('gbc.keepData')} size={14} />
+            </>}
+          </section>
+          <section className="hybrid-settings-section">
+            <h3 className="hybrid-settings-title">{t('hybridTagger.outputSettings')}</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 'var(--space-3)' }}>
+              <div className="form-group">
                 <label className="form-label">{t('hybridTagger.outputFormat')}</label>
-                <CustomSelect
-                  value={outputFormat}
-                  onChange={handleFormatChange}
-                  options={[
-                    { value: 'txt', label: t('hybridTagger.formatTxt') },
-                    { value: 'json', label: t('hybridTagger.formatJson') },
-                    { value: 'json_simplified', label: t('hybridTagger.formatJsonSimplified') },
-                  ]}
-                />
+                <CustomSelect value={outputFormat} onChange={handleFormatChange} options={[
+                  { value: 'txt', label: t('hybridTagger.formatTxt') },
+                  { value: 'json', label: t('hybridTagger.formatJson') },
+                  { value: 'json_simplified', label: t('hybridTagger.formatJsonSimplified') },
+                ]} />
               </div>
-            } />
-            {refineWithGbc && <GbcAnalysisFields value={gbcLimits} onChange={setGbcLimits} disabled={processing} />}
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-              <div style={{ flex: '1 1 100px', minWidth: 0 }}>
+              <div className="form-group">
                 <label htmlFor="hybrid-trigger-word" className="form-label" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   <Hash style={{ width: 12, height: 12, color: 'var(--color-text-tertiary)' }} /> {t('hybridTagger.triggerWord')}
                 </label>
-                <input id="hybrid-trigger-word" className="form-input" autoComplete="off" value={triggerWord}
-                  onChange={e => setTriggerWord(e.target.value)} />
+                <input id="hybrid-trigger-word" className="form-input" autoComplete="off" value={triggerWord} onChange={e => setTriggerWord(e.target.value)} />
               </div>
-              <span title={preferExisting ? undefined : t('hybridTagger.skipExistingRequiresReuse')} style={{ display: 'flex', alignItems: 'center', minHeight: 34 }}>
+            </div>
+            <div className="hybrid-output-options">
+              <div className="hybrid-threshold-option">
+                <label className="form-label" htmlFor="hybrid-short-reply-threshold" title={t('llmApi.shortReplyThresholdTip')}>
+                  <span>{t('llmApi.shortReplyThreshold')}</span>
+                  <span className="hybrid-threshold-value">{shortReplyThreshold}</span>
+                </label>
+                <input id="hybrid-short-reply-threshold" type="range" min={SHORT_REPLY_THRESHOLD.min} max={SHORT_REPLY_THRESHOLD.max} step={1} value={shortReplyThreshold} onChange={e => setShortReplyThreshold(Number(e.target.value))} />
+              </div>
+              <span title={preferExisting ? undefined : t('hybridTagger.skipExistingRequiresReuse')}>
                 <Checkbox checked={skipExisting} onChange={setSkipExisting} disabled={processing || !preferExisting} size={14} label={t('hybridTagger.skipExisting')} />
               </span>
             </div>
-          </div>
+          </section>
         </div>
       </div>
 
-      {/* 操作 + 进度 + 日志 */}
+      <div className="hybrid-run-column" style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
       <ProcessButton
         processing={processing}
         onStart={handleStart}
@@ -529,6 +546,17 @@ export default function HybridTaggerTab() {
         hasError={hasErr}
         onClearLogs={clearLogs}
       />
+
+      </div>
+      </div>
+      <Modal open={editingPrompt} onClose={() => setEditingPrompt(false)} title={t('gbc.editPrompt')} width="min(90vw, 900px)" maxWidth={900}>
+        <label className="form-label" htmlFor="hybrid-prompt">{t('hybridTagger.promptLabel')}</label>
+        <textarea id="hybrid-prompt" className="form-input" value={promptDraft} onChange={e => setPromptDraft(e.target.value)} style={{ minHeight: '50vh', fontFamily: 'monospace', fontSize: 12, lineHeight: 1.6, resize: 'vertical' }} />
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button className="btn btn-secondary" onClick={() => setEditingPrompt(false)}>{t('common.cancel')}</button>
+          <button className="btn btn-primary" disabled={processing} onClick={() => { setPrompt(promptDraft); setEditingPrompt(false); }}>{t('common.save')}</button>
+        </div>
+      </Modal>
 
       <Modal open={showSaveModal} onClose={() => setShowSaveModal(false)} title={t('hybridTagger.savePreset')}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>

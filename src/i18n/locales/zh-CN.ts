@@ -649,6 +649,7 @@ const zhCN = {
   // ═══════════════ AI 打标 ═══════════════
   // ═══════════════ 辅助打标（本地 + VLM 调优） ═══════════════
   hybridTagger: {
+    outputSettings: "输出设置",
     localPhase: '本地打标',
     llmPhase: 'VLM 调优',
     presetFull: '标签调优 + 自然语言描述',
@@ -764,6 +765,17 @@ const zhCN = {
 
   // ═══════════════ VLM 打标 ═══════════════
   gbc: {
+    keepData: "保留 GBC 数据",
+    continueRefine: "保存并继续细化",
+    region: "区域",
+    wholeImage: "整图",
+    left: "左",
+    top: "上",
+    right: "右",
+    bottom: "下",
+    description: "描述",
+
+    editPrompt: "编辑提示词",
     refineTab: "GBC 细化",
     analysisSettings: "GBC 分析设置",
     refineButton: "开始细化",

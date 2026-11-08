@@ -2046,3 +2046,5 @@ mod run_and_archive_tests {
         assert!(dir_dest.join("inner").is_dir());
     }
 }
+
+pub mod gbc_document;

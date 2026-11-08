@@ -109,6 +109,17 @@ def render(graph, image, options):
     return json.dumps({'nl':text}, ensure_ascii=False, indent=2) if options['output_format'] == 'json' else text
 
 
+def parse_graph_result(record):
+    if record is None:
+        raise ValueError('GBC 未返回图分析结果')
+    if not record.ok:
+        raise ValueError(str(record.failure))
+    raw = record.outputs.get('graph')
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raise ValueError('GBC 未生成有效的图分析结果，无法细化这张图片')
+    return graph_document(json.loads(raw))
+
+
 def valid_existing(path, options):
     try:
         text = path.read_text(encoding='utf-8')
@@ -159,13 +170,11 @@ def main():
                 with Image.open(path) as source:
                     image = ImageOps.exif_transpose(source).convert('RGB')
                 graph = None
-                try:
-                    cached = graph_document(json.loads(path.with_suffix('.gbc.json').read_text(encoding='utf-8')))
-                    if cached.get('_purinbox') == identity:
-                        graph = cached
-                except (OSError, ValueError, TypeError, KeyError):
-                    pass
-                request_count[0] = 0
+                existing_graph = path.with_suffix('.gbc.json')
+                if existing_graph.is_file():
+                    graph = graph_document(json.loads(existing_graph.read_text(encoding='utf-8')))
+                    if graph.get('img_size') and list(graph['img_size']) != list(image.size):
+                        raise ValueError('已有 GBC 数据的图片尺寸不匹配')
                 if graph is None:
                     for name in ('detector_path', 'embedder_path'):
                         if not Path(options[name]).is_dir():
@@ -197,9 +206,7 @@ def main():
                     sink = Capture()
                     machine.run([SourceItem(request['path'], {'image': {'path': working, 'key':request['path']}, 'controls': config['controls']})], sink)
                     record = sink.record
-                    if record is None or not record.ok:
-                        raise ValueError(str(record.failure if record else '未收到图分析结果'))
-                    graph = graph_document(json.loads(record.outputs['graph']))
+                    graph = parse_graph_result(record)
                     graph['img_size'] = list(image.size)
                     graph['img_path'] = str(path)
                     graph['_purinbox'] = identity

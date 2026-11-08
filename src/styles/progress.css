@@ -195,3 +195,22 @@
 @media (prefers-reduced-motion: reduce) {
   .log-download-active { animation: none; }
 }
+
+.hybrid-tuning-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-5); align-items: start; }
+.hybrid-tuning-grid > .tool-panel > .tool-panel-header { justify-content: flex-start; flex-wrap: wrap; gap: var(--space-3); }
+@media (max-width: 900px) { .hybrid-tuning-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.hybrid-settings-section { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--color-border); }
+.hybrid-settings-title { margin: 0; font-size: var(--font-size-sm); font-weight: 600; color: var(--color-text-primary); }
+.hybrid-settings-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.hybrid-output-options { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-3); }
+.hybrid-threshold-option { flex: 1; min-width: 180px; }
+.hybrid-threshold-option .form-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.hybrid-threshold-option input { width: 100%; accent-color: var(--color-accent-primary); }
+.hybrid-threshold-value { font-size: 11px; color: var(--color-accent-primary); font-family: monospace; }
+.hybrid-gbc-switch { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--font-size-sm); cursor: pointer; }
+
+.hybrid-prompt-row { display: flex; margin-left: auto; min-width: 0; align-items: center; gap: var(--space-1); }
+.hybrid-prompt-row > .btn { flex-shrink: 0; width: 28px; height: 28px; padding: 0; }
+.hybrid-prompt-row > .btn svg { width: 14px; height: 14px; }
+.hybrid-prompt-row > .cs-container { min-width: 0; }

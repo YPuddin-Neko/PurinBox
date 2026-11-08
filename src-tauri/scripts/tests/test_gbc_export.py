@@ -17,6 +17,17 @@ def graph():
 
 
 class ExportContractTests(unittest.TestCase):
+    def test_empty_graph_result_is_reported_before_json_decode(self):
+        import json
+        from types import SimpleNamespace
+        from gbc_worker import parse_graph_result
+        for raw in (None, '', '  '):
+            with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, '未生成有效的图分析结果'):
+                parse_graph_result(SimpleNamespace(ok=True, outputs={'graph': raw}))
+        self.assertEqual(parse_graph_result(SimpleNamespace(ok=True, outputs={'graph': json.dumps(graph())})), graph())
+        with self.assertRaisesRegex(ValueError, 'upstream failure'):
+            parse_graph_result(SimpleNamespace(ok=False, failure='upstream failure'))
+
     def test_graph_preserves_metadata(self):
         value = graph()
         value['source_metadata'] = {'seed': 18446744073709551615}

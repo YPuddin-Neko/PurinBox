@@ -620,6 +620,7 @@ const ja = {
   },
 
   hybridTagger: {
+    outputSettings: "出力設定",
     localPhase: 'ローカルタグ付け',
     llmPhase: 'VLM 調整',
     presetFull: 'タグ調整 + 自然言語説明',
@@ -734,6 +735,17 @@ const ja = {
   },
 
   gbc: {
+    keepData: "GBC データを保存",
+    continueRefine: "保存して詳細化を続ける",
+    region: "領域",
+    wholeImage: "画像全体",
+    left: "左",
+    top: "上",
+    right: "右",
+    bottom: "下",
+    description: "説明",
+
+    editPrompt: "プロンプトを編集",
     refineTab: "GBC 詳細化",
     analysisSettings: "GBC 解析設定",
     refineButton: "詳細化を開始",

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { BboxRegion } from '../utils/bboxRegions';
 
-export default function BboxImage({ src, alt, regions, onClick }: {
-  src: string; alt: string; regions: BboxRegion[]; onClick?: () => void;
+export default function BboxImage({ src, alt, regions, onClick, selectedRegion, onRegionSelect }: {
+  src: string; alt: string; regions: BboxRegion[]; onClick?: () => void; selectedRegion?: string; onRegionSelect?: (id: string) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -27,7 +27,9 @@ export default function BboxImage({ src, alt, regions, onClick }: {
     {width > 0 && height > 0 && <div className="bbox-overlay" style={{ width, height, left: (size.width - width) / 2, top: (size.height - height) / 2 }}>
       {regions.map(region => {
         const [left, top, right, bottom] = region.box;
-        return <div key={region.id} className="bbox-region" title={region.label} style={{
+        return <div key={region.id} className="bbox-region" title={region.label} onClick={onRegionSelect ? () => onRegionSelect(region.id) : undefined} style={{
+          pointerEvents: onRegionSelect ? 'auto' : undefined, cursor: onRegionSelect ? 'pointer' : undefined,
+          background: selectedRegion === region.id ? 'rgba(124,92,252,0.12)' : undefined,
           left: `${left * 100}%`, top: `${top * 100}%`, width: `${(right - left) * 100}%`, height: `${(bottom - top) * 100}%`,
           borderColor: region.color, borderStyle: region.nested ? 'dashed' : 'solid',
         }}>

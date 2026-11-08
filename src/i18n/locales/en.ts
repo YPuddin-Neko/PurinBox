@@ -620,6 +620,7 @@ const en = {
   },
 
   hybridTagger: {
+    outputSettings: "Output settings",
     localPhase: 'Local Tagging',
     llmPhase: 'VLM Refinement',
     presetFull: 'Refine tags + description',
@@ -734,6 +735,17 @@ const en = {
   },
 
   gbc: {
+    keepData: "Keep GBC data",
+    continueRefine: "Save and continue refinement",
+    region: "Region",
+    wholeImage: "Whole image",
+    left: "Left",
+    top: "Top",
+    right: "Right",
+    bottom: "Bottom",
+    description: "Description",
+
+    editPrompt: "Edit prompt",
     refineTab: "GBC refinement",
     analysisSettings: "GBC analysis settings",
     refineButton: "Start refinement",

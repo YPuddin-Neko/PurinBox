@@ -1,4 +1,6 @@
-import { useId, useState } from 'react';
+import { useLocation } from 'react-router-dom';
+import Checkbox from './Checkbox';
+import { useEffect, useId, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import { Hash } from 'lucide-react';
@@ -18,12 +20,15 @@ export default function GbcRefineTab() {
   const { t } = useTranslation();
   const id = useId();
   const [path, setPath] = useState('');
+  const location = useLocation();
+  useEffect(() => { if (location.state?.gbcImage) setPath(location.state.gbcImage); }, [location.key, location.state]);
+  const [saveGraph, setSaveGraph] = useState(false);
   const [recursive, setRecursive] = useState(false);
   const [useGpu, setUseGpu] = useState(false);
   const [sampling, setSampling] = useState({ ...LLM_SAMPLING_DEFAULTS });
   const [maxTokens, setMaxTokens] = useState(-1);
   const [limits, setLimits] = useGbcAnalysisLimits();
-  const gbc = { ...useGbcOptions(useGpu), ...limits };
+  const gbc = { ...useGbcOptions(useGpu), ...limits, save_graph: saveGraph };
   const run = useLlmBatchRun({ event: 'gbc-refine-progress', taskId: 'gbc-refine' });
   const start = () => void run.start({ taskName: t('gbc.refineTab'), startLogKey: 'gbc.refineStart', intervalSec: sampling.intervalSec, concurrency: sampling.concurrency,
     exec: requestIntervalMs => invoke('start_llm_tagging', { options: {
@@ -43,6 +48,7 @@ export default function GbcRefineTab() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           <GbcAnalysisFields value={limits} onChange={setLimits} disabled={run.processing} />
           <LlmSamplingFields value={sampling} onChange={setSampling} image samplingFirst extra={<div className="form-group" style={{ marginBottom: 0, flex: 1 }}><label className="form-label" htmlFor={`${id}-tokens`} style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Hash size={13} />{t('llmTagger.maxTokens')}</label><NumberInput id={`${id}-tokens`} integer min={-1} max={8192} value={maxTokens} onChange={setMaxTokens} /></div>} />
+          <Checkbox checked={saveGraph} onChange={setSaveGraph} disabled={run.processing} label={t('gbc.keepData')} size={14} />
         </div>
       </div>
     </div>

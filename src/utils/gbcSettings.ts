@@ -4,6 +4,7 @@ export interface GbcOptions {
   embedder_path: string;
   device: string;
   content_type: string;
+  save_graph?: boolean;
   caption_prompt: string;
   max_nodes: number;
   max_depth: number;

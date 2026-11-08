@@ -28,6 +28,8 @@ pub struct GbcSettings {
     pub embedder_path: String,
     pub device: String,
     pub content_type: String,
+    #[serde(default)]
+    pub save_graph: bool,
     pub caption_prompt: String,
     pub max_nodes: u32,
     pub max_depth: u32,
@@ -56,6 +58,13 @@ fn validate_environment(settings: &GbcSettings) -> Result<PathBuf, String> {
         return Err("GBC 环境不可用".into());
     }
     Ok(python)
+}
+
+fn save_graph_sidecar(path: &std::path::Path, graph: &serde_json::Value, save_graph: bool) -> Result<(), String> {
+    if !save_graph { return Ok(()); }
+    config_paths::write_file_atomic(&path.with_extension("gbc.json"),
+        serde_json::to_string_pretty(graph).map_err(|e| e.to_string())?.as_bytes())
+        .map_err(|e| e.to_string())
 }
 
 pub fn cancel() {
@@ -153,14 +162,7 @@ pub fn run<R: tauri::Runtime>(
                         if LLM_CANCELLED.load(Ordering::SeqCst) {
                             return Err("已取消".into());
                         }
-                        let raw = path.with_extension("gbc.json");
-                        config_paths::write_file_atomic(
-                            &raw,
-                            serde_json::to_string_pretty(&msg["graph"])
-                                .map_err(|e| e.to_string())?
-                                .as_bytes(),
-                        )
-                        .map_err(|e| e.to_string())?;
+                        save_graph_sidecar(&path, &msg["graph"], settings.save_graph)?;
                     }
                     Some("result") => {
                         if LLM_CANCELLED.load(Ordering::SeqCst) {
@@ -253,6 +255,7 @@ pub(crate) struct Analyzer {
     session: PythonSession<'static>,
     cancel: &'static AtomicBool,
     log: Box<dyn FnMut(&serde_json::Value) + Send>,
+    save_graph: bool,
     _busy: crate::commands::BusyGuard,
 }
 
@@ -290,7 +293,7 @@ impl Analyzer {
         session.send(&init).map_err(|e| e.to_string())?;
         session.wait_ready(Duration::from_secs(600), |_| {}).map_err(|e| e.to_string())?;
         let app = app.clone();
-        Ok(Self { session, cancel, log: Box::new(move |msg| ProgressEvent::python_log(msg, 0, 0).emit(&app, event)), _busy: busy })
+        Ok(Self { session, cancel, log: Box::new(move |msg| ProgressEvent::python_log(msg, 0, 0).emit(&app, event)), save_graph: settings.save_graph, _busy: busy })
     }
 
     pub(crate) fn analyze(&mut self, path: &std::path::Path) -> Result<String, String> {
@@ -300,7 +303,7 @@ impl Analyzer {
             if self.cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
             match msg["type"].as_str() {
                 Some("graph") => {
-                    config_paths::write_file_atomic(&path.with_extension("gbc.json"), serde_json::to_string_pretty(&msg["graph"]).map_err(|e| e.to_string())?.as_bytes()).map_err(|e| e.to_string())?;
+                    save_graph_sidecar(path, &msg["graph"], self.save_graph)?;
                 }
                 Some("result") => return msg["content"].as_str().map(str::to_owned).ok_or("GBC 原始图为空".into()),
                 Some("error") => return Err(msg["message"].as_str().unwrap_or("GBC 分析失败").to_owned()),
@@ -409,6 +412,20 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn caption_does_not_create_or_overwrite_graph_sidecars() {
+        let root = TempDir::new("gbc_caption_sidecar");
+        let image = root.join("image.png");
+        let sidecar = image.with_extension("gbc.json");
+        save_graph_sidecar(&image, &json!({"vertices": []}), false).unwrap();
+        assert!(!sidecar.exists());
+        std::fs::write(&sidecar, "existing graph").unwrap();
+        save_graph_sidecar(&image, &json!({"vertices": []}), false).unwrap();
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), "existing graph");
+        save_graph_sidecar(&image, &json!({"vertices": []}), true).unwrap();
+        assert!(std::fs::read_to_string(&sidecar).unwrap().contains("vertices"));
+    }
+
+    #[test]
     fn setup_downloads_use_shared_progress_without_raw_log_rows() {
         let app = tauri::test::mock_app();
         let downloads = crate::commands::batch::capture_raw_events(app.handle(), "python-env-download");
@@ -434,6 +451,7 @@ mod tests {
         let root = TempDir::new("gbc_missing_environment");
         let app = tauri::test::mock_app();
         let settings = GbcSettings {
+            save_graph: false,
             python_path: root.join("missing-python").to_string_lossy().into_owned(),
             detector_path: String::new(), embedder_path: String::new(),
             device: "cpu".into(), content_type: "gbc".into(), caption_prompt: String::new(),
