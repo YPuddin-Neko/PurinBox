@@ -214,3 +214,11 @@
 .hybrid-prompt-row > .btn { flex-shrink: 0; width: 28px; height: 28px; padding: 0; }
 .hybrid-prompt-row > .btn svg { width: 14px; height: 14px; }
 .hybrid-prompt-row > .cs-container { min-width: 0; }
+
+@media (min-width: 901px) {
+  .hybrid-run-column { align-self: stretch; min-height: 0; }
+  .hybrid-run-column > .progress-section { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .hybrid-run-column .log-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .hybrid-run-column .log-panel-header { flex-shrink: 0; }
+  .hybrid-run-column .log-content { flex: 1; height: 0; min-height: 0; max-height: none; }
+}
