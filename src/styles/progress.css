@@ -216,9 +216,9 @@
 .hybrid-prompt-row > .cs-container { min-width: 0; }
 
 @media (min-width: 901px) {
-  .hybrid-run-column { align-self: stretch; min-height: 0; }
+  .hybrid-run-column { align-self: stretch; min-height: 0; contain: size; }
   .hybrid-run-column > .progress-section { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .hybrid-run-column .log-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .hybrid-run-column .log-panel-header { flex-shrink: 0; }
-  .hybrid-run-column .log-content { flex: 1; height: 0; min-height: 0; max-height: none; }
+  .hybrid-run-column .log-content { flex: 1 1 0px; min-height: 0; max-height: none; overflow-y: auto; }
 }
