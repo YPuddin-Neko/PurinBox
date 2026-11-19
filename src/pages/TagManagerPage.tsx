@@ -20,7 +20,7 @@ import type { SaveAllResult } from '../api/commandOptions';
 import TagChipList from '../components/TagChipList';
 import ImageGridColumn from '../components/ImageGridColumn';
 import TagStatsPanel from '../components/TagStatsPanel';
-import ScopeToggle from '../components/ScopeToggle';
+import ScopeToggle, { type BatchScope } from '../components/ScopeToggle';
 import { ImagePreviewPane, PanelSaveButton, ResizeHandle, TagPanelHeader, TagStatsActions, ToolSidebar } from '../components/TagEditorLayout';
 import SegmentedTabs from '../components/ui/SegmentedTabs';
 import PageHeader from '../components/ui/PageHeader';
@@ -81,10 +81,10 @@ export default function TagManagerPage() {
   const [addTagInput, setAddTagInput] = useState('');
   const [addPosition, setAddPosition] = useState<'start' | 'end'>('start');
   const [addOverwrite, setAddOverwrite] = useState(false);
-  /** 批量添加/删除的应用范围：当前图片 or 全部图片 */
-  const [addScope, setAddScope] = useState<'current' | 'all'>('all');
+  /** 批量添加/删除的应用范围：全部图片、当前图片或筛选图片 */
+  const [addScope, setAddScope] = useState<BatchScope>('all');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [deleteScope, setDeleteScope] = useState<'current' | 'all'>('all');
+  const [deleteScope, setDeleteScope] = useState<BatchScope>('all');
   const [showReplaceModal, setShowReplaceModal] = useState(false);
   const [replaceFrom, setReplaceFrom] = useState('');
   const [replaceTo, setReplaceTo] = useState('');
@@ -209,15 +209,19 @@ export default function TagManagerPage() {
     }
     return list;
   }, [images, searchText, filterMode, tagFilterActive, selectedTags]);
+  const hasFiltered = tagFilterActive && selectedTags.size > 0 && filtered.length > 0;
 
-  // ── 批量添加标签（按范围：当前图片 / 全部图片）──
+  // ── 批量添加标签（按范围：全部图片 / 当前图片 / 筛选图片）──
   const handleBatchAdd = () => {
     // 新标签的格式按整个数据集的现有惯例判定（与应用范围无关）
     const tags = splitTagInput(addTagInput, value => normalizeNewTag(value));
     if (tags.length === 0) return;
     if (addScope === 'current' && selectedIdx < 0) return;
+    if (addScope === 'filtered' && !hasFiltered) return;
+    const filteredPaths = addScope === 'filtered' ? new Set(filtered.map(img => img.path)) : null;
     setImages(p => p.map((img, i) => {
       if (addScope === 'current' && i !== selectedIdx) return img;
+      if (filteredPaths && !filteredPaths.has(img.path)) return img;
       let newTags = [...img.tags];
       // 前置不能逐个 unshift：那会把输入顺序整体反转（首 token 权重敏感）
       const toInsert: string[] = [];
@@ -236,12 +240,15 @@ export default function TagManagerPage() {
     setShowAddModal(false); setAddTagInput('');
   };
 
-  // ── 批量删除标签（按范围：当前图片 / 全部图片）──
+  // ── 批量删除标签（按范围：全部图片 / 当前图片 / 筛选图片）──
   const handleBatchDelete = () => {
     if (selectedTags.size === 0) return;
     if (deleteScope === 'current' && selectedIdx < 0) return;
+    if (deleteScope === 'filtered' && !hasFiltered) return;
+    const filteredPaths = deleteScope === 'filtered' ? new Set(filtered.map(img => img.path)) : null;
     setImages(p => p.map((img, i) => {
       if (deleteScope === 'current' && i !== selectedIdx) return img;
+      if (filteredPaths && !filteredPaths.has(img.path)) return img;
       const newTags = img.tags.filter(tag => !selectedTags.has(tag));
       if (newTags.length === img.tags.length) return img;
       return { ...img, tags: newTags, dirty: true };
@@ -457,13 +464,14 @@ export default function TagManagerPage() {
             </label>
           ))}
         </div>
-        <ScopeToggle value={addScope} onChange={setAddScope} hasCurrent={!!cur} appearance="radio" />
+        <ScopeToggle value={addScope} onChange={setAddScope} hasCurrent={!!cur} hasFiltered={hasFiltered} appearance="radio" />
         <Checkbox checked={addOverwrite} onChange={setAddOverwrite} size={14} label={t('tagManager.overwriteIfExist')}
           style={{ fontSize: 11, color: 'var(--color-text-secondary)', marginBottom: 16 }} />
         <div style={modalActions}>
           <button className="btn btn-secondary" style={modalButton} onClick={() => setShowAddModal(false)}>{t('common.cancel')}</button>
-          <button className="btn btn-primary" style={modalButton} onClick={handleBatchAdd} disabled={!addTagInput.trim() || (addScope === 'current' && !cur)}>
-            {addScope === 'all' ? t('tagManager.addToAll') : t('tagManager.addToCurrentOne')}
+          <button className="btn btn-primary" style={modalButton} onClick={handleBatchAdd}
+            disabled={!addTagInput.trim() || (addScope === 'current' && !cur) || (addScope === 'filtered' && !hasFiltered)}>
+            {t(addScope === 'all' ? 'tagManager.addToAll' : addScope === 'filtered' ? 'tagManager.addToFiltered' : 'tagManager.addToCurrentOne')}
           </button>
         </div>
       </Modal>
@@ -477,12 +485,12 @@ export default function TagManagerPage() {
               background: 'rgba(248,113,113,0.06)', color: 'var(--color-text-secondary)' }}>{tag}</span>
           ))}
         </div>
-        <ScopeToggle value={deleteScope} onChange={setDeleteScope} hasCurrent={!!cur} appearance="radio" style={{ marginBottom: 16 }} />
+        <ScopeToggle value={deleteScope} onChange={setDeleteScope} hasCurrent={!!cur} hasFiltered={hasFiltered} appearance="radio" style={{ marginBottom: 16 }} />
         <div style={modalActions}>
           <button className="btn btn-secondary" style={modalButton} onClick={() => setShowDeleteModal(false)}>{t('common.cancel')}</button>
           <button className="btn btn-primary" style={{ ...modalButton, background: '#ef4444', borderColor: '#ef4444' }} onClick={handleBatchDelete}
-            disabled={deleteScope === 'current' && !cur}>
-            {deleteScope === 'all' ? t('tagEditor.deleteFromAll') : t('tagEditor.deleteFromCurrentOne')}
+            disabled={(deleteScope === 'current' && !cur) || (deleteScope === 'filtered' && !hasFiltered)}>
+            {t(deleteScope === 'all' ? 'tagEditor.deleteFromAll' : deleteScope === 'filtered' ? 'tagEditor.deleteFromFiltered' : 'tagEditor.deleteFromCurrentOne')}
           </button>
         </div>
       </Modal>

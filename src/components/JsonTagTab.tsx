@@ -18,7 +18,7 @@ import { useTagFieldDrag } from '../hooks/useTagFieldDrag';
 import TagChipList from './TagChipList';
 import ImageGridColumn from './ImageGridColumn';
 import TagStatsPanel from './TagStatsPanel';
-import ScopeToggle from './ScopeToggle';
+import ScopeToggle, { type BatchScope } from './ScopeToggle';
 import TagAutocomplete from './TagAutocomplete';
 import { ImagePreviewPane, OptionChips, PanelSaveButton, ResizeHandle, TagPanelHeader, TagStatsActions, ToolSidebar } from './TagEditorLayout';
 import { Modal, AlertModal } from './Modal';
@@ -75,10 +75,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   const [batchField, setBatchField] = useState('fixed.quality');
   const [batchTags, setBatchTags] = useState('');
   const [batchPosition, setBatchPosition] = useState<'prepend' | 'append'>('prepend');
-  /** 批量添加/删除的应用范围：当前图片 or 全部图片 */
-  const [batchScope, setBatchScope] = useState<'current' | 'all'>('all');
+  /** 批量添加/删除的应用范围：全部图片、当前图片或筛选图片 */
+  const [batchScope, setBatchScope] = useState<BatchScope>('all');
   const [showSelDeleteModal, setShowSelDeleteModal] = useState(false);
-  const [selDeleteScope, setSelDeleteScope] = useState<'current' | 'all'>('all');
+  const [selDeleteScope, setSelDeleteScope] = useState<BatchScope>('all');
 
   const visibleBatchFieldOptions = JSON_FIELDS.filter(field => !simplified || field.simplified).map(field => ({
     value: field.key, label: `${field.name} - ${t(field.labelKey)}`,
@@ -112,6 +112,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   }, [folderPath, recursive]);
 
   const cur = selectedIdx >= 0 && selectedIdx < images.length ? images[selectedIdx] : null;
+  const editable = !!cur && !cur.parse_failed;
   const dirtyCount = images.filter(i => i.dirty).length;
 
   const handleSaveSingle = useCallback(async () => {
@@ -171,6 +172,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
     }
     return list;
   }, [images, searchText, filterMode, tagFilterActive, selectedTags]);
+  const hasFiltered = tagFilterActive && selectedTags.size > 0 && filtered.length > 0;
 
   const taggedCount = images.filter(image => image.has_json).length;
   const currentTags = useMemo(() => new Set(cur ? collectAllTags(cur.data) : []), [cur]);
@@ -186,11 +188,13 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
     onDrop: (source, target) => updateData(data => moveJsonTag(data, source, target, simplified)),
   });
   /** keyOf 决定哪些写法算同一个标签：统计列表里选中的按原文（忽略大小写），手输的按 tagKey */
-  const removeTags = (tags: Iterable<string>, scope: 'current' | 'all', field: string, keyOf: (tag: string) => string) => {
-    if (scope === 'current' && !cur) return;
+  const removeTags = (tags: Iterable<string>, scope: BatchScope, field: string, keyOf: (tag: string) => string) => {
+    if (scope === 'current' && !editable || scope === 'filtered' && !hasFiltered) return;
+    const filteredPaths = scope === 'filtered' ? new Set(filtered.map(image => image.path)) : null;
     const keys = new Set([...tags].map(keyOf));
+    if (!keys.size) return;
     setImages(previous => previous.map((image, index) => {
-      if (image.parse_failed || scope === 'current' && index !== selectedIdx) return image;
+      if (image.parse_failed || scope === 'current' && index !== selectedIdx || filteredPaths && !filteredPaths.has(image.path)) return image;
       let data = image.data;
       for (const definition of JSON_FIELDS) {
         if (field !== 'all' && definition.key !== field) continue;
@@ -207,9 +211,10 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   // 手输的标签与文件里的比较两侧都按 tagKey：存的 long_hair 和输入的 Long Hair 是同一个标签
   const handleBatchAdd = () => {
     const tags = splitTagInput(batchTags), field = JSON_FIELDS.find(item => item.key === batchField);
-    if (!field || !tags.length || batchScope === 'current' && !cur) return;
+    if (!field || !tags.length || batchScope === 'current' && !editable || batchScope === 'filtered' && !hasFiltered) return;
+    const filteredPaths = batchScope === 'filtered' ? new Set(filtered.map(image => image.path)) : null;
     setImages(previous => previous.map((image, index) => {
-      if (image.parse_failed || batchScope === 'current' && index !== selectedIdx) return image;
+      if (image.parse_failed || batchScope === 'current' && index !== selectedIdx || filteredPaths && !filteredPaths.has(image.path)) return image;
       const values = field.get(image.data), keys = new Set(values.map(tagKey));
       const incoming = tags.filter(tag => !keys.has(tagKey(tag)));
       if (!incoming.length) return image;
@@ -219,7 +224,9 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
     setBatchTags(''); setShowBatchAddModal(false);
   };
   const handleBatchDelete = () => {
-    removeTags(splitTagInput(batchTags), batchScope, batchField, tagKey);
+    const tags = splitTagInput(batchTags);
+    if (!tags.length || batchScope === 'current' && !editable || batchScope === 'filtered' && !hasFiltered) return;
+    removeTags(tags, batchScope, batchField, tagKey);
     setBatchTags(''); setShowBatchDeleteModal(false);
   };
   const handleDeduplicateTags = () => {
@@ -244,7 +251,6 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
       {simplified ? t('jsonTag.simplified') : t('jsonTag.full')}
     </span>
   );
-  const editable = !!cur && !cur.parse_failed;
 
   return (
     <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
@@ -367,12 +373,13 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
         <OptionChips legend={t('jsonTag.targetField')} options={visibleBatchFieldOptions} value={batchField} onChange={setBatchField} />
         <OptionChips legend={t('tagEditor.position')} value={batchPosition} onChange={setBatchPosition} color="#4ade80"
           options={[{ value: 'prepend', label: t('tagEditor.prepend') }, { value: 'append', label: t('tagEditor.append') }]} />
-        <ScopeToggle value={batchScope} onChange={setBatchScope} hasCurrent={editable} />
+        <ScopeToggle value={batchScope} onChange={setBatchScope} hasCurrent={editable} hasFiltered={hasFiltered} />
         <label className="form-label" style={{ fontSize: 11 }}>{t('tagEditor.tagContent')}</label>
         <TagAutocomplete multi value={batchTags} onChange={setBatchTags} onSelect={handleBatchAdd} autoFocus placeholder="tag1, tag2, tag3" />
         <div className="tag-batch-actions">
           <button className="btn btn-ghost" onClick={() => setShowBatchAddModal(false)}>{t('common.cancel')}</button>
-          <button className="btn btn-primary" onClick={handleBatchAdd} disabled={!batchTags.trim()}>
+          <button className="btn btn-primary" onClick={handleBatchAdd}
+            disabled={!batchTags.trim() || (batchScope === 'current' && !editable) || (batchScope === 'filtered' && !hasFiltered)}>
             <ListPlus style={{ width: 12, height: 12 }} />{t('jsonTag.batchApplyAdd')}
           </button>
         </div>
@@ -381,12 +388,13 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
         headerIcon={<ListX size={16} color={RED} />}>
         <OptionChips legend={t('jsonTag.targetField')} value={batchField} onChange={setBatchField} color={RED}
           options={[{ value: 'all', label: t('jsonTag.allFields') }, ...visibleBatchFieldOptions]} />
-        <ScopeToggle value={batchScope} onChange={setBatchScope} hasCurrent={editable} color={RED} />
+        <ScopeToggle value={batchScope} onChange={setBatchScope} hasCurrent={editable} hasFiltered={hasFiltered} color={RED} />
         <label className="form-label" style={{ fontSize: 11 }}>{t('tagEditor.tagContent')}</label>
         <TagAutocomplete multi value={batchTags} onChange={setBatchTags} onSelect={handleBatchDelete} autoFocus placeholder="tag1, tag2, tag3" />
         <div className="tag-batch-actions">
           <button className="btn btn-ghost" onClick={() => setShowBatchDeleteModal(false)}>{t('common.cancel')}</button>
-          <button className="btn btn-danger" onClick={handleBatchDelete} disabled={!batchTags.trim()}>
+          <button className="btn btn-danger" onClick={handleBatchDelete}
+            disabled={!batchTags.trim() || (batchScope === 'current' && !editable) || (batchScope === 'filtered' && !hasFiltered)}>
             <ListX style={{ width: 12, height: 12 }} />{t('jsonTag.batchApplyDelete')}
           </button>
         </div>
@@ -400,11 +408,13 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
             <span key={tag} style={{ fontSize: 10, color: RED, background: 'rgba(248,113,113,0.1)', borderRadius: 12, padding: '2px 8px', overflowWrap: 'anywhere' }}>{tag}</span>
           ))}
         </div>
-        <ScopeToggle value={selDeleteScope} onChange={setSelDeleteScope} hasCurrent={editable} color={RED} />
+        <ScopeToggle value={selDeleteScope} onChange={setSelDeleteScope} hasCurrent={editable} hasFiltered={hasFiltered} color={RED} />
         <div className="tag-batch-actions">
           <button className="btn btn-ghost" onClick={() => setShowSelDeleteModal(false)}>{t('common.cancel')}</button>
-          <button className="btn btn-danger" onClick={handleSidebarBatchDelete} disabled={selDeleteScope === 'current' && !editable}>
-            <Trash2 style={{ width: 12, height: 12 }} />{t(selDeleteScope === 'all' ? 'tagEditor.deleteFromAll' : 'tagEditor.deleteFromCurrentOne')}
+          <button className="btn btn-danger" onClick={handleSidebarBatchDelete}
+            disabled={(selDeleteScope === 'current' && !editable) || (selDeleteScope === 'filtered' && !hasFiltered)}>
+            <Trash2 style={{ width: 12, height: 12 }} />
+            {t(selDeleteScope === 'all' ? 'tagEditor.deleteFromAll' : selDeleteScope === 'filtered' ? 'tagEditor.deleteFromFiltered' : 'tagEditor.deleteFromCurrentOne')}
           </button>
         </div>
       </Modal>
