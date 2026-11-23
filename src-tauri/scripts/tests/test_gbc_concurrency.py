@@ -116,7 +116,7 @@ worker.main()
                         self.assertIn('400',results['11']['message'])
                         self.assertEqual(results['12']['type'],'result')
                         self.assertEqual(logs.count('正在分析全图、区域和对象关系'),1)
-                        self.assertEqual(logs.count('正在加载检测与嵌入模型'),1)
+                        self.assertEqual(logs.count('正在启动 GBC 分析引擎'),1)
                         # Cancellation can kill the one worker while several jobs are active.
                         send({'cmd':'process','id':'5','path':str(root/'red.png')})
                         send({'cmd':'process','id':'6','path':str(root/'blue.png')})

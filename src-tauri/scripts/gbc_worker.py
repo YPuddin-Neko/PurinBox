@@ -42,15 +42,16 @@ def make_config(options):
         sampling['max_tokens'] = options['max_tokens']
     if options['top_p'] > 0:
         sampling['top_p'] = options['top_p']
+    device = 'cuda:0' if options['device'] == 'cuda' else options['device']
     return {
         'engines': {
             'vlm': {'entry': 'api', 'protocol': 'openai', 'flavour': 'openai',
                     'structured': 'prompt', 'model': options['model_name'],
                     'sampling': sampling, 'endpoints': [endpoint_spec]},
             'detect': {'entry': 'torch', 'model': options['detector_path'],
-                       'devices': ['cuda:0' if options['device'] == 'cuda' else options['device']], 'dtype': 'float32'},
+                       'devices': [device], 'dtype': 'float32'},
             'embed': {'entry': 'torch', 'model': options['embedder_path'],
-                      'devices': ['cpu'], 'dtype': 'float32'},
+                      'devices': [device], 'dtype': 'float32'},
         },
         'controls': {'min_nodes': 1, 'max_nodes': options['max_nodes'],
                      'max_depth': options['max_depth'], 'max_rounds': options['max_depth'] + 1,
@@ -183,9 +184,48 @@ class AnalysisReplies:
         return text
 
 
+def model_host_config(config):
+    from kohakugbc.engines import registry
+    slots = config['engines']
+    if 'detect' not in slots or 'embed' not in slots:
+        return config
+
+    local = {slot: slots[slot].copy() for slot in ('detect', 'embed')}
+    if Path(local['embed']['model']).name == 'all-MiniLM-L6-v2':
+        local['embed']['impl'] = 'st'
+    if local['detect']['devices'] == ['cpu']:
+        # On CPU both models share one Torch runtime and warm up together.
+        emit(type='log', model_stage=True, message='正在加载检测与嵌入模型（CPU）')
+        return {**config, 'engines': {**slots, **local}}
+
+    def remote_entry(slot, label):
+        def build(settings, shared):
+            remote = registry.build_slot(slot, {**settings, 'entry': 'remote'}, shared)
+            name = Path(local[slot]['model']).name
+            device = ', '.join(local[slot]['devices'])
+            for unit in remote.units:
+                def before_start(timeout, wait=unit.before_start):
+                    wait(timeout)
+                    emit(type='log', model_stage=True, message=f'正在加载{label} {name}（{device}）')
+                unit.before_start = before_start
+            return remote
+        return build
+
+    # KohakuGBC groups models by device, dtype and engine settings. A separate
+    # engine on the same GPU lets each startup stage load and warm just its model.
+    local['embed']['engine'] = {'schedule': 'co_resident'}
+    slots = {**slots, 'hosts': {'vision': {'engines': local, 'order': [['detect'], ['embed']]}}}
+    for slot, label in [('detect', '检测模型'), ('embed', '嵌入模型')]:
+        registry.entry(slot, 'purinbox_remote')(remote_entry(slot, label))
+        slots[slot] = {'entry': 'purinbox_remote', 'hosts': ['vision']}
+    return {**config, 'engines': slots}
+
+
 def build_analysis_parts(config, strict=False):
+    emit(type='log', model_stage=True, message='正在启动 GBC 分析引擎')
     from kohakugbc.machine.build import build_parts
     from kohakugbc.nodes import registry
+    config = model_host_config(config)
     failures = []
 
     def no_reply(err):
@@ -200,7 +240,9 @@ def build_analysis_parts(config, strict=False):
     try:
         registry.NODES[:] = [(no_reply if fn.__name__ == 'no_reply' else fn, outputs, flags)
                             for fn, outputs, flags in original]
-        return build_parts(config), failures
+        parts = build_parts(config)
+        emit(type='models_ready')
+        return parts, failures
     finally:
         registry.NODES[:] = original
 
@@ -369,7 +411,6 @@ def parallel_main(options):
         start_engine.wait()
         if not jobs:
             return
-        emit(type='log', message='正在加载检测与嵌入模型')
         parts, _ = build_analysis_parts(config, strict=True)
         adapter = parts.slots['vlm'].adapter
         # Keep the original bound methods; validators must not call the wrapper recursively.
@@ -425,9 +466,8 @@ def main():
                         if not Path(options[name]).is_dir():
                             raise ValueError('请选择已下载的检测模型和嵌入模型目录')
                     if machine is None:
-                        emit(type='log', message='正在加载检测与嵌入模型')
-                        from togeari import SourceItem
                         parts, failures = build_analysis_parts(config)
+                        from togeari import SourceItem
                         adapter = parts.slots['vlm'].adapter
                         replies = AnalysisReplies(adapter, options, failures)
                         adapter.prepare = replies.prepare

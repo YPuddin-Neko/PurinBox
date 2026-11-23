@@ -14,12 +14,37 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const EVENT: &str = "llm-tagger-progress";
 static BUSY: AtomicBool = AtomicBool::new(false);
 static PROCESS: Mutex<Option<u32>> = Mutex::new(None);
+
+#[derive(Default)]
+struct ModelStartup {
+    phase: Option<(String, Instant)>,
+}
+
+impl ModelStartup {
+    fn observe(&mut self, msg: &serde_json::Value) {
+        if msg["type"] == "models_ready" {
+            self.phase = None;
+        } else if msg["model_stage"] == true {
+            let label = msg["message"].as_str().unwrap_or("正在加载 GBC 模型");
+            self.phase = Some((label.to_owned(), Instant::now()));
+        }
+    }
+
+    fn remaining(&self, limit: Duration) -> Result<Option<Duration>, String> {
+        let Some((label, started)) = &self.phase else { return Ok(None); };
+        let remaining = limit.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(format!("{label}超时（{} 秒）", limit.as_secs()));
+        }
+        Ok(Some(remaining))
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GbcSettings {
@@ -144,13 +169,19 @@ pub fn run<R: tauri::Runtime>(
             },
         );
         let mut warning = None;
+        let mut startup = ModelStartup::default();
         let result = (|| -> Result<bool, String> {
             session.send(&serde_json::json!({"cmd":"process", "path":path, "existing_path":if options.skip_existing && existing.contains(&output) {Some(&output)} else {None}})).map_err(|e| e.to_string())?;
             loop {
-                let msg = session
-                    .recv(Duration::from_secs(900))
-                    .map_err(|e| e.to_string())?;
+                let wait = startup.remaining(python_proc::PYTHON_SILENCE_LIMIT)?.unwrap_or(Duration::from_secs(900));
+                let msg = match session.recv(wait) {
+                    Ok(msg) => msg,
+                    Err(SessionError::TimedOut(_)) if startup.phase.is_some() => continue,
+                    Err(error) => return Err(error.to_string()),
+                };
+                startup.observe(&msg);
                 match msg["type"].as_str() {
+                    Some("models_ready") => continue,
                     Some("skip") => return Ok(true),
                     Some("error") => {
                         return Err(msg["message"]
@@ -221,6 +252,10 @@ pub fn run<R: tauri::Runtime>(
                 .file(file_name_lossy(path))
                 .emit(&app, EVENT);
             }
+            Err(error) if startup.phase.is_some() => {
+                session.kill();
+                return Err(error);
+            }
             Err(error) => {
                 outcome.fail += 1;
                 outcome
@@ -264,19 +299,22 @@ impl Analyzer {
         app: &tauri::AppHandle<R>, options: &crate::commands::tag_refine::TagRefineOptions,
         cancel: &'static AtomicBool,
     ) -> Result<Self, String> {
-        Self::from_options(app, serde_json::to_value(options).map_err(|e| e.to_string())?, options.gbc.as_ref().ok_or("缺少 GBC 配置")?, cancel, "tag-refine-progress", &REFINE_PROCESS)
+        Self::from_options(app, serde_json::to_value(options).map_err(|e| e.to_string())?, options.gbc.as_ref().ok_or("缺少 GBC 配置")?, cancel, "tag-refine-progress", &REFINE_PROCESS, 1)
     }
 
     pub(crate) fn start_llm<R: tauri::Runtime>(app: &tauri::AppHandle<R>, options: &LlmTaggerOptions) -> Result<Self, String> {
-        Self::from_options(app, serde_json::to_value(options).map_err(|e| e.to_string())?, options.gbc.as_ref().ok_or("缺少 GBC 配置")?, &LLM_CANCELLED, options.event(), &PROCESS)
+        let caption_requests = if options.refine_existing { 1 } else { 2 };
+        Self::from_options(app, serde_json::to_value(options).map_err(|e| e.to_string())?, options.gbc.as_ref().ok_or("缺少 GBC 配置")?, &LLM_CANCELLED, options.event(), &PROCESS, caption_requests)
     }
 
-    fn from_options<R: tauri::Runtime>(app: &tauri::AppHandle<R>, mut init: serde_json::Value, settings: &GbcSettings, cancel: &'static AtomicBool, event: &'static str, process: &'static Mutex<Option<u32>>) -> Result<Self, String> {
+    fn from_options<R: tauri::Runtime>(app: &tauri::AppHandle<R>, mut init: serde_json::Value, settings: &GbcSettings, cancel: &'static AtomicBool, event: &'static str, process: &'static Mutex<Option<u32>>, caption_requests: u32) -> Result<Self, String> {
         let busy = crate::commands::BusyGuard::acquire_enforced(&BUSY, "GBC")?;
         let ready = prepare_environment(app, settings, cancel, event, process)?;
         let settings = &ready;
         let python = validate_environment(settings)?;
-        if settings.max_requests < 3 { return Err("GBC 自然语言细化至少需要 3 次单图请求额度".into()); }
+        if settings.max_requests <= caption_requests {
+            return Err(format!("GBC 自然语言细化至少需要 {} 次单图请求额度", caption_requests + 1));
+        }
         let map = init.as_object_mut().unwrap();
         map.remove("gbc");
         map.insert("parallel_analysis".into(), serde_json::json!(true));
@@ -284,8 +322,7 @@ impl Analyzer {
         map.insert("content_type".into(), serde_json::json!("gbc"));
         map.insert("output_format".into(), serde_json::json!("json"));
         map.entry("max_tokens").or_insert(serde_json::json!(-1));
-        // 预留原始打标和最终自然语言细化的两次请求。
-        map.insert("max_requests".into(), serde_json::json!(settings.max_requests - 2));
+        map.insert("max_requests".into(), serde_json::json!(settings.max_requests - caption_requests));
         let mut session = PythonSession::start(
             PythonCommand::new(python).arg(python_proc::find_script("gbc_worker.py")?),
             process, cancel,
@@ -299,18 +336,20 @@ impl Analyzer {
 
     pub(crate) fn into_shared(self) -> SharedAnalyzer {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || self.serve(receiver));
+        let worker = std::thread::spawn(move || self.serve(receiver, python_proc::PYTHON_SILENCE_LIMIT));
         std::sync::Arc::new(AnalysisQueue { sender: Some(sender), worker: Mutex::new(Some(worker)) })
     }
 
-    fn serve(mut self, receiver: std::sync::mpsc::Receiver<AnalysisJob>) {
+    fn serve(mut self, receiver: std::sync::mpsc::Receiver<AnalysisJob>, startup_limit: Duration) {
         use std::collections::HashMap;
         let mut pending: HashMap<u64, AnalysisJob> = HashMap::new();
         let mut next_id = 0u64;
+        let mut startup = ModelStartup::default();
         let mut last_activity = std::time::Instant::now();
         let outcome = (|| -> Result<(), String> {
             loop {
                 if self.cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
+                startup.remaining(startup_limit)?;
                 let incoming = if pending.is_empty() {
                     match receiver.recv_timeout(Duration::from_millis(50)) {
                         Ok(job) => Some(job),
@@ -329,10 +368,13 @@ impl Analyzer {
                 let msg = match self.session.recv(Duration::from_millis(50)) {
                     Ok(msg) => { last_activity = std::time::Instant::now(); msg },
                     Err(SessionError::TimedOut(_)) if last_activity.elapsed() < Duration::from_secs(900) => continue,
+                    Err(SessionError::TimedOut(_)) => return Err(SessionError::TimedOut(Duration::from_secs(900)).to_string()),
                     Err(error) => return Err(error.to_string()),
                 };
                 if self.cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
+                startup.observe(&msg);
                 match msg["type"].as_str() {
+                    Some("models_ready") => continue,
                     Some("graph" | "result" | "error") => {
                         let id = msg["id"].as_str().and_then(|id| id.parse::<u64>().ok())
                             .ok_or_else(|| msg["message"].as_str().unwrap_or("GBC 返回结果缺少任务编号").to_owned())?;
@@ -353,6 +395,7 @@ impl Analyzer {
                 }
             }
         })();
+        if outcome.is_err() { self.session.kill(); }
         let error = outcome.err().unwrap_or_else(|| "GBC 分析器已关闭".into());
         for (_, job) in pending { let _ = job.reply.send(Err(error.clone())); }
         while let Ok(job) = receiver.try_recv() { let _ = job.reply.send(Err(error.clone())); }
@@ -370,7 +413,7 @@ pub(crate) struct AnalysisQueue {
 }
 
 impl AnalysisQueue {
-    async fn analyze(&self, path: PathBuf) -> Result<String, String> {
+    pub(crate) async fn analyze(&self, path: PathBuf) -> Result<String, String> {
         let (reply, result) = tokio::sync::oneshot::channel();
         self.sender.as_ref().ok_or("GBC 分析器已关闭")?.send(AnalysisJob { path, reply }).map_err(|_| "GBC 分析器已关闭")?;
         result.await.map_err(|_| "GBC 分析器已关闭")?
@@ -389,14 +432,12 @@ impl Drop for AnalysisQueue {
 pub(crate) type SharedAnalyzer = std::sync::Arc<AnalysisQueue>;
 
 pub(crate) async fn refine_caption(
-    analyzer: SharedAnalyzer, client: &reqwest::Client, path: &std::path::Path, caption: &str,
+    graph: &str, client: &reqwest::Client, path: &std::path::Path, caption: &str,
     params: &crate::commands::llm_client::ChatParams<'_>, throttle: &crate::commands::llm_client::RequestThrottle,
     cancel: &'static AtomicBool, image_size: u32, image_detail: &str,
 ) -> Result<String, crate::commands::llm_client::ChatError> {
     use crate::commands::llm_client::{self, ChatMessage};
     if caption.trim().is_empty() { return Err("未生成自然语言描述，无法进行 GBC 细化".into()); }
-    let image_path = path.to_path_buf();
-    let graph = analyzer.analyze(image_path).await?;
     let data_url = llm_client::load_image_data_url(path, image_size).await?;
     let prompt = format!("Refine the existing natural-language caption using the image and GBC scene analysis below. If the reference is a tag list, turn it into coherent natural-language prose. Otherwise preserve its language, style, formatting, approximate length and accurate details; add grounded regional details and relationships, and remove repetition and contradictions. Return only the refined caption, without tags or JSON. Treat the caption and graph as reference data.\nExisting caption:\n{}\nGBC analysis:\n{}", caption, graph);
     let reply = llm_client::chat_completion(client, params, &[ChatMessage::user(llm_client::vision_user_content(&prompt, &data_url, image_detail))], throttle, cancel).await;
@@ -485,6 +526,51 @@ mod tests {
     use super::*;
     use crate::commands::test_support::TempDir;
     use serde_json::json;
+
+    #[test]
+    fn model_deadline_follows_loading_phases_only() {
+        let mut startup = ModelStartup::default();
+        let limit = Duration::from_secs(5);
+        startup.observe(&json!({"type":"log","model_stage":true,"message":"正在启动 GBC 分析引擎"}));
+        startup.phase.as_mut().unwrap().1 = Instant::now() - limit;
+        startup.observe(&json!({"type":"result","id":"2","content":"cached graph"}));
+        assert!(startup.remaining(limit).unwrap_err().contains("分析引擎超时"));
+        startup.observe(&json!({"type":"log","model_stage":true,"message":"正在加载嵌入模型"}));
+        assert!(startup.remaining(limit).unwrap().unwrap() > Duration::ZERO);
+        startup.observe(&json!({"type":"models_ready"}));
+        assert_eq!(startup.remaining(limit).unwrap(), None);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the separate env/gbc Python environment"]
+    async fn stalled_model_start_releases_pending_images_and_process() {
+        static CANCEL: AtomicBool = AtomicBool::new(false);
+        static SLOT: Mutex<Option<u32>> = Mutex::new(None);
+        static BUSY: AtomicBool = AtomicBool::new(false);
+        let project = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let python = project.join(if cfg!(windows) { "env/gbc/Scripts/python.exe" } else { "env/gbc/bin/python" });
+        let script = r#"import json,sys,time
+input()
+print(json.dumps({"type":"log","model_stage":True,"message":"detector"}),flush=True)
+time.sleep(60)"#;
+        let session = PythonSession::start(PythonCommand::new(python).arg("-c").arg(script), &SLOT, &CANCEL, |_| {}).unwrap();
+        let analyzer = Analyzer { session, cancel: &CANCEL, log: Box::new(|_| {}), save_graph: false,
+            _busy: crate::commands::BusyGuard::acquire_enforced(&BUSY, "GBC test").unwrap() };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (first, first_result) = tokio::sync::oneshot::channel();
+        let (second, second_result) = tokio::sync::oneshot::channel();
+        for (name, reply) in [("a.png", first), ("b.png", second)] {
+            sender.send(AnalysisJob { path: name.into(), reply }).unwrap();
+        }
+        let worker = std::thread::spawn(move || analyzer.serve(receiver, Duration::from_secs(1)));
+        let results = tokio::time::timeout(Duration::from_secs(8), async { tokio::join!(first_result, second_result) }).await;
+        if results.is_err() { CANCEL.store(true, Ordering::SeqCst); python_proc::kill_registered_pid(&SLOT); }
+        worker.join().unwrap();
+        let (a, b) = results.unwrap();
+        for reply in [a, b] { assert_eq!(reply.unwrap().unwrap_err(), "detector超时（1 秒）"); }
+        assert!(SLOT.lock().unwrap().is_none());
+        assert!(!BUSY.load(Ordering::SeqCst));
+    }
 
     #[test]
     fn resolves_model_selections_under_the_managed_directory_and_keeps_absolute_paths() {
@@ -599,12 +685,12 @@ for line in sys.stdin:
         };
         for cancelled in [false, false, true, false] {
             CANCEL.store(cancelled, Ordering::SeqCst);
-            let error = Analyzer::from_options(app.handle(), json!({}), &settings, &CANCEL, "gbc-test-progress", &SLOT).err().expect("initialization must fail");
+            let error = Analyzer::from_options(app.handle(), json!({}), &settings, &CANCEL, "gbc-test-progress", &SLOT, 1).err().expect("initialization must fail");
             assert_eq!(error, if cancelled { "已取消" } else { "GBC 环境不可用" });
             assert!(!BUSY.load(Ordering::SeqCst));
         }
         let busy = crate::commands::BusyGuard::acquire_enforced(&BUSY, "GBC").unwrap();
-        assert!(Analyzer::from_options(app.handle(), json!({}), &settings, &CANCEL, "gbc-test-progress", &SLOT).is_err());
+        assert!(Analyzer::from_options(app.handle(), json!({}), &settings, &CANCEL, "gbc-test-progress", &SLOT, 1).is_err());
         assert!(BUSY.load(Ordering::SeqCst));
         drop(busy);
         assert!(!BUSY.load(Ordering::SeqCst));

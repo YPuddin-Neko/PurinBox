@@ -230,10 +230,13 @@ async fn tag_file(
     let start = std::time::Instant::now();
     let written = async {
         let existing = if options.refine_existing { Some(existing_input(path, &options.output_format)?) } else { None };
+        let graph = if let Some(analyzer) = analyzer {
+            Some(analyzer.analyze(path.to_path_buf()).await?)
+        } else { None };
         let text = if let Some((reference, _, _)) = &existing { reference.clone() } else { tag_with_llm(client, path, options, throttle).await? };
         let mut content = if let Some((_, _, original)) = &existing { original.clone() } else { format_output(&text, options)? };
         let mut warning_text = text.clone();
-        if let Some(analyzer) = analyzer {
+        if let Some(graph) = graph {
             let mut json = if options.output_format == "json" { Some(serde_json::from_str::<serde_json::Value>(&content).map_err(|e| e.to_string())?) } else { None };
             let simple = if options.refine_existing { json.as_ref().is_none_or(|v| v.get("ai_output").is_none()) } else { options.json_simplified };
             let caption = if options.refine_existing { text.as_str() } else { match &json {
@@ -241,7 +244,7 @@ async fn tag_file(
                 None => &content,
             } };
             let params = ChatParams { endpoint: &options.api_endpoint, api_key: &options.api_key, model: &options.model_name, temperature: options.temperature, max_tokens: options.max_tokens, top_p: options.top_p };
-            let refined = super::gbc::refine_caption(analyzer, client, path, caption, &params, throttle, &LLM_CANCELLED, options.image_size, &options.image_detail).await?;
+            let refined = super::gbc::refine_caption(&graph, client, path, caption, &params, throttle, &LLM_CANCELLED, options.image_size, &options.image_detail).await?;
             warning_text = refined.clone();
             if let Some(value) = &mut json {
                 if simple { value["nl"] = refined.into(); } else { value["ai_output"]["nl"] = refined.into(); }

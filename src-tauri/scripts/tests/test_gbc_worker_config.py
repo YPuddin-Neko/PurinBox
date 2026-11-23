@@ -6,7 +6,7 @@ from gbc_worker import make_config
 
 
 class DeviceConfigTests(unittest.TestCase):
-    def test_gpu_selection_has_explicit_index_and_other_devices_are_preserved(self):
+    def test_device_selection_applies_to_both_local_models(self):
         options = dict(api_endpoint='http://localhost/v1', api_key='', concurrency=1,
             request_interval_ms=-1, temperature=.3, max_tokens=-1, top_p=0,
             model_name='test', detector_path='detector', embedder_path='embedder',
@@ -15,7 +15,7 @@ class DeviceConfigTests(unittest.TestCase):
             with self.subTest(device=device):
                 config = make_config({**options, 'device': device})
                 self.assertEqual(config['engines']['detect']['devices'], [expected])
-                self.assertEqual(config['engines']['embed']['devices'], ['cpu'])
+                self.assertEqual(config['engines']['embed']['devices'], [expected])
 
 
 if __name__ == '__main__':
