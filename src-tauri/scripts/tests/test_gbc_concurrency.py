@@ -60,6 +60,27 @@ class ConcurrentWorkerTests(unittest.TestCase):
                 harness.write_text('''import sys
 sys.path.insert(0, sys.argv[1])
 import gbc_worker as worker
+protocol_input = sys.stdin
+models_ready = False
+worker_ready = False
+original_emit = worker.emit
+def emit(**event):
+    global models_ready, worker_ready
+    if event['type'] == 'models_ready':
+        models_ready = True
+    if event['type'] == 'ready':
+        assert models_ready and event['mode'] == 'analysis'
+        worker_ready = True
+    original_emit(**event)
+worker.emit = emit
+
+class CommandPipe:
+    readline = protocol_input.readline
+    def __iter__(self):
+        assert worker_ready, 'read first image command before engine ready'
+        yield from protocol_input
+sys.stdin = CommandPipe()
+
 original = worker.make_config
 def config(options):
     value = original(options)
@@ -98,7 +119,16 @@ worker.main()
                         return results
                     try:
                         send(options)
-                        self.assertEqual(messages.get(timeout=10)['type'],'ready')
+                        startup = []
+                        while True:
+                            msg = messages.get(timeout=15)
+                            startup.append(msg['type'])
+                            if msg['type'] == 'log': logs.append(msg['message'])
+                            if msg['type'] == 'ready': break
+                            self.assertIn(msg['type'], ('log', 'models_ready'), msg)
+                        self.assertEqual(msg['mode'], 'analysis')
+                        self.assertIn('models_ready', startup)
+                        self.assertEqual(state['peak'], 0)
                         send({'cmd':'process','id':'1','path':str(root/'red.png')})
                         send({'cmd':'process','id':'2','path':str(root/'blue.png')})
                         for index in range(3, concurrency + 1):

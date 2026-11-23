@@ -13,7 +13,7 @@ from pathlib import Path
 REVISION = 'd90f360dbf561f63270522e44fa0e74ebed59c12'
 ROOT = Path(__file__).resolve().parents[2]
 ENV = ROOT / 'env' / 'gbc'
-PROBE = 'import kohakugbc, kohakugbc_data, torch, torchvision, transformers, sentence_transformers; from kohakugbc.machine.build import build_parts; from kohakugbc.cli.main import main; main(["host", "--help"])'
+PROBE = 'import kohakugbc, kohakugbc_data, torch, torchvision, transformers, sentence_transformers; from kohakugbc.machine.build import build_parts; from kohakugbc.engines.torch.entries import detector, embedder'
 MODELS = json.loads(Path(__file__).with_name('gbc_models.json').read_text(encoding='utf-8'))
 
 
@@ -70,46 +70,6 @@ def model_progress(name):
     return ModelProgress
 
 
-def repair_host_cli(target):
-    """Keep the pinned GBC host entry independent of optional Togeari HTTP serving."""
-    candidates = [target / 'Lib' / 'site-packages' / 'kohakugbc' / 'cli' / 'main.py']
-    candidates += list(target.glob('lib/python*/site-packages/kohakugbc/cli/main.py'))
-    imports = (
-        'from togeari.cli.commands.serve import add_balancer_args, serve_until_signal',
-        'from togeari.plugins.telemetry import Telemetry',
-        'from togeari.serve import Service',
-    )
-    for path in candidates:
-        if not path.is_file():
-            continue
-        source = path.read_text(encoding='utf-8')
-        if imports[0] + '\n' in source and '    ' + imports[0] not in source:
-            if not all(line + '\n' in source for line in imports) or '            add_balancer_args(p)' not in source:
-                raise RuntimeError('GBC 引擎启动文件版本不匹配')
-            for line in imports:
-                source = source.replace(line + '\n', '', 1)
-            source = source.replace('    parts = build_parts(*args.configs)',
-                '    ' + '\n    '.join(imports) + '\n    parts = build_parts(*args.configs)', 1)
-            source = source.replace('            add_balancer_args(p)',
-                '            if "serve" in (argv if argv is not None else sys.argv[1:]):\n'
-                '                from togeari.cli.commands.serve import add_balancer_args\n'
-                '                add_balancer_args(p)', 1)
-        if '_purinbox_host_thread_error' not in source:
-            anchor = '    served = engine_host.serve(engines)'
-            if anchor in source:
-                handler = """def _purinbox_host_thread_error(args):
-    message = f"GBC 引擎线程失败：{args.exc_type.__name__}: {args.exc_value}"
-    print(json.dumps({'type': 'error', 'message': message}, ensure_ascii=False), flush=True)
-    os._exit(1)
-
-
-"""
-                source = source.replace('def host(args)', handler + 'def host(args)', 1)
-                source = source.replace(anchor, '    threading.excepthook = _purinbox_host_thread_error\n' + anchor, 1)
-        if source != path.read_text(encoding='utf-8'):
-            path.write_text(source, encoding='utf-8')
-
-
 def environment_ready(python):
     return python.is_file() and subprocess.run([str(python), '-c', PROBE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
@@ -123,7 +83,6 @@ def prepare(target, device):
     if not python.is_file():
         emit('正在创建 GBC 环境')
         venv.EnvBuilder(with_pip=True).create(target)
-    repair_host_cli(target)
     if not environment_ready(python):
         emit('正在安装 GBC 依赖')
         total = 3 if device == 'cuda' else 2
@@ -136,7 +95,6 @@ def prepare(target, device):
         progress(f'@pythonEnv.installingDep|KohakuGBC|{total}|{total}', (total - 1) / total * 100)
         run([str(python), '-m', 'pip', 'install', '--only-binary=kohakugbc-data,kohakuvault',
              'kohakugbc-data==0.2.0', f'kohakugbc[torch] @ {archive}'])
-        repair_host_cli(target)
         if not environment_ready(python):
             raise RuntimeError('GBC 依赖检查失败')
     if device == 'cuda' and subprocess.run([str(python), '-c', 'import torch; raise SystemExit(0 if torch.version.cuda else 1)'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:

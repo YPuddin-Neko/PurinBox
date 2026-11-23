@@ -116,7 +116,7 @@ class ExportContractTests(unittest.TestCase):
                            request_interval_ms=-1, temperature=.2, max_tokens=512, top_p=0,
                            model_name='fixture', detector_path='missing', embedder_path='missing',
                            device='cpu', max_nodes=20, max_depth=3, max_requests=64, image_size=1024,
-                           content_type='gbc', output_format='json')
+                           content_type='gbc', output_format='json', cache_only=True)
             value = graph(); value['_purinbox'] = analysis_identity(path, options)
             path.with_suffix('.gbc.json').write_text(json.dumps(value))
             commands = [options, {'cmd':'process','path':str(path)}, {'cmd':'quit'}]

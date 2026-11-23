@@ -184,48 +184,51 @@ class AnalysisReplies:
         return text
 
 
-def model_host_config(config):
+def local_model_config(config):
     from kohakugbc.engines import registry
-    slots = config['engines']
-    if 'detect' not in slots or 'embed' not in slots:
-        return config
 
-    local = {slot: slots[slot].copy() for slot in ('detect', 'embed')}
-    if Path(local['embed']['model']).name == 'all-MiniLM-L6-v2':
-        local['embed']['impl'] = 'st'
-    if local['detect']['devices'] == ['cpu']:
-        # On CPU both models share one Torch runtime and warm up together.
-        emit(type='log', model_stage=True, message='正在加载检测与嵌入模型（CPU）')
-        return {**config, 'engines': {**slots, **local}}
-
-    def remote_entry(slot, label):
+    def local_entry(slot, label):
         def build(settings, shared):
-            remote = registry.build_slot(slot, {**settings, 'entry': 'remote'}, shared)
-            name = Path(local[slot]['model']).name
-            device = ', '.join(local[slot]['devices'])
-            for unit in remote.units:
-                def before_start(timeout, wait=unit.before_start):
-                    wait(timeout)
-                    emit(type='log', model_stage=True, message=f'正在加载{label} {name}（{device}）')
-                unit.before_start = before_start
-            return remote
+            if slot == 'embed' and Path(settings['model']).name == 'all-MiniLM-L6-v2':
+                settings = {**settings, 'impl': 'st'}
+            # Warm on one runtime, then allow detection and embedding to run concurrently on the GPU.
+            if settings['devices'] != ['cpu']:
+                settings = {**settings, 'engine': {'schedule': 'priority_streams'}}
+            result = registry.build_slot(slot, {**settings, 'entry': 'torch'}, shared)
+            unit, = result.units  # The UI selects one device for both models.
+            original_load = unit.model.load
+            name = Path(settings['model']).name
+
+            def load(device, dtype):
+                emit(type='log', model_stage=True, message=f'正在加载{label} {name}（{device}）')
+                return original_load(device, dtype)
+
+            unit.model.load = load
+            return result
         return build
 
-    # KohakuGBC groups models by device, dtype and engine settings. A separate
-    # engine on the same GPU lets each startup stage load and warm just its model.
-    local['embed']['engine'] = {'schedule': 'co_resident'}
-    slots = {**slots, 'hosts': {'vision': {'engines': local, 'order': [['detect'], ['embed']]}}}
+    # The app already owns this worker. Keep Torch here so starting local
+    # models needs neither a second Python interpreter nor a loopback handshake.
+    slots = dict(config['engines'])
     for slot, label in [('detect', '检测模型'), ('embed', '嵌入模型')]:
-        registry.entry(slot, 'purinbox_remote')(remote_entry(slot, label))
-        slots[slot] = {'entry': 'purinbox_remote', 'hosts': ['vision']}
+        if slot in slots and slots[slot]['entry'] == 'torch':
+            registry.entry(slot, 'purinbox_local')(local_entry(slot, label))
+            slots[slot] = {**slots[slot], 'entry': 'purinbox_local'}
     return {**config, 'engines': slots}
+
+
+def worker_thread_error(args):
+    if args.thread.name.startswith('torch-'):
+        emit(type='error', message=f'GBC 引擎线程失败：{args.exc_type.__name__}: {args.exc_value}')
+        os._exit(1)
+    threading.__excepthook__(args)
 
 
 def build_analysis_parts(config, strict=False):
     emit(type='log', model_stage=True, message='正在启动 GBC 分析引擎')
     from kohakugbc.machine.build import build_parts
     from kohakugbc.nodes import registry
-    config = model_host_config(config)
+    config = local_model_config(config)
     failures = []
 
     def no_reply(err):
@@ -264,6 +267,12 @@ def analyze_graph(machine, source, replies, filename):
             if replies.failures:
                 raise ValueError('GBC 模型请求失败：' + replies.failures[-1])
             raise
+
+
+def announce_engine_ready(machine):
+    machine.inspect('signals').result(machine.start_timeout_s)
+    emit(type='log', message='GBC 分析引擎已就绪')
+    emit(type='ready', mode='analysis')
 
 
 class BatchStages:
@@ -335,47 +344,48 @@ class ConcurrentReplies:
 
 def parallel_main(options):
     from PIL import Image, ImageOps
-    from togeari import SourceItem
     config = make_config(options)
     config['machine']['max_jobs'] = max(1, options['concurrency'])
-    start_engine = threading.Event()
     replies = None
     sources = queue.Queue()
     jobs = {}
     stages = BatchStages()
     stopping = threading.Event()
     with tempfile.TemporaryDirectory(prefix='purinbox-gbc-') as scratch, contextlib.ExitStack() as stack:
-        def read_requests():
+        def read_commands():
+            for line in sys.stdin:
+                request = json.loads(line)
+                if request.get('cmd') == 'quit':
+                    break
+                key = str(request['id'])
+                try:
+                    path = Path(request['path'])
+                    identity = analysis_identity(path, options)
+                    with Image.open(path) as original:
+                        image = ImageOps.exif_transpose(original).convert('RGB')
+                    existing = path.with_suffix('.gbc.json')
+                    if existing.is_file():
+                        graph = graph_document(json.loads(existing.read_text(encoding='utf-8')))
+                        if graph.get('img_size') and list(graph['img_size']) != list(image.size):
+                            raise ValueError('已有 GBC 数据的图片尺寸不匹配')
+                        emit(type='result', id=key, content=json.dumps(graph, ensure_ascii=False))
+                        continue
+                    if replies is None:
+                        raise ValueError('已有 GBC 数据已移除，请重新运行')
+                    working = Path(scratch) / f'{key}.png'
+                    image.save(working)
+                    source = SourceItem(key, {'image': {'path':str(working), 'key':key}, 'controls':config['controls']})
+                    jobs[key] = {'path':path, 'identity':identity, 'size':list(image.size), 'source':source, 'attempt':0, 'working':working}
+                    sources.put(source)
+                except Exception as error:
+                    emit(type='error', id=key, message=str(error))
+
+        def feed_machine():
             try:
-                for line in sys.stdin:
-                    request = json.loads(line)
-                    if request.get('cmd') == 'quit':
-                        break
-                    key = str(request['id'])
-                    try:
-                        path = Path(request['path'])
-                        identity = analysis_identity(path, options)
-                        with Image.open(path) as original:
-                            image = ImageOps.exif_transpose(original).convert('RGB')
-                        existing = path.with_suffix('.gbc.json')
-                        if existing.is_file():
-                            graph = graph_document(json.loads(existing.read_text(encoding='utf-8')))
-                            if graph.get('img_size') and list(graph['img_size']) != list(image.size):
-                                raise ValueError('已有 GBC 数据的图片尺寸不匹配')
-                            emit(type='result', id=key, content=json.dumps(graph, ensure_ascii=False))
-                            continue
-                        working = Path(scratch) / f'{key}.png'
-                        image.save(working)
-                        source = SourceItem(key, {'image': {'path':str(working), 'key':key}, 'controls':config['controls']})
-                        jobs[key] = {'path':path, 'identity':identity, 'size':list(image.size), 'source':source, 'attempt':0, 'working':working}
-                        sources.put(source)
-                        start_engine.set()
-                    except Exception as error:
-                        emit(type='error', id=key, message=str(error))
+                read_commands()
             finally:
                 stopping.set()
                 sources.put(None)
-                start_engine.set()
 
         class Sink:
             def write(self, record):
@@ -406,18 +416,21 @@ def parallel_main(options):
             def close(self):
                 pass
 
-        threading.Thread(target=read_requests, daemon=True).start()
-        emit(type='ready')
-        start_engine.wait()
-        if not jobs:
+        if options.get('cache_only'):
+            emit(type='ready', mode='cached')
+            read_commands()
             return
+        # Start the command reader only after the local engines own their devices.
         parts, _ = build_analysis_parts(config, strict=True)
+        from togeari import SourceItem
         adapter = parts.slots['vlm'].adapter
         # Keep the original bound methods; validators must not call the wrapper recursively.
         import copy
         replies = ConcurrentReplies(copy.copy(adapter), options)
         adapter.prepare, adapter.decode = replies.prepare, replies.decode
         machine = stack.enter_context(parts.machine)
+        announce_engine_ready(machine)
+        threading.Thread(target=feed_machine, daemon=True).start()
 
         def pending_sources():
             for source in iter(sources.get, None):
@@ -430,6 +443,7 @@ def parallel_main(options):
 
 
 def main():
+    threading.excepthook = worker_thread_error
     options = json.loads(sys.stdin.readline())
     os.environ['HF_HUB_OFFLINE'] = '1'
     os.environ['TRANSFORMERS_OFFLINE'] = '1'
@@ -441,7 +455,22 @@ def main():
     replies = None
     stages = BatchStages()
     with contextlib.ExitStack() as stack, tempfile.TemporaryDirectory(prefix='purinbox-gbc-') as scratch:
-        emit(type='ready')
+        cache_only = options.get('cache_only') and all(
+            valid_existing(Path(path), options) for path in options.get('skip_outputs', [])
+        )
+        if not cache_only:
+            for name in ('detector_path', 'embedder_path'):
+                if not Path(options[name]).is_dir():
+                    raise ValueError('请选择已下载的检测模型和嵌入模型目录')
+            parts, failures = build_analysis_parts(config)
+            from togeari import SourceItem
+            adapter = parts.slots['vlm'].adapter
+            replies = AnalysisReplies(adapter, options, failures)
+            adapter.prepare, adapter.decode = replies.prepare, replies.decode
+            machine = stack.enter_context(parts.machine)
+            announce_engine_ready(machine)
+        else:
+            emit(type='ready', mode='cached')
         for line in sys.stdin:
             request = json.loads(line)
             if request.get('cmd') == 'quit':
@@ -462,17 +491,8 @@ def main():
                     if graph.get('img_size') and list(graph['img_size']) != list(image.size):
                         raise ValueError('已有 GBC 数据的图片尺寸不匹配')
                 if graph is None:
-                    for name in ('detector_path', 'embedder_path'):
-                        if not Path(options[name]).is_dir():
-                            raise ValueError('请选择已下载的检测模型和嵌入模型目录')
                     if machine is None:
-                        parts, failures = build_analysis_parts(config)
-                        from togeari import SourceItem
-                        adapter = parts.slots['vlm'].adapter
-                        replies = AnalysisReplies(adapter, options, failures)
-                        adapter.prepare = replies.prepare
-                        adapter.decode = replies.decode
-                        machine = stack.enter_context(parts.machine)
+                        raise ValueError('已有 GBC 数据或导出文件已更改，请重新运行')
                     working = str(Path(scratch) / 'image.png')
                     image.save(working)
                     stages.log('正在分析全图、区域和对象关系')

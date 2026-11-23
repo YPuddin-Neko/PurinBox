@@ -21,28 +21,37 @@ const EVENT: &str = "llm-tagger-progress";
 static BUSY: AtomicBool = AtomicBool::new(false);
 static PROCESS: Mutex<Option<u32>> = Mutex::new(None);
 
-#[derive(Default)]
-struct ModelStartup {
-    phase: Option<(String, Instant)>,
-}
-
-impl ModelStartup {
-    fn observe(&mut self, msg: &serde_json::Value) {
-        if msg["type"] == "models_ready" {
-            self.phase = None;
-        } else if msg["model_stage"] == true {
-            let label = msg["message"].as_str().unwrap_or("正在加载 GBC 模型");
-            self.phase = Some((label.to_owned(), Instant::now()));
+fn wait_for_engine(
+    session: &mut PythonSession<'_>, init: &serde_json::Value, limit: Duration,
+    mut log: impl FnMut(&serde_json::Value),
+) -> Result<(), String> {
+    session.send(init).map_err(|e| e.to_string())?;
+    let mut stage = "正在启动 GBC 分析引擎".to_owned();
+    let mut deadline = Instant::now() + limit;
+    let mut models_ready = false;
+    loop {
+        let msg = match session.recv(deadline.saturating_duration_since(Instant::now())) {
+            Ok(msg) => msg,
+            Err(SessionError::TimedOut(_)) => return Err(format!("{stage}超时（{} 秒）", limit.as_secs())),
+            Err(error) => return Err(error.to_string()),
+        };
+        match msg["type"].as_str() {
+            Some("log") => {
+                if msg["model_stage"] == true {
+                    stage = msg["message"].as_str().unwrap_or("正在加载 GBC 模型").to_owned();
+                    deadline = Instant::now() + limit;
+                }
+                log(&msg);
+            }
+            Some("models_ready") => models_ready = true,
+            Some("ready") => match msg["mode"].as_str() {
+                Some("analysis") if models_ready => return Ok(()),
+                Some("cached") if init["cache_only"] == true => return Ok(()),
+                _ => return Err("GBC 分析引擎未确认就绪，请检查工作脚本版本".into()),
+            },
+            Some("error") => return Err(msg["message"].as_str().unwrap_or("GBC 启动失败").into()),
+            _ => {}
         }
-    }
-
-    fn remaining(&self, limit: Duration) -> Result<Option<Duration>, String> {
-        let Some((label, started)) = &self.phase else { return Ok(None); };
-        let remaining = limit.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return Err(format!("{label}超时（{} 秒）", limit.as_secs()));
-        }
-        Ok(Some(remaining))
     }
 }
 
@@ -151,12 +160,22 @@ pub fn run<R: tauri::Runtime>(
             .unwrap()
             .clone(),
     );
-    session.send(&init).map_err(|e| e.to_string())?;
-    session
-        .wait_ready(Duration::from_secs(600), |msg| {
-            ProgressEvent::python_log(msg, 0, outcome.total).emit(&app, EVENT)
-        })
-        .map_err(|e| e.to_string())?;
+    let mut skip_outputs = Vec::new();
+    let cache_only = files.iter().all(|path| {
+        if path.with_extension("gbc.json").is_file() { return true; }
+        let output = path.with_extension(extension);
+        if options.skip_existing && existing.contains(&output) {
+            skip_outputs.push(output);
+            return true;
+        }
+        false
+    });
+    if cache_only {
+        map.insert("cache_only".into(), true.into());
+        map.insert("skip_outputs".into(), serde_json::json!(skip_outputs));
+    }
+    wait_for_engine(&mut session, &init, python_proc::PYTHON_SILENCE_LIMIT,
+        |msg| ProgressEvent::python_log(msg, 0, outcome.total).emit(&app, EVENT))?;
     for (index, path) in files.iter().enumerate() {
         if LLM_CANCELLED.load(Ordering::SeqCst) {
             break;
@@ -169,19 +188,11 @@ pub fn run<R: tauri::Runtime>(
             },
         );
         let mut warning = None;
-        let mut startup = ModelStartup::default();
         let result = (|| -> Result<bool, String> {
             session.send(&serde_json::json!({"cmd":"process", "path":path, "existing_path":if options.skip_existing && existing.contains(&output) {Some(&output)} else {None}})).map_err(|e| e.to_string())?;
             loop {
-                let wait = startup.remaining(python_proc::PYTHON_SILENCE_LIMIT)?.unwrap_or(Duration::from_secs(900));
-                let msg = match session.recv(wait) {
-                    Ok(msg) => msg,
-                    Err(SessionError::TimedOut(_)) if startup.phase.is_some() => continue,
-                    Err(error) => return Err(error.to_string()),
-                };
-                startup.observe(&msg);
+                let msg = session.recv(Duration::from_secs(900)).map_err(|e| e.to_string())?;
                 match msg["type"].as_str() {
-                    Some("models_ready") => continue,
                     Some("skip") => return Ok(true),
                     Some("error") => {
                         return Err(msg["message"]
@@ -252,10 +263,6 @@ pub fn run<R: tauri::Runtime>(
                 .file(file_name_lossy(path))
                 .emit(&app, EVENT);
             }
-            Err(error) if startup.phase.is_some() => {
-                session.kill();
-                return Err(error);
-            }
             Err(error) => {
                 outcome.fail += 1;
                 outcome
@@ -297,14 +304,18 @@ pub(crate) struct Analyzer {
 impl Analyzer {
     pub(crate) fn start<R: tauri::Runtime>(
         app: &tauri::AppHandle<R>, options: &crate::commands::tag_refine::TagRefineOptions,
-        cancel: &'static AtomicBool,
+        cancel: &'static AtomicBool, cache_only: bool,
     ) -> Result<Self, String> {
-        Self::from_options(app, serde_json::to_value(options).map_err(|e| e.to_string())?, options.gbc.as_ref().ok_or("缺少 GBC 配置")?, cancel, "tag-refine-progress", &REFINE_PROCESS, 1)
+        let mut init = serde_json::to_value(options).map_err(|e| e.to_string())?;
+        init["cache_only"] = cache_only.into();
+        Self::from_options(app, init, options.gbc.as_ref().ok_or("缺少 GBC 配置")?, cancel, "tag-refine-progress", &REFINE_PROCESS, 1)
     }
 
-    pub(crate) fn start_llm<R: tauri::Runtime>(app: &tauri::AppHandle<R>, options: &LlmTaggerOptions) -> Result<Self, String> {
+    pub(crate) fn start_llm<R: tauri::Runtime>(app: &tauri::AppHandle<R>, options: &LlmTaggerOptions, cache_only: bool) -> Result<Self, String> {
         let caption_requests = if options.refine_existing { 1 } else { 2 };
-        Self::from_options(app, serde_json::to_value(options).map_err(|e| e.to_string())?, options.gbc.as_ref().ok_or("缺少 GBC 配置")?, &LLM_CANCELLED, options.event(), &PROCESS, caption_requests)
+        let mut init = serde_json::to_value(options).map_err(|e| e.to_string())?;
+        init["cache_only"] = cache_only.into();
+        Self::from_options(app, init, options.gbc.as_ref().ok_or("缺少 GBC 配置")?, &LLM_CANCELLED, options.event(), &PROCESS, caption_requests)
     }
 
     fn from_options<R: tauri::Runtime>(app: &tauri::AppHandle<R>, mut init: serde_json::Value, settings: &GbcSettings, cancel: &'static AtomicBool, event: &'static str, process: &'static Mutex<Option<u32>>, caption_requests: u32) -> Result<Self, String> {
@@ -328,28 +339,26 @@ impl Analyzer {
             process, cancel,
             python_proc::stderr_warnings(app, event, StderrNoise::Runtime, None),
         ).map_err(|e| e.to_string())?;
-        session.send(&init).map_err(|e| e.to_string())?;
-        session.wait_ready(Duration::from_secs(600), |_| {}).map_err(|e| e.to_string())?;
+        wait_for_engine(&mut session, &init, python_proc::PYTHON_SILENCE_LIMIT,
+            |msg| ProgressEvent::python_log(msg, 0, 0).emit(app, event))?;
         let app = app.clone();
         Ok(Self { session, cancel, log: Box::new(move |msg| ProgressEvent::python_log(msg, 0, 0).emit(&app, event)), save_graph: settings.save_graph, _busy: busy })
     }
 
     pub(crate) fn into_shared(self) -> SharedAnalyzer {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || self.serve(receiver, python_proc::PYTHON_SILENCE_LIMIT));
+        let worker = std::thread::spawn(move || self.serve(receiver));
         std::sync::Arc::new(AnalysisQueue { sender: Some(sender), worker: Mutex::new(Some(worker)) })
     }
 
-    fn serve(mut self, receiver: std::sync::mpsc::Receiver<AnalysisJob>, startup_limit: Duration) {
+    fn serve(mut self, receiver: std::sync::mpsc::Receiver<AnalysisJob>) {
         use std::collections::HashMap;
         let mut pending: HashMap<u64, AnalysisJob> = HashMap::new();
         let mut next_id = 0u64;
-        let mut startup = ModelStartup::default();
         let mut last_activity = std::time::Instant::now();
         let outcome = (|| -> Result<(), String> {
             loop {
                 if self.cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
-                startup.remaining(startup_limit)?;
                 let incoming = if pending.is_empty() {
                     match receiver.recv_timeout(Duration::from_millis(50)) {
                         Ok(job) => Some(job),
@@ -372,9 +381,7 @@ impl Analyzer {
                     Err(error) => return Err(error.to_string()),
                 };
                 if self.cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
-                startup.observe(&msg);
                 match msg["type"].as_str() {
-                    Some("models_ready") => continue,
                     Some("graph" | "result" | "error") => {
                         let id = msg["id"].as_str().and_then(|id| id.parse::<u64>().ok())
                             .ok_or_else(|| msg["message"].as_str().unwrap_or("GBC 返回结果缺少任务编号").to_owned())?;
@@ -528,48 +535,22 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn model_deadline_follows_loading_phases_only() {
-        let mut startup = ModelStartup::default();
-        let limit = Duration::from_secs(5);
-        startup.observe(&json!({"type":"log","model_stage":true,"message":"正在启动 GBC 分析引擎"}));
-        startup.phase.as_mut().unwrap().1 = Instant::now() - limit;
-        startup.observe(&json!({"type":"result","id":"2","content":"cached graph"}));
-        assert!(startup.remaining(limit).unwrap_err().contains("分析引擎超时"));
-        startup.observe(&json!({"type":"log","model_stage":true,"message":"正在加载嵌入模型"}));
-        assert!(startup.remaining(limit).unwrap().unwrap() > Duration::ZERO);
-        startup.observe(&json!({"type":"models_ready"}));
-        assert_eq!(startup.remaining(limit).unwrap(), None);
-    }
-
-    #[tokio::test]
     #[ignore = "requires the separate env/gbc Python environment"]
-    async fn stalled_model_start_releases_pending_images_and_process() {
+    fn startup_requires_model_confirmation_and_releases_process_on_failure() {
         static CANCEL: AtomicBool = AtomicBool::new(false);
         static SLOT: Mutex<Option<u32>> = Mutex::new(None);
-        static BUSY: AtomicBool = AtomicBool::new(false);
         let project = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let python = project.join(if cfg!(windows) { "env/gbc/Scripts/python.exe" } else { "env/gbc/bin/python" });
-        let script = r#"import json,sys,time
-input()
-print(json.dumps({"type":"log","model_stage":True,"message":"detector"}),flush=True)
-time.sleep(60)"#;
-        let session = PythonSession::start(PythonCommand::new(python).arg("-c").arg(script), &SLOT, &CANCEL, |_| {}).unwrap();
-        let analyzer = Analyzer { session, cancel: &CANCEL, log: Box::new(|_| {}), save_graph: false,
-            _busy: crate::commands::BusyGuard::acquire_enforced(&BUSY, "GBC test").unwrap() };
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let (first, first_result) = tokio::sync::oneshot::channel();
-        let (second, second_result) = tokio::sync::oneshot::channel();
-        for (name, reply) in [("a.png", first), ("b.png", second)] {
-            sender.send(AnalysisJob { path: name.into(), reply }).unwrap();
+        for reply in [r#"{"type":"ready"}"#, r#"{"type":"ready","mode":"analysis"}"#,
+            r#"{"type":"ready","mode":"cached"}"#, r#"{"type":"log","model_stage":true,"message":"detector"}"#] {
+            let script = "import sys,time; input(); print(sys.argv[1],flush=True); time.sleep(60)";
+            let mut session = PythonSession::start(PythonCommand::new(&python).arg("-c").arg(script).arg(reply), &SLOT, &CANCEL, |_| {}).unwrap();
+            let result = wait_for_engine(&mut session, &json!({"cache_only":false}), Duration::from_secs(1), |_| {});
+            let expected = if reply.contains("detector") { "detector超时" } else { "未确认就绪" };
+            assert!(result.unwrap_err().contains(expected));
+            drop(session);
+            assert!(SLOT.lock().unwrap().is_none());
         }
-        let worker = std::thread::spawn(move || analyzer.serve(receiver, Duration::from_secs(1)));
-        let results = tokio::time::timeout(Duration::from_secs(8), async { tokio::join!(first_result, second_result) }).await;
-        if results.is_err() { CANCEL.store(true, Ordering::SeqCst); python_proc::kill_registered_pid(&SLOT); }
-        worker.join().unwrap();
-        let (a, b) = results.unwrap();
-        for reply in [a, b] { assert_eq!(reply.unwrap().unwrap_err(), "detector超时（1 秒）"); }
-        assert!(SLOT.lock().unwrap().is_none());
-        assert!(!BUSY.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -751,9 +732,15 @@ p.with_suffix('.gbc.json').write_text(json.dumps(g))
             1
         );
         assert_eq!(std::fs::read_to_string(&output).unwrap(), original);
-        options.skip_existing = false;
         std::fs::remove_file(image.with_extension("gbc.json")).unwrap();
-        assert_eq!(run(app.handle().clone(), options).unwrap().fail_count, 1);
+        let skipped = run(app.handle().clone(), options.clone()).unwrap();
+        assert_eq!((skipped.success_count, skipped.fail_count), (1, 0));
+        std::fs::write(&output, "invalid graph").unwrap();
+        assert!(run(app.handle().clone(), options.clone()).unwrap_err().contains("模型目录"));
+        assert_eq!(std::fs::read_to_string(&output).unwrap(), "invalid graph");
+        std::fs::write(&output, &original).unwrap();
+        options.skip_existing = false;
+        assert!(run(app.handle().clone(), options).unwrap_err().contains("模型目录"));
         assert_eq!(std::fs::read_to_string(&output).unwrap(), original);
     }
 }

@@ -183,7 +183,10 @@ async fn refine_dataset<R: tauri::Runtime>(
 
     let analyzer = if options.gbc.is_some() {
         let (worker_app, config) = (app.clone(), options.clone());
-        match tauri::async_runtime::spawn_blocking(move || super::tagger::gbc::Analyzer::start(&worker_app, &config, &TAG_REFINE_CANCELLED)).await.map_err(|e| e.to_string()).and_then(|v| v) {
+        let skip_existing = options.hybrid_mode && options.skip_existing_labels;
+        let cache_only = files.iter().all(|path| path.with_extension("gbc.json").is_file()
+            || (skip_existing && super::tagger::has_labels(path)));
+        match tauri::async_runtime::spawn_blocking(move || super::tagger::gbc::Analyzer::start(&worker_app, &config, &TAG_REFINE_CANCELLED, cache_only)).await.map_err(|e| e.to_string()).and_then(|v| v) {
             Ok(value) => Some(value.into_shared()),
             Err(error) => {
                 if options.hybrid_mode { clear_batch_drafts(app, &files); }
@@ -1963,43 +1966,68 @@ mod e2e_tests {
         let project = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let models = project.join("models/gbc");
         let device = std::env::var("PURINBOX_GBC_TEST_DEVICE").unwrap_or_else(|_| "cpu".into());
-        for invalid_model in [false, true] {
+        for (format, invalid_model) in [("txt", false), ("json", false), ("json", true)] {
+            let simplified = serde_json::json!({"tags":["purple square"], "nl":"previous", "custom":true});
+            let source = if format == "json" { simplified.to_string() } else { "purple square".into() };
             let (root, first) = setup_dir("hybrid_gbc_cold");
             let second = root.join("b.png");
             std::fs::copy(&first, &second).unwrap();
             for path in [&first, &second] {
-                std::fs::write(path.with_extension("txt"), "purple square").unwrap();
+                std::fs::write(path.with_extension(format), &source).unwrap();
             }
-            hybrid::prepare_sources(&root, false, "txt").unwrap();
-            let server = serve_n(8, |stream, request, _| {
+            hybrid::prepare_sources(&root, false, format).unwrap();
+            let server = serve_n(8, move |stream, request, _| {
                 let content = if request.header("x-gbc-request").is_some() {
                     r#"{"detailed_caption":"A violet square.","concise_caption":"A square.","elements":[]}"#
-                } else { "A violet square on a solid background." };
+                } else if format == "json" { "NL: A violet square on a solid background." }
+                else { "A violet square on a solid background." };
                 let body = serde_json::json!({"choices":[{"message":{"content":content},"finish_reason":"stop"}]});
                 write_response(stream, "200 OK", "application/json", body.to_string().as_bytes());
             });
-            let mut options = make_options(server.url.clone());
+            let mut options = if format == "json" { nl_only_options(server.url.clone()) }
+                else { make_options(server.url.clone()) };
+            options.image_size = 2048;
+            options.image_detail = "original".into();
             options.input_path = root.to_string_lossy().into_owned();
             options.output_path = options.input_path.clone();
             options.hybrid_mode = true;
-            options.caption_mode = true;
+            options.caption_mode = format == "txt";
             options.concurrency = 2;
             let detector = if invalid_model { root.join("broken-detector") } else { models.join("owlv2-base-patch16-ensemble") };
             if invalid_model { std::fs::create_dir(&detector).unwrap(); }
             options.gbc = Some(serde_json::from_value(serde_json::json!({
                 "python_path":"", "detector_path":detector, "embedder_path":models.join("all-MiniLM-L6-v2"),
-                "device":device,"content_type":"caption","caption_prompt":"","max_nodes":1,"max_depth":0,"max_requests":2
+                "device":device,"content_type":"caption","caption_prompt":"","max_nodes":20,"max_depth":4,"max_requests":64
             })).unwrap());
             TAG_REFINE_CANCELLED.store(false, Ordering::SeqCst);
             let app = tauri::test::mock_app();
-            let outcome = refine_dataset(app.handle(), options, client()).await.unwrap();
+            let events = crate::commands::batch::capture_events(app.handle(), EVENT);
+            let result = refine_dataset(app.handle(), options, client()).await;
+            let events = events.lock().unwrap();
+            let messages: Vec<_> = events.iter().filter_map(|e| e["message"].as_str()).collect();
+            let dispatch = messages.iter().position(|m| m.contains("线程开始"));
             let requests: Vec<_> = server.requests.try_iter().collect();
             if invalid_model {
+                assert!(result.is_err());
+                assert!(dispatch.is_none(), "{messages:?}");
                 assert!(requests.is_empty(), "model startup failure sent {} VLM requests", requests.len());
-                assert_eq!(outcome.fail_count, 2);
-                for image in [&first, &second] { assert_eq!(std::fs::read_to_string(image.with_extension("txt")).unwrap(), "purple square"); }
+                for image in [&first, &second] { assert_eq!(std::fs::read_to_string(image.with_extension(format)).unwrap(), source); }
             } else {
+                let warmup = messages.iter().position(|m| m.contains("正在加载嵌入模型")).unwrap();
+                let ready = messages.iter().position(|m| *m == "GBC 分析引擎已就绪").unwrap();
+                assert!(warmup < ready && ready < dispatch.unwrap(), "{messages:?}");
+                let outcome = result.unwrap();
                 assert_eq!(outcome.success_count, 2, "{outcome:?}");
+                for image in [&first, &second] {
+                    let written = std::fs::read_to_string(image.with_extension(format)).unwrap();
+                    if format == "json" {
+                        let mut expected = simplified.clone();
+                        expected["nl"] = serde_json::json!("A violet square on a solid background.");
+                        assert_eq!(serde_json::from_str::<serde_json::Value>(&written).unwrap(), expected);
+                    } else {
+                        assert_eq!(written.trim(), "A violet square on a solid background.");
+                    }
+                }
                 assert_eq!(requests.len(), 4);
                 assert!(requests[0].header("x-gbc-request").is_some());
                 let captions: Vec<_> = requests.iter().filter(|req| req.header("x-gbc-request").is_none()).collect();

@@ -171,7 +171,8 @@ async fn run_llm_tagging<R: tauri::Runtime>(
     });
     let analyzer = if options.gbc.is_some() {
         let (app, config) = (app.clone(), options.clone());
-        Some((tauri::async_runtime::spawn_blocking(move || super::gbc::Analyzer::start_llm(&app, &config)).await.map_err(|e| e.to_string())??).into_shared())
+        let cache_only = files.iter().all(|path| skipped.contains(path) || path.with_extension("gbc.json").is_file());
+        Some((tauri::async_runtime::spawn_blocking(move || super::gbc::Analyzer::start_llm(&app, &config, cache_only)).await.map_err(|e| e.to_string())??).into_shared())
     } else { None };
     let recursive = options.recursive;
     let concurrency = options.concurrency.max(1) as usize;
