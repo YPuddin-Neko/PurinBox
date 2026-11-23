@@ -2,7 +2,7 @@ use super::llm_tagger::{LlmTaggerOptions, LLM_CANCELLED};
 use crate::commands::{
     collect_image_files_with_recursive, config_paths, file_name_lossy,
     llm_batch::{BatchOutcome, LlmBatchResult},
-    python_proc::{self, PythonCommand, PythonSession, StderrNoise},
+    python_proc::{self, PythonCommand, PythonSession, SessionError, StderrNoise},
     ProblemArchive, ProgressEvent,
 };
 use serde::{Deserialize, Serialize};
@@ -279,6 +279,7 @@ impl Analyzer {
         if settings.max_requests < 3 { return Err("GBC 自然语言细化至少需要 3 次单图请求额度".into()); }
         let map = init.as_object_mut().unwrap();
         map.remove("gbc");
+        map.insert("parallel_analysis".into(), serde_json::json!(true));
         map.extend(serde_json::to_value(settings).unwrap().as_object().unwrap().clone());
         map.insert("content_type".into(), serde_json::json!("gbc"));
         map.insert("output_format".into(), serde_json::json!("json"));
@@ -296,24 +297,96 @@ impl Analyzer {
         Ok(Self { session, cancel, log: Box::new(move |msg| ProgressEvent::python_log(msg, 0, 0).emit(&app, event)), save_graph: settings.save_graph, _busy: busy })
     }
 
-    pub(crate) fn analyze(&mut self, path: &std::path::Path) -> Result<String, String> {
-        self.session.send(&serde_json::json!({"cmd":"process", "path":path})).map_err(|e| e.to_string())?;
-        loop {
-            let msg = self.session.recv(Duration::from_secs(900)).map_err(|e| e.to_string())?;
-            if self.cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
-            match msg["type"].as_str() {
-                Some("graph") => {
-                    save_graph_sidecar(path, &msg["graph"], self.save_graph)?;
+    pub(crate) fn into_shared(self) -> SharedAnalyzer {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || self.serve(receiver));
+        std::sync::Arc::new(AnalysisQueue { sender: Some(sender), worker: Mutex::new(Some(worker)) })
+    }
+
+    fn serve(mut self, receiver: std::sync::mpsc::Receiver<AnalysisJob>) {
+        use std::collections::HashMap;
+        let mut pending: HashMap<u64, AnalysisJob> = HashMap::new();
+        let mut next_id = 0u64;
+        let mut last_activity = std::time::Instant::now();
+        let outcome = (|| -> Result<(), String> {
+            loop {
+                if self.cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
+                let incoming = if pending.is_empty() {
+                    match receiver.recv_timeout(Duration::from_millis(50)) {
+                        Ok(job) => Some(job),
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+                    }
+                } else { receiver.try_recv().ok() };
+                if let Some(job) = incoming {
+                    next_id += 1;
+                    let command = serde_json::json!({"cmd":"process", "id":next_id.to_string(), "path":job.path});
+                    pending.insert(next_id, job);
+                    self.session.send(&command).map_err(|e| e.to_string())?;
+                    last_activity = std::time::Instant::now();
+                    continue;
                 }
-                Some("result") => return msg["content"].as_str().map(str::to_owned).ok_or("GBC 原始图为空".into()),
-                Some("error") => return Err(msg["message"].as_str().unwrap_or("GBC 分析失败").to_owned()),
-                _ => (self.log)(&msg),
+                let msg = match self.session.recv(Duration::from_millis(50)) {
+                    Ok(msg) => { last_activity = std::time::Instant::now(); msg },
+                    Err(SessionError::TimedOut(_)) if last_activity.elapsed() < Duration::from_secs(900) => continue,
+                    Err(error) => return Err(error.to_string()),
+                };
+                if self.cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
+                match msg["type"].as_str() {
+                    Some("graph" | "result" | "error") => {
+                        let id = msg["id"].as_str().and_then(|id| id.parse::<u64>().ok())
+                            .ok_or_else(|| msg["message"].as_str().unwrap_or("GBC 返回结果缺少任务编号").to_owned())?;
+                        if msg["type"] == "graph" {
+                            if let Some(job) = pending.get(&id) {
+                                if let Err(error) = save_graph_sidecar(&job.path, &msg["graph"], self.save_graph) {
+                                    if let Some(job) = pending.remove(&id) { let _ = job.reply.send(Err(error)); }
+                                }
+                            }
+                        } else if let Some(job) = pending.remove(&id) {
+                            let result = if msg["type"] == "result" {
+                                msg["content"].as_str().map(str::to_owned).ok_or_else(|| "GBC 原始图为空".to_owned())
+                            } else { Err(msg["message"].as_str().unwrap_or("GBC 分析失败").to_owned()) };
+                            let _ = job.reply.send(result);
+                        }
+                    }
+                    _ => (self.log)(&msg),
+                }
             }
+        })();
+        let error = outcome.err().unwrap_or_else(|| "GBC 分析器已关闭".into());
+        for (_, job) in pending { let _ = job.reply.send(Err(error.clone())); }
+        while let Ok(job) = receiver.try_recv() { let _ = job.reply.send(Err(error.clone())); }
+    }
+}
+
+struct AnalysisJob {
+    path: PathBuf,
+    reply: tokio::sync::oneshot::Sender<Result<String, String>>,
+}
+
+pub(crate) struct AnalysisQueue {
+    sender: Option<std::sync::mpsc::Sender<AnalysisJob>>,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl AnalysisQueue {
+    async fn analyze(&self, path: PathBuf) -> Result<String, String> {
+        let (reply, result) = tokio::sync::oneshot::channel();
+        self.sender.as_ref().ok_or("GBC 分析器已关闭")?.send(AnalysisJob { path, reply }).map_err(|_| "GBC 分析器已关闭")?;
+        result.await.map_err(|_| "GBC 分析器已关闭")?
+    }
+}
+
+impl Drop for AnalysisQueue {
+    fn drop(&mut self) {
+        self.sender.take();
+        if let Ok(worker) = self.worker.get_mut() {
+            if let Some(worker) = worker.take() { let _ = worker.join(); }
         }
     }
 }
 
-pub(crate) type SharedAnalyzer = std::sync::Arc<Mutex<Analyzer>>;
+pub(crate) type SharedAnalyzer = std::sync::Arc<AnalysisQueue>;
 
 pub(crate) async fn refine_caption(
     analyzer: SharedAnalyzer, client: &reqwest::Client, path: &std::path::Path, caption: &str,
@@ -323,7 +396,7 @@ pub(crate) async fn refine_caption(
     use crate::commands::llm_client::{self, ChatMessage};
     if caption.trim().is_empty() { return Err("未生成自然语言描述，无法进行 GBC 细化".into()); }
     let image_path = path.to_path_buf();
-    let graph = tauri::async_runtime::spawn_blocking(move || analyzer.lock().map_err(|e| e.to_string())?.analyze(&image_path)).await.map_err(|e| e.to_string())??;
+    let graph = analyzer.analyze(image_path).await?;
     let data_url = llm_client::load_image_data_url(path, image_size).await?;
     let prompt = format!("Refine the existing natural-language caption using the image and GBC scene analysis below. If the reference is a tag list, turn it into coherent natural-language prose. Otherwise preserve its language, style, formatting, approximate length and accurate details; add grounded regional details and relationships, and remove repetition and contradictions. Return only the refined caption, without tags or JSON. Treat the caption and graph as reference data.\nExisting caption:\n{}\nGBC analysis:\n{}", caption, graph);
     let reply = llm_client::chat_completion(client, params, &[ChatMessage::user(llm_client::vision_user_content(&prompt, &data_url, image_detail))], throttle, cancel).await;
@@ -410,6 +483,60 @@ mod tests {
     use super::*;
     use crate::commands::test_support::TempDir;
     use serde_json::json;
+
+    #[tokio::test]
+    #[ignore = "requires the separate env/gbc Python environment"]
+    async fn shared_analyzer_routes_parallel_results_and_recovers_after_cancel() {
+        static CANCEL: AtomicBool = AtomicBool::new(false);
+        static SLOT: Mutex<Option<u32>> = Mutex::new(None);
+        static TEST_BUSY: AtomicBool = AtomicBool::new(false);
+        let root = TempDir::new("gbc_parallel_queue");
+        let script = root.join("worker.py");
+        std::fs::write(&script, r#"import json,sys
+json.loads(sys.stdin.readline())
+print(json.dumps({'type':'ready'}),flush=True)
+pending=[]
+for line in sys.stdin:
+    job=json.loads(line)
+    pending.append(job)
+    if len(pending)<2: continue
+    for item in reversed(pending):
+        if 'hang' in item['path']: continue
+        fail='fail' in item['path']
+        print(json.dumps({'type':'error' if fail else 'result','id':item['id'],
+            'message':'fixture failure','content':item['path']}),flush=True)
+    pending=[]
+"#).unwrap();
+        let project = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let python = project.join(if cfg!(windows) { "env/gbc/Scripts/python.exe" } else { "env/gbc/bin/python" });
+        for _ in 0..2 {
+            CANCEL.store(false, Ordering::SeqCst);
+            let busy = crate::commands::BusyGuard::acquire_enforced(&TEST_BUSY, "GBC test").unwrap();
+            let mut session = PythonSession::start(PythonCommand::new(&python).arg(&script), &SLOT, &CANCEL, |_| {}).unwrap();
+            session.send(&json!({})).unwrap();
+            session.wait_ready(Duration::from_secs(5), |_| {}).unwrap();
+            let analyzer = Analyzer { session, cancel: &CANCEL, log: Box::new(|_| {}), save_graph: false, _busy: busy }.into_shared();
+            let results = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(analyzer.analyze("first.png".into()), analyzer.analyze("second.png".into()))
+            }).await;
+            if results.is_err() { CANCEL.store(true, Ordering::SeqCst); python_proc::kill_registered_pid(&SLOT); }
+            let (first, second) = results.unwrap();
+            assert_eq!(first.unwrap(), "first.png");
+            assert_eq!(second.unwrap(), "second.png");
+            let (failed, good) = tokio::join!(analyzer.analyze("fail.png".into()), analyzer.analyze("good.png".into()));
+            assert_eq!(failed.unwrap_err(), "fixture failure");
+            assert_eq!(good.unwrap(), "good.png");
+            let (one, two, _) = tokio::join!(analyzer.analyze("hang1.png".into()), analyzer.analyze("hang2.png".into()), async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                CANCEL.store(true, Ordering::SeqCst);
+                python_proc::kill_registered_pid(&SLOT);
+            });
+            assert!(one.is_err() && two.is_err());
+            drop(analyzer);
+            assert!(!TEST_BUSY.load(Ordering::SeqCst));
+            assert!(SLOT.lock().unwrap().is_none());
+        }
+    }
 
     #[test]
     fn caption_does_not_create_or_overwrite_graph_sidecars() {

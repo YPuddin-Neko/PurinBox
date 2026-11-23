@@ -5,15 +5,19 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import queue
 from pathlib import Path
 
 from gbc_export import graph_document, layout_document, layout_from_graph
 
 WIRE = sys.stdout
+WIRE_LOCK = threading.Lock()
 
 def emit(**value):
-    WIRE.write(json.dumps(value, ensure_ascii=False) + '\n')
-    WIRE.flush()
+    with WIRE_LOCK:
+        WIRE.write(json.dumps(value, ensure_ascii=False) + '\n')
+        WIRE.flush()
 
 
 class Capture:
@@ -179,7 +183,7 @@ class AnalysisReplies:
         return text
 
 
-def build_analysis_parts(config):
+def build_analysis_parts(config, strict=False):
     from kohakugbc.machine.build import build_parts
     from kohakugbc.nodes import registry
     failures = []
@@ -187,6 +191,8 @@ def build_analysis_parts(config):
     def no_reply(err):
         # GBC deliberately turns failed requests into empty replies; retain their cause.
         message = err.get('message', err.get('kind', '请求失败')) if isinstance(err, dict) else str(err)
+        if strict:
+            raise ValueError(str(message))
         failures.append(str(message))
         return ''
 
@@ -254,10 +260,140 @@ def analysis_identity(path, options):
             'settings': {key: options[key] for key in ('model_name', 'api_endpoint', 'temperature', 'top_p', 'max_tokens', 'detector_path', 'embedder_path', 'max_nodes', 'max_depth', 'image_size')}}
 
 
+class ConcurrentReplies:
+    """One per-image budget and reply validator, sharing the engine adapter."""
+    def __init__(self, adapter, options):
+        self.adapter = adapter
+        self.options = options
+        self.states = {}
+        self.requests = {}
+        self.lock = threading.RLock()
+
+    def add(self, key):
+        with self.lock:
+            self.states[key] = AnalysisReplies(self.adapter, self.options)
+
+    def remove(self, key):
+        with self.lock:
+            self.states.pop(key, None)
+            self.requests = {k: v for k, v in self.requests.items() if v != key}
+
+    def prepare(self, inputs, protocol):
+        key = json.loads(inputs['request']['key'])['image']
+        with self.lock:
+            prepared = self.states[key].prepare(inputs, protocol)
+            self.requests[prepared.headers['X-GBC-Request']] = key
+            return prepared
+
+    def decode(self, raw, protocol):
+        with self.lock:
+            key = self.requests[raw.request.headers['X-GBC-Request']]
+            return self.states[key].decode(raw, protocol)
+
+
+def parallel_main(options):
+    from PIL import Image, ImageOps
+    from togeari import SourceItem
+    config = make_config(options)
+    config['machine']['max_jobs'] = max(1, options['concurrency'])
+    start_engine = threading.Event()
+    replies = None
+    sources = queue.Queue()
+    jobs = {}
+    stages = BatchStages()
+    stopping = threading.Event()
+    with tempfile.TemporaryDirectory(prefix='purinbox-gbc-') as scratch, contextlib.ExitStack() as stack:
+        def read_requests():
+            try:
+                for line in sys.stdin:
+                    request = json.loads(line)
+                    if request.get('cmd') == 'quit':
+                        break
+                    key = str(request['id'])
+                    try:
+                        path = Path(request['path'])
+                        identity = analysis_identity(path, options)
+                        with Image.open(path) as original:
+                            image = ImageOps.exif_transpose(original).convert('RGB')
+                        existing = path.with_suffix('.gbc.json')
+                        if existing.is_file():
+                            graph = graph_document(json.loads(existing.read_text(encoding='utf-8')))
+                            if graph.get('img_size') and list(graph['img_size']) != list(image.size):
+                                raise ValueError('已有 GBC 数据的图片尺寸不匹配')
+                            emit(type='result', id=key, content=json.dumps(graph, ensure_ascii=False))
+                            continue
+                        working = Path(scratch) / f'{key}.png'
+                        image.save(working)
+                        source = SourceItem(key, {'image': {'path':str(working), 'key':key}, 'controls':config['controls']})
+                        jobs[key] = {'path':path, 'identity':identity, 'size':list(image.size), 'source':source, 'attempt':0, 'working':working}
+                        sources.put(source)
+                        start_engine.set()
+                    except Exception as error:
+                        emit(type='error', id=key, message=str(error))
+            finally:
+                stopping.set()
+                sources.put(None)
+                start_engine.set()
+
+        class Sink:
+            def write(self, record):
+                key = record.key
+                job = jobs[key]
+                try:
+                    graph = parse_graph_result(record)
+                    if analysis_identity(job['path'], options) != job['identity']:
+                        raise ValueError('图片已发生变化，请重新运行')
+                    graph['img_size'] = job['size']
+                    graph['img_path'] = str(job['path'])
+                    graph['_purinbox'] = job['identity']
+                    emit(type='graph', id=key, graph=graph)
+                    emit(type='result', id=key, content=json.dumps(graph, ensure_ascii=False))
+                except Exception as error:
+                    state = replies.states[key]
+                    if state.invalid_reply and job['attempt'] == 0 and state.count < options['max_requests'] and not stopping.is_set():
+                        job['attempt'] += 1
+                        emit(type='log', message=f"{job['path'].name}：{state.invalid_reply}，正在重试（1/1）")
+                        state.invalid_reply = ''
+                        sources.put(job['source'])
+                        return
+                    emit(type='error', id=key, message=state.invalid_reply or str(error))
+                replies.remove(key)
+                job['working'].unlink(missing_ok=True)
+                del jobs[key]
+
+            def close(self):
+                pass
+
+        threading.Thread(target=read_requests, daemon=True).start()
+        emit(type='ready')
+        start_engine.wait()
+        if not jobs:
+            return
+        emit(type='log', message='正在加载检测与嵌入模型')
+        parts, _ = build_analysis_parts(config, strict=True)
+        adapter = parts.slots['vlm'].adapter
+        # Keep the original bound methods; validators must not call the wrapper recursively.
+        import copy
+        replies = ConcurrentReplies(copy.copy(adapter), options)
+        adapter.prepare, adapter.decode = replies.prepare, replies.decode
+        machine = stack.enter_context(parts.machine)
+
+        def pending_sources():
+            for source in iter(sources.get, None):
+                if source.key not in replies.states:
+                    replies.add(source.key)
+                stages.log('正在分析全图、区域和对象关系')
+                yield source
+
+        machine.run(pending_sources(), Sink())
+
+
 def main():
     options = json.loads(sys.stdin.readline())
     os.environ['HF_HUB_OFFLINE'] = '1'
     os.environ['TRANSFORMERS_OFFLINE'] = '1'
+    if options.get('parallel_analysis'):
+        return parallel_main(options)
     from PIL import Image, ImageOps
     config = make_config(options)
     machine = None

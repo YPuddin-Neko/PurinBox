@@ -184,15 +184,14 @@ async fn refine_dataset<R: tauri::Runtime>(
     let analyzer = if options.gbc.is_some() {
         let (worker_app, config) = (app.clone(), options.clone());
         match tauri::async_runtime::spawn_blocking(move || super::tagger::gbc::Analyzer::start(&worker_app, &config, &TAG_REFINE_CANCELLED)).await.map_err(|e| e.to_string()).and_then(|v| v) {
-            Ok(value) => Some(Arc::new(std::sync::Mutex::new(value))),
+            Ok(value) => Some(value.into_shared()),
             Err(error) => {
                 if options.hybrid_mode { clear_batch_drafts(app, &files); }
                 return Err(error);
             }
         }
     } else { None };
-    // 单个检测引擎依次分析图片；图内 VLM 请求仍使用配置的并发数。
-    let concurrency = if analyzer.is_some() { 1 } else { std::cmp::max(1, options.concurrency) as usize };
+    let concurrency = std::cmp::max(1, options.concurrency) as usize;
 
 
     let action = if options.nl_only {
@@ -863,7 +862,7 @@ async fn process_single_file_with_gbc(
     output_dir: &Path,
     options: &TagRefineOptions,
     throttle: &RequestThrottle,
-    analyzer: Option<Arc<std::sync::Mutex<super::tagger::gbc::Analyzer>>>,
+    analyzer: Option<super::tagger::gbc::SharedAnalyzer>,
 ) -> FileResult {
     let result =
         refine_single_file(client, img_path, input_root, output_dir, options, throttle, analyzer).await;
@@ -880,7 +879,7 @@ async fn refine_single_file(
     output_dir: &Path,
     options: &TagRefineOptions,
     throttle: &RequestThrottle,
-    analyzer: Option<Arc<std::sync::Mutex<super::tagger::gbc::Analyzer>>>,
+    analyzer: Option<super::tagger::gbc::SharedAnalyzer>,
 ) -> FileResult {
     let start = std::time::Instant::now();
     let filename = super::file_name_lossy(img_path);

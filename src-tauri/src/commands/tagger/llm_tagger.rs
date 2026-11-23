@@ -171,10 +171,10 @@ async fn run_llm_tagging<R: tauri::Runtime>(
     });
     let analyzer = if options.gbc.is_some() {
         let (app, config) = (app.clone(), options.clone());
-        Some(Arc::new(std::sync::Mutex::new(tauri::async_runtime::spawn_blocking(move || super::gbc::Analyzer::start_llm(&app, &config)).await.map_err(|e| e.to_string())??)))
+        Some((tauri::async_runtime::spawn_blocking(move || super::gbc::Analyzer::start_llm(&app, &config)).await.map_err(|e| e.to_string())??).into_shared())
     } else { None };
     let recursive = options.recursive;
-    let concurrency = if analyzer.is_some() { 1 } else { options.concurrency.max(1) as usize };
+    let concurrency = options.concurrency.max(1) as usize;
     let throttle = Arc::new(RequestThrottle::new(options.request_interval_ms));
     let completion = if options.refine_existing { "GBC 细化完成" } else { "LLM 打标完成" };
     let options = Arc::new(options);
