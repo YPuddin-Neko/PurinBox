@@ -1,5 +1,5 @@
 import GbcTagTab, { type GbcTagTabHandle } from '../components/GbcTagTab';
-import { useState, useRef, useCallback, useMemo, useId } from 'react';
+import { useState, useRef, useMemo, useId } from 'react';
 import { useQueuedInvoke } from '../hooks/useQueuedInvoke';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
@@ -7,6 +7,7 @@ import {
   Tags, FolderOpen, Save, X, Trash2, BarChart3, Loader2, Replace, Filter, ListPlus, PlusCircle, MinusCircle,
   List, CopyX, Wand2,
 } from 'lucide-react';
+import { useFilteredImageSelection } from '../hooks/useFilteredImageSelection';
 import { useTagStats } from '../hooks/useTagStats';
 import { useTagTranslation } from '../hooks/useTagTranslation';
 import { useDragResize, useFlexRatioResize } from '../hooks/useDragResize';
@@ -50,7 +51,6 @@ export default function TagManagerPage() {
   const [images, setImages] = useState<ImageItem[]>([]);
   const [nlImages, setNlImages] = useState<CaptionItem[]>([]);
 
-  const [selectedIdx, setSelectedIdx] = useState(-1);
   const [searchText, setSearchText] = useState('');
   const [filterMode, setFilterMode] = useState<'all' | 'tagged' | 'untagged'>('all');
 
@@ -97,6 +97,24 @@ export default function TagManagerPage() {
   const stats = useTagStats(tagLists, folderPath, translations);
   const { selectedTags, setSelectedTags, tagListMode, filteredStats, tagStats, taggedCount, setGlobalSearch } = stats;
 
+  // ── 标签筛选图片 ──
+  const filtered = useMemo(() => {
+    let list = images.map((img, i) => ({ ...img, _i: i }));
+    if (searchText) {
+      const q = searchText.toLowerCase();
+      list = list.filter(img => img.filename.toLowerCase().includes(q) || img.tags.some(tag => tag.includes(q)));
+    }
+    if (filterMode === 'tagged') list = list.filter(img => img.tags.length > 0);
+    if (filterMode === 'untagged') list = list.filter(img => img.tags.length === 0);
+    if (tagFilterActive && selectedTags.size > 0) {
+      const required = [...selectedTags];
+      list = list.filter(img => required.every(tag => img.tags.includes(tag)));
+    }
+    return list;
+  }, [images, searchText, filterMode, tagFilterActive, selectedTags]);
+  const hasFiltered = tagFilterActive && selectedTags.size > 0 && filtered.length > 0;
+  const { selectedIdx, setSelectedIdx, position, goPrev, goNext } = useFilteredImageSelection(filtered);
+
   // ── 加载文件夹 ──
   const handleLoadFolder = async () => {
     const selected = await open({ directory: true, multiple: false, title: t('tagEditor.selectFolder') });
@@ -130,7 +148,6 @@ export default function TagManagerPage() {
       if (mode === 'danbooru') {
         const result = await invoke<TagDataset>('load_tag_dataset', { folder: folderPath, recursive });
         setImages(result.images.map(img => ({ ...img, dirty: false })));
-        if (selectedIdx >= result.images.length) setSelectedIdx(result.images.length > 0 ? 0 : -1);
       } else {
         const result = await invoke<CaptionDataset>('load_caption_dataset', { folder: folderPath, recursive });
         setNlImages(result.images.map(img => ({ ...img, dirty: false })));
@@ -194,22 +211,6 @@ export default function TagManagerPage() {
       return sameTags(img.tags, next) ? img : { ...img, tags: next, dirty: true };
     }));
   };
-
-  // ── 标签筛选图片 ──
-  const filtered = useMemo(() => {
-    let list = images.map((img, i) => ({ ...img, _i: i }));
-    if (searchText) {
-      const q = searchText.toLowerCase();
-      list = list.filter(img => img.filename.toLowerCase().includes(q) || img.tags.some(tag => tag.includes(q)));
-    }
-    if (filterMode === 'tagged') list = list.filter(img => img.tags.length > 0);
-    if (filterMode === 'untagged') list = list.filter(img => img.tags.length === 0);
-    if (tagFilterActive && selectedTags.size > 0) {
-      list = list.filter(img => [...selectedTags].every(tag => img.tags.includes(tag)));
-    }
-    return list;
-  }, [images, searchText, filterMode, tagFilterActive, selectedTags]);
-  const hasFiltered = tagFilterActive && selectedTags.size > 0 && filtered.length > 0;
 
   // ── 批量添加标签（按范围：全部图片 / 当前图片 / 筛选图片）──
   const handleBatchAdd = () => {
@@ -300,10 +301,6 @@ export default function TagManagerPage() {
   };
   const curHasAllSelected = cur ? [...selectedTags].every(tag => cur.tags.includes(tag)) : false;
 
-  // ── 切换图片 ──
-  const goPrev = useCallback(() => { setSelectedIdx(i => Math.max(0, i - 1)); }, []);
-  const goNext = useCallback(() => { setSelectedIdx(i => Math.min(images.length - 1, i + 1)); }, [images.length]);
-
   const setCurrentTags = (path: string, tags: string[]) =>
     setImages(previous => previous.map(image => image.path === path && !sameTags(image.tags, tags) ? { ...image, tags, dirty: true } : image));
   const tagDrag = useTagFieldDrag({
@@ -327,14 +324,14 @@ export default function TagManagerPage() {
     } finally { setSavingSingle(false); }
   };
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (mode !== 'danbooru') return;
     // 焦点在输入框、文本域或 contenteditable 里时，方向键留给编辑控件，不切换图片
     const el = e.target as HTMLElement | null;
     if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el?.isContentEditable) return;
     if (e.key === 'ArrowLeft') { e.preventDefault(); goPrev(); }
     if (e.key === 'ArrowRight') { e.preventDefault(); goNext(); }
-  }, [goPrev, goNext, mode]);
+  };
 
   const dirtyCount = images.filter(i => i.dirty).length;
 
@@ -382,7 +379,7 @@ export default function TagManagerPage() {
         <ResizeHandle axis="x" onMouseDown={col1.onMouseDown} />
 
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-          <ImagePreviewPane ref={previewRow.beforeRef} path={cur?.path} filename={cur?.filename} index={selectedIdx} total={images.length}
+          <ImagePreviewPane ref={previewRow.beforeRef} path={cur?.path} filename={cur?.filename} index={position} total={filtered.length}
             onPrev={goPrev} onNext={goNext} style={{ flex: previewRow.ratio, minHeight: 80 }} />
 
           <ResizeHandle axis="y" onMouseDown={previewRow.onMouseDown} />
@@ -422,7 +419,7 @@ export default function TagManagerPage() {
           </div>
 
           <ToolSidebar items={[
-            { icon: Filter, label: t('tagEditor.filterByTag'), onClick: () => setTagFilterActive(v => !v), disabled: images.length === 0, color: tagFilterActive ? '#7c5cfc' : undefined },
+            { icon: Filter, label: t('tagEditor.filterByTag'), pressed: tagFilterActive, onClick: () => setTagFilterActive(v => !v), disabled: images.length === 0, color: tagFilterActive ? '#7c5cfc' : undefined },
             { icon: Replace, label: t('tagManager.replaceTag'), disabled: images.length === 0, onClick: () => {
               setReplaceTo(''); setReplaceFrom(selectedTags.size === 1 ? [...selectedTags][0] : ''); setShowReplaceModal(true);
             } },

@@ -94,6 +94,7 @@ export interface ToolSidebarItem {
   label: string;
   onClick: () => void;
   disabled?: boolean;
+  pressed?: boolean;
   color?: string;
 }
 
@@ -103,7 +104,7 @@ export function ToolSidebar({ items }: { items: readonly ToolSidebarItem[] }) {
     <div className="tag-tool-sidebar">
       {items.map(item => (
         <button key={item.label} type="button" className="btn btn-ghost" title={item.label} aria-label={item.label}
-          disabled={item.disabled} onClick={item.onClick} style={{ color: item.color }}>
+          aria-pressed={item.pressed} disabled={item.disabled} onClick={item.onClick} style={{ color: item.color }}>
           <item.icon style={{ width: 14, height: 14 }} />
         </button>
       ))}

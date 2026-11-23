@@ -24,12 +24,28 @@ export default function TagStatsPanel({
 }) {
   const { t } = useTranslation();
   const progressDone = !!progress && progress.current >= progress.total;
+  const canSelectMatches = filterActive && /[^,，\s]/.test(stats.globalSearch) && stats.filteredStats.length > 0;
+  const selectMatches = () => {
+    stats.setSelectedTags(previous => new Set([...previous, ...stats.filteredStats.map(([tag]) => tag)]));
+    stats.setGlobalSearch('');
+  };
   return <>
     <div style={{ display: 'flex', gap: 4, padding: '8px 10px', borderBottom: '1px solid var(--color-border)' }}>
       <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
         <Search size={12} style={{ position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-tertiary)' }} />
-        <input className="form-input" placeholder={t('tagEditor.searchTags')} value={stats.globalSearch}
-          onChange={e => stats.setGlobalSearch(e.target.value)} style={{ minWidth: 0, paddingLeft: 26, fontSize: 11, height: 28 }} />
+        <input className="form-input" aria-label={t('tagEditor.searchTags')} title={filterActive ? t('tagEditor.batchSearchTags') : undefined}
+          placeholder={filterActive ? 'tag1, tag2' : t('tagEditor.searchTags')} value={stats.globalSearch}
+          onChange={e => stats.setGlobalSearch(e.target.value)}
+          onPaste={e => {
+            const pasted = e.clipboardData.getData('text');
+            if (!/[\r\n]/.test(pasted)) return;
+            e.preventDefault();
+            const input = e.currentTarget;
+            input.setRangeText(pasted.replace(/[\r\n]+/g, ', '), input.selectionStart ?? 0, input.selectionEnd ?? 0, 'end');
+            stats.setGlobalSearch(input.value);
+          }}
+          onKeyDown={e => { if (canSelectMatches && e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); selectMatches(); } }}
+          style={{ minWidth: 0, paddingLeft: 26, fontSize: 11, height: 28 }} />
       </div>
       <button className="btn btn-ghost btn-sm" title={t(stats.tagSortBy === 'freq' ? 'tagEditor.sortByFreq' : 'tagEditor.sortByName')}
         onClick={() => stats.setTagSortBy(v => v === 'freq' ? 'name' : 'freq')}
@@ -42,14 +58,23 @@ export default function TagStatsPanel({
       </button>
     </div>
     {filterActive && (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px', fontSize: 10, color: '#a78bfa',
-        borderBottom: '1px solid var(--color-border)', background: 'linear-gradient(90deg,rgba(124,92,252,0.08),rgba(124,92,252,0.02))' }}>
-        <Filter size={10} />
-        <span style={{ flex: 1 }}>{t('tagEditor.filtering')} <b>{filteredCount}</b>/{total}</span>
-        <button type="button" className="tag-chip-remove" onClick={onClearFilter} aria-label={t('tagEditor.clearFilter')}
-          style={{ opacity: 1, color: '#f87171', background: 'rgba(248,113,113,0.1)' }}>
-          <X size={8} />
-        </button>
+      <div className="tag-filter-summary">
+        <div className="tag-filter-heading">
+          <Filter size={11} />
+          <span>{t(stats.selectedTags.size ? 'tagEditor.matchAllTags' : 'tagEditor.pickFilterTags')}</span>
+          <b>{filteredCount}/{total}</b>
+          <button type="button" className="tag-chip-remove" onClick={() => { stats.setSelectedTags(new Set()); stats.setGlobalSearch(''); onClearFilter(); }}
+            aria-label={t('tagEditor.clearFilter')} title={t('tagEditor.clearFilter')}><X size={10} /></button>
+        </div>
+        {stats.selectedTags.size > 0 && <div className="tag-filter-chips">
+          {[...stats.selectedTags].map(tag => <button key={tag} type="button" title={tag} aria-label={t('tagEditor.removeFilterTag', { tag })}
+            onClick={() => stats.setSelectedTags(previous => { const next = new Set(previous); next.delete(tag); return next; })}>
+            <span>{tag}</span><X size={10} />
+          </button>)}
+        </div>}
+        {canSelectMatches && <button type="button" className="btn btn-ghost btn-sm tag-filter-select" onClick={selectMatches}>
+          {t('tagEditor.selectMatches', { n: stats.filteredStats.length })}
+        </button>}
       </div>
     )}
     <div role="listbox" aria-multiselectable="true" aria-label={t('tagEditor.allTags')} style={{ flex: 1, overflowY: 'auto', userSelect: 'none' }}>
@@ -58,7 +83,7 @@ export default function TagStatsPanel({
         const selected = stats.selectedTags.has(tag);
         return (
           <div key={tag} role="option" className="tag-stat-row" data-current={currentTags.has(tag)} aria-selected={selected}
-            onMouseDown={e => e.preventDefault()} onClick={e => stats.toggleTagSelect(tag, e)}
+            onMouseDown={e => e.preventDefault()} onClick={e => stats.toggleTagSelect(tag, e, filterActive)}
             style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 12px', cursor: 'pointer',
               borderBottom: '1px solid rgba(255,255,255,0.03)', borderLeft: `2px solid ${selected ? 'var(--color-accent-primary)' : 'transparent'}` }}>
             <div style={{ flex: 1, minWidth: 0 }}>

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { splitTagInput, tagKey } from '../utils/tagText';
 
 export function useTagStats(tagLists: readonly string[][], folderPath: string, translations: Record<string, string>) {
   const [globalSearch, setGlobalSearch] = useState('');
@@ -15,20 +16,25 @@ export function useTagStats(tagLists: readonly string[][], folderPath: string, t
     return [...counts.entries()].sort((a, b) => b[1] - a[1]);
   }, [tagLists]);
   const filteredStats = useMemo(() => {
-    const query = globalSearch.toLowerCase();
-    return tagStats.filter(([tag, count]) => (tagListMode === 'all' || taggedCount > 0 && count === taggedCount)
-      && (!query || tag.toLowerCase().includes(query) || (translations[tag] ?? '').toLowerCase().includes(query)))
+    const queries = splitTagInput(globalSearch, tagKey);
+    return tagStats.filter(([tag, count]) => {
+      if (tagListMode === 'common' && count !== taggedCount) return false;
+      if (!queries.length) return true;
+      const name = tagKey(tag);
+      const translated = tagKey(translations[tag] ?? '');
+      return queries.some(query => name.includes(query) || translated.includes(query));
+    })
       .sort((a, b) => (tagSortBy === 'freq' ? a[1] - b[1] : a[0].localeCompare(b[0])) * (tagSortDir === 'desc' ? -1 : 1));
   }, [tagStats, globalSearch, tagListMode, taggedCount, translations, tagSortBy, tagSortDir]);
   useEffect(() => { setStatsLimit(300); }, [globalSearch, tagListMode, folderPath, tagSortBy, tagSortDir]);
-  useEffect(() => { setSelectedTags(new Set()); lastClicked.current = ''; }, [folderPath]);
-  const toggleTagSelect = (tag: string, e: MouseEvent) => {
+  useEffect(() => { setSelectedTags(new Set()); setGlobalSearch(''); lastClicked.current = ''; }, [folderPath]);
+  const toggleTagSelect = (tag: string, e: MouseEvent, filtering: boolean) => {
     const anchor = lastClicked.current;
-    const additive = e.ctrlKey || e.metaKey;
+    const additive = filtering || e.ctrlKey || e.metaKey;
     const shift = e.shiftKey;
     if (!shift) lastClicked.current = tag;
     setSelectedTags(prev => {
-      if (shift && anchor) {
+      if (shift && anchor && prev.size) {
         const tags = filteredStats.map(([value]) => value), a = tags.indexOf(anchor), b = tags.indexOf(tag);
         if (a >= 0 && b >= 0) return new Set([...(additive ? prev : []), ...tags.slice(Math.min(a, b), Math.max(a, b) + 1)]);
       }

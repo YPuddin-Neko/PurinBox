@@ -41,11 +41,11 @@ buildSync({
     export const statsActions = props => renderToStaticMarkup(<TagStatsActions disabled={false} onError={noop}
       stats={{ tagStats: [], tagListMode: 'all', setTagListMode: noop }}
       translation={{ translations: {}, translating: false, translate: async () => {} }} {...props} />);
-    export const statsPanel = (rows, props) => renderToStaticMarkup(<TagStatsPanel translations={{}} currentTags={new Set()} total={2}
+    export const statsPanel = (rows, props, state) => renderToStaticMarkup(<TagStatsPanel translations={{}} currentTags={new Set()} total={2}
       filteredCount={2} filterActive={false} onClearFilter={noop} progress={null} {...props} stats={{
         globalSearch: '', setGlobalSearch: noop, tagSortBy: 'freq', setTagSortBy: noop, tagSortDir: 'desc', setTagSortDir: noop,
         tagListMode: 'all', setTagListMode: noop, selectedTags: new Set(), setSelectedTags: noop, statsLimit: 300, setStatsLimit: noop,
-        taggedCount: 2, tagStats: rows, filteredStats: rows, toggleTagSelect: noop,
+        taggedCount: 2, tagStats: rows, filteredStats: rows, toggleTagSelect: noop, ...state,
       }} />);
   `, loader: 'tsx', resolveDir: root },
   bundle: true, platform: 'node', format: 'cjs', jsx: 'automatic', loader: { '.css': 'empty' }, outfile,
@@ -231,12 +231,25 @@ test('chip buttons are named for what they do and carry no misleading tooltip', 
   assert.doesNotMatch(html, /outline:/);
 });
 
-test('scope chips look the same in both batch dialogs and disable a missing current image', () => {
-  const html = m.scope({ hasCurrent: false, color: '#f87171' });
+test('batch filter keeps active tags visible while searching for additional tags', () => {
+  const html = m.statsPanel([['island', 1]], { filterActive: true, filteredCount: 1 }, {
+    globalSearch: 'island', selectedTags: new Set(['ocean', 'coast']),
+  });
+  assert.match(html, /tagEditor.matchAllTags/);
+  assert.match(html, /<b>1\/2<\/b>/);
+  assert.match(html, /<span>ocean<\/span>/);
+  assert.match(html, /<span>coast<\/span>/);
+  assert.match(html, /tagEditor.selectMatches/);
+});
+
+test('batch scope offers all, current and filtered images and disables empty ranges', () => {
+  const html = m.scope({ hasCurrent: false, hasFiltered: false, color: '#f87171' });
   assert.match(html, /<legend>tagEditor.applyScope<\/legend>/);
   assert.match(html, /--option-color:#f87171/);
-  assert.equal((html.match(/class="tag-option"/g) || []).length, 2);
+  assert.equal((html.match(/class="tag-option"/g) || []).length, 3);
   assert.match(html, /<input type="radio"[^>]*disabled=""[^>]*\/>tagEditor.scopeCurrentImage/);
+  assert.match(html, /<input type="radio"[^>]*disabled=""[^>]*\/>tagEditor.scopeFilteredImages/);
+  assert.doesNotMatch(m.scope({ hasCurrent: true, hasFiltered: true }), /disabled=""/);
 });
 
 test('sampling fields keep each page layout', () => {

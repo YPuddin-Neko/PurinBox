@@ -11,6 +11,7 @@ import { dedupeTags, getJsonStatColor, splitTagInput, tagKey } from '../utils/ta
 import { saveFailureAlert, saveFailures, settleSaved } from '../utils/tagSave';
 import { ensureAssetScope } from '../utils/assetScope';
 import type { SaveAllResult } from '../api/commandOptions';
+import { useFilteredImageSelection } from '../hooks/useFilteredImageSelection';
 import { useTagStats } from '../hooks/useTagStats';
 import { useTagTranslation } from '../hooks/useTagTranslation';
 import { useDragResize } from '../hooks/useDragResize';
@@ -51,7 +52,6 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
 }>(function JsonTagTab({ recursive = false, onDirtyChange, onLoadingChange, onSavingChange }, ref) {
   const { t } = useTranslation();
   const [images, setImages] = useState<JsonImageItem[]>([]);
-  const [selectedIdx, setSelectedIdx] = useState(-1);
   const [folderPath, setFolderPath] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -87,6 +87,28 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   const [col3Mode, setCol3Mode] = useState<'json' | 'stats'>('stats');
   const [tagFilterActive, setTagFilterActive] = useState(false);
 
+  const filtered = useMemo(() => {
+    let list = images.map((img, i) => ({ ...img, _i: i }));
+    if (searchText) {
+      const q = searchText.toLowerCase();
+      list = list.filter(img => {
+        if (img.filename.toLowerCase().includes(q)) return true;
+        // 搜索比筛选多带一个 nl（自然语言描述里也能搜到词）
+        const all = [...collectAllTags(img.data), img.data.ai_output?.nl || ''];
+        return all.some(tag => tag.toLowerCase().includes(q));
+      });
+    }
+    if (filterMode === 'tagged') list = list.filter(img => img.has_json);
+    if (filterMode === 'untagged') list = list.filter(img => !img.has_json);
+    if (tagFilterActive && selectedTags.size > 0) {
+      const required = [...selectedTags];
+      list = list.filter(img => required.every(tag => tagLists[img._i].includes(tag)));
+    }
+    return list;
+  }, [images, searchText, filterMode, tagFilterActive, selectedTags, tagLists]);
+  const hasFiltered = tagFilterActive && selectedTags.size > 0 && filtered.length > 0;
+  const { selectedIdx, setSelectedIdx, position, goPrev, goNext } = useFilteredImageSelection(filtered);
+
   const handleLoadFolder = useCallback(async () => {
     const sel = await dialogOpen({ directory: true, multiple: false, title: t('tagEditor.selectFolder') });
     if (!sel) return;
@@ -100,7 +122,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
       if (r.detected_format === 'simplified') { setSimplified(true); localStorage.setItem('json_tag_simplified', 'true'); }
       else if (r.detected_format === 'full') { setSimplified(false); localStorage.setItem('json_tag_simplified', 'false'); }
     } catch (e) { console.error(e); } finally { setLoading(false); }
-  }, [recursive, t]);
+  }, [recursive, t, setSelectedIdx]);
   const handleRefresh = useCallback(async () => {
     if (!folderPath) return;
     setLoading(true);
@@ -148,31 +170,6 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
   useEffect(() => { onDirtyChange?.(dirtyCount); }, [dirtyCount, onDirtyChange]);
   useEffect(() => { onLoadingChange?.(loading); }, [loading, onLoadingChange]);
   useEffect(() => { onSavingChange?.(saving); }, [saving, onSavingChange]);
-  const goPrev = () => { if (selectedIdx > 0) setSelectedIdx(selectedIdx - 1); };
-  const goNext = () => { if (selectedIdx < images.length - 1) setSelectedIdx(selectedIdx + 1); };
-
-  const filtered = useMemo(() => {
-    let list = images.map((img, i) => ({ ...img, _i: i }));
-    if (searchText) {
-      const q = searchText.toLowerCase();
-      list = list.filter(img => {
-        if (img.filename.toLowerCase().includes(q)) return true;
-        // 搜索比筛选多带一个 nl（自然语言描述里也能搜到词）
-        const all = [...collectAllTags(img.data), img.data.ai_output?.nl || ''];
-        return all.some(tag => tag.toLowerCase().includes(q));
-      });
-    }
-    if (filterMode === 'tagged') list = list.filter(img => img.has_json);
-    if (filterMode === 'untagged') list = list.filter(img => !img.has_json);
-    if (tagFilterActive && selectedTags.size > 0) {
-      list = list.filter(img => {
-        const allTags = collectAllTags(img.data);
-        return [...selectedTags].every(tag => allTags.includes(tag));
-      });
-    }
-    return list;
-  }, [images, searchText, filterMode, tagFilterActive, selectedTags]);
-  const hasFiltered = tagFilterActive && selectedTags.size > 0 && filtered.length > 0;
 
   const taggedCount = images.filter(image => image.has_json).length;
   const currentTags = useMemo(() => new Set(cur ? collectAllTags(cur.data) : []), [cur]);
@@ -262,7 +259,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
       <ResizeHandle axis="x" onMouseDown={col1.onMouseDown} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-        <ImagePreviewPane path={cur?.path} filename={cur?.filename} index={selectedIdx} total={images.length}
+        <ImagePreviewPane path={cur?.path} filename={cur?.filename} index={position} total={filtered.length}
           onPrev={goPrev} onNext={goNext} badge={parseFailedBadge} style={{ height: preview.size, flexShrink: 0 }} />
 
         <ResizeHandle axis="y" onMouseDown={preview.onMouseDown} />
@@ -355,7 +352,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
         </div>
 
         {col3Mode === 'stats' && <ToolSidebar items={[
-          { icon: Filter, label: t('tagEditor.filterByTag'), onClick: () => setTagFilterActive(v => !v), disabled: images.length === 0, color: tagFilterActive ? '#7c5cfc' : undefined },
+          { icon: Filter, label: t('tagEditor.filterByTag'), pressed: tagFilterActive, onClick: () => setTagFilterActive(v => !v), disabled: images.length === 0, color: tagFilterActive ? '#7c5cfc' : undefined },
           { icon: ListPlus, label: t('tagEditor.batchAdd'), disabled: images.length === 0, onClick: () => {
             setBatchField(simplified ? 'ai_output.tags' : 'fixed.quality'); setBatchTags(''); setBatchPosition('prepend'); setBatchScope('all'); setShowBatchAddModal(true);
           } },

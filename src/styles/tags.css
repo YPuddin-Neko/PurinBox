@@ -103,6 +103,29 @@
 .tag-stat-row[data-current='true']:hover { background: rgba(124, 92, 252, 0.08); }
 .tag-stat-row[aria-selected='true'] { background: rgba(124, 92, 252, 0.12); }
 .tag-stat-bar { transition: width 300ms ease; }
+.tag-filter-summary {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-accent-primary) 5%, transparent);
+  font-size: 10px;
+}
+.tag-filter-heading, .tag-filter-chips button { display: flex; align-items: center; gap: 4px; }
+.tag-filter-heading { color: var(--color-text-secondary); }
+.tag-filter-heading b { margin-left: auto; font-variant-numeric: tabular-nums; }
+.tag-filter-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; max-height: 64px; overflow-y: auto; }
+.tag-filter-chips button {
+  max-width: 100%;
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--color-accent-primary) 25%, transparent);
+  background: color-mix(in srgb, var(--color-accent-primary) 8%, transparent);
+  color: var(--color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+.tag-filter-chips span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tag-filter-chips svg { flex-shrink: 0; color: var(--color-text-secondary); }
+.tag-filter-select.btn { margin-top: 5px; height: 22px; padding: 0 6px; font-size: 10px; }
 .tag-image-grid-item { transition: border-color 150ms, box-shadow 150ms; }
 .tag-image-grid-pager.ui-pager.is-sm .ui-pager-btn {
   width: 20px;
