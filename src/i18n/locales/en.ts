@@ -752,6 +752,8 @@ const en = {
     refining: "Refining…",
     refineStart: "Starting GBC refinement, model: {{model}}",
 
+    detector: 'Detection model',
+    embedder: 'Embedding model',
     max_nodes: 'Maximum nodes',
     max_depth: 'Exploration depth',
     max_nodesHelp: 'Budget for full-image and object-region description nodes. A node may describe the whole image, a person or clothing; this is not the tag count or final box count. Default: 20. Higher values may add detail, processing time and API usage.',

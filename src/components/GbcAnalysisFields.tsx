@@ -1,5 +1,7 @@
 import { useEffect, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import CustomSelect from './CustomSelect';
+import { GBC_MODEL_OPTIONS, type GbcModels } from '../hooks/useGbcOptions';
 import { GBC_DEFAULTS } from '../utils/gbcSettings';
 
 type Limits = Pick<typeof GBC_DEFAULTS, 'max_nodes' | 'max_depth'>;
@@ -18,10 +20,15 @@ export function useGbcAnalysisLimits() {
   return [limits, setLimits] as const;
 }
 
-export default function GbcAnalysisFields({ value, onChange, disabled }: { value: Limits; onChange: (value: Limits) => void; disabled: boolean }) {
+export default function GbcAnalysisFields({ models, value, onChange, disabled }: { models: GbcModels; value: Limits; onChange: (value: Limits) => void; disabled: boolean }) {
   const { t } = useTranslation();
   const id = useId();
   return <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 'var(--space-3)' }}>
+    {(['detector', 'embedder'] as const).map(role => <div key={role}>
+      <label className="form-label" id={`${id}-${role}`}>{t(`gbc.${role}`)}</label>
+      <CustomSelect labelledBy={`${id}-${role}`} disabled={disabled} value={models.value[role]} options={GBC_MODEL_OPTIONS[role]}
+        onChange={model => models.onChange(role, model)} />
+    </div>)}
     {(['max_nodes', 'max_depth'] as const).map(key => <div key={key}>
       <label className="form-label" htmlFor={`${id}-${key}`} title={t(`gbc.${key}Help`)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{t(`gbc.${key}`)}

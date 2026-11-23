@@ -1,5 +1,5 @@
 import GbcAnalysisFields, { useGbcAnalysisLimits } from './GbcAnalysisFields';
-import { useGbcOptions } from '../hooks/useGbcOptions';
+import { useGbcOptions, type GbcModels } from '../hooks/useGbcOptions';
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Hash, Save, Trash2, RotateCcw } from 'lucide-react';
@@ -58,7 +58,7 @@ const loadCustomPresets = (): HybridPromptPreset[] => {
 const processResult = (value: unknown): Pick<ProcessResult, 'fail_count' | 'warning_count'> | null =>
   typeof value === 'object' && value !== null && typeof (value as ProcessResult).fail_count === 'number' ? value as ProcessResult : null;
 
-export default function HybridTaggerTab() {
+export default function HybridTaggerTab({ gbcModels }: { gbcModels: GbcModels }) {
   const { t } = useTranslation();
   const [inputPath, setInputPath] = useState('');
   const [recursive, setRecursive] = useState(false);
@@ -84,7 +84,7 @@ export default function HybridTaggerTab() {
   });
   const [useGpu, setUseGpu] = useState(sv.useGpu ?? true);
   const [gbcLimits, setGbcLimits] = useGbcAnalysisLimits();
-  const gbc = { ...useGbcOptions(useGpu), ...gbcLimits, save_graph: saveGraph };
+  const gbc = { ...useGbcOptions(useGpu, gbcModels.value), ...gbcLimits, save_graph: saveGraph };
   const [replaceUnderscore, setReplaceUnderscore] = useState(sv.replaceUnderscore ?? true);
   const [escapeParentheses, setEscapeParentheses] = useState(sv.escapeParentheses ?? false);
   const [preferExisting, setPreferExisting] = useState(sv.preferExisting ?? true);
@@ -479,7 +479,7 @@ export default function HybridTaggerTab() {
               <label className="hybrid-gbc-switch" title={!supportsNaturalLanguage ? t('gbc.naturalPresetRequired') : undefined}><span>{t('gbc.enhance')}</span><Switch checked={refineWithGbc} onChange={setGbcEnabled} disabled={processing || !supportsNaturalLanguage} aria-label={t('gbc.enhance')} size="sm" /></label>
             </div>
             {refineWithGbc && <>
-              <GbcAnalysisFields value={gbcLimits} onChange={setGbcLimits} disabled={processing} />
+              <GbcAnalysisFields models={gbcModels} value={gbcLimits} onChange={setGbcLimits} disabled={processing} />
               <Checkbox checked={saveGraph} onChange={setSaveGraph} disabled={processing} label={t('gbc.keepData')} size={14} />
             </>}
           </section>

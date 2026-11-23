@@ -59,19 +59,42 @@ def main(argv=None):
     def test_complete_models_skip_download_and_partial_models_resume(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for _, _, name, files in setup.MODELS:
-                for file in files:
-                    path = root / name / file
+            defaults = [setup.MODELS[role][0] for role in ('detector', 'embedder')]
+            for model in defaults:
+                for file in model['files']:
+                    path = root / model['repo'].split('/')[1] / file
                     path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'x')
-            hub = Mock()
-            with patch.dict(sys.modules, {'huggingface_hub': hub}):
-                setup.download_models(root); hub.snapshot_download.assert_not_called()
-                repo, revision, name, files = setup.MODELS[0]
-                (root / name / files[0]).unlink()
-                def restore(**kwargs): (root / name / files[0]).write_bytes(b'x')
-                hub.snapshot_download.side_effect = restore
+            with patch('huggingface_hub.snapshot_download') as download:
                 setup.download_models(root)
-                hub.snapshot_download.assert_called_once_with(repo_id=repo, revision=revision, local_dir=str(root / name), allow_patterns=files, tqdm_class=ANY)
+                download.assert_not_called()
+                model = defaults[0]
+                folder = root / model['repo'].split('/')[1]
+                missing = folder / model['files'][0]
+                missing.unlink()
+                download.side_effect = lambda **kwargs: missing.write_bytes(b'x')
+                setup.download_models(root)
+                download.assert_called_once_with(repo_id=model['repo'], revision=model['revision'],
+                    local_dir=str(folder), allow_patterns=model['files'], tqdm_class=ANY)
+
+    def test_only_selected_models_download_and_complete_pairs_are_reused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def write_files(**args):
+                for name in args['allow_patterns']:
+                    file = Path(args['local_dir']) / name
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.write_bytes(b'x')
+            for detector in setup.MODELS['detector']:
+                for embedder in setup.MODELS['embedder']:
+                    with self.subTest(detector=detector['label'], embedder=embedder['label']):
+                        folder = Path(tempfile.mkdtemp(dir=root))
+                        paths = [folder / model['repo'].split('/')[1] for model in (detector, embedder)]
+                        with patch('huggingface_hub.snapshot_download', side_effect=write_files) as download, patch('sys.stdout', io.StringIO()):
+                            setup.download_models(folder, *paths)
+                            self.assertEqual([call.kwargs['repo_id'] for call in download.call_args_list],
+                                             [detector['repo'], embedder['repo']])
+                            setup.download_models(folder, *paths)
+                            self.assertEqual(download.call_count, 2)
 
     def test_child_json_logs_are_not_double_encoded(self):
         process = Mock()

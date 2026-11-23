@@ -50,7 +50,7 @@ def make_config(options):
             'detect': {'entry': 'torch', 'model': options['detector_path'],
                        'devices': ['cuda:0' if options['device'] == 'cuda' else options['device']], 'dtype': 'float32'},
             'embed': {'entry': 'torch', 'model': options['embedder_path'],
-                      'impl': 'st', 'devices': ['cpu'], 'dtype': 'float32'},
+                      'devices': ['cpu'], 'dtype': 'float32'},
         },
         'controls': {'min_nodes': 1, 'max_nodes': options['max_nodes'],
                      'max_depth': options['max_depth'], 'max_rounds': options['max_depth'] + 1,

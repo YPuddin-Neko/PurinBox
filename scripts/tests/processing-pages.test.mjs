@@ -49,7 +49,9 @@ await build({
     import HashThresholdFields from './src/components/HashThresholdFields';
     import DeviceToggle from './src/components/ui/DeviceToggle';
     import ResultTable from './src/components/ui/ResultTable';
-    import HybridTaggerTab from './src/components/HybridTaggerTab';
+    import HybridTab from './src/components/HybridTaggerTab';
+    import { useGbcModels } from './src/hooks/useGbcOptions';
+    function HybridTaggerTab() { return <HybridTab gbcModels={useGbcModels()} />; }
     import LlmTaggerTab from './src/components/LlmTaggerTab';
     import ProgressLog from './src/components/ProgressLog';
     import AestheticPage from './src/pages/AestheticPage';

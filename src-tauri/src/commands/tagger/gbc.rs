@@ -436,6 +436,10 @@ fn forward_setup_message<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: &s
     Ok(())
 }
 
+fn model_path(root: &std::path::Path, selected: &str, default: &str) -> PathBuf {
+    root.join(if selected.is_empty() { default } else { selected })
+}
+
 fn prepare_environment<R: tauri::Runtime>(app: &tauri::AppHandle<R>, settings: &GbcSettings, cancel: &'static AtomicBool, event: &'static str, process: &'static Mutex<Option<u32>>) -> Result<GbcSettings, String> {
     if cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
     let root = config_paths::app_data_root();
@@ -455,14 +459,12 @@ fn prepare_environment<R: tauri::Runtime>(app: &tauri::AppHandle<R>, settings: &
     if cancel.load(Ordering::SeqCst) { return Err("已取消".into()); }
     let mut command = PythonCommand::new(base).arg(python_proc::find_script("gbc_setup.py")?).arg("--env").arg(&target).arg("--device").arg(&ready.device);
     let models = root.join("models/gbc");
-    let detector = models.join("owlv2-base-patch16-ensemble");
-    let embedder = models.join("all-MiniLM-L6-v2");
-    if ready.detector_path.is_empty() || ready.embedder_path.is_empty()
-        || PathBuf::from(&ready.detector_path) == detector || PathBuf::from(&ready.embedder_path) == embedder {
-        command = command.arg("--models").arg(&models);
-        if ready.detector_path.is_empty() { ready.detector_path = detector.to_string_lossy().into_owned(); }
-        if ready.embedder_path.is_empty() { ready.embedder_path = embedder.to_string_lossy().into_owned(); }
-    }
+    let detector = model_path(&models, &ready.detector_path, "owlv2-base-patch16-ensemble");
+    let embedder = model_path(&models, &ready.embedder_path, "all-MiniLM-L6-v2");
+    command = command.arg("--models").arg(&models)
+        .arg("--detector").arg(&detector).arg("--embedder").arg(&embedder);
+    ready.detector_path = detector.to_string_lossy().into_owned();
+    ready.embedder_path = embedder.to_string_lossy().into_owned();
     let token = crate::commands::huggingface_config::load_huggingface_token_internal();
     if !token.is_empty() { command = command.env("HF_TOKEN", token); }
     let exit = python_proc::run_json_lines_script_with(command, None, process, cancel,
@@ -483,6 +485,17 @@ mod tests {
     use super::*;
     use crate::commands::test_support::TempDir;
     use serde_json::json;
+
+    #[test]
+    fn resolves_model_selections_under_the_managed_directory_and_keeps_absolute_paths() {
+        let project = TempDir::new("gbc_models");
+        let root = project.join("models/gbc");
+        let default = "all-MiniLM-L6-v2";
+        assert_eq!(model_path(&root, "", default), root.join(default));
+        assert_eq!(model_path(&root, "all-mpnet-base-v2", default), root.join("all-mpnet-base-v2"));
+        let external = project.join("local-embedder");
+        assert_eq!(model_path(&root, external.to_str().unwrap(), default), external);
+    }
 
     #[tokio::test]
     #[ignore = "requires the separate env/gbc Python environment"]

@@ -22,6 +22,11 @@
   min-height: 34px;
 }
 
+.cs-root[aria-disabled="true"] .cs-trigger {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .cs-root:focus {
   outline: none;
 }

@@ -18,7 +18,9 @@ await build({
   stdin: { contents: `
     import { renderToStaticMarkup } from 'react-dom/server';
     import './src/i18n';
-    import HybridTaggerTab from './src/components/HybridTaggerTab';
+    import HybridTab from './src/components/HybridTaggerTab';
+    import { useGbcModels } from './src/hooks/useGbcOptions';
+    function HybridTaggerTab() { return <HybridTab gbcModels={useGbcModels()} />; }
     export * from './src/utils/hybridPresets';
     export const render = () => renderToStaticMarkup(<HybridTaggerTab />);
   `, loader: 'tsx', resolveDir: root },
@@ -27,7 +29,9 @@ await build({
   plugins: [{
     name: 'hybrid-fixture',
     setup(build) {
-      build.onLoad({ filter: /\/useGbcOptions\.ts$/ }, () => ({ contents: `export const useGbcOptions = useGpu => ({ python_path: '/fixture/python', detector_path: '/fixture/owl', embedder_path: '/fixture/embed', device: useGpu ? 'cuda' : 'cpu', content_type: 'caption', caption_prompt: '', max_nodes: 20, max_depth: 3, max_requests: 64 });`, loader: 'ts' }));
+      build.onLoad({ filter: /\/useGbcOptions\.ts$/ }, ({ path }) => ({
+        contents: readFileSync(path, 'utf8').replace("gpu_device: ''", "gpu_device: 'cuda'"), loader: 'ts',
+      }));
       build.onLoad({ filter: /\/HybridTaggerTab\.tsx$/ }, ({ path }) => {
         const source = readFileSync(path, 'utf8');
         const initializer = "const [inputPath, setInputPath] = useState('');";
@@ -269,12 +273,14 @@ test('GBC checkbox reaches the real refine command only for natural-language out
   globalThis.window={dispatchEvent(){}};
   for (const useGpu of [false, true]) for (const [presetId,outputFormat,enabled] of [['builtin_caption','txt',true],['builtin_nl','json',true],['builtin_full','json',true],['builtin_full','txt',false],['builtin_sort','json',false]]) {
    const store=new Map([['hybrid_tagger_settings_v1',JSON.stringify({modelId:'fixture-local',presetId,outputFormat,gbcEnabled:true,useGpu})], ['gbc_analysis_limits',JSON.stringify({max_nodes:12,max_depth:2})]]);
+   store.set('gbc_model_selection', JSON.stringify({detector:'owlv2-large-patch14-ensemble',embedder:'all-mpnet-base-v2'}));
    globalThis.localStorage={getItem:k=>store.get(k)??null,setItem:(k,v)=>store.set(k,v)};
    globalThis.hybridFixture={calls:[]};lib.render();await globalThis.hybridFixture.start();
    const options=globalThis.hybridFixture.calls.find(c=>c.command==='start_tag_refining').args.options;
    assert.equal(Boolean(options.gbc),enabled,presetId+'/'+outputFormat);
    if(enabled) {
-    assert.equal(options.gbc.detector_path,'/fixture/owl');
+    assert.equal(options.gbc.detector_path,'owlv2-large-patch14-ensemble');
+    assert.equal(options.gbc.embedder_path,'all-mpnet-base-v2');
     assert.equal(options.gbc.device,useGpu ? 'cuda' : 'cpu');
     assert.equal(options.gbc.content_type,'caption');
     assert.equal(options.gbc.max_nodes,12);

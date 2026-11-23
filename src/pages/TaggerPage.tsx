@@ -1,4 +1,5 @@
 import { useLocation } from 'react-router-dom';
+import { useGbcModels } from '../hooks/useGbcOptions';
 import GbcRefineTab from '../components/GbcRefineTab';
 import { useEffect, useState } from 'react';
 import SegmentedTabs from '../components/ui/SegmentedTabs';
@@ -14,6 +15,7 @@ export default function TaggerPage() {
   const { t } = useTranslation();
   const { hybridTaggerEnabled } = useAppSettings();
   const location = useLocation();
+  const gbcModels = useGbcModels();
   const [activeTab, setActiveTab] = useState(location.state?.gbcImage ? 'gbc' : 'ai');
   useEffect(() => { if (location.state?.gbcImage) setActiveTab('gbc'); }, [location.key, location.state]);
 
@@ -33,8 +35,8 @@ export default function TaggerPage() {
       <SegmentedTabs tabs={tabs} value={tab} onChange={setActiveTab} style={{ marginBottom: 'var(--space-4)' }} />
       <div style={{ display: tab === 'ai' ? 'block' : 'none' }}><AiTaggerTab /></div>
       <div style={{ display: tab === 'llm' ? 'block' : 'none' }}><LlmTaggerTab /></div>
-      <div style={{ display: tab === 'gbc' ? 'block' : 'none' }}><GbcRefineTab /></div>
-      <div style={{ display: tab === 'hybrid' ? 'block' : 'none' }}><HybridTaggerTab /></div>
+      <div style={{ display: tab === 'gbc' ? 'block' : 'none' }}><GbcRefineTab gbcModels={gbcModels} /></div>
+      <div style={{ display: tab === 'hybrid' ? 'block' : 'none' }}><HybridTaggerTab gbcModels={gbcModels} /></div>
     </div>
   );
 }

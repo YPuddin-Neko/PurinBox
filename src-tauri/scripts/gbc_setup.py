@@ -14,12 +14,7 @@ REVISION = 'd90f360dbf561f63270522e44fa0e74ebed59c12'
 ROOT = Path(__file__).resolve().parents[2]
 ENV = ROOT / 'env' / 'gbc'
 PROBE = 'import kohakugbc, kohakugbc_data, torch, torchvision, transformers, sentence_transformers; from kohakugbc.machine.build import build_parts; from kohakugbc.cli.main import main; main(["host", "--help"])'
-MODELS = [
-    ('google/owlv2-base-patch16-ensemble', 'cfd3195ba4ea9592eec887ded089f4c08eff231d',
-     'owlv2-base-patch16-ensemble', ['config.json', 'preprocessor_config.json', 'tokenizer_config.json', 'special_tokens_map.json', 'vocab.json', 'merges.txt', 'added_tokens.json', 'model.safetensors']),
-    ('sentence-transformers/all-MiniLM-L6-v2', '1110a243fdf4706b3f48f1d95db1a4f5529b4d41',
-     'all-MiniLM-L6-v2', ['config.json', 'config_sentence_transformers.json', 'sentence_bert_config.json', 'modules.json', '1_Pooling/config.json', 'tokenizer.json', 'tokenizer_config.json', 'special_tokens_map.json', 'vocab.txt', 'model.safetensors']),
-]
+MODELS = json.loads(Path(__file__).with_name('gbc_models.json').read_text(encoding='utf-8'))
 
 
 def emit(message):
@@ -151,16 +146,30 @@ def prepare(target, device):
     return python
 
 
-def download_models(root):
+def download_models(root, detector=None, embedder=None):
     from huggingface_hub import snapshot_download
-    for repo, revision, name, files in MODELS:
-        folder = root / name
-        if model_ready(folder, files):
+    from huggingface_hub.errors import GatedRepoError
+
+    for role, selected in [('detector', detector), ('embedder', embedder)]:
+        choices = MODELS[role]
+        if selected is None:
+            selected = root / choices[0]['repo'].split('/')[1]
+        model = next((item for item in choices if root / item['repo'].split('/')[1] == selected), None)
+        # Custom checkpoints are loaded by the worker only when a new graph is needed.
+        if model is None:
             continue
+        files = model['files']
+        if model_ready(selected, files):
+            continue
+        name = selected.name
         emit(f'正在下载 GBC 模型：{name}')
         progress(f'@pythonEnv.downloading|{name}', filename=name)
-        snapshot_download(repo_id=repo, revision=revision, local_dir=str(folder), allow_patterns=files, tqdm_class=model_progress(name))
-        if not model_ready(folder, files):
+        try:
+            snapshot_download(repo_id=model['repo'], revision=model['revision'], local_dir=str(selected),
+                              allow_patterns=files, tqdm_class=model_progress(name))
+        except GatedRepoError as error:
+            raise RuntimeError(f"下载 {model['repo']} 需要访问权限，请在 Hugging Face 获取授权并在设置中填写令牌") from error
+        if not model_ready(selected, files):
             raise RuntimeError(f'GBC 模型文件不完整：{name}')
 
 
@@ -168,17 +177,23 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--env', type=Path, default=ENV)
     parser.add_argument('--models', type=Path)
+    parser.add_argument('--detector', type=Path)
+    parser.add_argument('--embedder', type=Path)
     parser.add_argument('--device', choices=['cpu', 'cuda', 'mps'], default='cpu')
     parser.add_argument('--download-models', action='store_true')
     args = parser.parse_args()
     if sys.version_info < (3, 11):
         raise RuntimeError('GBC 需要 Python 3.11 或更新版本')
     if args.download_models:
-        download_models(args.models)
+        download_models(args.models, args.detector, args.embedder)
         return
     python = prepare(args.env, args.device)
     if args.models:
-        run([str(python), __file__, '--download-models', '--models', str(args.models)], forward_events=True)
+        command = [str(python), __file__, '--download-models', '--models', str(args.models)]
+        for flag, path in [('--detector', args.detector), ('--embedder', args.embedder)]:
+            if path is not None:
+                command.extend([flag, str(path)])
+        run(command, forward_events=True)
     emit('GBC 环境已就绪，继续处理')
 
 

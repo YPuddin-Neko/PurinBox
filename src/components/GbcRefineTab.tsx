@@ -13,10 +13,10 @@ import DeviceToggle from './ui/DeviceToggle';
 import ProcessButton from './ProcessButton';
 import ProgressLog from './ProgressLog';
 import { useLlmBatchRun } from '../hooks/useLlmBatchRun';
-import { useGbcOptions } from '../hooks/useGbcOptions';
+import { useGbcOptions, type GbcModels } from '../hooks/useGbcOptions';
 import { buildLlmTaggerOptions, type GbcRefineOptions } from '../api/commandOptions';
 
-export default function GbcRefineTab() {
+export default function GbcRefineTab({ gbcModels }: { gbcModels: GbcModels }) {
   const { t } = useTranslation();
   const id = useId();
   const [path, setPath] = useState('');
@@ -28,7 +28,7 @@ export default function GbcRefineTab() {
   const [sampling, setSampling] = useState({ ...LLM_SAMPLING_DEFAULTS });
   const [maxTokens, setMaxTokens] = useState(-1);
   const [limits, setLimits] = useGbcAnalysisLimits();
-  const gbc = { ...useGbcOptions(useGpu), ...limits, save_graph: saveGraph };
+  const gbc = { ...useGbcOptions(useGpu, gbcModels.value), ...limits, save_graph: saveGraph };
   const run = useLlmBatchRun({ event: 'gbc-refine-progress', taskId: 'gbc-refine' });
   const start = () => void run.start({ taskName: t('gbc.refineTab'), startLogKey: 'gbc.refineStart', intervalSec: sampling.intervalSec, concurrency: sampling.concurrency,
     exec: requestIntervalMs => invoke('start_llm_tagging', { options: {
@@ -46,7 +46,7 @@ export default function GbcRefineTab() {
       <div className="tool-panel">
         <div className="tool-panel-header"><span className="tool-panel-title">{t('gbc.analysisSettings')}</span><DeviceToggle useGpu={useGpu} onChange={v => { if (!run.processing) setUseGpu(v); }} /></div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-          <GbcAnalysisFields value={limits} onChange={setLimits} disabled={run.processing} />
+          <GbcAnalysisFields models={gbcModels} value={limits} onChange={setLimits} disabled={run.processing} />
           <LlmSamplingFields value={sampling} onChange={setSampling} image samplingFirst extra={<div className="form-group" style={{ marginBottom: 0, flex: 1 }}><label className="form-label" htmlFor={`${id}-tokens`} style={{ display: 'flex', gap: 6, alignItems: 'center' }}><Hash size={13} />{t('llmTagger.maxTokens')}</label><NumberInput id={`${id}-tokens`} integer min={-1} max={8192} value={maxTokens} onChange={setMaxTokens} /></div>} />
           <Checkbox checked={saveGraph} onChange={setSaveGraph} disabled={run.processing} label={t('gbc.keepData')} size={14} />
         </div>

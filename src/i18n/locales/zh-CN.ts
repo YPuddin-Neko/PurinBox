@@ -782,6 +782,8 @@ const zhCN = {
     refining: "正在细化…",
     refineStart: "开始 GBC 细化，模型：{{model}}",
 
+    detector: '检测模型',
+    embedder: '嵌入模型',
     max_nodes: '最多节点',
     max_depth: '探索深度',
     max_nodesHelp: '控制每张图用于描述整图和对象区域的节点预算。节点可以是一张整图，也可以是人物、衣服等局部对象；不是标签词数或最终框数。默认 20，调大可能增加细节、耗时和 API 用量。',

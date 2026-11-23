@@ -16,10 +16,12 @@ interface CustomSelectProps {
   style?: React.CSSProperties;
   /** compact 模式：更小字号/高度 */
   compact?: boolean;
+  disabled?: boolean;
+  labelledBy?: string;
 }
 
 export default function CustomSelect({
-  value, options, onChange, style, compact = false,
+  value, options, onChange, style, compact = false, disabled = false, labelledBy,
 }: CustomSelectProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -82,6 +84,7 @@ export default function CustomSelect({
   }, [onChange]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (disabled) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       setOpen(o => !o);
@@ -96,24 +99,28 @@ export default function CustomSelect({
         : Math.max(idx - 1, 0);
       onChange(options[next].value);
     }
-  }, [options, value, onChange]);
+  }, [disabled, options, value, onChange]);
 
   return (
     <div
       ref={ref}
       className={`cs-root ${open ? 'cs-open' : ''} ${compact ? 'cs-compact' : ''}`}
       style={style}
-      tabIndex={0}
+      role="button"
+      aria-labelledby={labelledBy}
+      aria-expanded={open && !disabled}
+      aria-disabled={disabled || undefined}
+      tabIndex={disabled ? -1 : 0}
       onKeyDown={handleKeyDown}
     >
-      <div className="cs-trigger" onClick={() => setOpen(o => !o)}>
+      <div className="cs-trigger" onClick={() => { if (!disabled) setOpen(o => !o); }}>
         <span className={`cs-value ${!selected && !value ? 'cs-placeholder' : ''}`}>
           {selected ? selected.label : (value || t('common.select'))}
         </span>
         <ChevronDown className={`cs-arrow ${open ? 'cs-arrow-open' : ''}`} />
       </div>
 
-      {open && dropdownPos && createPortal(
+      {open && !disabled && dropdownPos && createPortal(
         <div
           className={`cs-dropdown ${compact ? 'cs-compact' : ''}`}
           ref={listRef}
