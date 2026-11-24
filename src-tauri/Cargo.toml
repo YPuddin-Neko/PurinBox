@@ -1,6 +1,6 @@
 [package]
 name = "purinbox"
-version = "0.4.2"
+version = "0.5.0"
 description = "PurinBox - AI训练数据处理工具箱"
 edition = "2021"
 license = "PolyForm-Noncommercial-1.0.0"
@@ -15,7 +15,7 @@ name = "purinbox_lib"
 crate-type = ["rlib"]
 
 [build-dependencies]
-tauri-build = "2"
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
@@ -61,5 +61,5 @@ webview2-com = "0.38"
 windows = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
 
 [dev-dependencies]
-# 单元测试用 MockRuntime 构造 AppHandle（工作流节点命令测试）
+# 单元测试用 MockRuntime 构造 AppHandle
 tauri = { version = "2", features = ["test"] }
