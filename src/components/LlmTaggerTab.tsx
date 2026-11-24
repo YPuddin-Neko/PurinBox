@@ -81,7 +81,7 @@ export default function LlmTaggerTab() {
   const formatButton = (active: boolean, enabled = true) => ({
     padding: '2px 10px', borderRadius: 'var(--radius-sm)',
     border: `1px solid ${active ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-    background: active ? 'rgba(124,92,252,0.08)' : 'transparent',
+    background: active ? 'var(--color-accent-soft)' : 'transparent',
     color: active ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
     fontSize: 11, fontWeight: 600, cursor: enabled ? 'pointer' : 'not-allowed', opacity: enabled ? 1 : 0.4,
   });

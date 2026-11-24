@@ -97,18 +97,20 @@ test('TXT scope options are grouped native radios and cannot select a missing cu
   assert.doesNotMatch(html, /tag-option/);
   assert.match(html, /margin-bottom:16px/);
   const radios = [...html.matchAll(/<input type="radio"[^>]*>/g)].map(match => match[0]);
-  assert.equal(radios.length, 2);
+  assert.equal(radios.length, 3);
   assert.equal(radios[0].match(/name="([^"]+)"/)[1], radios[1].match(/name="([^"]+)"/)[1]);
+  assert.equal(radios[0].match(/name="([^"]+)"/)[1], radios[2].match(/name="([^"]+)"/)[1]);
   assert.match(radios[0], /checked/);
   assert.match(radios[1], /disabled/);
   assert.doesNotMatch(radios[1], /checked/);
+  assert.match(radios[2], /disabled/);
 });
 
 test('JSON scope options keep colored chips by default', () => {
   const html = ui.scope({ value: 'current', color: '#f87171' });
   assert.match(html, /class="tag-option[^"]*"/);
   assert.match(html, /#f87171/);
-  assert.equal([...html.matchAll(/type="radio"/g)].length, 2);
+  assert.equal([...html.matchAll(/type="radio"/g)].length, 3);
 });
 
 test('API provider buttons support content widths without changing equal-width callers', () => {

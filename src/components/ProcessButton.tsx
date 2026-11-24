@@ -97,14 +97,14 @@ export default function ProcessButton({
   const btnClass = `btn ${isCancel ? '' : 'btn-primary'} btn-lg`;
   const btnStyle: React.CSSProperties = {
     width: '100%',
-    height: 48,
-    transition: 'all 0.15s ease',
+    height: 44,
+    transition: 'all 0.18s var(--ease-out-expo)',
     ...(isCancel ? {
       background: cancelStage >= 1
-        ? 'rgba(248, 113, 113, 0.15)'
-        : 'rgba(248, 113, 113, 0.1)',
-      color: '#f87171',
-      border: '1px solid rgba(248, 113, 113, 0.3)',
+        ? 'color-mix(in srgb, var(--color-error) 18%, transparent)'
+        : 'var(--color-error-bg)',
+      color: 'var(--color-error)',
+      border: '1px solid color-mix(in srgb, var(--color-error) 35%, transparent)',
     } : {}),
   };
 

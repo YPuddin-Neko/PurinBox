@@ -431,7 +431,7 @@ export default function BucketPreviewPage() {
                 fontSize: 11,
                 fontWeight: 700,
                 borderColor: modeMenuOpen ? 'var(--color-border-active)' : 'var(--color-border)',
-                background: modeMenuOpen ? 'rgba(124,92,252,0.08)' : undefined,
+                background: modeMenuOpen ? 'var(--color-accent-soft)' : undefined,
                 color: modeMenuOpen ? 'var(--color-accent-primary)' : undefined,
               }}
             >
@@ -471,7 +471,7 @@ export default function BucketPreviewPage() {
                         padding: '0 8px',
                         borderRadius: 'var(--radius-sm)',
                         border: 'none',
-                        background: selected ? 'rgba(124,92,252,0.10)' : 'transparent',
+                        background: selected ? 'var(--color-accent-soft)' : 'transparent',
                         color: selected ? 'var(--color-accent-primary)' : 'var(--color-text-secondary)',
                         fontSize: 12,
                         fontWeight: selected ? 700 : 600,
@@ -565,7 +565,7 @@ export default function BucketPreviewPage() {
                     <button key={value} type="button" aria-pressed={bucketMode === value} onClick={() => setBucketMode(value)} style={{
                       padding: '4px 10px', borderRadius: 'var(--radius-sm)',
                       border: `1px solid ${bucketMode === value ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                      background: bucketMode === value ? 'rgba(124,92,252,0.08)' : 'transparent',
+                      background: bucketMode === value ? 'var(--color-accent-soft)' : 'transparent',
                       color: bucketMode === value ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
                       fontSize: 11, fontWeight: 600, cursor: 'pointer',
                     }}>{t(value === 'legacy' ? 'bucketPreview.modeLegacy' : 'bucketPreview.modeNearest')}</button>
@@ -662,7 +662,7 @@ export default function BucketPreviewPage() {
                               && candidate.res_width === resWidth
                               && formatRecommendedAr(candidate.dp_min_ar) === formatRecommendedAr(dpMinAr)
                               && formatRecommendedAr(candidate.dp_max_ar) === formatRecommendedAr(dpMaxAr)
-                              ? 'rgba(124,92,252,0.08)'
+                              ? 'var(--color-accent-soft)'
                               : 'var(--color-bg-input)',
                             color: 'var(--color-text-secondary)',
                             cursor: 'pointer',

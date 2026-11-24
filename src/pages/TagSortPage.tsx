@@ -20,8 +20,8 @@ export default function TagSortPage() {
       <PageHeader icon={Wand2} color="#a78bfa" title={t('tagOptimize.title')} subtitle={t('tagOptimize.subtitle')} />
 
       <SegmentedTabs tabs={tabs} value={activeTab} onChange={setActiveTab} style={{ marginBottom: 'var(--space-4)' }} />
-      <div style={{ display: activeTab === 'sort' ? 'block' : 'none' }}><TagSortTab /></div>
-      <div style={{ display: activeTab === 'refine' ? 'block' : 'none' }}><TagRefineTab /></div>
+      <div className={activeTab === 'sort' ? 'tab-panel-enter' : undefined} style={{ display: activeTab === 'sort' ? 'block' : 'none' }}><TagSortTab /></div>
+      <div className={activeTab === 'refine' ? 'tab-panel-enter' : undefined} style={{ display: activeTab === 'refine' ? 'block' : 'none' }}><TagRefineTab /></div>
     </div>
   );
 }

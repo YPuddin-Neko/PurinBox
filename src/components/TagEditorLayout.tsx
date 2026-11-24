@@ -167,7 +167,7 @@ export function ImagePreviewPane({ path, filename, index, total, onPrev, onNext,
   }, [path]);
   return (
     <div ref={ref} className="tag-card" style={style}>
-      <TagPanelHeader icon={ImageIcon} color="#7c5cfc" title={t('tagEditor.preview')}
+      <TagPanelHeader icon={ImageIcon} color="var(--color-accent-primary)" title={t('tagEditor.preview')}
         extra={<>{filename && <span className="tag-panel-note">{filename}</span>}{badge}</>}>
         {regions.length > 0 && <button type="button" className="btn btn-ghost btn-sm" aria-pressed={showRegions} onClick={() => setShowRegions(v => !v)}>{t('gbc.regionBoxes')}</button>}
         {total > 0 && (

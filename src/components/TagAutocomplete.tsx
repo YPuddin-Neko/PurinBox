@@ -303,7 +303,7 @@ export default function TagAutocomplete({
               padding: '6px 10px',
               borderRadius: 6,
               cursor: 'pointer',
-              background: isActive ? 'rgba(124,92,252,0.1)' : 'transparent',
+              background: isActive ? 'var(--color-accent-soft)' : 'transparent',
               transition: 'background 0.1s',
             }}
           >

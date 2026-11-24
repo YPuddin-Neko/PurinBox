@@ -50,6 +50,7 @@ await build({
     import DeviceToggle from './src/components/ui/DeviceToggle';
     import ResultTable from './src/components/ui/ResultTable';
     import HybridTab from './src/components/HybridTaggerTab';
+    export { restoreHybridSelection } from './src/utils/hybridPresets';
     import { useGbcModels } from './src/hooks/useGbcOptions';
     function HybridTaggerTab() { return <HybridTab gbcModels={useGbcModels()} />; }
     import LlmTaggerTab from './src/components/LlmTaggerTab';
@@ -78,7 +79,6 @@ await build({
     import TagManagerPage from './src/pages/TagManagerPage';
     import TagSortPage from './src/pages/TagSortPage';
     import DatasetBalancerPage from './src/pages/DatasetBalancerPage';
-    import WorkflowPage from './src/pages/WorkflowPage';
     export const locales = { 'zh-CN': zhCN, en, ja };
     export const setLanguage = lng => i18n.changeLanguage(lng);
     const render = node => renderToStaticMarkup(node);
@@ -86,7 +86,7 @@ await build({
       AestheticPage, AlphaConvertPage, BatchRenamePage, BlurNoisePage, BucketPreviewPage, CropPage, FileKeeperPage,
       FilterPage, FlipPage, FormatConvertPage, ImageClusterPage, ImageDedupPage, PersonCropPage, PerspectivePage,
       ResolutionAnalyzePage, ScalePage, SdMetadataPage, UpscalePage, HybridTaggerTab, LlmTaggerTab,
-      HomePage, SettingsPage, TaggerPage, TagManagerPage, TagSortPage, DatasetBalancerPage, WorkflowPage,
+      HomePage, SettingsPage, TaggerPage, TagManagerPage, TagSortPage, DatasetBalancerPage,
     };
     export const page = name => { const Page = pages[name]; return render(<MemoryRouter><Page /></MemoryRouter>); };
     export const progressLog = logs => render(<ProgressLog current={1} total={1} logs={logs} isDone hasError={false} />);
@@ -123,7 +123,7 @@ test('all page entry points render in every supported language', async () => {
 test('settings retain operational descriptions and the outlined proxy controls', async () => {
   const keys = [
     'monitorRealtime', 'monitorFast', 'monitorDefault', 'monitorSave', 'monitorLow', 'monitorNone',
-    'workflowToggleDesc', 'hybridTaggerToggleDesc', 'proxyLlmDesc', 'proxyDesc', 'proxyNoAuthHint',
+    'hybridTaggerToggleDesc', 'proxyLlmDesc', 'proxyDesc', 'proxyNoAuthHint',
     'huggingFaceDesc', 'enableTranslationDesc', 'targetLanguageDesc', 'tagDatabaseDesc', 'deployPythonDesc',
   ];
   try {
@@ -191,19 +191,10 @@ test('hybrid trigger word disables native autocomplete but retains the saved val
 });
 
 test('hybrid default prompt matches the restored output format', () => {
-  const storage = globalThis.localStorage;
-  try {
-    for (const outputFormat of ['txt', 'json', 'json_simplified']) {
-      globalThis.localStorage = {
-        getItem: key => key === 'hybrid_tagger_settings_v1' ? JSON.stringify({ outputFormat }) : null,
-        setItem: () => {},
-      };
-      const prompt = lib.page('HybridTaggerTab').match(/<textarea\b[^>]*\bid="hybrid-prompt"[^>]*>([\s\S]*?)<\/textarea>/)?.[1];
-      assert.ok(prompt, outputFormat);
-      assert.equal(prompt.includes('NL: &lt;natural language description&gt;'), outputFormat !== 'txt', outputFormat);
-    }
-  } finally {
-    globalThis.localStorage = storage;
+  for (const outputFormat of ['txt', 'json', 'json_simplified']) {
+    const restored = lib.restoreHybridSelection({ outputFormat }, []);
+    assert.ok(restored.prompt, outputFormat);
+    assert.equal(restored.prompt.includes('NL: <natural language description>'), outputFormat !== 'txt', outputFormat);
   }
 });
 
@@ -275,8 +266,8 @@ test('the rename-tags option names every sidecar the backend renames', () => {
   lib.setLanguage('en');
   const html = lib.page('BatchRenamePage');
   assert.match(html, /Rename tag files too \(\.txt, \.json, \.caption\)/);
-  // 页签栏是共用的 SegmentedTabs
-  assert.match(html, /<div role="tablist" class="ui-seg"[^>]*><button type="button" role="tab" aria-selected="true" class="ui-seg-tab is-active">/);
+  // 页签栏是共用的 SegmentedTabs（含滑块胶囊）
+  assert.match(html, /<div role="tablist" class="ui-seg"[^>]*><span class="ui-seg-pill"[^>]*><\/span><button type="button" role="tab" aria-selected="true" class="ui-seg-tab is-active">/);
   lib.setLanguage('zh-CN');
 });
 

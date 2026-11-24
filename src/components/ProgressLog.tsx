@@ -28,6 +28,8 @@ interface ProgressLogProps {
   externalStartTime?: number;
   /** 日志面板标题栏右侧、计时之后的附加内容（如成功/失败/警告计数） */
   headerExtra?: ReactNode;
+  /** 统一文件级处理统计（仅在计数 > 0 且未传自定义 headerExtra 时自动显示语义徽章） */
+  stats?: { success: number; warnings: number; failed: number };
 }
 
 function getTimeStr(): string {
@@ -91,7 +93,7 @@ export function formatSpeed(sample: SpeedSample | null): string {
   return speed >= 1 ? `${speed.toFixed(1)} it/s` : `${(1 / speed).toFixed(1)} s/it`;
 }
 
-export default function ProgressLog({ current, total, logs, isDone, hasError, onClearLogs, externalStartTime, headerExtra }: ProgressLogProps) {
+export default function ProgressLog({ current, total, logs, isDone, hasError, onClearLogs, externalStartTime, headerExtra, stats }: ProgressLogProps) {
   const { t } = useTranslation();
   const [sample, setSample] = useState<SpeedSample | null>(null);
   const [elapsed, setElapsed] = useState('');
@@ -154,41 +156,52 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
     }
   };
 
+  const autoStatsBadges =
+    headerExtra === undefined && stats && (stats.success > 0 || stats.warnings > 0 || stats.failed > 0) ? (
+      <span className="log-stat-badges">
+        {stats.success > 0 && <span className="log-stat-badge is-ok" title={t('common.success')}><CheckCircle2 size={12} />{stats.success}</span>}
+        {stats.warnings > 0 && <span className="log-stat-badge is-warn" title={t('common.warning')}><AlertTriangle size={12} />{stats.warnings}</span>}
+        {stats.failed > 0 && <span className="log-stat-badge is-err" title={t('common.failed')}><XCircle size={12} />{stats.failed}</span>}
+      </span>
+    ) : null;
+
   return (
     <div className="progress-section">
-      <div className="progress-header">
-        <span className="progress-label">
-          {isDone ? t('progressLog.done') : t('progressLog.progress')}
-        </span>
-        <span className="progress-percent">
-          {speed && <span style={{ marginRight: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{speed}</span>}
-          {Math.round(progress)}%
-        </span>
-      </div>
-      <div className="progress-bar-lg">
-        <div
-          className={`progress-fill-lg ${isDone ? (hasError ? 'has-error' : 'done') : ''}`}
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-      <div className="progress-count">
-        {current} / {total} {t('progressLog.files')}
+      <div className="progress-card">
+        <div className="progress-header">
+          <span className="progress-label">
+            {isDone ? t('progressLog.done') : t('progressLog.progress')}
+          </span>
+          <span className="progress-percent">
+            {speed && <span style={{ marginRight: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{speed}</span>}
+            {Math.round(progress)}%
+          </span>
+        </div>
+        <div className="progress-bar-lg">
+          <div
+            className={`progress-fill-lg ${isDone ? (hasError ? 'has-error' : 'done') : progress > 0 ? 'is-running' : ''}`}
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+        <div className="progress-count">
+          {current} / {total} {t('progressLog.files')}
+        </div>
       </div>
 
-      <div className="log-panel" style={{ marginTop: 'var(--space-4)' }}>
+      <div className="log-panel">
         <div className="log-panel-header">
           <div className="log-panel-title">
             <ScrollText style={{ width: 14, height: 14 }} />
             {t('progressLog.logTitle')}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             {elapsed && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--color-text-tertiary)' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)' }}>
                 <Timer style={{ width: 11, height: 11 }} />
                 {elapsed}
               </span>
             )}
-            {headerExtra}
+            {headerExtra ?? autoStatsBadges}
             <span className="log-panel-count">{logs.length} {t('progressLog.entries')}</span>
             {onClearLogs && (
               <button
@@ -202,9 +215,9 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
             )}
           </div>
         </div>
-        <div className="log-content" ref={logContainerRef} onScroll={handleScroll}>
+        <div className={`log-content ${logs.length === 0 ? 'is-empty' : ''}`} ref={logContainerRef} onScroll={handleScroll}>
           {logs.length === 0 ? (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-text-tertiary)', fontSize: 12 }}>{t('progressLog.noLogs')}</div>
+            <div className="log-empty-state">{t('progressLog.noLogs')}</div>
           ) : logs.map((log, i) => (
             log.status === 'download' && log.dlPercent != null ? (
               <div key={i} className={`log-entry ${i === logs.length - 1 ? 'log-entry-new' : ''}`} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
@@ -219,7 +232,7 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 90 }}>
                   <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--color-border)', overflow: 'hidden' }}>
-                    <div className={log.dlIndeterminate ? 'log-download-active' : undefined} style={{ height: '100%', borderRadius: 3, background: 'linear-gradient(90deg, #7c5cfc, #60a5fa)', width: log.dlIndeterminate ? '35%' : '100%', transformOrigin: 'left', transform: log.dlIndeterminate ? undefined : `scaleX(${Math.min(100, Math.max(0, log.dlPercent)) / 100})`, transition: log.dlIndeterminate ? undefined : 'transform 0.25s linear' }} />
+                    <div className={log.dlIndeterminate ? 'log-download-active' : undefined} style={{ height: '100%', borderRadius: 3, background: 'var(--color-gradient-primary)', width: log.dlIndeterminate ? '35%' : '100%', transformOrigin: 'left', transform: log.dlIndeterminate ? undefined : `scaleX(${Math.min(100, Math.max(0, log.dlPercent)) / 100})`, transition: log.dlIndeterminate ? undefined : 'transform 0.25s linear' }} />
                   </div>
                 </div>
               </div>

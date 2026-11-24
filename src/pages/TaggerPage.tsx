@@ -33,10 +33,10 @@ export default function TaggerPage() {
       <PageHeader icon={Tags} color="#f59e0b" title={t('tagger.title')} subtitle={t('tagger.subtitle')} />
 
       <SegmentedTabs tabs={tabs} value={tab} onChange={setActiveTab} style={{ marginBottom: 'var(--space-4)' }} />
-      <div style={{ display: tab === 'ai' ? 'block' : 'none' }}><AiTaggerTab /></div>
-      <div style={{ display: tab === 'llm' ? 'block' : 'none' }}><LlmTaggerTab /></div>
-      <div style={{ display: tab === 'gbc' ? 'block' : 'none' }}><GbcRefineTab gbcModels={gbcModels} /></div>
-      <div style={{ display: tab === 'hybrid' ? 'block' : 'none' }}><HybridTaggerTab gbcModels={gbcModels} /></div>
+      <div className={tab === 'ai' ? 'tab-panel-enter' : undefined} style={{ display: tab === 'ai' ? 'block' : 'none' }}><AiTaggerTab /></div>
+      <div className={tab === 'llm' ? 'tab-panel-enter' : undefined} style={{ display: tab === 'llm' ? 'block' : 'none' }}><LlmTaggerTab /></div>
+      <div className={tab === 'gbc' ? 'tab-panel-enter' : undefined} style={{ display: tab === 'gbc' ? 'block' : 'none' }}><GbcRefineTab gbcModels={gbcModels} /></div>
+      <div className={tab === 'hybrid' ? 'tab-panel-enter' : undefined} style={{ display: tab === 'hybrid' ? 'block' : 'none' }}><HybridTaggerTab gbcModels={gbcModels} /></div>
     </div>
   );
 }

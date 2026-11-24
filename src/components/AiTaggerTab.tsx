@@ -244,8 +244,8 @@ export default function AiTaggerTab() {
               <span className="tool-panel-title" style={{ whiteSpace: 'nowrap' }}>{t('aiTagger.taggerModel')}</span>
               {cur && (
                 <div style={{ display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>
-                  <span style={{ flexShrink: 0, whiteSpace: 'nowrap', padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: cur.is_downloaded ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)', color: cur.is_downloaded ? '#4ade80' : '#fbbf24' }}>{cur.is_downloaded ? t('aiTagger.downloaded') : t('aiTagger.toDownload')}</span>
-                  <span style={{ flexShrink: 0, whiteSpace: 'nowrap', padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: 'rgba(124,92,252,0.1)', color: '#a78bfa' }}>{cur.input_size}px</span>
+                  <span style={{ flexShrink: 0, whiteSpace: 'nowrap', padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: cur.is_downloaded ? 'var(--color-success-bg)' : 'var(--color-warning-bg)', color: cur.is_downloaded ? 'var(--color-success)' : 'var(--color-warning)' }}>{cur.is_downloaded ? t('aiTagger.downloaded') : t('aiTagger.toDownload')}</span>
+                  <span style={{ flexShrink: 0, whiteSpace: 'nowrap', padding: '1px 6px', borderRadius: 'var(--radius-full)', fontSize: 10, background: 'var(--color-accent-soft)', color: 'var(--color-accent-primary)' }}>{cur.input_size}px</span>
                 </div>
               )}
             </div>
@@ -276,7 +276,7 @@ export default function AiTaggerTab() {
                       ) : presets.map(p => (
                         <div key={p.name} style={{ display: 'flex', alignItems: 'center', padding: '6px 12px', cursor: 'pointer', fontSize: 12, gap: 6, borderBottom: '1px solid rgba(127,127,127,0.08)' }}
                           onClick={() => handleLoadPreset(p)}
-                          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(124,92,252,0.06)')}
+                          onMouseEnter={e => (e.currentTarget.style.background = 'var(--color-bg-hover)')}
                           onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                           <span style={{ flex: 1, fontWeight: 500 }}>{p.name}</span>
                           <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{models.find(m => m.id === p.modelId)?.name || '?'}</span>
@@ -293,7 +293,7 @@ export default function AiTaggerTab() {
             </div>
           </div>
           {showAdd && (
-            <div style={{ padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', background: 'rgba(124,92,252,0.04)', border: '1px solid rgba(124,92,252,0.15)', marginBottom: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+            <div style={{ padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', background: 'var(--color-accent-soft)', border: '1px solid var(--color-border-hover)', marginBottom: 'var(--space-3)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.nameLabel')}</label><input className="form-input" placeholder={t('aiTagger.namePlaceholder')} value={nName} onChange={e => setNName(e.target.value)} style={{ width: '100%' }} /></div>
               <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.modelFile')}</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder={t('aiTagger.modelPlaceholder')} value={nModelPath} onChange={e => setNModelPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseOnnx}><FileUp style={{ width: 14, height: 14 }} /> {t('aiTagger.browse')}</button></div></div>
               <div><label className="form-label" style={{ fontSize: 11, marginBottom: 4 }}>{t('aiTagger.tagMapping')}</label><div style={{ display: 'flex', gap: 'var(--space-2)' }}><input className="form-input" placeholder={t('aiTagger.tagFilePlaceholder')} value={nTagsPath} onChange={e => setNTagsPath(e.target.value)} style={{ flex: 1 }} readOnly /><button className="btn btn-secondary btn-sm" onClick={browseTags}><FileUp style={{ width: 14, height: 14 }} /> {t('aiTagger.browse')}</button></div></div>
@@ -400,7 +400,7 @@ export default function AiTaggerTab() {
                 {(['prepend', 'append'] as const).map(pos => (
                   <button key={pos} onClick={() => setAppendPosition(pos)}
                     style={{ padding: '2px 8px', borderRadius: 'var(--radius-sm)', border: `1px solid ${appendPosition === pos ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                      background: appendPosition === pos ? 'rgba(124,92,252,0.08)' : 'transparent',
+                      background: appendPosition === pos ? 'var(--color-accent-soft)' : 'transparent',
                       color: appendPosition === pos ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)', fontSize: 10, fontWeight: 600, cursor: 'pointer' }}>
                     {pos === 'prepend' ? t('aiTagger.prepend') : t('aiTagger.append')}
                   </button>

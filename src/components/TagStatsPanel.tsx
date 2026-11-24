@@ -121,20 +121,20 @@ export default function TagStatsPanel({
     </div>
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, padding: '6px 12px', fontSize: 10,
       color: 'var(--color-text-tertiary)', borderTop: '1px solid var(--color-border)' }}>
-      <span style={{ color: stats.selectedTags.size ? '#a78bfa' : undefined }}>
+      <span style={{ color: stats.selectedTags.size ? 'var(--color-accent-primary)' : undefined }}>
         {t(stats.selectedTags.size ? 'tagEditor.selected' : 'tagEditor.nTagTypes', { n: stats.selectedTags.size || stats.tagStats.length })}
       </span>
       <span>{stats.taggedCount}/{total} {t('tagEditor.tagged')}</span>
     </div>
     {progress && (
       <div style={{ padding: '5px 12px', fontSize: 10, display: 'flex', alignItems: 'center', gap: 8,
-        borderTop: '1px solid var(--color-border)', background: 'rgba(96,165,250,0.04)' }}>
-        <span style={{ color: '#60a5fa', fontWeight: 600 }}>{t('tagEditor.translateProgress')}</span>
+        borderTop: '1px solid var(--color-border)', background: 'var(--color-info-bg)' }}>
+        <span style={{ color: 'var(--color-info)', fontWeight: 600 }}>{t('tagEditor.translateProgress')}</span>
         <div style={{ flex: 1, height: 3, borderRadius: 2, background: 'var(--color-border)', overflow: 'hidden' }}>
           <div className="tag-stat-bar" style={{ width: `${progress.total ? progress.current / progress.total * 100 : 0}%`, height: '100%',
-            background: progressDone ? '#4ade80' : 'linear-gradient(90deg,#7c5cfc,#00d4ff)' }} />
+            background: progressDone ? 'var(--color-success)' : 'var(--color-gradient-primary)' }} />
         </div>
-        <span style={{ color: progressDone ? '#4ade80' : 'var(--color-text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>
+        <span style={{ color: progressDone ? 'var(--color-success)' : 'var(--color-text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>
           {progress.current}/{progress.total}
         </span>
       </div>

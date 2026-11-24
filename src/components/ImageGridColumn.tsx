@@ -39,10 +39,10 @@ export default function ImageGridColumn<T extends Item>({ width, items, total, t
         <div style={{ display: 'flex', gap: 4 }}>
           {(['all', 'untagged', 'tagged'] as const).map(value => (
             <button key={value} onClick={() => { onFilter(value); setPage(0); }}
-              style={{ flex: 1, padding: '3px 0', fontSize: 10, fontWeight: 500, borderRadius: 6,
-                color: filter === value ? '#a78bfa' : 'var(--color-text-tertiary)',
-                background: filter === value ? 'rgba(124,92,252,0.15)' : 'transparent',
-                border: `1px solid ${filter === value ? 'rgba(124,92,252,0.25)' : 'transparent'}` }}>
+              style={{ flex: 1, padding: '3px 0', fontSize: 10, fontWeight: 600, borderRadius: 6,
+                color: filter === value ? 'var(--color-accent-primary)' : 'var(--color-text-tertiary)',
+                background: filter === value ? 'var(--color-accent-soft)' : 'transparent',
+                border: `1px solid ${filter === value ? 'var(--color-border-hover)' : 'transparent'}` }}>
               {t(FILTER_LABELS[value])} {counts[value]}
             </button>
           ))}
@@ -61,11 +61,11 @@ export default function ImageGridColumn<T extends Item>({ width, items, total, t
                 onClick={() => onSelect(item._i)}
                 style={{ position: 'relative', padding: 0, aspectRatio: '1', borderRadius: 8, overflow: 'hidden',
                   border: `2px solid ${selected === item._i ? 'var(--color-accent-primary)' : 'transparent'}`,
-                  boxShadow: selected === item._i ? '0 0 0 1px rgba(124,92,252,0.3)' : 'none', background: 'var(--color-bg-input)' }}>
+                  boxShadow: selected === item._i ? '0 0 0 2px var(--color-accent-ring)' : 'none', background: 'var(--color-bg-input)' }}>
                 <ThumbImage path={item.path} alt={item.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 {badge(item) != null && (
                   <span style={{ position: 'absolute', bottom: 2, right: 2, minWidth: 14, height: 14, display: 'flex', alignItems: 'center',
-                    justifyContent: 'center', padding: '0 3px', borderRadius: 7, background: item.dirty ? 'rgba(239,68,68,0.9)' : 'rgba(124,92,252,0.85)',
+                    justifyContent: 'center', padding: '0 3px', borderRadius: 7, background: item.dirty ? 'var(--color-error)' : 'var(--color-accent-primary)',
                     fontSize: 8, fontWeight: 700, color: '#fff' }}>
                     {badge(item)}
                   </span>

@@ -1,5 +1,5 @@
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Sun, Moon, Monitor, ListTodo, Cpu, MemoryStick, MonitorDot, Trash2 } from 'lucide-react';
 import { useAppSettings } from './ThemeProvider';
@@ -7,7 +7,7 @@ import { useTaskList, useTaskQueue, type TaskStatus } from './TaskContext';
 import { changeLanguage, availableLanguages } from '../i18n';
 import useSystemStats, { getUsageColor } from '../hooks/useSystemStats';
 import { formatBytes } from '../utils/format';
-import { routeI18nMap, TASK_ROUTE_MAP } from '../appRegistry';
+import { routeI18nMap, routeSectionMap, TASK_ROUTE_MAP } from '../appRegistry';
 import '../styles/layout.css';
 
 const MEMORY = { memory: true, compact: true } as const;
@@ -15,19 +15,18 @@ const MEMORY = { memory: true, compact: true } as const;
 function MiniBar({ value, color, max = 100 }: { value: number; color: string; max?: number }) {
   const pct = Math.min(Math.max(value / max * 100, 0), 100);
   return (
-    <div style={{ width: 36, height: 4, borderRadius: 2, background: 'var(--color-border)', overflow: 'hidden' }}>
-      <div style={{ width: `${pct}%`, height: '100%', borderRadius: 2, background: color, transition: 'width 0.6s ease' }} />
+    <div style={{ width: 32, height: 4, borderRadius: 999, background: 'var(--color-bg-hover)', overflow: 'hidden' }}>
+      <div style={{ width: `${pct}%`, height: '100%', borderRadius: 999, background: color, transition: 'width 0.5s var(--ease-out-expo)' }} />
     </div>
   );
 }
 
-/** 任务状态标签的底色和文字色 */
 const TASK_STATUS_COLORS: Record<TaskStatus, { background: string; color: string }> = {
-  running: { background: 'rgba(74,222,128,0.1)', color: '#4ade80' },
-  done: { background: 'rgba(96,165,250,0.1)', color: '#60a5fa' },
-  warning: { background: 'rgba(251,191,36,0.1)', color: '#fbbf24' },
+  running: { background: 'var(--color-success-bg)', color: 'var(--color-success)' },
+  done: { background: 'var(--color-info-bg)', color: 'var(--color-info)' },
+  warning: { background: 'var(--color-warning-bg)', color: 'var(--color-warning)' },
   cancelled: { background: 'var(--color-bg-tertiary)', color: 'var(--color-text-tertiary)' },
-  error: { background: 'rgba(248,113,113,0.1)', color: '#f87171' },
+  error: { background: 'var(--color-error-bg)', color: 'var(--color-error)' },
 };
 
 export default function Header() {
@@ -35,6 +34,7 @@ export default function Header() {
   const location = useLocation();
   const navigate = useNavigate();
   const i18nKey = routeI18nMap[location.pathname];
+  const sectionKey = routeSectionMap[location.pathname];
   const currentBreadcrumb = i18nKey ? t(i18nKey) : t('header.unknown');
   const { mode, cycleThemeWithRipple } = useAppSettings();
   const allTasks = useTaskList();
@@ -45,6 +45,18 @@ export default function Header() {
   const [showTaskPanel, setShowTaskPanel] = useState(false);
 
   const themeBtnRef = useRef<HTMLButtonElement>(null);
+  const taskAnchorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showTaskPanel) return;
+    const onDown = (e: MouseEvent) => {
+      if (taskAnchorRef.current && !taskAnchorRef.current.contains(e.target as Node)) {
+        setShowTaskPanel(false);
+      }
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [showTaskPanel]);
 
   const cycleTheme = (e: React.MouseEvent) => {
     const rect = themeBtnRef.current?.getBoundingClientRect();
@@ -74,6 +86,12 @@ export default function Header() {
       <div className="header-left">
         <div className="header-breadcrumb">
           <span className="header-breadcrumb-item">PurinBox</span>
+          {sectionKey && (
+            <>
+              <span className="header-breadcrumb-separator">/</span>
+              <span className="header-breadcrumb-item">{t(sectionKey)}</span>
+            </>
+          )}
           <span className="header-breadcrumb-separator">/</span>
           <span className="header-breadcrumb-current">{currentBreadcrumb}</span>
         </div>
@@ -116,8 +134,8 @@ export default function Header() {
             <>
               <div className="header-stat-divider" />
               <div className="header-stat-item" title={stats.gpu_name}>
-                <MonitorDot style={{ width: 13, height: 13, color: '#a78bfa' }} />
-                <span className="header-stat-value" style={{ color: '#a78bfa', fontSize: 10 }}>GPU</span>
+                <MonitorDot style={{ width: 13, height: 13, color: 'var(--color-accent-primary)' }} />
+                <span className="header-stat-value" style={{ color: 'var(--color-accent-primary)', fontSize: 10 }}>GPU</span>
               </div>
             </>
           ) : null}
@@ -126,22 +144,21 @@ export default function Header() {
 
       <div className="header-right">
         {/* 任务队列 */}
-        <div style={{ position: 'relative' }}>
-          <button className="header-btn" title={t('header.taskQueue')} onClick={() => setShowTaskPanel(!showTaskPanel)}>
+        <div ref={taskAnchorRef} style={{ position: 'relative' }}>
+          <button type="button" className="header-btn" title={t('header.taskQueue')} onClick={() => setShowTaskPanel(!showTaskPanel)}>
             <ListTodo />
             {runningTasks.length > 0 && (
-              <span style={{ position: 'absolute', top: 2, right: 2, width: 8, height: 8, borderRadius: '50%', background: '#4ade80', animation: 'pulse 2s infinite' }} />
+              <span style={{ position: 'absolute', top: 4, right: 4, width: 7, height: 7, borderRadius: '50%', background: 'var(--color-success)', animation: 'pulse 2s infinite' }} />
             )}
           </button>
           {showTaskPanel && (
             <div className="header-dropdown">
-              <div style={{ padding: '12px 16px', fontWeight: 700, fontSize: 13, borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ padding: '11px 14px', fontWeight: 700, fontSize: 12.5, borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span>{t('header.taskQueue')}</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {allTasks.length > 0 && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>{runningTasks.length} {t('header.running')}</span>}
                   {completedTasks.length > 0 && (
-                    <button className="task-clear-button" onClick={(e) => { e.stopPropagation(); clearCompleted(); }} title={t('header.clearDoneTitle')}
-                    >
+                    <button type="button" className="task-clear-button" onClick={(e) => { e.stopPropagation(); clearCompleted(); }} title={t('header.clearDoneTitle')}>
                       <Trash2 style={{ width: 10, height: 10 }} /> {t('header.clearDone')}
                     </button>
                   )}
@@ -156,12 +173,12 @@ export default function Header() {
                   {allTasks.map(task => (
                     <div key={task.id} className={TASK_ROUTE_MAP[task.id] ? 'task-queue-item' : undefined}
                       onClick={() => { const route = TASK_ROUTE_MAP[task.id]; if (route) { navigate(route); setShowTaskPanel(false); } }}
-                      style={{ padding: '10px 16px', borderBottom: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 4, cursor: TASK_ROUTE_MAP[task.id] ? 'pointer' : 'default', transition: 'background 0.15s' }}
+                      style={{ padding: '10px 14px', borderBottom: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', gap: 4, cursor: TASK_ROUTE_MAP[task.id] ? 'pointer' : 'default', transition: 'background 0.15s' }}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                         <span style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{task.name}</span>
                         <span style={{
-                          fontSize: 10, padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap', flexShrink: 0,
+                          fontSize: 10, padding: '1px 6px', borderRadius: 5, fontWeight: 600, whiteSpace: 'nowrap', flexShrink: 0,
                           ...TASK_STATUS_COLORS[task.status],
                         }}>
                           {taskStatusLabel(task.status)}
@@ -169,13 +186,13 @@ export default function Header() {
                       </div>
                       {task.status === 'running' && task.total > 0 && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <div style={{ flex: 1, height: 3, borderRadius: 2, background: 'var(--color-border)', overflow: 'hidden' }}>
-                            <div style={{ width: `${Math.min(100, (task.current / task.total) * 100)}%`, height: '100%', borderRadius: 2, background: '#4ade80', transition: 'width 0.3s' }} />
+                          <div style={{ flex: 1, height: 4, borderRadius: 999, background: 'var(--color-bg-hover)', overflow: 'hidden' }}>
+                            <div style={{ width: `${Math.min(100, (task.current / task.total) * 100)}%`, height: '100%', borderRadius: 999, background: 'var(--color-success)', transition: 'width 0.3s' }} />
                           </div>
-                          <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)', whiteSpace: 'nowrap' }}>{task.current}/{task.total}</span>
+                          <span style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--color-text-tertiary)', whiteSpace: 'nowrap' }}>{task.current}/{task.total}</span>
                         </div>
                       )}
-                      <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.message}</div>
+                      <div style={{ fontSize: 10.5, color: 'var(--color-text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.message}</div>
                     </div>
                   ))}
                 </div>
@@ -185,17 +202,17 @@ export default function Header() {
         </div>
 
         {/* 主题切换 */}
-        <button ref={themeBtnRef} className="header-btn" onClick={cycleTheme} title={themeLabel}>
+        <button type="button" ref={themeBtnRef} className="header-btn" onClick={cycleTheme} title={themeLabel}>
           {themeIcon}
         </button>
 
         {/* 语言切换 */}
-        <button className="header-btn" title={t('settings.language')}
+        <button type="button" className="header-btn" title={t('settings.language')}
           onClick={() => {
             const idx = availableLanguages.indexOf(i18n.language);
             changeLanguage(availableLanguages[(idx + 1) % availableLanguages.length]);
           }}
-          style={{ fontSize: 13, fontWeight: 800 }}
+          style={{ fontSize: 12, fontWeight: 700 }}
         >
           {{ 'zh-CN': '中', en: 'EN', ja: '日' }[i18n.language] || '中'}
         </button>

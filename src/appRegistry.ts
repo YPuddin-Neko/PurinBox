@@ -25,7 +25,6 @@ import {
   Star,
   Wand2,
   BarChart3,
-  Workflow,
 } from 'lucide-react';
 
 /**
@@ -39,7 +38,7 @@ import {
  *   - TaskContext 的进度事件 → 任务 ID 映射（EVENT_TASK_MAP）
  */
 
-type SectionKey = 'preprocess' | 'dataset' | 'advanced' | 'automation';
+type SectionKey = 'preprocess' | 'dataset' | 'advanced';
 
 /** 页面拥有的全局任务：id 为 addTask 的任务 ID，events 为后端进度事件名 */
 interface PageTaskDef {
@@ -67,7 +66,6 @@ const SECTION_ORDER: { key: SectionKey; titleKey: string }[] = [
   { key: 'preprocess', titleKey: 'sidebar.sectionPreprocess' },
   { key: 'dataset', titleKey: 'sidebar.sectionDataset' },
   { key: 'advanced', titleKey: 'sidebar.sectionAdvanced' },
-  { key: 'automation', titleKey: 'sidebar.sectionAutomation' },
 ];
 
 export const PAGES: PageDef[] = [
@@ -131,9 +129,6 @@ export const PAGES: PageDef[] = [
   { path: '/sd-metadata', i18nKey: 'sidebar.sdMetadata', icon: FileCode2, section: 'advanced', persistent: true,
     tasks: [{ id: 'sd-metadata', events: ['sd-metadata-progress'] }] },
 
-  // ─── 自动化 ───
-  { path: '/workflow', i18nKey: 'sidebar.workflow', icon: Workflow, section: 'automation', persistent: true, experimental: true, tasks: [{ id: 'workflow', events: [] }] },
-
   { path: '/settings', i18nKey: 'sidebar.settings', icon: Settings, persistent: true },
 ];
 
@@ -161,8 +156,17 @@ export const TASK_ROUTE_MAP: Record<string, string> = Object.fromEntries(
     ...Object.entries(QUEUED_COMMANDS).map(([command, task]) => [command, task.route])],
 );
 
+/** 路由路径 → 所属分组标题翻译 key */
+export const routeSectionMap: Record<string, string> = Object.fromEntries(
+  PAGES.filter(p => p.section).map(p => [
+    p.path,
+    SECTION_ORDER.find(s => s.key === p.section)!.titleKey,
+  ]),
+);
+
 /** 侧边栏分组导航（home/settings 由 Sidebar 单独渲染） */
 export const navSections = SECTION_ORDER.map(section => ({
+  key: section.key,
   titleKey: section.titleKey,
   items: PAGES.filter(p => p.section === section.key),
 }));

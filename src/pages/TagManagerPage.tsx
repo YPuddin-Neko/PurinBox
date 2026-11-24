@@ -347,30 +347,37 @@ export default function TagManagerPage() {
   return (
     <>
     <div className="page" style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden', gap: 0 }} onKeyDown={handleKeyDown} tabIndex={0}>
-      <PageHeader icon={List} color="#7c5cfc" title={t('tagManager.title')} subtitle={t('tagManager.subtitle')} />
+      <PageHeader
+        icon={List}
+        color="var(--dom-dat)"
+        title={t('tagManager.title')}
+        subtitle={t('tagManager.subtitle')}
+        actions={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <RecursiveScanToggle checked={recursive} onChange={setRecursive} style={{ height: 34 }} />
+            <button className="btn btn-secondary" style={topButton} onClick={topBar.onLoad} disabled={topBar.loading}>
+              {topBar.loading ? <Loader2 style={spinner14} /> : <FolderOpen style={{ width: 14, height: 14 }} />}
+              {' '}{topBar.loading ? t('tagManager.loading') : t('tagManager.loadFolder')}
+            </button>
+            <button className="btn btn-primary" style={topButton} disabled={topBar.dirty === 0 || topBar.saving} onClick={topBar.onSave}>
+              {topBar.saving ? <Loader2 style={spinner14} /> : <Save style={{ width: 14, height: 14 }} />}
+              {' '}{t('tagManager.saveAll')}{topBar.dirty > 0 ? ` (${topBar.dirty})` : ''}
+            </button>
+          </div>
+        }
+      />
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-4)', flexShrink: 0 }}>
+      <div style={{ marginBottom: 'var(--space-3)', flexShrink: 0 }}>
         <SegmentedTabs value={mode} onChange={setMode} tabs={[
           { id: 'danbooru', label: t('tagManager.danbooruTab') },
           { id: 'natural', label: t('tagManager.naturalTab') },
           { id: 'json', label: t('tagManager.jsonTab') },
-          { id: 'gbc', label: 'GBC' },
+          { id: 'gbc', label: t('tagManager.gbcTab') },
         ]} />
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <RecursiveScanToggle checked={recursive} onChange={setRecursive} style={{ height: 34 }} />
-          <button className="btn btn-secondary" style={topButton} onClick={topBar.onLoad} disabled={topBar.loading}>
-            {topBar.loading ? <Loader2 style={spinner14} /> : <FolderOpen style={{ width: 14, height: 14 }} />}
-            {' '}{topBar.loading ? t('tagManager.loading') : t('tagManager.loadFolder')}
-          </button>
-          <button className="btn btn-primary" style={topButton} disabled={topBar.dirty === 0 || topBar.saving} onClick={topBar.onSave}>
-            {topBar.saving ? <Loader2 style={spinner14} /> : <Save style={{ width: 14, height: 14 }} />}
-            {' '}{t('tagManager.saveAll')}{topBar.dirty > 0 ? ` (${topBar.dirty})` : ''}
-          </button>
-        </div>
       </div>
 
       {mode === 'danbooru' && (
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+      <div className="tab-panel-enter" style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
         <ImageGridColumn key={folderPath} width={col1.size} items={filtered} total={images.length} tagged={taggedCount}
           search={searchText} onSearch={setSearchText} filter={filterMode} onFilter={setFilterMode}
           selected={selectedIdx} onSelect={setSelectedIdx} onRefresh={folderPath ? handleRefresh : undefined} loading={loading}
@@ -419,7 +426,7 @@ export default function TagManagerPage() {
           </div>
 
           <ToolSidebar items={[
-            { icon: Filter, label: t('tagEditor.filterByTag'), pressed: tagFilterActive, onClick: () => setTagFilterActive(v => !v), disabled: images.length === 0, color: tagFilterActive ? '#7c5cfc' : undefined },
+            { icon: Filter, label: t('tagEditor.filterByTag'), pressed: tagFilterActive, onClick: () => setTagFilterActive(v => !v), disabled: images.length === 0, color: tagFilterActive ? 'var(--color-accent-primary)' : undefined },
             { icon: Replace, label: t('tagManager.replaceTag'), disabled: images.length === 0, onClick: () => {
               setReplaceTo(''); setReplaceFrom(selectedTags.size === 1 ? [...selectedTags][0] : ''); setShowReplaceModal(true);
             } },
@@ -438,14 +445,16 @@ export default function TagManagerPage() {
       )}
 
       {mode === 'natural' && (
-        <NaturalLangTab images={nlImages} setImages={setNlImages} onRefresh={folderPath ? handleRefresh : undefined} onError={setAlertMsg} />
+        <div className="tab-panel-enter" style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+          <NaturalLangTab images={nlImages} setImages={setNlImages} onRefresh={folderPath ? handleRefresh : undefined} onError={setAlertMsg} />
+        </div>
       )}
 
-      <div style={{ display: mode === 'gbc' ? 'flex' : 'none', flex: 1, overflow: 'hidden', minHeight: 0 }}>
+      <div className={mode === 'gbc' ? 'tab-panel-enter' : undefined} style={{ display: mode === 'gbc' ? 'flex' : 'none', flex: 1, overflow: 'hidden', minHeight: 0 }}>
         <GbcTagTab ref={gbcTabRef} recursive={recursive} onDirtyChange={setGbcDirtyCount} onLoadingChange={setGbcLoading} onSavingChange={setGbcSaving} />
       </div>
 
-      <div style={{ display: mode === 'json' ? 'flex' : 'none', flex: 1, overflow: 'hidden', minHeight: 0 }}>
+      <div className={mode === 'json' ? 'tab-panel-enter' : undefined} style={{ display: mode === 'json' ? 'flex' : 'none', flex: 1, overflow: 'hidden', minHeight: 0 }}>
         <JsonTagTab ref={jsonTabRef} recursive={recursive} onDirtyChange={setJsonDirtyCount} onLoadingChange={setJsonLoading} onSavingChange={setJsonSaving} />
       </div>
 
@@ -511,9 +520,9 @@ export default function TagManagerPage() {
               {replaceMatches.slice(0, 50).map(([tag, count]) => (
                 <div key={tag} onClick={() => { setReplaceFrom(tag); setReplaceSearch(''); setReplaceDropOpen(false); }}
                   style={{ padding: '6px 10px', fontSize: 11, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    background: replaceFrom === tag ? 'rgba(124,92,252,0.1)' : 'transparent', color: 'var(--color-text-primary)' }}
+                    background: replaceFrom === tag ? 'var(--color-accent-soft)' : 'transparent', color: 'var(--color-text-primary)' }}
                   onMouseEnter={e => e.currentTarget.style.background = 'var(--color-bg-hover)'}
-                  onMouseLeave={e => e.currentTarget.style.background = replaceFrom === tag ? 'rgba(124,92,252,0.1)' : 'transparent'}>
+                  onMouseLeave={e => e.currentTarget.style.background = replaceFrom === tag ? 'var(--color-accent-soft)' : 'transparent'}>
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tag}</span>
                   <span style={{ fontSize: 9, color: 'var(--color-text-tertiary)', flexShrink: 0, marginLeft: 8 }}>{count}</span>
                 </div>

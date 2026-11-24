@@ -168,10 +168,10 @@ export default function SettingsPage() {
   const {
     monitorInterval,
     setMonitorInterval,
-    workflowEnabled,
-    setWorkflowEnabled,
     hybridTaggerEnabled,
     setHybridTaggerEnabled,
+    updateInfo,
+    setUpdateInfo,
   } = useAppSettings();
   const isDesktopRuntime = hasTauriRuntime();
   const desktopOnlyText = t('settings.desktopOnly');
@@ -513,17 +513,17 @@ export default function SettingsPage() {
                   return (
                     <div key={opt.value} onClick={() => setMonitorInterval(opt.value)} style={{
                       padding: '8px 12px', borderRadius: 'var(--radius-sm)',
-                      border: `1.5px solid ${active ? (opt.value === 0 ? 'rgba(248,113,113,0.5)' : 'var(--color-border-active)') : 'var(--color-border)'}`,
-                      background: active ? (opt.value === 0 ? 'rgba(248,113,113,0.06)' : 'rgba(124,92,252,0.06)') : 'var(--color-bg-input)',
-                      cursor: 'pointer', transition: 'all 0.15s',
+                      border: `1.5px solid ${active ? (opt.value === 0 ? 'color-mix(in srgb, var(--color-error) 50%, transparent)' : 'var(--color-border-active)') : 'var(--color-border)'}`,
+                      background: active ? (opt.value === 0 ? 'var(--color-error-bg)' : 'var(--color-accent-soft)') : 'var(--color-bg-input)',
+                      cursor: 'pointer', transition: 'all 0.16s ease',
                       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                     }}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}>{opt.label}</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: active ? (opt.value === 0 ? 'var(--color-error)' : 'var(--color-accent-primary)') : 'var(--color-text-primary)' }}>{opt.label}</span>
                         <span style={{ fontSize: 10, color: 'var(--color-text-tertiary)' }}>{opt.desc}</span>
                       </div>
                       {active && (
-                        <div style={{ width: 16, height: 16, borderRadius: '50%', background: opt.value === 0 ? '#f87171' : 'var(--color-accent-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <div style={{ width: 16, height: 16, borderRadius: '50%', background: opt.value === 0 ? 'var(--color-error)' : 'var(--color-accent-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           <Check style={{ width: 10, height: 10, color: '#fff' }} />
                         </div>
                       )}
@@ -539,12 +539,6 @@ export default function SettingsPage() {
             <PanelHeader icon={FlaskConical} color="#fbbf24" title={t('settings.experimental')} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {[
-                {
-                  enabled: workflowEnabled,
-                  setEnabled: setWorkflowEnabled,
-                  title: t('settings.workflowToggle'),
-                  desc: t('settings.workflowToggleDesc'),
-                },
                 {
                   enabled: hybridTaggerEnabled,
                   setEnabled: setHybridTaggerEnabled,
@@ -913,42 +907,66 @@ export default function SettingsPage() {
                 </a>
               </p>
               {/* Update check */}
-              <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, padding: '10px 14px' }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)' }}>{t('settings.checkForUpdate')}</div>
-                  <div style={{ fontSize: 10, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
-                    {!isDesktopRuntime ? desktopOnlyText
-                      : updateChecking ? t('settings.checkingForUpdate')
-                      : updateError ? `${t('settings.updateCheckFailed')}: ${updateError}`
-                      : updateResult
-                        ? updateResult.has_update
-                          ? <span style={{ color: '#ef4444' }}>{t('settings.hasUpdate', { version: updateResult.latest_version })}</span>
-                          : <span style={{ color: '#4ade80' }}>{t('settings.noUpdate')}</span>
-                        : null}
+              {(() => {
+                const effectiveUpdate = updateResult ?? updateInfo;
+                const hasUpdate = Boolean(effectiveUpdate?.has_update && !updateChecking);
+                return (
+                  <div style={{
+                    ...cardStyle,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 10,
+                    marginTop: 8,
+                    padding: '10px 14px',
+                    transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                    ...(hasUpdate ? {
+                      background: 'var(--color-error-bg)',
+                      border: '1px solid color-mix(in srgb, var(--color-error) 30%, transparent)',
+                    } : {}),
+                  }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span>{t('settings.checkForUpdate')}</span>
+                        {hasUpdate && (
+                          <span style={{ position: 'relative', width: 7, height: 7, borderRadius: '50%', background: 'var(--color-error)', display: 'inline-block' }} />
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginTop: 2 }}>
+                        {!isDesktopRuntime ? desktopOnlyText
+                          : updateChecking ? t('settings.checkingForUpdate')
+                          : updateError ? <span style={{ color: 'var(--color-error)' }}>{t('settings.updateCheckFailed')}: {updateError}</span>
+                          : effectiveUpdate
+                            ? effectiveUpdate.has_update
+                              ? <span style={{ color: 'var(--color-error)', fontWeight: 600 }}>{t('settings.hasUpdate', { version: effectiveUpdate.latest_version })}</span>
+                              : <span style={{ color: 'var(--color-success)' }}>{t('settings.noUpdate')}</span>
+                            : null}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      {hasUpdate && effectiveUpdate?.release_url && (
+                        <a href={effectiveUpdate.release_url} target="_blank" rel="noreferrer"
+                          className="btn btn-primary" style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4, animation: 'chipPop 240ms var(--ease-pop) both' }}>
+                          <ExternalLink style={{ width: 11, height: 11 }} /> {t('settings.goToDownload')}
+                        </a>
+                      )}
+                      <button className="btn btn-secondary" disabled={updateChecking || !isDesktopRuntime}
+                        onClick={async () => {
+                          setUpdateChecking(true); setUpdateError(''); setUpdateResult(null);
+                          try {
+                            const r = await invoke<UpdateCheckResult>('check_for_updates');
+                            setUpdateResult(r);
+                            setUpdateInfo(r.has_update ? r : null);
+                          } catch (e: any) { setUpdateError(String(e)); }
+                          finally { setUpdateChecking(false); }
+                        }}
+                        style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        {updateChecking ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <RefreshIcon style={{ width: 12, height: 12 }} />}
+                        {updateChecking ? t('settings.checkingForUpdate') : t('settings.checkForUpdate')}
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {updateResult?.has_update && updateResult.release_url && (
-                    <a href={updateResult.release_url} target="_blank" rel="noreferrer"
-                      className="btn btn-primary" style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <ExternalLink style={{ width: 11, height: 11 }} /> {t('settings.goToDownload')}
-                    </a>
-                  )}
-                  <button className="btn btn-secondary" disabled={updateChecking || !isDesktopRuntime}
-                    onClick={async () => {
-                      setUpdateChecking(true); setUpdateError(''); setUpdateResult(null);
-                      try {
-                        const r = await invoke<UpdateCheckResult>('check_for_updates');
-                        setUpdateResult(r);
-                      } catch (e: any) { setUpdateError(String(e)); }
-                      finally { setUpdateChecking(false); }
-                    }}
-                    style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4 }}>
-                    {updateChecking ? <Loader2 style={{ width: 12, height: 12, animation: 'spin 1s linear infinite' }} /> : <RefreshIcon style={{ width: 12, height: 12 }} />}
-                    {updateChecking ? t('settings.checkingForUpdate') : t('settings.checkForUpdate')}
-                  </button>
-                </div>
-              </div>
+                );
+              })()}
             </div>
           </div>
         </div>

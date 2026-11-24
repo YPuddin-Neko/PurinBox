@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
-import { useRef, type ComponentType } from 'react';
+import { useEffect, useRef, type ComponentType } from 'react';
 import { ThemeProvider } from './components/ThemeProvider';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -26,7 +26,6 @@ import ImageDedupPage from './pages/ImageDedupPage';
 import DatasetBalancerPage from './pages/DatasetBalancerPage';
 import SdMetadataPage from './pages/SdMetadataPage';
 import AestheticPage from './pages/AestheticPage';
-import WorkflowPage from './pages/WorkflowPage';
 import SettingsPage from './pages/SettingsPage';
 import './assets/fonts/inter.css';
 import './styles/global.css';
@@ -59,7 +58,6 @@ const PAGE_COMPONENTS: Record<string, ComponentType> = {
   '/image-dedup': ImageDedupPage,
   '/dataset-balancer': DatasetBalancerPage,
   '/sd-metadata': SdMetadataPage,
-  '/workflow': WorkflowPage,
   '/settings': SettingsPage,
 };
 
@@ -74,21 +72,43 @@ function AppContent() {
   const currentPath = location.pathname;
   // 懒加载：仅在首次访问时挂载页面，之后保持 mounted（display 切换，切页不丢状态）
   const visitedRef = useRef<Set<string>>(new Set());
+  const prevPathRef = useRef(currentPath);
+  const directionRef = useRef<'down' | 'up'>('down');
+  const mainRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (mainRef.current) mainRef.current.scrollTop = 0;
+  }, [currentPath]);
+
+  if (prevPathRef.current !== currentPath) {
+    const prevIdx = PAGES.findIndex(p => p.path === prevPathRef.current);
+    const nextIdx = PAGES.findIndex(p => p.path === currentPath);
+    directionRef.current = nextIdx >= prevIdx ? 'down' : 'up';
+    prevPathRef.current = currentPath;
+  }
+
   const isPersistentRoute = persistentPages.some(p => p.path === currentPath);
   if (isPersistentRoute) {
     visitedRef.current.add(currentPath);
   }
 
+  const enterClass = directionRef.current === 'down' ? 'page-enter-down' : 'page-enter-up';
+
   return (
     <div className="main-layout">
       <Header />
-      <main className="main-content">
-        {/* 持久化页面 - 首次访问时挂载，之后通过 display 控制显示 */}
+      <main ref={mainRef} className="main-content">
+        {/* 持久化页面 - 首次访问时挂载，之后通过 display 控制显示，切回时触发方向感微滑入 */}
         {persistentPages.map(({ path }) => {
           if (!visitedRef.current.has(path)) return null;
           const Component = PAGE_COMPONENTS[path];
+          const isActive = currentPath === path;
           return (
-            <div key={path} style={{ display: currentPath === path ? 'block' : 'none', height: '100%' }}>
+            <div
+              key={path}
+              className={isActive ? `page-slot ${enterClass}` : 'page-slot'}
+              style={{ display: isActive ? 'block' : 'none', height: '100%' }}
+            >
               <Component />
             </div>
           );
@@ -96,12 +116,14 @@ function AppContent() {
 
         {/* 非持久化页面 - 正常路由 */}
         {!isPersistentRoute && (
-          <Routes>
-            {routePages.map(({ path }) => {
-              const Component = PAGE_COMPONENTS[path];
-              return <Route key={path} path={path} element={<Component />} />;
-            })}
-          </Routes>
+          <div key={currentPath} className={`page-slot ${enterClass}`}>
+            <Routes>
+              {routePages.map(({ path }) => {
+                const Component = PAGE_COMPONENTS[path];
+                return <Route key={path} path={path} element={<Component />} />;
+              })}
+            </Routes>
+          </div>
         )}
       </main>
     </div>

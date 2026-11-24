@@ -14,7 +14,7 @@ export function TaggerCategoryGrid({ enabled, onChange, supported }: { enabled: 
         title={available ? undefined : t('hybridTagger.catUnsupported')}>
         <Checkbox checked={checked} disabled={!available} size={14}
           onChange={on => { const next = new Set(enabled); if (on) next.add(c.key); else next.delete(c.key); onChange(next); }}
-          style={{ display: 'flex', padding: '6px 10px', minWidth: 0, fontSize: 12, fontWeight: 600, opacity: 1 }} label={t(c.labelKey)} />
+          style={{ display: 'flex', width: '100%', padding: '7px 10px', minWidth: 0, fontSize: 12, fontWeight: 600, opacity: 1 }} label={t(c.labelKey)} />
       </div>;
     })}
   </div>;

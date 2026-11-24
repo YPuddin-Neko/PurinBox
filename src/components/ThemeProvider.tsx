@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { setSystemStatsInterval } from '../hooks/useSystemStats';
+import type { UpdateCheckResult } from '../utils/appVersion';
 
 type ThemeMode = 'dark' | 'light' | 'system';
 
@@ -9,28 +10,30 @@ interface AppSettingsContextType {
   monitorInterval: number;
   setMonitorInterval: (ms: number) => void;
   cycleThemeWithRipple: (x: number, y: number) => void;
-  /** 实验性功能：工作流是否显示在工具箱（侧边栏）中 */
-  workflowEnabled: boolean;
-  setWorkflowEnabled: (on: boolean) => void;
   /** 实验性功能：辅助打标是否显示在图片打标标签页中 */
   hybridTaggerEnabled: boolean;
   setHybridTaggerEnabled: (on: boolean) => void;
+  /** 共享版本更新检测结果（侧边栏、首页、设置页同步展示） */
+  updateInfo: UpdateCheckResult | null;
+  setUpdateInfo: (info: UpdateCheckResult | null) => void;
 }
 
 const AppSettingsContext = createContext<AppSettingsContextType>({
-  mode: 'dark', resolved: 'dark',
+  mode: 'light', resolved: 'light',
   monitorInterval: 0, setMonitorInterval: () => {},
   cycleThemeWithRipple: () => {},
-  workflowEnabled: false, setWorkflowEnabled: () => {},
   hybridTaggerEnabled: false, setHybridTaggerEnabled: () => {},
+  updateInfo: null, setUpdateInfo: () => {},
 });
 
 export function useAppSettings() { return useContext(AppSettingsContext); }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [mode, setModeRaw] = useState<ThemeMode>(() => {
-    return (localStorage.getItem('theme') as ThemeMode) || 'system';
+    return (localStorage.getItem('theme') as ThemeMode) || 'light';
   });
+
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
 
   const [monitorInterval, setMonitorIntervalRaw] = useState<number>(() => {
     const saved = localStorage.getItem('monitorInterval');
@@ -38,10 +41,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   });
 
   // 实验性功能开关：默认关闭（测试版功能按需启用）
-  const [workflowEnabled, setWorkflowEnabledRaw] = useState<boolean>(() => {
-    return localStorage.getItem('workflow_enabled') === '1';
-  });
-
   const [hybridTaggerEnabled, setHybridTaggerEnabledRaw] = useState<boolean>(() => {
     return localStorage.getItem('hybrid_tagger_enabled') === '1';
   });
@@ -70,11 +69,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setSystemStatsInterval(monitorInterval);
   }, [monitorInterval]);
-
-  const setWorkflowEnabled = (on: boolean) => {
-    setWorkflowEnabledRaw(on);
-    localStorage.setItem('workflow_enabled', on ? '1' : '0');
-  };
 
   const setHybridTaggerEnabled = (on: boolean) => {
     setHybridTaggerEnabledRaw(on);
@@ -138,10 +132,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       monitorInterval,
       setMonitorInterval,
       cycleThemeWithRipple,
-      workflowEnabled,
-      setWorkflowEnabled,
       hybridTaggerEnabled,
       setHybridTaggerEnabled,
+      updateInfo,
+      setUpdateInfo,
     }}>
       {children}
     </AppSettingsContext.Provider>

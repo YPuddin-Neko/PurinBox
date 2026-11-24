@@ -37,10 +37,13 @@ export function useBatchRunStats() {
     if (errors.length) logger.appendLog(`${t('tagSort.failedFiles')}: ${errors.join(', ')}`, 'error');
     if (warningFiles.length) logger.appendLog(`${t('tagSort.warnFiles')}: ${warningFiles.join(', ')}`, 'warning');
   }, [t]);
-  const headerExtra = <span style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 12 }}>
-    <span title={t('common.success')} style={{ color: 'var(--color-success)', display: 'inline-flex', alignItems: 'center', gap: 4, lineHeight: 1 }}><CheckCircle2 size={13} />{stats.success}</span>
-    <span title={t('common.failed')} style={{ color: 'var(--color-error)', display: 'inline-flex', alignItems: 'center', gap: 4, lineHeight: 1 }}><XCircle size={13} />{stats.failed}</span>
-    {stats.warnings > 0 && <span title={t('common.warning')} style={{ color: 'var(--color-warning)', display: 'inline-flex', alignItems: 'center', gap: 4, lineHeight: 1 }}><AlertTriangle size={13} />{stats.warnings}</span>}
-  </span>;
+  const hasStats = stats.success > 0 || stats.warnings > 0 || stats.failed > 0;
+  const headerExtra = hasStats ? (
+    <span className="log-stat-badges">
+      {stats.success > 0 && <span className="log-stat-badge is-ok" title={t('common.success')}><CheckCircle2 size={12} />{stats.success}</span>}
+      {stats.warnings > 0 && <span className="log-stat-badge is-warn" title={t('common.warning')}><AlertTriangle size={12} />{stats.warnings}</span>}
+      {stats.failed > 0 && <span className="log-stat-badge is-err" title={t('common.failed')}><XCircle size={12} />{stats.failed}</span>}
+    </span>
+  ) : null;
   return { reset, onEvent, summarize, headerExtra };
 }

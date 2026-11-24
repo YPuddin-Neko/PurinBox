@@ -1,20 +1,26 @@
-.settings-help { margin: 0; font-size: 10px; color: var(--color-text-tertiary); line-height: 1.6; }
+.settings-help { margin: 0; font-size: 11px; color: var(--color-text-tertiary); line-height: 1.6; }
 .settings-beta-badge { margin-left: 8px; padding: 1px 5px; }
 .settings-proxy-types { display: flex; gap: 6px; }
 .settings-proxy-types button {
-  flex: 1; padding: 4px 0; border-radius: var(--radius-sm);
-  border: 1.5px solid var(--color-border); background: transparent;
-  color: var(--color-text-tertiary); font-size: 11px; font-weight: 600; cursor: pointer;
+  flex: 1; padding: 5px 0; border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border); background: var(--color-bg-input);
+  color: var(--color-text-secondary); font-size: 11px; font-weight: 600; cursor: pointer;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), color var(--transition-fast);
+}
+.settings-proxy-types button:hover {
+  background: var(--color-bg-hover);
 }
 .settings-proxy-types button[aria-pressed='true'] {
-  border-color: var(--color-border-active); background: rgba(124, 92, 252, 0.08); color: var(--color-accent-primary);
+  border-color: var(--color-border-active);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-primary);
 }
 .ui-switch.settings-translation-switch {
   width: 40px; height: 22px; border-radius: 11px; border: 1px solid var(--color-border);
-  background: var(--color-bg-tertiary, rgba(255, 255, 255, 0.06)); transition: all 0.2s;
+  background: var(--color-border-strong); transition: background-color 220ms ease, border-color 220ms ease;
 }
 .ui-switch.settings-translation-switch.is-on { border-color: var(--color-accent-primary); background: var(--color-accent-primary); }
 .settings-translation-switch .ui-switch-knob {
-  width: 16px; height: 16px; top: 2px; left: 2px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  width: 16px; height: 16px; top: 2px; left: 2px; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
 }
-.settings-translation-switch.is-on .ui-switch-knob { transform: translateX(17px); }
+.settings-translation-switch.is-on .ui-switch-knob { transform: translateX(18px); }

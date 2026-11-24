@@ -352,7 +352,7 @@ const JsonTagTab = forwardRef<JsonTagTabHandle, {
         </div>
 
         {col3Mode === 'stats' && <ToolSidebar items={[
-          { icon: Filter, label: t('tagEditor.filterByTag'), pressed: tagFilterActive, onClick: () => setTagFilterActive(v => !v), disabled: images.length === 0, color: tagFilterActive ? '#7c5cfc' : undefined },
+          { icon: Filter, label: t('tagEditor.filterByTag'), pressed: tagFilterActive, onClick: () => setTagFilterActive(v => !v), disabled: images.length === 0, color: tagFilterActive ? 'var(--color-accent-primary)' : undefined },
           { icon: ListPlus, label: t('tagEditor.batchAdd'), disabled: images.length === 0, onClick: () => {
             setBatchField(simplified ? 'ai_output.tags' : 'fixed.quality'); setBatchTags(''); setBatchPosition('prepend'); setBatchScope('all'); setShowBatchAddModal(true);
           } },

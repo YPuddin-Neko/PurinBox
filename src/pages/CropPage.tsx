@@ -100,104 +100,117 @@ export default function CropPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
           {modeCards.map((mc) => (
             <ChoiceCard key={mc.key} selected={mode === mc.key} onSelect={() => setMode(mc.key)} indicator="radio" body={<>
-              {(mc.key === 'center' || mc.key === 'cover') && mode === mc.key && (
-                <div style={{ marginBottom: 'var(--space-3)' }}>
-                  <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
-                    <div className="form-group" style={{ flex: 1 }}>
-                      <label className="form-label">{t('crop.targetWidth')}</label>
-                      <NumberInput className="form-input" value={centerW} min={1} onChange={setCenterW} fallback={d.target_width} integer />
-                    </div>
-                    <div className="form-group" style={{ flex: 1 }}>
-                      <label className="form-label">{t('crop.targetHeight')}</label>
-                      <NumberInput className="form-input" value={centerH} min={1} onChange={setCenterH} fallback={d.target_height} integer />
+              {(mc.key === 'center' || mc.key === 'cover') && (
+                <div className={`ui-accordion ${mode === mc.key ? 'is-open' : ''}`}>
+                  <div className="ui-accordion-inner">
+                    <div style={{ marginBottom: 'var(--space-3)' }}>
+                      <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
+                        <div className="form-group" style={{ flex: 1 }}>
+                          <label className="form-label">{t('crop.targetWidth')}</label>
+                          <NumberInput className="form-input" value={centerW} min={1} onChange={setCenterW} fallback={d.target_width} integer />
+                        </div>
+                        <div className="form-group" style={{ flex: 1 }}>
+                          <label className="form-label">{t('crop.targetHeight')}</label>
+                          <NumberInput className="form-input" value={centerH} min={1} onChange={setCenterH} fallback={d.target_height} integer />
+                        </div>
+                      </div>
+                      {mc.key === 'cover' && (
+                        <div className="form-group">
+                          <label className="form-label">{t('crop.cropAnchor')}</label>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 6 }}>
+                            {cropAnchors.map(({ key, Icon, label }) => {
+                              const active = cropAnchor === key;
+                              return (
+                                <button
+                                  key={key}
+                                  type="button"
+                                  onClick={() => setCropAnchor(key)}
+                                  title={label}
+                                  style={{
+                                    height: 34,
+                                    borderRadius: 'var(--radius-sm)',
+                                    border: `1px solid ${active ? 'var(--color-border-active)' : 'var(--color-border)'}`,
+                                    background: active ? 'rgba(6, 182, 212, 0.10)' : 'var(--color-bg-secondary)',
+                                    color: active ? '#06b6d4' : 'var(--color-text-secondary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 5,
+                                    cursor: 'pointer',
+                                    fontSize: 'var(--font-size-xs)',
+                                    fontWeight: 700,
+                                    fontFamily: 'inherit',
+                                    transition: 'all 0.16s ease',
+                                  }}
+                                >
+                                  <Icon style={{ width: 14, height: 14 }} />
+                                  <span>{label}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
-                  {mc.key === 'cover' && (
-                    <div className="form-group">
-                      <label className="form-label">{t('crop.cropAnchor')}</label>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 6 }}>
-                        {cropAnchors.map(({ key, Icon, label }) => {
-                          const active = cropAnchor === key;
-                          return (
-                            <button
-                              key={key}
-                              type="button"
-                              onClick={() => setCropAnchor(key)}
-                              title={label}
-                              style={{
-                                height: 34,
-                                borderRadius: 'var(--radius-sm)',
-                                border: `1px solid ${active ? 'var(--color-border-active)' : 'var(--color-border)'}`,
-                                background: active ? 'rgba(6, 182, 212, 0.10)' : 'var(--color-bg-secondary)',
-                                color: active ? '#06b6d4' : 'var(--color-text-secondary)',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                gap: 5,
-                                cursor: 'pointer',
-                                fontSize: 'var(--font-size-xs)',
-                                fontWeight: 700,
-                                fontFamily: 'inherit',
-                              }}
-                            >
-                              <Icon style={{ width: 14, height: 14 }} />
-                              <span>{label}</span>
-                            </button>
-                          );
-                        })}
+                </div>
+              )}
+
+              {mc.key === 'aspect' && (
+                <div className={`ui-accordion ${mode === 'aspect' ? 'is-open' : ''}`}>
+                  <div className="ui-accordion-inner">
+                    <div style={{ marginBottom: 'var(--space-3)' }}>
+                      <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', alignItems: 'flex-end' }}>
+                        <div className="form-group" style={{ flex: 1 }}>
+                          <label className="form-label">{t('crop.widthRatio')}</label>
+                          <NumberInput className="form-input" value={ratioW} min={1} onChange={setRatioW} fallback={1} integer />
+                        </div>
+                        <span style={{ paddingBottom: 10, fontWeight: 700, color: 'var(--color-text-tertiary)', fontSize: 18 }}>:</span>
+                        <div className="form-group" style={{ flex: 1 }}>
+                          <label className="form-label">{t('crop.heightRatio')}</label>
+                          <NumberInput className="form-input" value={ratioH} min={1} onChange={setRatioH} fallback={1} integer />
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {PRESETS.map((p) => (
+                          <button key={p.label} className="btn btn-ghost" onClick={() => { setRatioW(p.w); setRatioH(p.h); }}
+                            style={{
+                              fontSize: 11, height: 26, padding: '0 10px', borderRadius: 13,
+                              background: ratioW === p.w && ratioH === p.h ? 'rgba(129, 140, 248, 0.15)' : undefined,
+                              color: ratioW === p.w && ratioH === p.h ? '#818cf8' : undefined,
+                              border: ratioW === p.w && ratioH === p.h ? '1px solid rgba(129, 140, 248, 0.3)' : undefined,
+                            }}>
+                            {p.label}
+                          </button>
+                        ))}
                       </div>
                     </div>
-                  )}
-                </div>
-              )}
-
-              {mc.key === 'aspect' && mode === 'aspect' && (
-                <div style={{ marginBottom: 'var(--space-3)' }}>
-                  <div style={{ display: 'flex', gap: 'var(--space-3)', marginBottom: 'var(--space-3)', alignItems: 'flex-end' }}>
-                    <div className="form-group" style={{ flex: 1 }}>
-                      <label className="form-label">{t('crop.widthRatio')}</label>
-                      <NumberInput className="form-input" value={ratioW} min={1} onChange={setRatioW} fallback={1} integer />
-                    </div>
-                    <span style={{ paddingBottom: 10, fontWeight: 700, color: 'var(--color-text-tertiary)', fontSize: 18 }}>:</span>
-                    <div className="form-group" style={{ flex: 1 }}>
-                      <label className="form-label">{t('crop.heightRatio')}</label>
-                      <NumberInput className="form-input" value={ratioH} min={1} onChange={setRatioH} fallback={1} integer />
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                    {PRESETS.map((p) => (
-                      <button key={p.label} className="btn btn-ghost" onClick={() => { setRatioW(p.w); setRatioH(p.h); }}
-                        style={{
-                          fontSize: 11, height: 26, padding: '0 10px', borderRadius: 13,
-                          background: ratioW === p.w && ratioH === p.h ? 'rgba(129, 140, 248, 0.15)' : undefined,
-                          color: ratioW === p.w && ratioH === p.h ? '#818cf8' : undefined,
-                          border: ratioW === p.w && ratioH === p.h ? '1px solid rgba(129, 140, 248, 0.3)' : undefined,
-                        }}>
-                        {p.label}
-                      </button>
-                    ))}
                   </div>
                 </div>
               )}
 
-              {mc.key === 'edges' && mode === 'edges' && (
-                <div style={{ marginBottom: 'var(--space-3)' }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
-                    <div className="form-group">
-                      <label className="form-label">{t('crop.cropTop')}</label>
-                      <NumberInput className="form-input" value={cropTop} min={0} onChange={setCropTop} fallback={0} integer />
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">{t('crop.cropBottom')}</label>
-                      <NumberInput className="form-input" value={cropBottom} min={0} onChange={setCropBottom} fallback={0} integer />
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">{t('crop.cropLeft')}</label>
-                      <NumberInput className="form-input" value={cropLeft} min={0} onChange={setCropLeft} fallback={0} integer />
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">{t('crop.cropRight')}</label>
-                      <NumberInput className="form-input" value={cropRight} min={0} onChange={setCropRight} fallback={0} integer />
+              {mc.key === 'edges' && (
+                <div className={`ui-accordion ${mode === 'edges' ? 'is-open' : ''}`}>
+                  <div className="ui-accordion-inner">
+                    <div style={{ marginBottom: 'var(--space-3)' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
+                        <div className="form-group">
+                          <label className="form-label">{t('crop.cropTop')}</label>
+                          <NumberInput className="form-input" value={cropTop} min={0} onChange={setCropTop} fallback={0} integer />
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">{t('crop.cropBottom')}</label>
+                          <NumberInput className="form-input" value={cropBottom} min={0} onChange={setCropBottom} fallback={0} integer />
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">{t('crop.cropLeft')}</label>
+                          <NumberInput className="form-input" value={cropLeft} min={0} onChange={setCropLeft} fallback={0} integer />
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">{t('crop.cropRight')}</label>
+                          <NumberInput className="form-input" value={cropRight} min={0} onChange={setCropRight} fallback={0} integer />
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>

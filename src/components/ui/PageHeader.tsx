@@ -15,13 +15,21 @@ export interface PageHeaderProps {
 
 export default function PageHeader({ icon: Icon, color, title, subtitle, actions, style }: PageHeaderProps) {
   const heading = (
-    <>
-      <div className="ui-page-heading">
-        <Icon className="ui-page-icon" style={{ color }} />
-        <h1 className="page-title">{title}</h1>
+    <div className="ui-page-hero">
+      <div
+        className="ui-page-icon-badge"
+        style={{
+          color,
+          background: `color-mix(in srgb, ${color} 12%, transparent)`,
+        }}
+      >
+        <Icon className="ui-page-icon" />
       </div>
-      {subtitle !== undefined && <p className="page-subtitle">{subtitle}</p>}
-    </>
+      <div className="ui-page-title-block">
+        <h1 className="page-title">{title}</h1>
+        {subtitle !== undefined && <p className="page-subtitle">{subtitle}</p>}
+      </div>
+    </div>
   );
 
   if (actions === undefined) {
@@ -30,8 +38,8 @@ export default function PageHeader({ icon: Icon, color, title, subtitle, actions
 
   return (
     <div className="page-header ui-page-header-split" style={style}>
-      <div>{heading}</div>
-      {actions}
+      {heading}
+      <div className="ui-page-actions">{actions}</div>
     </div>
   );
 }

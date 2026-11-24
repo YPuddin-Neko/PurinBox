@@ -39,20 +39,15 @@ buildSync({
 });
 const ui = createRequire(import.meta.url)(outfile);
 
-test('the sidebar version label stays unframed in expanded and collapsed layouts', () => {
+test('the sidebar brand version stays unframed when up to date and pulses on updates', () => {
   const css = postcss.parse(readFileSync(join(root, 'src/styles/sidebar.css'), 'utf8'));
-  const versionRules = [];
-  css.walkRules(rule => {
-    if (rule.selectors.some(selector => /\.sidebar-version$/.test(selector))) versionRules.push(rule);
+  const verRule = css.nodes.find(rule => rule.selector === '.sidebar-brand-ver');
+  assert.ok(verRule);
+  verRule.walkDecls(decl => {
+    assert.doesNotMatch(decl.prop, /^(?:background(?:-color|-image)?|border(?:-color|-style|-width)?|box-shadow)$/);
   });
-  assert.equal(versionRules.length, 2);
-  for (const rule of versionRules) {
-    rule.walkDecls(decl => {
-      assert.doesNotMatch(decl.prop, /^(?:background(?:-color|-image)?|border(?:-color|-style|-width)?|box-shadow)$/);
-    });
-  }
-  const dot = css.nodes.find(rule => rule.selector === '.sidebar-version-dot');
-  assert.ok(dot.nodes.some(decl => decl.prop === 'animation' && decl.value === 'pulse 2s infinite'));
+  const dotRing = css.nodes.find(rule => rule.selector === '.sidebar-version-dot::after');
+  assert.ok(dotRing?.nodes.some(decl => decl.prop === 'animation' && decl.value.includes('updateRing')));
 });
 
 test('formatBytes keeps one decimal below 100 and steps up at 1024', () => {
