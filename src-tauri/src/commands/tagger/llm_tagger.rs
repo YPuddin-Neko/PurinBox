@@ -69,7 +69,7 @@ fn existing_input(path: &Path, format: &str) -> Result<(String, Option<serde_jso
         let original = std::fs::read_to_string(path.with_extension("gbc.json")).map_err(|e| e.to_string())?;
         let value: serde_json::Value = serde_json::from_str(&original).map_err(|e| format!("GBC 数据无效：{}", e))?;
         if !crate::commands::tag_manager::is_structured_caption(&value) { return Err("GBC 数据中没有图结构".into()); }
-        return Ok((format!("Describe this image using its GBC scene graph: {}", original), None, original));
+        return Ok(("Describe this image using its GBC scene graph below.".into(), None, original));
     }
     let original = std::fs::read_to_string(path.with_extension(format)).map_err(|e| format!("无法读取已有标签：{}", e))?;
     if original.trim().is_empty() { return Err("已有标签为空".into()); }

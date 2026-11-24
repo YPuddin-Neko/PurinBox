@@ -4,58 +4,58 @@
       "label": "OWLv2 Base",
       "repo": "google/owlv2-base-patch16-ensemble",
       "revision": "cfd3195ba4ea9592eec887ded089f4c08eff231d",
-      "files": [
-        "config.json",
-        "preprocessor_config.json",
-        "tokenizer_config.json",
-        "special_tokens_map.json",
-        "vocab.json",
-        "merges.txt",
-        "added_tokens.json",
-        "model.safetensors"
-      ]
+      "files": {
+        "config.json": 414,
+        "preprocessor_config.json": 425,
+        "tokenizer_config.json": 1100,
+        "special_tokens_map.json": 121,
+        "vocab.json": 1059962,
+        "merges.txt": 524619,
+        "added_tokens.json": 67,
+        "model.safetensors": 619918824
+      }
     },
     {
       "label": "OWLv2 Large",
       "repo": "google/owlv2-large-patch14-ensemble",
       "revision": "95e26936e865f87db1742128404b3c035d47d89d",
-      "files": [
-        "config.json",
-        "preprocessor_config.json",
-        "tokenizer_config.json",
-        "special_tokens_map.json",
-        "vocab.json",
-        "merges.txt",
-        "added_tokens.json",
-        "model.safetensors"
-      ]
+      "files": {
+        "config.json": 617,
+        "preprocessor_config.json": 427,
+        "tokenizer_config.json": 1100,
+        "special_tokens_map.json": 121,
+        "vocab.json": 1059962,
+        "merges.txt": 524619,
+        "added_tokens.json": 67,
+        "model.safetensors": 1750520144
+      }
     },
     {
       "label": "SAM 3",
       "repo": "facebook/sam3",
       "revision": "3c879f39826c281e95690f02c7821c4de09afae7",
-      "files": [
-        "config.json",
-        "merges.txt",
-        "model.safetensors",
-        "processor_config.json",
-        "special_tokens_map.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "vocab.json"
-      ]
+      "files": {
+        "config.json": 25843,
+        "merges.txt": 524619,
+        "model.safetensors": 3439938512,
+        "processor_config.json": 1712,
+        "special_tokens_map.json": 588,
+        "tokenizer.json": 3642073,
+        "tokenizer_config.json": 799,
+        "vocab.json": 862328
+      }
     },
     {
       "label": "SAM 3 LiteText S0",
       "repo": "vil-uob/sam3-litetext-s0",
       "revision": "b09766e54f5d2eba021119ec7feff13e74c0f8fc",
-      "files": [
-        "config.json",
-        "model.safetensors",
-        "processor_config.json",
-        "tokenizer.json",
-        "tokenizer_config.json"
-      ]
+      "files": {
+        "config.json": 3357,
+        "model.safetensors": 2117074488,
+        "processor_config.json": 576,
+        "tokenizer.json": 3642073,
+        "tokenizer_config.json": 380
+      }
     }
   ],
   "embedder": [
@@ -63,57 +63,57 @@
       "label": "all-MiniLM-L6-v2",
       "repo": "sentence-transformers/all-MiniLM-L6-v2",
       "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
-      "files": [
-        "config.json",
-        "config_sentence_transformers.json",
-        "sentence_bert_config.json",
-        "modules.json",
-        "1_Pooling/config.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "special_tokens_map.json",
-        "vocab.txt",
-        "model.safetensors"
-      ]
+      "files": {
+        "config.json": 612,
+        "config_sentence_transformers.json": 116,
+        "sentence_bert_config.json": 53,
+        "modules.json": 349,
+        "1_Pooling/config.json": 190,
+        "tokenizer.json": 466247,
+        "tokenizer_config.json": 350,
+        "special_tokens_map.json": 112,
+        "vocab.txt": 231508,
+        "model.safetensors": 90868376
+      }
     },
     {
       "label": "all-mpnet-base-v2",
       "repo": "sentence-transformers/all-mpnet-base-v2",
       "revision": "e8c3b32edf5434bc2275fc9bab85f82640a19130",
-      "files": [
-        "config.json",
-        "config_sentence_transformers.json",
-        "sentence_bert_config.json",
-        "modules.json",
-        "1_Pooling/config.json",
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "special_tokens_map.json",
-        "vocab.txt",
-        "model.safetensors"
-      ]
+      "files": {
+        "config.json": 571,
+        "config_sentence_transformers.json": 116,
+        "sentence_bert_config.json": 53,
+        "modules.json": 349,
+        "1_Pooling/config.json": 190,
+        "tokenizer.json": 466021,
+        "tokenizer_config.json": 363,
+        "special_tokens_map.json": 239,
+        "vocab.txt": 231536,
+        "model.safetensors": 437971872
+      }
     },
     {
       "label": "EmbeddingGemma 300M",
       "repo": "google/embeddinggemma-300m",
       "revision": "57c266a740f537b4dc058e1b0cda161fd15afa75",
-      "files": [
-        "config.json",
-        "config_sentence_transformers.json",
-        "sentence_bert_config.json",
-        "modules.json",
-        "1_Pooling/config.json",
-        "2_Dense/config.json",
-        "2_Dense/model.safetensors",
-        "3_Dense/config.json",
-        "3_Dense/model.safetensors",
-        "model.safetensors",
-        "added_tokens.json",
-        "special_tokens_map.json",
-        "tokenizer.json",
-        "tokenizer.model",
-        "tokenizer_config.json"
-      ]
+      "files": {
+        "config.json": 1488,
+        "config_sentence_transformers.json": 997,
+        "sentence_bert_config.json": 58,
+        "modules.json": 573,
+        "1_Pooling/config.json": 312,
+        "2_Dense/config.json": 134,
+        "2_Dense/model.safetensors": 9437272,
+        "3_Dense/config.json": 134,
+        "3_Dense/model.safetensors": 9437272,
+        "model.safetensors": 1211486072,
+        "added_tokens.json": 35,
+        "special_tokens_map.json": 662,
+        "tokenizer.json": 33385008,
+        "tokenizer.model": 4689074,
+        "tokenizer_config.json": 1155346
+      }
     }
   ]
 }

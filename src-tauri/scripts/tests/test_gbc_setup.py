@@ -29,45 +29,51 @@ class SetupTests(unittest.TestCase):
                 setup.prepare(root, 'cpu')
                 self.assertIn('--only-binary=kohakugbc-data,kohakuvault', run.call_args.args[0])
 
+    def tiny_catalog(self):
+        return {role: [{**m, 'files': dict.fromkeys(m['files'], 1)} for m in models]
+                for role, models in setup.MODELS.items()}
+
     def test_complete_models_skip_download_and_partial_models_resume(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, patch.object(setup, 'MODELS', self.tiny_catalog()):
             root = Path(directory)
             defaults = [setup.MODELS[role][0] for role in ('detector', 'embedder')]
             for model in defaults:
                 for file in model['files']:
                     path = root / model['repo'].split('/')[1] / file
                     path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'x')
-            with patch('huggingface_hub.snapshot_download') as download:
+            with patch('huggingface_hub.hf_hub_download') as download:
                 setup.download_models(root)
                 download.assert_not_called()
                 model = defaults[0]
                 folder = root / model['repo'].split('/')[1]
-                missing = folder / model['files'][0]
+                missing = folder / 'config.json'
                 missing.unlink()
                 download.side_effect = lambda **kwargs: missing.write_bytes(b'x')
                 setup.download_models(root)
                 download.assert_called_once_with(repo_id=model['repo'], revision=model['revision'],
-                    local_dir=str(folder), allow_patterns=model['files'], tqdm_class=ANY)
+                    filename=missing.name, local_dir=str(folder), force_download=False, tqdm_class=ANY)
+                missing.write_bytes(b'bad')
+                setup.download_models(root)
+                self.assertTrue(download.call_args.kwargs['force_download'])
 
     def test_only_selected_models_download_and_complete_pairs_are_reused(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, patch.object(setup, 'MODELS', self.tiny_catalog()):
             root = Path(directory)
-            def write_files(**args):
-                for name in args['allow_patterns']:
-                    file = Path(args['local_dir']) / name
-                    file.parent.mkdir(parents=True, exist_ok=True)
-                    file.write_bytes(b'x')
+            def write_file(**args):
+                file = Path(args['local_dir']) / args['filename']
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(b'x')
             for detector in setup.MODELS['detector']:
                 for embedder in setup.MODELS['embedder']:
                     with self.subTest(detector=detector['label'], embedder=embedder['label']):
                         folder = Path(tempfile.mkdtemp(dir=root))
                         paths = [folder / model['repo'].split('/')[1] for model in (detector, embedder)]
-                        with patch('huggingface_hub.snapshot_download', side_effect=write_files) as download, patch('sys.stdout', io.StringIO()):
+                        expected = [(m['repo'], f) for m in (detector, embedder) for f in m['files']]
+                        with patch('huggingface_hub.hf_hub_download', side_effect=write_file) as download, patch('sys.stdout', io.StringIO()):
                             setup.download_models(folder, *paths)
-                            self.assertEqual([call.kwargs['repo_id'] for call in download.call_args_list],
-                                             [detector['repo'], embedder['repo']])
                             setup.download_models(folder, *paths)
-                            self.assertEqual(download.call_count, 2)
+                            self.assertEqual([(c.kwargs['repo_id'], c.kwargs['filename'])
+                                              for c in download.call_args_list], expected)
 
     def test_child_json_logs_are_not_double_encoded(self):
         process = Mock()
@@ -100,18 +106,26 @@ class SetupTests(unittest.TestCase):
             setup.run([sys.executable, '-c', code], forward_events=True)
         self.assertEqual([json.loads(line) for line in output.getvalue().splitlines()], [event])
 
-    def test_model_progress_uses_download_protocol_without_terminal_bars(self):
+    def test_xet_network_progress_precedes_disk_writes_and_keeps_one_model_total(self):
+        from types import SimpleNamespace
+        from huggingface_hub.utils._xet_progress_reporting import XetDownloadProgressReporter
         output, terminal = io.StringIO(), io.StringIO()
-        with patch('sys.stdout', output), patch('sys.stderr', terminal):
-            progress = setup.model_progress('model')
-            with progress(total=100, unit='B') as bar:
-                bar.update(50)
-                bar.display()
-            with progress(total=10, unit='it') as count:
-                count.update(1)
+        def report(written, received):
+            return SimpleNamespace(total_bytes_completed=written, total_transfer_bytes_completed=received,
+                total_transfer_bytes_completion_rate=1, total_bytes_completion_rate=1, total_bytes=800)
+        with patch('sys.stdout', output), patch('sys.stderr', terminal), patch.object(setup.time, 'monotonic', return_value=0) as clock:
+            with XetDownloadProgressReporter(reconstruction_desc='weight: reconstructing file',
+                    transfer_desc='weight: downloading bytes', total=800, log_level=20, name='test',
+                    tqdm_class=setup.model_progress('test', 200, 1000, 800)) as reporter:
+                clock.return_value = 1
+                reporter.update_progress(report(0, 400))
+                clock.return_value = 2
+                reporter.update_progress(report(400, 400))
+                clock.return_value = 3
+                reporter.update_progress(report(800, 800))
         events = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertTrue(any(event['percent'] == 50 for event in events))
-        self.assertTrue(all(event['type'] == 'download' for event in events))
+        self.assertEqual([e['percent'] for e in events], [60, 60, 99.9])
+        self.assertGreater(events[0]['speed_mbps'], 0)
         self.assertEqual(terminal.getvalue(), '')
 
 if __name__ == '__main__': unittest.main()

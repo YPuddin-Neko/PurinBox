@@ -5,7 +5,7 @@ use serde_json::Value;
 #[derive(Serialize, Deserialize)]
 pub struct GbcDocument { pub path: String, pub image_path: String, pub content: String }
 
-fn validate(value: &Value) -> Result<(), String> {
+pub(crate) fn validate(value: &Value) -> Result<(), String> {
     let graph = value.get("graph").unwrap_or(value);
     let vertices = graph["vertices"].as_array().filter(|v| !v.is_empty()).ok_or("GBC 数据缺少区域节点")?;
     let mut ids = std::collections::HashSet::new();

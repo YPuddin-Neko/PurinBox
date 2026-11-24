@@ -51,31 +51,47 @@ def run(command, *, forward_events=False):
             raise RuntimeError(child_error or 'GBC 依赖安装失败：' + '\n'.join(tail)[-2000:])
 
 
-def model_progress(name):
+def model_progress(name, completed, total, file_size):
     from tqdm.auto import tqdm
 
     class ModelProgress(tqdm):
         def __init__(self, *args, **kwargs):
-            kwargs.update(file=io.StringIO(), disable=False, mininterval=0.25, miniters=1)
+            self.received = self.last_received = 0
+            self.last_report = time.monotonic()
+            kwargs.update(file=io.StringIO(), disable=False)
             super().__init__(*args, **kwargs)
 
         def display(self, *args, **kwargs):
-            if self.unit != 'B' or self.desc == 'Downloading bytes':
+            pass
+
+        def report(self):
+            now = time.monotonic()
+            elapsed = now - self.last_report
+            if elapsed < 0.25:
                 return
-            elapsed = time.time() - getattr(self, 'start_t', time.time())
-            speed = max(0, self.n - self.initial) / elapsed / 1_000_000 if elapsed > 0 else 0
-            percent = min(100, max(0, self.n / self.total * 100)) if self.total else 0
+            # Xet can receive bytes before writing them. Both counters describe the same file.
+            file_done = min(file_size, max(self.n, self.initial + self.received))
+            percent = min(99.9, (completed + file_done) / total * 100)
+            speed = max(0, self.received - self.last_received) / elapsed / 1_000_000
+            self.last_report, self.last_received = now, self.received
             progress(f'@pythonEnv.downloading|{name}', percent, name, speed)
+
+        def update(self, n=1):
+            super().update(n)
+            self.report()
+
+        def update_transfer(self, n):
+            self.received += n
+            self.report()
+
+        def set_transfer_postfix_str(self, *args, **kwargs):
+            pass
 
     return ModelProgress
 
 
 def environment_ready(python):
     return python.is_file() and subprocess.run([str(python), '-c', PROBE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-
-
-def model_ready(folder, files):
-    return all((folder / name).is_file() and (folder / name).stat().st_size > 0 for name in files)
 
 
 def prepare(target, device):
@@ -105,9 +121,11 @@ def prepare(target, device):
 
 
 def download_models(root, detector=None, embedder=None):
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import constants, hf_hub_download
     from huggingface_hub.errors import GatedRepoError
 
+    # The HTTP fallback delivers progress once per read (10 MiB by default).
+    constants.DOWNLOAD_CHUNK_SIZE = min(constants.DOWNLOAD_CHUNK_SIZE, 64 * 1024)
     for role, selected in [('detector', detector), ('embedder', embedder)]:
         choices = MODELS[role]
         if selected is None:
@@ -117,18 +135,29 @@ def download_models(root, detector=None, embedder=None):
         if model is None:
             continue
         files = model['files']
-        if model_ready(selected, files):
+        pending = [file for file, size in files.items()
+                   if not (selected / file).is_file() or (selected / file).stat().st_size != size]
+        if not pending:
             continue
+        total = sum(files.values())
+        completed = total - sum(files[file] for file in pending)
         name = selected.name
+        message = f'@pythonEnv.downloading|{name}'
         emit(f'正在下载 GBC 模型：{name}')
-        progress(f'@pythonEnv.downloading|{name}', filename=name)
-        try:
-            snapshot_download(repo_id=model['repo'], revision=model['revision'], local_dir=str(selected),
-                              allow_patterns=files, tqdm_class=model_progress(name))
-        except GatedRepoError as error:
-            raise RuntimeError(f"下载 {model['repo']} 需要访问权限，请在 Hugging Face 获取授权并在设置中填写令牌") from error
-        if not model_ready(selected, files):
-            raise RuntimeError(f'GBC 模型文件不完整：{name}')
+        progress(message, min(99.9, completed / total * 100), name)
+        for file in pending:
+            path = selected / file
+            size = files[file]
+            try:
+                hf_hub_download(repo_id=model['repo'], filename=file, revision=model['revision'],
+                                local_dir=str(selected), force_download=path.is_file(),
+                                tqdm_class=model_progress(name, completed, total, size))
+            except GatedRepoError as error:
+                raise RuntimeError(f"下载 {model['repo']} 需要访问权限，请在 Hugging Face 获取授权并在设置中填写令牌") from error
+            if not path.is_file() or path.stat().st_size != size:
+                raise RuntimeError(f'GBC 模型文件不完整：{name}/{file}')
+            completed += size
+            progress(message, min(99.9, completed / total * 100) if completed < total else 100, name)
 
 
 def main():

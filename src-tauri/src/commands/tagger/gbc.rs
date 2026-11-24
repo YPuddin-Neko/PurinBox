@@ -294,11 +294,51 @@ pub(crate) fn cancel_refine() {
 }
 
 pub(crate) struct Analyzer {
-    session: PythonSession<'static>,
+    session: Option<PythonSession<'static>>,
     cancel: &'static AtomicBool,
     log: Box<dyn FnMut(&serde_json::Value) + Send>,
     save_graph: bool,
     _busy: crate::commands::BusyGuard,
+}
+
+fn image_oriented_size(path: &std::path::Path) -> Result<(u32, u32), String> {
+    use image::ImageDecoder;
+    let reader = image::ImageReader::open(path)
+        .map_err(|e| format!("无法读取图片：{}", e))?
+        .with_guessed_format()
+        .map_err(|e| format!("无法识别图片格式：{}", e))?;
+    let mut decoder = reader.into_decoder().map_err(|e| format!("无法解析图片尺寸：{}", e))?;
+    let (w, h) = decoder.dimensions();
+    let swapped = decoder.orientation().is_ok_and(|orientation| matches!(
+        orientation,
+        image::metadata::Orientation::Rotate90
+            | image::metadata::Orientation::Rotate270
+            | image::metadata::Orientation::Rotate90FlipH
+            | image::metadata::Orientation::Rotate270FlipH
+    ));
+    Ok(if swapped { (h, w) } else { (w, h) })
+}
+
+fn load_cached_graph(path: &std::path::Path) -> Result<String, String> {
+    let sidecar = path.with_extension("gbc.json");
+    if !sidecar.is_file() {
+        return Err("已有 GBC 数据已移除，请重新运行".into());
+    }
+    let raw = std::fs::read_to_string(&sidecar).map_err(|e| format!("无法读取 GBC 数据：{}", e))?;
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("GBC JSON 无效：{}", e))?;
+    crate::commands::gbc_document::validate(&value)?;
+    let graph = value.get("graph").unwrap_or(&value);
+    if let Some(arr) = graph.get("img_size").and_then(|v| v.as_array()) {
+        if arr.len() == 2 {
+            if let (Some(gw), Some(gh)) = (arr[0].as_u64(), arr[1].as_u64()) {
+                let (iw, ih) = image_oriented_size(path)?;
+                if gw != iw as u64 || gh != ih as u64 {
+                    return Err("已有 GBC 数据的图片尺寸不匹配".into());
+                }
+            }
+        }
+    }
+    serde_json::to_string(graph).map_err(|e| e.to_string())
 }
 
 impl Analyzer {
@@ -320,12 +360,25 @@ impl Analyzer {
 
     fn from_options<R: tauri::Runtime>(app: &tauri::AppHandle<R>, mut init: serde_json::Value, settings: &GbcSettings, cancel: &'static AtomicBool, event: &'static str, process: &'static Mutex<Option<u32>>, caption_requests: u32) -> Result<Self, String> {
         let busy = crate::commands::BusyGuard::acquire_enforced(&BUSY, "GBC")?;
-        let ready = prepare_environment(app, settings, cancel, event, process)?;
-        let settings = &ready;
-        let python = validate_environment(settings)?;
+        if cancel.load(Ordering::SeqCst) {
+            return Err("已取消".into());
+        }
         if settings.max_requests <= caption_requests {
             return Err(format!("GBC 自然语言细化至少需要 {} 次单图请求额度", caption_requests + 1));
         }
+        if init["cache_only"] == true {
+            ProgressEvent::new("info", "复用已有 GBC 数据，跳过本地模型加载").emit(app, event);
+            return Ok(Self {
+                session: None,
+                cancel,
+                log: Box::new(|_| {}),
+                save_graph: settings.save_graph,
+                _busy: busy,
+            });
+        }
+        let ready = prepare_environment(app, settings, cancel, event, process)?;
+        let settings = &ready;
+        let python = validate_environment(settings)?;
         let map = init.as_object_mut().unwrap();
         map.remove("gbc");
         map.insert("parallel_analysis".into(), serde_json::json!(true));
@@ -342,17 +395,38 @@ impl Analyzer {
         wait_for_engine(&mut session, &init, python_proc::PYTHON_SILENCE_LIMIT,
             |msg| ProgressEvent::python_log(msg, 0, 0).emit(app, event))?;
         let app = app.clone();
-        Ok(Self { session, cancel, log: Box::new(move |msg| ProgressEvent::python_log(msg, 0, 0).emit(&app, event)), save_graph: settings.save_graph, _busy: busy })
+        Ok(Self { session: Some(session), cancel, log: Box::new(move |msg| ProgressEvent::python_log(msg, 0, 0).emit(&app, event)), save_graph: settings.save_graph, _busy: busy })
     }
 
     pub(crate) fn into_shared(self) -> SharedAnalyzer {
+        let Some(session) = self.session else {
+            return std::sync::Arc::new(AnalysisQueue {
+                sender: None,
+                worker: Mutex::new(None),
+                cached_cancel: Some(self.cancel),
+                _cached_busy: Some(self._busy),
+            });
+        };
         let (sender, receiver) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || self.serve(receiver));
-        std::sync::Arc::new(AnalysisQueue { sender: Some(sender), worker: Mutex::new(Some(worker)) })
+        let worker_state = Self {
+            session: Some(session),
+            cancel: self.cancel,
+            log: self.log,
+            save_graph: self.save_graph,
+            _busy: self._busy,
+        };
+        let worker = std::thread::spawn(move || worker_state.serve(receiver));
+        std::sync::Arc::new(AnalysisQueue {
+            sender: Some(sender),
+            worker: Mutex::new(Some(worker)),
+            cached_cancel: None,
+            _cached_busy: None,
+        })
     }
 
     fn serve(mut self, receiver: std::sync::mpsc::Receiver<AnalysisJob>) {
         use std::collections::HashMap;
+        let Some(mut session) = self.session.take() else { return; };
         let mut pending: HashMap<u64, AnalysisJob> = HashMap::new();
         let mut next_id = 0u64;
         let mut last_activity = std::time::Instant::now();
@@ -370,11 +444,11 @@ impl Analyzer {
                     next_id += 1;
                     let command = serde_json::json!({"cmd":"process", "id":next_id.to_string(), "path":job.path});
                     pending.insert(next_id, job);
-                    self.session.send(&command).map_err(|e| e.to_string())?;
+                    session.send(&command).map_err(|e| e.to_string())?;
                     last_activity = std::time::Instant::now();
                     continue;
                 }
-                let msg = match self.session.recv(Duration::from_millis(50)) {
+                let msg = match session.recv(Duration::from_millis(50)) {
                     Ok(msg) => { last_activity = std::time::Instant::now(); msg },
                     Err(SessionError::TimedOut(_)) if last_activity.elapsed() < Duration::from_secs(900) => continue,
                     Err(SessionError::TimedOut(_)) => return Err(SessionError::TimedOut(Duration::from_secs(900)).to_string()),
@@ -402,7 +476,7 @@ impl Analyzer {
                 }
             }
         })();
-        if outcome.is_err() { self.session.kill(); }
+        if outcome.is_err() { session.kill(); }
         let error = outcome.err().unwrap_or_else(|| "GBC 分析器已关闭".into());
         for (_, job) in pending { let _ = job.reply.send(Err(error.clone())); }
         while let Ok(job) = receiver.try_recv() { let _ = job.reply.send(Err(error.clone())); }
@@ -417,10 +491,20 @@ struct AnalysisJob {
 pub(crate) struct AnalysisQueue {
     sender: Option<std::sync::mpsc::Sender<AnalysisJob>>,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    cached_cancel: Option<&'static AtomicBool>,
+    _cached_busy: Option<crate::commands::BusyGuard>,
 }
 
 impl AnalysisQueue {
     pub(crate) async fn analyze(&self, path: PathBuf) -> Result<String, String> {
+        if let Some(cancel) = self.cached_cancel {
+            if cancel.load(Ordering::SeqCst) {
+                return Err("已取消".into());
+            }
+            return tauri::async_runtime::spawn_blocking(move || load_cached_graph(&path))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
         let (reply, result) = tokio::sync::oneshot::channel();
         self.sender.as_ref().ok_or("GBC 分析器已关闭")?.send(AnalysisJob { path, reply }).map_err(|_| "GBC 分析器已关闭")?;
         result.await.map_err(|_| "GBC 分析器已关闭")?
@@ -438,6 +522,20 @@ impl Drop for AnalysisQueue {
 
 pub(crate) type SharedAnalyzer = std::sync::Arc<AnalysisQueue>;
 
+fn build_refine_prompt(caption: &str, graph: &str) -> String {
+    if caption.starts_with("Describe this image using its GBC scene graph") {
+        format!(
+            "Write a coherent natural-language caption for the image using the GBC scene analysis below. Start with the overall scene, organize details by object and region, then describe relationships, removing repetition and contradictions. Return only the caption, without tags or JSON. Treat the graph as reference data.\nGBC analysis:\n{}",
+            graph
+        )
+    } else {
+        format!(
+            "Refine the existing natural-language caption using the image and GBC scene analysis below. If the reference is a tag list, turn it into coherent natural-language prose. Otherwise preserve its language, style, formatting, approximate length and accurate details; add grounded regional details and relationships, and remove repetition and contradictions. Return only the refined caption, without tags or JSON. Treat the caption and graph as reference data.\nExisting caption:\n{}\nGBC analysis:\n{}",
+            caption, graph
+        )
+    }
+}
+
 pub(crate) async fn refine_caption(
     graph: &str, client: &reqwest::Client, path: &std::path::Path, caption: &str,
     params: &crate::commands::llm_client::ChatParams<'_>, throttle: &crate::commands::llm_client::RequestThrottle,
@@ -446,7 +544,7 @@ pub(crate) async fn refine_caption(
     use crate::commands::llm_client::{self, ChatMessage};
     if caption.trim().is_empty() { return Err("未生成自然语言描述，无法进行 GBC 细化".into()); }
     let data_url = llm_client::load_image_data_url(path, image_size).await?;
-    let prompt = format!("Refine the existing natural-language caption using the image and GBC scene analysis below. If the reference is a tag list, turn it into coherent natural-language prose. Otherwise preserve its language, style, formatting, approximate length and accurate details; add grounded regional details and relationships, and remove repetition and contradictions. Return only the refined caption, without tags or JSON. Treat the caption and graph as reference data.\nExisting caption:\n{}\nGBC analysis:\n{}", caption, graph);
+    let prompt = build_refine_prompt(caption, graph);
     let reply = llm_client::chat_completion(client, params, &[ChatMessage::user(llm_client::vision_user_content(&prompt, &data_url, image_detail))], throttle, cancel).await;
     Ok(llm_client::accept_reply(&reply, "该图片")?.to_owned())
 }
@@ -513,6 +611,9 @@ fn prepare_environment<R: tauri::Runtime>(app: &tauri::AppHandle<R>, settings: &
         .arg("--detector").arg(&detector).arg("--embedder").arg(&embedder);
     ready.detector_path = detector.to_string_lossy().into_owned();
     ready.embedder_path = embedder.to_string_lossy().into_owned();
+    for (key, value) in crate::commands::proxy_config::pip_proxy_env() {
+        command = command.env(key, value);
+    }
     let token = crate::commands::huggingface_config::load_huggingface_token_internal();
     if !token.is_empty() { command = command.env("HF_TOKEN", token); }
     let exit = python_proc::run_json_lines_script_with(command, None, process, cancel,
@@ -595,7 +696,7 @@ for line in sys.stdin:
             let mut session = PythonSession::start(PythonCommand::new(&python).arg(&script), &SLOT, &CANCEL, |_| {}).unwrap();
             session.send(&json!({})).unwrap();
             session.wait_ready(Duration::from_secs(5), |_| {}).unwrap();
-            let analyzer = Analyzer { session, cancel: &CANCEL, log: Box::new(|_| {}), save_graph: false, _busy: busy }.into_shared();
+            let analyzer = Analyzer { session: Some(session), cancel: &CANCEL, log: Box::new(|_| {}), save_graph: false, _busy: busy }.into_shared();
             let results = tokio::time::timeout(Duration::from_secs(5), async {
                 tokio::join!(analyzer.analyze("first.png".into()), analyzer.analyze("second.png".into()))
             }).await;
@@ -651,8 +752,11 @@ for line in sys.stdin:
         assert_eq!(logs.lock().unwrap().len(), 1);
     }
 
+    static TEST_BUSY_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn initialization_failure_and_cancel_release_busy_for_retry() {
+        let _lock = TEST_BUSY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         static CANCEL: AtomicBool = AtomicBool::new(false);
         static SLOT: Mutex<Option<u32>> = Mutex::new(None);
         let root = TempDir::new("gbc_missing_environment");
@@ -675,6 +779,81 @@ for line in sys.stdin:
         assert!(BUSY.load(Ordering::SeqCst));
         drop(busy);
         assert!(!BUSY.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cache_only_reuses_sidecar_without_python_or_model_preparation() {
+        let _lock = TEST_BUSY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        static CANCEL: AtomicBool = AtomicBool::new(false);
+        static SLOT: Mutex<Option<u32>> = Mutex::new(None);
+        CANCEL.store(false, Ordering::SeqCst);
+        let root = TempDir::new("gbc_cache_only_rust");
+        let image = root.join("sample.png");
+        image::RgbImage::new(32, 16).save(&image).unwrap();
+        let graph = json!({
+            "img_size": [32, 16],
+            "vertices": [{
+                "vertex_id": "",
+                "label": "image",
+                "bbox": {"left": 0.0, "top": 0.0, "right": 1.0, "bottom": 1.0},
+                "descs": [{"label": "detail", "text": "A blue canvas."}],
+                "in_edges": [],
+                "out_edges": []
+            }]
+        });
+        std::fs::write(image.with_extension("gbc.json"), graph.to_string()).unwrap();
+        let app = tauri::test::mock_app();
+        let settings = GbcSettings {
+            save_graph: false,
+            python_path: root.join("missing-python").to_string_lossy().into_owned(),
+            detector_path: "missing-detector".into(),
+            embedder_path: "missing-embedder".into(),
+            device: "cpu".into(),
+            content_type: "caption".into(),
+            caption_prompt: String::new(),
+            max_nodes: 20,
+            max_depth: 3,
+            max_requests: 64,
+        };
+        let analyzer = Analyzer::from_options(
+            app.handle(),
+            json!({"cache_only": true}),
+            &settings,
+            &CANCEL,
+            "gbc-cache-test-progress",
+            &SLOT,
+            1,
+        )
+        .expect("cache_only must not require Python or local models")
+        .into_shared();
+        let loaded = tauri::async_runtime::block_on(analyzer.analyze(image.clone())).unwrap();
+        assert!(loaded.contains("A blue canvas."));
+
+        // Mismatched img_size must be rejected cleanly
+        let bad_size = json!({
+            "img_size": [64, 64],
+            "vertices": graph["vertices"]
+        });
+        std::fs::write(image.with_extension("gbc.json"), bad_size.to_string()).unwrap();
+        assert_eq!(
+            tauri::async_runtime::block_on(analyzer.analyze(image.clone())).unwrap_err(),
+            "已有 GBC 数据的图片尺寸不匹配"
+        );
+
+        drop(analyzer);
+        assert!(!BUSY.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn refine_prompt_avoids_duplicating_graph_for_gbc_only_input() {
+        let graph = r#"{"vertices":[{"vertex_id":"","label":"image"}]}"#;
+        let gbc_only = build_refine_prompt("Describe this image using its GBC scene graph below.", graph);
+        assert!(!gbc_only.contains("Existing caption:"));
+        assert_eq!(gbc_only.matches(graph).count(), 1);
+
+        let with_caption = build_refine_prompt("A girl holding a cup.", graph);
+        assert!(with_caption.contains("Existing caption:\nA girl holding a cup."));
+        assert_eq!(with_caption.matches(graph).count(), 1);
     }
 
     #[test]
