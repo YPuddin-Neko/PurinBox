@@ -66,19 +66,6 @@ export function pruneTaggerCategories(
   return next;
 }
 
-/**
- * 从工作流打标节点的 `cat_<类别>` 布尔参数取出启用的类别。
- * 旧工作流缺少的参数（如 cat_quality、cat_model）按 defaultOn 处理。
- */
-export function categoriesFromFlags(params: Readonly<Record<string, unknown>>): TaggerCategory[] {
-  return TAGGER_CATEGORIES
-    .filter(c => {
-      const v = params[`cat_${c.key}`];
-      return typeof v === 'boolean' ? v : c.defaultOn;
-    })
-    .map(c => c.key);
-}
-
 // ── JSON 追加字段 ──
 
 export interface JsonAppendFieldDef {

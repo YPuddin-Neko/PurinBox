@@ -30,7 +30,6 @@ test('every omitted command has a task route and its page uses queued invoke', (
     assert.match(readFileSync(join(root, `src/pages/${page}Page.tsx`), 'utf8'), /const invoke = useQueuedInvoke\(\)/);
   }
   assert.equal(TASK_ROUTE_MAP['image-dedup'], '/image-dedup');
-  assert.equal(TASK_ROUTE_MAP.workflow, '/workflow');
 });
 test('progress and early done do not finish task before backend returns', async () => {
   let resolve;

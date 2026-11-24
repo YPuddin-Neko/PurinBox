@@ -47,12 +47,9 @@ pub mod tagger;
 pub mod thumbnail;
 pub mod translator;
 pub mod upscale;
-pub mod workflow;
 
 #[cfg(test)]
 pub(crate) mod test_support;
-#[cfg(test)]
-mod workflow_node_tests;
 
 /// 下载临时文件辅助：返回 `{dest}.part` 临时路径，并清理上次中断遗留的旧残件。
 /// 下载应先写入 .part 文件，完成校验后再用 `finalize_part_file` 原子替换到最终路径，
