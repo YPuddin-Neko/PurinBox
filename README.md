@@ -4,7 +4,7 @@
 
 # PurinBox
 
-一个AI图片训练数据集处理工具箱
+让训练数据准备更轻松的 AI 图片数据集处理工具箱
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
@@ -12,65 +12,72 @@
 ![Rust](https://img.shields.io/badge/Rust-Tauri%202-orange)
 ![React](https://img.shields.io/badge/React-19-61DAFB)
 
-[下载](https://github.com/YPuddin-Neko/PurinBox/releases/latest) · [功能介绍](#功能特性) · [快速开始](#快速开始)
+[下载](https://github.com/YPuddin-Neko/PurinBox/releases/latest) · [功能介绍](#功能介绍) · [快速开始](#快速开始) · [更新日志](CHANGELOG.md)
 
 </div>
 
 ---
 
-PurinBox 是一个基于 **Tauri 2 + React** 的桌面应用，专注于二次元动漫图的训练数据集的预处理与管理。提供图片处理、自动打标、标签管理、分桶预览、图片超分/聚类/去重等一揽子功能，帮助你快速准备高质量的训练数据。
+PurinBox 是基于 **Tauri 2 + React** 的跨平台桌面工具，面向二次元与通用 AI 图像训练的数据集准备流程，涵盖图片预处理、自动打标、可视化标签管理、分桶分析以及超分、聚类、去重等常用工具。
 
 > [!NOTE]
 > 本项目是 **Vibe Coding** 的产物 — 从架构设计到每一行代码，全部由 AI 生成。
 
-## 功能特性
+## 功能介绍
 
 ### 数据集预处理
 
+多数处理工具支持输入单张图片或整个目录，并可选择是否递归扫描子文件夹。
+
 | 功能 | 说明 |
 | --- | --- |
-| **灵活输入** | 多数图片处理功能支持选择单张图片或文件夹，并可递归扫描子文件夹中的图片 |
-| **美学评分** | 使用 AI 模型自动评估图片美学质量，按 7 个等级分类到子文件夹 |
-| **图片裁切** | 批量裁切图片，支持中心裁切、填满裁切、比例裁切和边缘裁切；填满裁切可指定保留上方/下方/左侧/右侧画面 |
-| **三分法裁切** | 基于检测模型的智能构图裁切，自动识别人物位置进行三分法裁切 |
-| **图片缩放** | 按目标像素面积批量等比上采样/下采样，保持原图宽高比并自动对齐到训练常用尺寸 |
-| **图片处理** | 批量水平、垂直或双向翻转图片 |
-| **分辨率筛选** | 按最小宽度、最小高度或低于/高于指定分辨率筛选图片，对命中的图片执行复制或删除 |
-| **分辨率分析** | 统计数据集的分辨率分布，识别稀有尺寸，按宽高比推荐聚合目标分辨率，并可将图片导出到对应的分辨率文件夹 |
-| **保留指定文件** | 根据匹配规则保留或删除目录中的文件 |
-| **图片格式转换** | 批量转换为 PNG、JPG、WebP 或 BMP（源文件另支持 TIFF、GIF、PSD），自动跳过同格式文件 |
-| **转换透明通道** | 将带透明通道的图片转换为指定底色的不透明图片 |
-| **批量重命名** | 按前缀加序号批量重命名，可设置起始编号、序号位数和随机打乱顺序 |
-| **透视变换** | 批量对图片进行随机透视变换，用于数据增强 |
-| **模糊/噪点** | 批量添加高斯模糊和高斯噪点，用于数据增强 |
+| **美学评分** | 自动评估图片美学质量，按 7 个等级分类归档 |
+| **图片裁切** | 支持中心、填满、比例与边缘四种批量裁切模式 |
+| **三分法裁切** | 基于人物检测的构图裁切，自动对齐人物位置 |
+| **图片缩放** | 按目标像素面积等比缩放，自动对齐训练常用分辨率 |
+| **图片处理** | 批量水平、垂直或双向翻转 |
+| **分辨率筛选** | 按宽高或分辨率阈值筛选图片并复制或清理 |
+| **分辨率分析** | 统计分辨率分布，识别低频尺寸并按宽高比推荐聚合方案 |
+| **保留指定文件** | 按规则批量保留或删除目录中的文件 |
+| **图片格式转换** | 批量转为 PNG、JPG、WebP、BMP（源文件另支持 TIFF、GIF、PSD） |
+| **转换透明通道** | 将透明图转换为指定纯色背景的不透明图片 |
+| **批量重命名** | 按前缀与序号批量重命名，支持打乱顺序与同步重命名关联标签 |
+| **透视变换** | 批量随机透视变换，用于数据增强 |
+| **模糊 / 噪点** | 批量添加高斯模糊或高斯噪点，用于数据增强 |
 
 ### 数据集处理
 
 | 功能 | 说明 |
 | --- | --- |
-| **图片打标** | Tagger 模型（WD / CL / PixAI）自动生成 Danbooru 风格标签，VLM 生成自然语言描述，支持 GBC 细化与 CPU/GPU 推理、递归扫描及 TXT/JSON 输出；辅助打标（实验性功能）支持本地模型生成标签后由 VLM 视觉能力二次确认与调优，可在设置中开启 |
-| **标签管理** | 可视化编辑标签，支持 Danbooru (TXT)、自然语言 (TXT)、Danbooru+自然语言 (JSON) 与 GBC 格式 (GBC.JSON)；提供多标签交集筛选、按全部/当前/筛选范围批量增删替换、拖拽排序、全局翻译、大图滚轮缩放拖动查看，以及 GBC 树状层级区域框聚焦与画布直接拖拉微调 |
+| **图片打标** | 支持 WD / CL / PixAI 等本地 Tagger 模型生成 Danbooru 标签，支持 VLM 生成自然语言描述与 GBC 精细描述；设置中可开启「辅助打标」，结合本地模型初标与 VLM 二次调优 |
+| **标签管理** | 可视化管理 Danbooru（TXT）、自然语言（TXT）、Danbooru + 自然语言（JSON）与 GBC（GBC.JSON）四类标注文件；支持多标签筛选、批量增删替换、拖拽排序、标签翻译与大图缩放查看 |
 
 ### 高级工具
 
 | 功能 | 说明 |
 | --- | --- |
-| **标签优化** | 使用 LLM 对标签文件进行语义排序，或结合图片对已有标签进行细化调优（纠错/补充/移除） |
-| **分桶预览** | 预览训练集图片的 Bucket 分桶结果，支持 SD-Scripts 与 Diffusion Pipe 分桶逻辑、递归扫描、推荐参数、图片预览和导出分桶结构 |
-| **图片超分** | 使用超分模型对图片进行超分辨率放大 |
-| **图片聚类** | 基于视觉特征对数据集图片进行自动聚类分组，发现相似图片 |
-| **图片去重** | 基于感知哈希检测并清理重复/相似图片 |
-| **数据集配平** | LoRA/DreamBooth 训练步数计算器，支持多概念文件夹配平、按轮次/按步数两种模式、数据分布可视化（树状图/饼图/时间线） |
-| **图片元数据** | 读取、直接编辑并保存 A1111/ComfyUI/NovelAI 生成元数据，支持批量导出正向提示词 |
+| **标签优化** | 使用大语言模型对标签进行语义排序，或结合图片对已有标签纠错、补充与精简 |
+| **分桶预览** | 模拟训练集分桶结果，兼容 SD-Scripts 与 Diffusion Pipe 分桶逻辑，支持参数推荐与导出 |
+| **图片超分** | 基于 Real-ESRGAN 对图片进行批量超分辨率放大 |
+| **图片聚类** | 按视觉特征自动对图片分组，便于归类画风、角色或场景 |
+| **图片去重** | 基于感知哈希检测并清理重复或近似图片 |
+| **数据集配平** | LoRA / DreamBooth 多概念文件夹步数与轮次配平计算及分布可视化 |
+| **图片元数据** | 读取、编辑 A1111 / ComfyUI / NovelAI 生成元数据，并批量导出正向提示词 |
 
-### 系统功能
+### GBC 精细描述
 
-- 实时系统监控（CPU、内存、GPU）
-- 标签翻译（Google、百度、有道、Bing 四种翻译引擎）
-- 网络代理设置（HTTP/SOCKS5）
-- 翻译结果本地缓存（SQLite）
-- 全局任务队列（多任务并行，实时进度追踪）
-- 统一检测 GPU 加速环境，并在不可用时回退到 CPU
+PurinBox 集成 KohakuGBC，用于结合画面局部区域与对象关系生成更准确的自然语言描述：
+
+- **入口**：可在「图片打标 → GBC 细化」中对已有 TXT / JSON 标签的图片直接润色自然语言，或在「辅助打标」的自然语言预设中勾选启用。
+- **环境与模型**：首次使用时自动在应用数据目录的 `env/gbc` 与 `models/gbc` 中准备独立运行环境及所选检测、嵌入模型（如 OWLv2、SAM 3 等），支持按所选设备（CPU / CUDA / MPS）加载。
+- **图结构编辑**：开启保留 GBC 数据后会生成同名 `.gbc.json` 文件，可在「标签管理 → GBC 格式 (GBC.JSON)」中查看层级区域框、调整框选位置与节点描述，并在修改后回到「GBC 细化」重新生成最终自然语言。
+
+### 通用特性
+
+- 浅色 / 深色双主题与中 / 英 / 日三语界面
+- 实时硬件监控（CPU、内存、GPU）与全局任务队列
+- 四种标签翻译引擎（Google、百度、有道、Bing）与本地 SQLite 缓存
+- HTTP / SOCKS5 网络代理与 Hugging Face Token 管理
 
 ## 快速开始
 
@@ -78,27 +85,27 @@ PurinBox 是一个基于 **Tauri 2 + React** 的桌面应用，专注于二次�
 
 前往 [Releases](https://github.com/YPuddin-Neko/PurinBox/releases/latest) 下载对应平台的安装包：
 
-| 平台 | 文件 |
+| 平台 | 安装包 |
 | --- | --- |
-| Windows | `PurinBox_x.x.x_x64-setup.exe` |
+| Windows | `PurinBox_x.x.x_x64-setup.exe` / 便携版 ZIP |
 | macOS (Apple Silicon) | `PurinBox_x.x.x_aarch64.dmg` |
 | macOS (Intel) | `PurinBox_x.x.x_x64.dmg` |
 | Linux (x64 / ARM64) | `.deb` / `.rpm` / `.AppImage` |
 
 ### 系统要求
 
-- **Windows** 10/11、**macOS** 12+ 或主流 **Linux** 发行版
-- GPU 加速（可选）：Windows/Linux 需要 CUDA 12.x 和 cuDNN 9.x，macOS 使用 CoreML
+- **Windows** 10 / 11、**macOS** 12+ 或主流 **Linux** 发行版
+- **GPU 加速（可选）**：Windows / Linux 需 CUDA 12.x + cuDNN 9.x，macOS 支持 CoreML / MPS
 
 ### 从源码构建
 
-#### 前置依赖
+#### 环境依赖
 
 - [Node.js](https://nodejs.org/) 20.19+ 或 22.12+
 - [Rust](https://www.rust-lang.org/tools/install) >= 1.88
-- [Tauri CLI](https://v2.tauri.app/start/prerequisites/)
+- [Tauri 2 前置依赖](https://v2.tauri.app/start/prerequisites/)
 
-Linux 还需要安装 Tauri 构建依赖（以 Ubuntu/Debian 为例）：
+Linux 构建需额外安装系统库（以 Ubuntu / Debian 为例）：
 
 ```bash
 sudo apt-get update
@@ -108,47 +115,26 @@ sudo apt-get install -y \
   libfuse2 patchelf rpm wget
 ```
 
-#### 构建步骤
+#### 运行与打包
 
 ```bash
-# 克隆项目
 git clone https://github.com/YPuddin-Neko/PurinBox.git
 cd PurinBox
 
-# 安装前端依赖
 npm install
-
-# 开发模式运行
-npm run tauri dev
-
-# 构建生产版本
-npm run tauri build
+npm run tauri dev    # 开发模式
+npm run tauri build  # 生产构建
 ```
-
-### KohakuGBC 精细描述
-
-「图片打标 → GBC 细化」选择图片或数据集文件夹，自动读取同目录、同名的 TXT／JSON 标签；两者同时存在时优先读取 JSON。程序直接结合已有描述或标签和 GBC 区域分析进行细化，成功后更新原标签，失败时保留原文件。
-
-在「图片打标 → 辅助打标」的 VLM 调优中，勾选「使用 GBC 细化自然语言」。程序先结合 Tagger 标签和当前调优提示词生成结果，再通过整图、局部区域和对象关系细化自然语言。JSON 只替换自然语言字段，保留标签；辅助打标的预设、标签写回规则和触发词继续生效。只输出标签的预设不启用自然语言细化。
-
-启用 GBC 后，开始任务时自动准备独立环境和所选检测/嵌入模型，进度显示在当前任务中。环境安装到 `env/gbc`，模型保存到 `models/gbc`，后续任务复用已有文件；检测与嵌入模型均按所选设备（CPU / CUDA / MPS）加载。
-
-自然语言保存为同名 TXT，或更新完整／简化 JSON 中的自然语言字段；分析结果另存为 `.gbc.json`。取消会结束当前工作进程并保留已保存的结果。在「标签管理 → GBC 格式 (GBC.JSON)」中可按树状层级查看和编辑区域框坐标与节点描述，并一键「保存并继续细化」直接复用修改后的图结构重新润色最终自然语言；其余模式预览图同样支持叠加切换「区域框」并滚轮缩放查看大图。
 
 ## 技术栈
 
 | 层 | 技术 |
 | --- | --- |
-| 前端框架 | React 19 + TypeScript |
-| 桌面框架 | Tauri 2 |
-| 后端语言 | Rust |
-| 图片处理 | image-rs, psd |
-| AI 推理 | ONNX Runtime (Python) |
-| 超分引擎 | Real-ESRGAN (Python) |
-| 构建工具 | Vite 7 |
-| 样式 | 原生 CSS (CSS Variables) |
-| 图标 | Lucide React |
-| 数据库 | SQLite (rusqlite) |
+| 前端 | React 19 + TypeScript + Vite 7 |
+| 桌面框架 | Tauri 2 (Rust) |
+| 图像处理 | image-rs, psd |
+| 本地推理 | ONNX Runtime / PyTorch / Real-ESRGAN (Python) |
+| 数据存储 | SQLite (rusqlite) |
 
 ## 项目结构
 
@@ -156,27 +142,22 @@ npm run tauri build
 PurinBox/
 ├── public/               # 静态资源 (Logo, Icon)
 ├── src/                  # 前端源码
-│   ├── components/       # React 组件
-│   ├── pages/            # 页面组件
-│   ├── i18n/             # 国际化（多语言）
-│   └── styles/           # CSS 样式
-├── src-tauri/            # Tauri/Rust 后端
-│   ├── src/
-│   │   ├── commands/     # Tauri 命令 (业务逻辑)
-│   │   ├── lib.rs        # 插件注册
-│   │   └── main.rs       # 入口
-│   ├── icons/            # 应用图标
-│   └── scripts/          # Python 推理脚本
-├── package.json
-└── index.html
+│   ├── components/       # 组件
+│   ├── pages/            # 功能页面
+│   ├── i18n/             # 多语言资源
+│   └── styles/           # 样式与主题变量
+├── src-tauri/            # Tauri / Rust 后端
+│   ├── src/commands/     # Tauri 命令与业务逻辑
+│   ├── icons/            # 各平台应用图标
+│   └── scripts/          # Python 推理与环境脚本
+├── CHANGELOG.md
+└── package.json
 ```
 
 ## 许可证
 
-本项目采用 [PolyForm Noncommercial License 1.0.0](LICENSE)，以源码可用的方式提供，允许协议规定的非商业用途。商业用途需要另行获得授权。
-
-第三方依赖和模型遵循各自的许可证。
+本项目采用 [PolyForm Noncommercial License 1.0.0](LICENSE)，以源码可用的方式提供，允许协议规定的非商业用途；商业用途需另行获得授权。第三方依赖与模型遵循各自许可证。
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request！
+欢迎提交 Issue 和 Pull Request。
