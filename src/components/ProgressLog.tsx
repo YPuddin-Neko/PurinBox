@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, Dispatch, SetStateAction, ReactNode } from 'react';
-import { CheckCircle2, XCircle, Loader2, Info, ScrollText, Trash2, Download, Timer, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Info, ScrollText, Trash2, Download, Timer, AlertTriangle, SkipForward } from 'lucide-react';
 import '../styles/progress.css';
 import { useTranslation } from 'react-i18next';
 
@@ -26,10 +26,10 @@ interface ProgressLogProps {
    * 速度总是从第一个计数开始算，不含环境部署、模型下载等准备时间。
    */
   externalStartTime?: number;
-  /** 日志面板标题栏右侧、计时之后的附加内容（如成功/失败/警告计数） */
+  /** 进度标题栏中「处理进度」右侧的附加内容（如成功/跳过/警告/失败计数） */
   headerExtra?: ReactNode;
   /** 统一文件级处理统计（仅在计数 > 0 且未传自定义 headerExtra 时自动显示语义徽章） */
-  stats?: { success: number; warnings: number; failed: number };
+  stats?: { success: number; skipped?: number; warnings: number; failed: number };
 }
 
 function getTimeStr(): string {
@@ -111,8 +111,6 @@ export function estimateRemainingMs(
   const doneDelta = sample.lastCount - sample.firstCount;
   const sampleMs = sample.lastTime - sample.firstTime;
   if (doneDelta <= 0 || sampleMs < 500) return null;
-  // 避免前两张极短间隔抖动误触发长任务提示；慢任务（>=5s）第二次计数到达即可给出估算
-  if (doneDelta < 2 && sampleMs < 5000) return null;
   const msPerItem = sampleMs / doneDelta;
   const remainingItems = total - current;
   const rawRemainingMs = remainingItems * msPerItem;
@@ -198,10 +196,12 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
     }
   };
 
+  const skippedCount = stats?.skipped ?? 0;
   const autoStatsBadges =
-    headerExtra === undefined && stats && (stats.success > 0 || stats.warnings > 0 || stats.failed > 0) ? (
+    headerExtra === undefined && stats && (stats.success > 0 || skippedCount > 0 || stats.warnings > 0 || stats.failed > 0) ? (
       <span className="log-stat-badges">
         {stats.success > 0 && <span className="log-stat-badge is-ok" title={t('common.success')}><CheckCircle2 size={12} />{stats.success}</span>}
+        {skippedCount > 0 && <span className="log-stat-badge is-skip" title={t('common.skipped')}><SkipForward size={12} />{skippedCount}</span>}
         {stats.warnings > 0 && <span className="log-stat-badge is-warn" title={t('common.warning')}><AlertTriangle size={12} />{stats.warnings}</span>}
         {stats.failed > 0 && <span className="log-stat-badge is-err" title={t('common.failed')}><XCircle size={12} />{stats.failed}</span>}
       </span>
@@ -211,9 +211,12 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
     <div className="progress-section">
       <div className="progress-card">
         <div className="progress-header">
-          <span className="progress-label">
-            {isDone ? t('progressLog.done') : t('progressLog.progress')}
-          </span>
+          <div className="progress-header-left">
+            <span className="progress-label">
+              {isDone ? t('progressLog.done') : t('progressLog.progress')}
+            </span>
+            {headerExtra ?? autoStatsBadges}
+          </div>
           <span className="progress-percent">
             {speed && <span style={{ marginRight: 8, fontSize: 11, color: 'var(--color-text-tertiary)', fontWeight: 400 }}>{speed}</span>}
             {Math.round(progress)}%
@@ -250,7 +253,6 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
                 {elapsed}
               </span>
             )}
-            {headerExtra ?? autoStatsBadges}
             <span className="log-panel-count">{logs.length} {t('progressLog.entries')}</span>
             {onClearLogs && (
               <button

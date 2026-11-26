@@ -8,6 +8,7 @@ import { usePythonEnvEvents } from './usePythonEnvEvents';
 import {
   RunIdGate,
   isCancelledDone,
+  isSkippedProgressEvent,
   textsOverlap,
   useUnifiedTaskLogs,
   type UnifiedDownloadPayload,
@@ -82,7 +83,7 @@ export interface ProgressLogBindings {
   hasError: boolean;
   onClearLogs: () => void;
   externalStartTime: number;
-  stats: { success: number; warnings: number; failed: number };
+  stats: { success: number; skipped: number; warnings: number; failed: number };
 }
 
 /** 直接展开给 <ProcessButton>（onStart、cancelCommand 等由页面传） */
@@ -166,7 +167,7 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
   const [isDone, setIsDone] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [startTime, setStartTime] = useState(0);
-  const [stats, setStats] = useState({ success: 0, warnings: 0, failed: 0 });
+  const [stats, setStats] = useState({ success: 0, skipped: 0, warnings: 0, failed: 0 });
 
   const optionsRef = useRef(options);
   useLayoutEffect(() => {
@@ -220,9 +221,11 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
         record.failed = true;
         setHasError(true);
       }
-      if (payload.filename && (payload.status === 'success' || payload.status === 'warning' || payload.status === 'error')) {
+      if (payload.filename && (payload.status === 'success' || payload.status === 'warning' || payload.status === 'error' || payload.status === 'skipped')) {
+        const skipped = isSkippedProgressEvent(payload);
         setStats(prev => ({
-          success: prev.success + (payload.status === 'success' || (payload.status === 'warning' && !payload.unwritten) ? 1 : 0),
+          success: prev.success + (!skipped && (payload.status === 'success' || (payload.status === 'warning' && !payload.unwritten)) ? 1 : 0),
+          skipped: prev.skipped + (skipped ? 1 : 0),
           warnings: prev.warnings + (payload.status === 'warning' ? 1 : 0),
           failed: prev.failed + (payload.status === 'error' ? 1 : 0),
         }));
@@ -305,7 +308,7 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
     setIsDone(false);
     setHasError(false);
     setStartTime(Date.now());
-    setStats({ success: 0, warnings: 0, failed: 0 });
+    setStats({ success: 0, skipped: 0, warnings: 0, failed: 0 });
     logger.setInitialLog(request.startLog, 'info', { keep: request.keepLogs });
     if (tracked) addTask(tracked.id, tracked.name);
 
@@ -368,7 +371,7 @@ export function useBatchTask(options: BatchTaskOptions): BatchTask {
     setIsDone(false);
     setHasError(false);
     setStartTime(0);
-    setStats({ success: 0, warnings: 0, failed: 0 });
+    setStats({ success: 0, skipped: 0, warnings: 0, failed: 0 });
   }, [logger]);
 
   const progressLogProps = useMemo<ProgressLogBindings>(() => ({

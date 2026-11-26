@@ -28,6 +28,7 @@ const en = {
     close: 'Close',
     loading: 'Loading...',
     success: 'Success',
+    skipped: 'Skipped',
     failed: 'Failed',
     warning: 'Warning',
     export: 'Export',

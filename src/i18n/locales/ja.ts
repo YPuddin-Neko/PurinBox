@@ -28,6 +28,7 @@ const ja = {
     close: '閉じる',
     loading: '読み込み中...',
     success: '成功',
+    skipped: 'スキップ',
     failed: '失敗',
     warning: '警告',
     export: 'エクスポート',

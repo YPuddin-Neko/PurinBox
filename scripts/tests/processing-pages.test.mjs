@@ -89,7 +89,7 @@ await build({
       HomePage, SettingsPage, TaggerPage, TagManagerPage, TagSortPage, DatasetBalancerPage,
     };
     export const page = name => { const Page = pages[name]; return render(<MemoryRouter><Page /></MemoryRouter>); };
-    export const progressLog = logs => render(<ProgressLog current={1} total={1} logs={logs} isDone hasError={false} />);
+    export const progressLog = (logs, props = {}) => render(<ProgressLog current={1} total={1} logs={logs} isDone hasError={false} {...props} />);
     export const modal = props => render(<Modal open onClose={() => {}} title="T" {...props}><p>body</p></Modal>);
     export const thresholds = () => render(<HashThresholdFields dhash={10} onDhash={() => {}} phash={10} onPhash={() => {}} color={0.85} onColor={() => {}} />);
     export const device = props => render(<DeviceToggle onChange={() => {}} {...props} />);
@@ -206,6 +206,18 @@ test('warning logs keep one status icon and the completion detail', () => {
   assert.equal(count(html, /疑似截断/g), 1);
   assert.ok(html.includes('log-entry-message warning'));
   assert.ok(!html.includes('⚠'));
+});
+
+test('progress stat badges render in the progress header next to the progress label', () => {
+  const html = lib.progressLog([], { stats: { success: 4, skipped: 2, warnings: 1, failed: 3 } });
+  const headerIdx = html.indexOf('progress-header-left');
+  const badgesIdx = html.indexOf('log-stat-badges');
+  const logPanelIdx = html.indexOf('log-panel-header');
+  assert.ok(headerIdx > 0 && badgesIdx > headerIdx && badgesIdx < logPanelIdx);
+  assert.match(html, /log-stat-badge is-ok[^>]*title="成功"[^>]*>.*4<\/span>/);
+  assert.match(html, /log-stat-badge is-skip[^>]*title="跳过"[^>]*>.*2<\/span>/);
+  assert.match(html, /log-stat-badge is-warn[^>]*title="警告"[^>]*>.*1<\/span>/);
+  assert.match(html, /log-stat-badge is-err[^>]*title="失败"[^>]*>.*3<\/span>/);
 });
 
 test('both tagging tabs restore the warning slider below Top P within 1-500', () => {

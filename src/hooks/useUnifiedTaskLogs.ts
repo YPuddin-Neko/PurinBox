@@ -46,6 +46,12 @@ export function isCancelledDone(payload: Pick<UnifiedProgressPayload, 'status' |
   return payload.status === 'done' && payload.cancelled === true;
 }
 
+/** 判定单条文件进度事件是否属于「跳过」（兼容 status === 'skipped' 与 [跳过] 消息前缀） */
+export function isSkippedProgressEvent(payload: Pick<UnifiedProgressPayload, 'status' | 'message'>): boolean {
+  return payload.status === 'skipped'
+    || (payload.status === 'success' && /^\s*\[(?:跳过|skip(?:ped)?)\]/i.test(payload.message ?? ''));
+}
+
 export interface UnifiedDownloadPayload {
   filename?: string;
   downloaded?: number;

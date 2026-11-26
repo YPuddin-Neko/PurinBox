@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { PanelLeftClose, Search, ChevronDown, X } from 'lucide-react';
 import '../styles/sidebar.css';
 import { packageAppVersion, type UpdateCheckResult } from '../utils/appVersion';
+import { openExternalUrl } from '../utils/tauriRuntime';
 import { navSections, homePage, settingsPage, type PageDef } from '../appRegistry';
 import { useAppSettings } from './ThemeProvider';
 import { PurinBrandIcon } from './PurinBrandIcon';
@@ -127,7 +128,7 @@ export default function Sidebar() {
   const handleVersionClick = (e: MouseEvent) => {
     e.stopPropagation();
     if (updateInfo?.release_url) {
-      window.open(updateInfo.release_url, '_blank');
+      void openExternalUrl(updateInfo.release_url);
     } else {
       navigate('/settings');
     }

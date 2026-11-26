@@ -17,6 +17,7 @@ import { useTaskList } from '../components/TaskContext';
 import { PurinBrandIcon, DomainArtIcon } from '../components/PurinBrandIcon';
 import useSystemStats, { getUsageColor } from '../hooks/useSystemStats';
 import { packageAppVersion } from '../utils/appVersion';
+import { openExternalUrl } from '../utils/tauriRuntime';
 import { navSections, TASK_ROUTE_MAP } from '../appRegistry';
 import '../styles/home.css';
 
@@ -122,7 +123,7 @@ export default function HomePage() {
                     className="home-update-pill"
                     title={t('sidebar.newVersion', { version: updateInfo.latest_version })}
                     onClick={() => {
-                      if (updateInfo.release_url) window.open(updateInfo.release_url, '_blank');
+                      if (updateInfo.release_url) void openExternalUrl(updateInfo.release_url);
                       else navigate('/settings');
                     }}
                   >

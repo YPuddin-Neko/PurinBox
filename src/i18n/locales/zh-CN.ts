@@ -29,6 +29,7 @@ const zhCN = {
     close: '关闭',
     loading: '加载中...',
     success: '成功',
+    skipped: '跳过',
     failed: '失败',
     warning: '警告',
     export: '导出',

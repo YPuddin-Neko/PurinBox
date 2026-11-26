@@ -13,7 +13,7 @@ after(() => rmSync(output, { recursive: true, force: true }));
 const outfile = join(output, 'task-events.cjs');
 buildSync({
   stdin: { contents: `
-    export { RunIdGate, isCancelledDone } from './src/hooks/useUnifiedTaskLogs';
+    export { RunIdGate, isCancelledDone, isSkippedProgressEvent } from './src/hooks/useUnifiedTaskLogs';
     export { isCancelMessage, taskStatusFromEvent } from './src/components/TaskContext';
     export { settledTaskStatus, processResultHasIssues } from './src/hooks/useBatchTask';
     export {
@@ -130,6 +130,14 @@ test('ETA only displays for tasks projected to exceed 5 minutes and formats long
   medium = lib.nextSpeedSample(medium, 4, 1000, 8000); // 3 items in 6s = 2s/it; 120 items = 4m
   assert.equal(lib.estimateRemainingMs(medium, 4, 120, false, 8000, 1000), null);
 
+  // Immediately computes ETA as soon as speed appears (even after 1 delta in 2s) when projected >= 5 min
+  let earlyLong = lib.nextSpeedSample(null, 1, 1000, 2000);
+  earlyLong = lib.nextSpeedSample(earlyLong, 2, 1000, 4000); // 1 item in 2s = 2s/it; 300 items = 10m
+  assert.equal(lib.formatSpeed(earlyLong), '2.0 s/it');
+  const earlyRem = lib.estimateRemainingMs(earlyLong, 2, 300, false, 4000, 1000);
+  assert.equal(earlyRem, 298 * 2000);
+  assert.equal(lib.formatEtaDuration(earlyRem), '10m');
+
   // Long VLM task (86.4s/it, 146/434 done -> ~6h 55m remaining)
   let slow = lib.nextSpeedSample(null, 1, 0, 1000);
   slow = lib.nextSpeedSample(slow, 146, 0, 1000 + 145 * 86_400);
@@ -150,4 +158,12 @@ test('ETA only displays for tasks projected to exceed 5 minutes and formats long
   assert.equal(lib.formatElapsed(12 * 60_000 + 30_000), '12m30s');
   assert.equal(lib.formatElapsed(209 * 60_000 + 45_000), '3h29m45s');
   assert.equal(lib.formatEtaDuration(28 * 3600_000), '1d 4h');
+});
+
+test('skipped file progress events are classified separately from successes', () => {
+  assert.equal(lib.isSkippedProgressEvent({ status: 'skipped', message: 'a.png' }), true);
+  assert.equal(lib.isSkippedProgressEvent({ status: 'success', message: '[跳过] a.png (已有描述)' }), true);
+  assert.equal(lib.isSkippedProgressEvent({ status: 'success', message: '  [SKIP] b.png' }), true);
+  assert.equal(lib.isSkippedProgressEvent({ status: 'success', message: '[完成] a.png' }), false);
+  assert.equal(lib.isSkippedProgressEvent({ status: 'error', message: '[跳过] bad.png' }), false);
 });

@@ -21,7 +21,17 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-bottom: 8px;
+}
+
+.progress-header-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
 }
 
 .progress-label {
@@ -31,6 +41,9 @@
 }
 
 .progress-percent {
+  margin-left: auto;
+  white-space: nowrap;
+  flex-shrink: 0;
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
   font-weight: 700;
@@ -157,6 +170,11 @@
 .log-stat-badge.is-ok {
   background: var(--color-success-bg);
   color: var(--color-success);
+}
+
+.log-stat-badge.is-skip {
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
 }
 
 .log-stat-badge.is-warn {

@@ -2,7 +2,7 @@ import { Settings, Info, Check, Activity, Languages, Trash2, Eye, EyeOff, Extern
 import { useAppSettings } from '../components/ThemeProvider';
 import { useState, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { errorText, hasTauriRuntime, listen } from '../utils/tauriRuntime';
+import { errorText, hasTauriRuntime, listen, openExternalUrl } from '../utils/tauriRuntime';
 import { ConfirmModal, AlertModal } from '../components/Modal';
 import CustomSelect from '../components/CustomSelect';
 import { useQueuedInvoke } from '../hooks/useQueuedInvoke';
@@ -36,9 +36,18 @@ const SecretInput = ({ value, onChange, placeholder, show, onToggle, fontSize = 
 );
 
 const LinkButton = ({ href, text }: { href: string; text: string }) => (
-  <a href={href} target="_blank" rel="noreferrer" style={{
-    fontSize: 10, color: '#60a5fa', display: 'inline-flex', alignItems: 'center', gap: 3,
-  }}>
+  <a
+    href={href}
+    target="_blank"
+    rel="noreferrer"
+    onClick={e => {
+      e.preventDefault();
+      void openExternalUrl(href);
+    }}
+    style={{
+      fontSize: 10, color: '#60a5fa', display: 'inline-flex', alignItems: 'center', gap: 3,
+    }}
+  >
     {text} <ExternalLink style={{ width: 9, height: 9 }} />
   </a>
 );
@@ -781,7 +790,7 @@ export default function SettingsPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
               <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', lineHeight: 1.6 }}>
                 {t('settings.tagDatabaseDesc')}{' '}
-                {t('settings.tagDbSource')}: <a href="https://github.com/DraconicDragon/dbr-e621-lists-archive" target="_blank" rel="noreferrer" style={{ color: 'var(--color-accent-primary)' }}>DraconicDragon/dbr-e621-lists-archive</a>
+                {t('settings.tagDbSource')}: <a href="https://github.com/DraconicDragon/dbr-e621-lists-archive" target="_blank" rel="noreferrer" onClick={e => { e.preventDefault(); void openExternalUrl('https://github.com/DraconicDragon/dbr-e621-lists-archive'); }} style={{ color: 'var(--color-accent-primary)' }}>DraconicDragon/dbr-e621-lists-archive</a>
               </div>
               <div style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -902,6 +911,7 @@ export default function SettingsPage() {
               <p>Tauri 2 + React + TypeScript</p>
               <p style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                 <a href="https://github.com/YPuddin-Neko/PurinBox" target="_blank" rel="noreferrer"
+                  onClick={e => { e.preventDefault(); void openExternalUrl('https://github.com/YPuddin-Neko/PurinBox'); }}
                   style={{ color: '#60a5fa', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                   GitHub <ExternalLink style={{ width: 12, height: 12 }} />
                 </a>
@@ -945,6 +955,7 @@ export default function SettingsPage() {
                     <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
                       {hasUpdate && effectiveUpdate?.release_url && (
                         <a href={effectiveUpdate.release_url} target="_blank" rel="noreferrer"
+                          onClick={e => { e.preventDefault(); void openExternalUrl(effectiveUpdate.release_url); }}
                           className="btn btn-primary" style={{ fontSize: 11, height: 28, padding: '0 12px', display: 'flex', alignItems: 'center', gap: 4, animation: 'chipPop 240ms var(--ease-pop) both' }}>
                           <ExternalLink style={{ width: 11, height: 11 }} /> {t('settings.goToDownload')}
                         </a>
