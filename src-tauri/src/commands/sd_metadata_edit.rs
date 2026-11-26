@@ -1,4 +1,6 @@
-use flate2::{write::ZlibEncoder, Compression, Decompress, FlushDecompress, Status};
+use flate2::{
+    read::ZlibDecoder, write::ZlibEncoder, Compression, Decompress, FlushDecompress, Status,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -75,12 +77,162 @@ fn read_document_sync(file_path: String) -> Result<SdMetadataDocument, String> {
     document(Path::new(&file_path), &bytes, &parse_png(&bytes)?)
 }
 
-pub(super) fn read_text_chunks(path: &Path) -> Result<Vec<(String, String)>, String> {
+pub(super) struct PngMetadataChunks {
+    pub text_chunks: Vec<(String, String)>,
+    pub exif_blobs: Vec<Vec<u8>>,
+}
+
+pub(super) fn read_png_metadata_chunks(path: &Path) -> Result<PngMetadataChunks, String> {
     let bytes = read_bytes(path)?;
-    Ok(parse_png(&bytes)?
-        .into_iter()
-        .filter_map(|chunk| chunk.text.map(|text| (text.keyword, text.text)))
-        .collect())
+    if let Ok(chunks) = parse_png(&bytes) {
+        let mut text_chunks = Vec::new();
+        let mut exif_blobs = Vec::new();
+        for chunk in chunks {
+            if let Some(text) = chunk.text {
+                text_chunks.push((text.keyword, text.text));
+            } else if chunk.raw.len() >= 12 {
+                let kind = &bytes[chunk.raw.start + 4..chunk.raw.start + 8];
+                if kind == b"eXIf" {
+                    let data = &bytes[chunk.raw.start + 8..chunk.raw.end - 4];
+                    if data.len() <= MAX_TEXT_BYTES {
+                        exif_blobs.push(data.to_vec());
+                    }
+                }
+            }
+        }
+        return Ok(PngMetadataChunks {
+            text_chunks,
+            exif_blobs,
+        });
+    }
+    read_png_metadata_chunks_lenient(&bytes)
+}
+
+fn decode_latin1_or_utf8(bytes: &[u8]) -> String {
+    String::from_utf8(bytes.to_vec())
+        .unwrap_or_else(|_| bytes.iter().map(|b| char::from(*b)).collect())
+}
+
+fn inflate_lenient(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut decoder = ZlibDecoder::new(bytes).take((MAX_TEXT_BYTES + 1) as u64);
+    let mut out = Vec::new();
+    decoder.read_to_end(&mut out).ok()?;
+    if out.len() > MAX_TEXT_BYTES {
+        return None;
+    }
+    Some(out)
+}
+
+fn parse_itxt_lenient(data: &[u8]) -> Option<(String, String)> {
+    let null1 = data.iter().position(|&b| b == 0)?;
+    let key = decode_latin1_or_utf8(&data[..null1]);
+    let rest = &data[null1 + 1..];
+    if rest.len() < 4 {
+        return None;
+    }
+    let comp_flag = rest[0];
+    let rest = &rest[2..];
+    let null2 = rest.iter().position(|&b| b == 0)?;
+    let rest = &rest[null2 + 1..];
+    let null3 = rest.iter().position(|&b| b == 0)?;
+    let text_data = &rest[null3 + 1..];
+    let decoded = if comp_flag == 1 {
+        inflate_lenient(text_data)?
+    } else {
+        if text_data.len() > MAX_TEXT_BYTES {
+            return None;
+        }
+        text_data.to_vec()
+    };
+    let trimmed = match decoded.iter().rposition(|&b| b != 0) {
+        Some(end) => &decoded[..=end],
+        None => &[],
+    };
+    let text = String::from_utf8_lossy(trimmed).into_owned();
+    Some((key, text))
+}
+
+fn read_png_metadata_chunks_lenient(bytes: &[u8]) -> Result<PngMetadataChunks, String> {
+    if !bytes.starts_with(SIGNATURE) {
+        return Err(invalid("文件签名无效"));
+    }
+    let mut text_chunks = Vec::new();
+    let mut exif_blobs = Vec::new();
+    let mut pos = SIGNATURE.len();
+    let mut total_text = 0usize;
+    let mut chunk_count = 0usize;
+
+    while pos + 12 <= bytes.len() && chunk_count < 100_000 {
+        chunk_count += 1;
+        let len = u32::from_be_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+        let kind = &bytes[pos + 4..pos + 8];
+        let Some(data_end) = pos.checked_add(8).and_then(|v| v.checked_add(len)) else {
+            break;
+        };
+        if data_end > bytes.len() {
+            break;
+        }
+        let data = &bytes[pos + 8..data_end];
+
+        let parsed_text = match kind {
+            b"tEXt" => data.iter().position(|&b| b == 0).and_then(|null_pos| {
+                let raw_val = &data[null_pos + 1..];
+                if raw_val.len() > MAX_TEXT_BYTES {
+                    return None;
+                }
+                let trimmed = match raw_val.iter().rposition(|&b| b != 0) {
+                    Some(end) => &raw_val[..=end],
+                    None => &[],
+                };
+                Some((
+                    decode_latin1_or_utf8(&data[..null_pos]),
+                    decode_latin1_or_utf8(trimmed),
+                ))
+            }),
+            b"zTXt" => data.iter().position(|&b| b == 0).and_then(|null_pos| {
+                if null_pos + 2 > data.len() || data[null_pos + 1] != 0 {
+                    return None;
+                }
+                let decoded = inflate_lenient(&data[null_pos + 2..])?;
+                let trimmed = match decoded.iter().rposition(|&b| b != 0) {
+                    Some(end) => &decoded[..=end],
+                    None => &[],
+                };
+                Some((
+                    decode_latin1_or_utf8(&data[..null_pos]),
+                    decode_latin1_or_utf8(trimmed),
+                ))
+            }),
+            b"iTXt" => parse_itxt_lenient(data),
+            b"eXIf" => {
+                if data.len() <= MAX_TEXT_BYTES {
+                    exif_blobs.push(data.to_vec());
+                }
+                None
+            }
+            _ => None,
+        };
+
+        if let Some((key, val)) = parsed_text {
+            if val.len() <= MAX_TEXT_BYTES && total_text.saturating_add(val.len()) <= MAX_TOTAL_TEXT_BYTES {
+                total_text += val.len();
+                text_chunks.push((key, val));
+            }
+        }
+
+        if kind == b"IEND" {
+            break;
+        }
+        let Some(next) = data_end.checked_add(4) else {
+            break;
+        };
+        pos = next;
+    }
+
+    Ok(PngMetadataChunks {
+        text_chunks,
+        exif_blobs,
+    })
 }
 
 #[tauri::command]
@@ -142,7 +294,7 @@ fn png_path(file_path: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
+pub(super) fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
     let file = File::open(path).map_err(|e| format!("读取图片失败: {e}"))?;
     if file
         .metadata()

@@ -4,7 +4,13 @@ import { Loader2, Save } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { SaveSdMetadataArgs, SdMetadataDocument } from '../api/commandOptions';
 import { errorText } from '../utils/tauriRuntime';
-import { getMetadataFields, updateMetadataField, validateMetadataText, type MetadataField } from '../utils/sdMetadataEditor';
+import {
+  getMetadataFields,
+  updateDocumentMetadataField,
+  updateDocumentRawEntry,
+  validateMetadataText,
+  type MetadataField,
+} from '../utils/sdMetadataEditor';
 
 interface Props {
   path: string;
@@ -70,12 +76,13 @@ export default function SdMetadataEditor({ path, onSaved, onCancel, onStateChang
   const fullParams = fields.find(field => field.id === 'a1111:params');
 
   const updateField = (field: MetadataField, value: string) => {
-    if (!entry) return null;
+    if (!entry || !document) return null;
     const key = `${entry.index}:${field.id}`;
     try {
-      const next = updateMetadataField(entry.keyword, text, field.id, value);
+      const nextDrafts = updateDocumentMetadataField(document.entries, drafts, entry.index, field.id, value);
+      const next = nextDrafts[entry.index] ?? text;
       const nextFields = getMetadataFields(entry.keyword, next);
-      setDrafts(previous => ({ ...previous, [entry.index]: next }));
+      setDrafts(nextDrafts);
       setInvalidFields(previous => {
         const nextErrors = { ...previous };
         delete nextErrors[key];
@@ -132,7 +139,10 @@ export default function SdMetadataEditor({ path, onSaved, onCancel, onStateChang
         {entry && (raw || fields.length === 0 ? <div className="metadata-edit-field">
           <label className="form-label" htmlFor={rawId}>{entry.keyword}</label>
           <textarea id={rawId} className="form-input metadata-edit-raw" rows={14} value={text} disabled={saving} spellCheck={false}
-            onChange={e => { setDrafts(previous => ({ ...previous, [entry.index]: e.target.value })); setError(null); }} />
+            onChange={e => {
+              setDrafts(previous => updateDocumentRawEntry(document.entries, previous, entry.index, e.target.value, fields.length === 0 || !raw));
+              setError(null);
+            }} />
         </div> : groups.map(group => <div key={group} className="metadata-edit-group">
           {group && <div className="metadata-edit-group-title">{group.startsWith('sdMetadata.') ? t(group) : group === 'positive' || group === 'negative' ? t(`sdMetadata.${group}`) : group}</div>}
           <div className="metadata-edit-fields">{fields.filter(field => (field.group ?? '') === group && field.id !== 'a1111:params').map(field =>

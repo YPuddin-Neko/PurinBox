@@ -7,6 +7,12 @@ export type MetadataField = {
   group?: string;
 };
 
+export type MetadataDraftEntry = {
+  index: number;
+  keyword: string;
+  text: string;
+};
+
 type Span = { start: number; end: number };
 type EditableField = MetadataField & Span & { encoding?: 'json' | 'lora'; insert?: string; suffix?: string };
 type JsonNode = Span & {
@@ -233,4 +239,138 @@ export function validateMetadataText(keyword: string, text: string, originalText
     try { parseJson(originalText); originalJson = true; } catch { /* Plain text comments are valid. */ }
   }
   if (key === 'prompt' || key === 'workflow' || key === 'comment' && (originalJson || /^\s*[{[]/.test(text))) parseJson(text);
+}
+
+function isNovelAiCommentJson(text: string): boolean {
+  try {
+    const root = parseJson(text);
+    if (root.kind !== 'object' || !root.properties) return false;
+    const keys = new Set(root.properties.map(prop => prop.key));
+    return keys.has('v4_prompt')
+      || keys.has('v4_negative_prompt')
+      || keys.has('uc')
+      || (keys.has('prompt') && (keys.has('sampler') || keys.has('scale') || keys.has('noise_schedule') || keys.has('steps')));
+  } catch {
+    return false;
+  }
+}
+
+function updateJsonFieldByMatch(
+  keyword: string,
+  text: string,
+  predicate: (field: MetadataField) => boolean,
+  value: string,
+): string {
+  const target = getMetadataFields(keyword, text).find(predicate);
+  if (!target || target.value === value) return text;
+  return updateMetadataField(keyword, text, target.id, value);
+}
+
+/**
+ * Updates a structured field and keeps NovelAI's mirrored prompt fields in sync
+ * across `Comment` (`prompt` <-> `v4_prompt.caption.base_caption`, `uc` <-> `v4_negative_prompt.caption.base_caption`)
+ * and `Description`.
+ */
+export function updateDocumentMetadataField(
+  entries: MetadataDraftEntry[],
+  drafts: Record<number, string>,
+  entryIndex: number,
+  fieldId: string,
+  value: string,
+): Record<number, string> {
+  const entry = entries.find(item => item.index === entryIndex);
+  if (!entry) throw invalidField();
+  const currentText = drafts[entry.index] ?? entry.text;
+  const previousFields = getMetadataFields(entry.keyword, currentText);
+  const editedField = previousFields.find(field => field.id === fieldId);
+  let nextText = updateMetadataField(entry.keyword, currentText, fieldId, value);
+  const nextDrafts: Record<number, string> = { ...drafts, [entry.index]: nextText };
+
+  if (entry.keyword.toLowerCase() === 'comment' && editedField && isNovelAiCommentJson(nextText)) {
+    const group = editedField.group ?? '';
+    const isTopPrompt = group === '' && editedField.label === 'prompt';
+    const isV4Positive = group === 'v4_prompt.caption' && editedField.label === 'base_caption';
+    const isTopNegative = group === '' && editedField.label === 'uc';
+    const isV4Negative = group === 'v4_negative_prompt.caption' && editedField.label === 'base_caption';
+
+    if (isTopPrompt || isV4Positive) {
+      if (isTopPrompt) {
+        nextText = updateJsonFieldByMatch(
+          entry.keyword,
+          nextText,
+          f => (f.group ?? '') === 'v4_prompt.caption' && f.label === 'base_caption',
+          value,
+        );
+      } else {
+        nextText = updateJsonFieldByMatch(
+          entry.keyword,
+          nextText,
+          f => (f.group ?? '') === '' && f.label === 'prompt',
+          value,
+        );
+      }
+      nextDrafts[entry.index] = nextText;
+      for (const other of entries) {
+        if (other.keyword.toLowerCase() === 'description') {
+          nextDrafts[other.index] = value;
+        }
+      }
+    } else if (isTopNegative || isV4Negative) {
+      if (isTopNegative) {
+        nextText = updateJsonFieldByMatch(
+          entry.keyword,
+          nextText,
+          f => (f.group ?? '') === 'v4_negative_prompt.caption' && f.label === 'base_caption',
+          value,
+        );
+      } else {
+        nextText = updateJsonFieldByMatch(
+          entry.keyword,
+          nextText,
+          f => (f.group ?? '') === '' && f.label === 'uc',
+          value,
+        );
+      }
+      nextDrafts[entry.index] = nextText;
+    }
+  }
+
+  return nextDrafts;
+}
+
+export function updateDocumentRawEntry(
+  entries: MetadataDraftEntry[],
+  drafts: Record<number, string>,
+  entryIndex: number,
+  value: string,
+  syncMirrors = false,
+): Record<number, string> {
+  const entry = entries.find(item => item.index === entryIndex);
+  const nextDrafts: Record<number, string> = { ...drafts, [entryIndex]: value };
+  if (!entry || !syncMirrors || entry.keyword.toLowerCase() !== 'description') {
+    return nextDrafts;
+  }
+  for (const other of entries) {
+    if (other.keyword.toLowerCase() !== 'comment') continue;
+    const commentText = nextDrafts[other.index] ?? other.text;
+    if (!isNovelAiCommentJson(commentText)) continue;
+    try {
+      let updated = updateJsonFieldByMatch(
+        other.keyword,
+        commentText,
+        f => (f.group ?? '') === '' && f.label === 'prompt',
+        value,
+      );
+      updated = updateJsonFieldByMatch(
+        other.keyword,
+        updated,
+        f => (f.group ?? '') === 'v4_prompt.caption' && f.label === 'base_caption',
+        value,
+      );
+      nextDrafts[other.index] = updated;
+    } catch {
+      // Leave unparseable raw Comment drafts untouched.
+    }
+  }
+  return nextDrafts;
 }

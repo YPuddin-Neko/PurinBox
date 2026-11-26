@@ -336,7 +336,10 @@ export default function SdMetadataPage() {
                       }}>{item.source.toUpperCase()}</span>
                     </td>
                     <td style={{ padding: '6px 12px', fontSize: 11, color: 'var(--color-text-tertiary)', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {item.positive.slice(0, 80)}{item.positive.length > 80 ? '...' : ''}
+                      {(() => {
+                        const preview = item.positive || item.params;
+                        return preview ? `${preview.slice(0, 80)}${preview.length > 80 ? '...' : ''}` : '-';
+                      })()}
                     </td>
                   </tr>
                 );
@@ -351,7 +354,7 @@ export default function SdMetadataPage() {
           sectioned className="metadata-detail-modal" headerIcon={false} bodyStyle={{ padding: 20 }}
           dialogStyle={{ borderRadius: 12, maxHeight: '85vh' }} titleStyle={{ fontSize: 14, fontWeight: 600 }}
           headerExtra={<>
-            {!editing && <button className="btn btn-secondary btn-sm" disabled={task.processing} onClick={() => { setEditorState({ dirty: false, busy: false }); setEditing(true); }}><Pencil size={13} />{t('sdMetadata.editMetadata')}</button>}
+            {!editing && modalItem.path.toLowerCase().endsWith('.png') && <button className="btn btn-secondary btn-sm" disabled={task.processing} onClick={() => { setEditorState({ dirty: false, busy: false }); setEditing(true); }}><Pencil size={13} />{t('sdMetadata.editMetadata')}</button>}
             <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: `${sourceColor(modalItem.source)}22`, color: sourceColor(modalItem.source) }}>{modalItem.source.toUpperCase()}</span>
           </>}>
           <div className="metadata-detail-content">

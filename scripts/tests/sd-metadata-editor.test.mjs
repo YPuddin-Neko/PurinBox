@@ -12,7 +12,13 @@ const output = mkdtempSync(join(tmpdir(), 'purin-sd-metadata-editor-'));
 after(() => rmSync(output, { recursive: true, force: true }));
 const outfile = join(output, 'editor.cjs');
 buildSync({ entryPoints: [join(root, 'src/utils/sdMetadataEditor.ts')], bundle: true, platform: 'node', format: 'cjs', outfile });
-const { getMetadataFields, updateMetadataField, validateMetadataText } = createRequire(import.meta.url)(outfile);
+const {
+  getMetadataFields,
+  updateMetadataField,
+  updateDocumentMetadataField,
+  updateDocumentRawEntry,
+  validateMetadataText,
+} = createRequire(import.meta.url)(outfile);
 
 const find = (keyword, source, label, group) => {
   const field = getMetadataFields(keyword, source).find(field => field.label === label && (group === undefined || field.group === group));
@@ -107,4 +113,52 @@ test('field edits reject invalid numeric and boolean input, missing fields and m
   assert.throws(() => updateMetadataField('prompt', '{broken', 'json:[]', 'bad'), /sdMetadata.invalidJson/);
   assert.throws(() => edit('parameters', 'prompt\nSteps: 20', 'Steps', 'many'), /sdMetadata.invalidNumber/);
   assert.throws(() => edit('parameters', 'prompt\nSteps: 20', 'sdMetadata.params', 'Sampler: Euler'), /sdMetadata.invalidField/);
+});
+
+test('NovelAI document edits sync mirrored positive/negative prompts across Comment and Description', () => {
+  const comment = JSON.stringify({
+    prompt: 'artist_a, 1girl, solo',
+    steps: 28,
+    sampler: 'k_euler_ancestral',
+    scale: 5.5,
+    v4_prompt: { caption: { base_caption: 'artist_a, 1girl, solo', char_captions: [] }, use_coords: false },
+    v4_negative_prompt: { caption: { base_caption: 'lowres, bad hands', char_captions: [] }, use_coords: false },
+    uc: 'lowres, bad hands',
+  });
+  const entries = [
+    { index: 1, keyword: 'Comment', text: comment },
+    { index: 3, keyword: 'Description', text: 'artist_a, 1girl, solo' },
+    { index: 5, keyword: 'Source', text: 'NovelAI Diffusion V5 DB276663' },
+  ];
+  const initialDrafts = Object.fromEntries(entries.map(e => [e.index, e.text]));
+
+  // Deleting top-level Comment.prompt clears v4_prompt.caption.base_caption AND Description
+  const promptField = find('Comment', comment, 'prompt', '');
+  const afterClearPrompt = updateDocumentMetadataField(entries, initialDrafts, 1, promptField.id, '');
+  const parsedAfterClear = JSON.parse(afterClearPrompt[1]);
+  assert.equal(parsedAfterClear.prompt, '');
+  assert.equal(parsedAfterClear.v4_prompt.caption.base_caption, '');
+  assert.equal(afterClearPrompt[3], '');
+
+  // Editing v4_prompt.caption.base_caption updates Comment.prompt AND Description
+  const baseField = find('Comment', afterClearPrompt[1], 'base_caption', 'v4_prompt.caption');
+  const afterEditBase = updateDocumentMetadataField(entries, afterClearPrompt, 1, baseField.id, '1girl, blue sky');
+  const parsedAfterBase = JSON.parse(afterEditBase[1]);
+  assert.equal(parsedAfterBase.prompt, '1girl, blue sky');
+  assert.equal(parsedAfterBase.v4_prompt.caption.base_caption, '1girl, blue sky');
+  assert.equal(afterEditBase[3], '1girl, blue sky');
+
+  // Editing uc syncs v4_negative_prompt.caption.base_caption
+  const ucField = find('Comment', afterEditBase[1], 'uc', '');
+  const afterClearUc = updateDocumentMetadataField(entries, afterEditBase, 1, ucField.id, '');
+  const parsedAfterUc = JSON.parse(afterClearUc[1]);
+  assert.equal(parsedAfterUc.uc, '');
+  assert.equal(parsedAfterUc.v4_negative_prompt.caption.base_caption, '');
+
+  // Editing Description directly syncs both Comment.prompt and v4_prompt.caption.base_caption
+  const afterClearDesc = updateDocumentRawEntry(entries, afterClearUc, 3, '', true);
+  const parsedAfterDesc = JSON.parse(afterClearDesc[1]);
+  assert.equal(parsedAfterDesc.prompt, '');
+  assert.equal(parsedAfterDesc.v4_prompt.caption.base_caption, '');
+  assert.equal(afterClearDesc[3], '');
 });
