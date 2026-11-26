@@ -39,7 +39,7 @@ if (hasTauriRuntime()) {
     const hasSelection = (target.selectionStart ?? 0) !== (target.selectionEnd ?? 0);
 
     menu = document.createElement('div');
-    menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:99999;min-width:120px;padding:4px;background:var(--color-bg-secondary);border:1px solid var(--color-border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.25);`;
+    menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:99999;min-width:120px;padding:4px;background:var(--color-bg-secondary);border:1px solid var(--color-border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.25);transform-origin:top left;animation:dropdownDown 120ms var(--ease-out-expo);`;
 
     menu.appendChild(createMenuItem(i18next.t('contextMenu.selectAll'), () => { target.focus(); target.select(); }));
     menu.appendChild(createMenuItem(i18next.t('contextMenu.copy'), async () => {

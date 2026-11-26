@@ -285,6 +285,8 @@ export default function TagAutocomplete({
         maxHeight: 320,
         overflowY: 'auto',
         padding: 4,
+        transformOrigin: dropdownPos.flipUp ? 'bottom left' : 'top left',
+        animation: `${dropdownPos.flipUp ? 'dropdownUp' : 'dropdownDown'} 140ms var(--ease-out-expo)`,
       }}
     >
       {suggestions.map((tag, i) => {

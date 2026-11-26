@@ -451,6 +451,8 @@ export default function BucketPreviewPage() {
                 background: 'var(--color-bg-card)',
                 boxShadow: '0 10px 28px rgba(15,23,42,0.16)',
                 zIndex: 20,
+                transformOrigin: 'top right',
+                animation: 'dropdownDown 160ms var(--ease-out-expo)',
               }}>
                 {bucketEngineOptions.map(option => {
                   const selected = bucketEngine === option.value;

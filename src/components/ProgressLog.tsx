@@ -37,10 +37,12 @@ function getTimeStr(): string {
   return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 }
 
-function formatElapsed(ms: number): string {
-  const sec = Math.floor(ms / 1000);
-  const m = Math.floor(sec / 60);
+export function formatElapsed(ms: number): string {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
   const s = sec % 60;
+  if (h > 0) return `${h}h${m}m${s}s`;
   return m > 0 ? `${m}m${s}s` : `${s}s`;
 }
 
@@ -84,6 +86,9 @@ export function nextSpeedSample(prev: SpeedSample | null, current: number, run: 
   return { ...prev, lastTime: now, lastCount: current };
 }
 
+/** 预计总耗时达到 5 分钟及以上才显示预计剩余时间 */
+export const ETA_MIN_TASK_MS = 5 * 60 * 1000;
+
 /** 采样不足（还没有第二次计数，或间隔不到 0.5 秒）时返回空串 */
 export function formatSpeed(sample: SpeedSample | null): string {
   if (!sample || sample.lastCount <= sample.firstCount) return '';
@@ -93,10 +98,48 @@ export function formatSpeed(sample: SpeedSample | null): string {
   return speed >= 1 ? `${speed.toFixed(1)} it/s` : `${(1 / speed).toFixed(1)} s/it`;
 }
 
+/** 估算长任务的剩余毫秒数；任务未达 5 分钟阈值、采样不足或已结束时返回 null */
+export function estimateRemainingMs(
+  sample: SpeedSample | null,
+  current: number,
+  total: number,
+  isDone: boolean,
+  now: number,
+  startTime = 0,
+): number | null {
+  if (isDone || !sample || total <= 0 || current <= 0 || current >= total) return null;
+  const doneDelta = sample.lastCount - sample.firstCount;
+  const sampleMs = sample.lastTime - sample.firstTime;
+  if (doneDelta <= 0 || sampleMs < 500) return null;
+  // 避免前两张极短间隔抖动误触发长任务提示；慢任务（>=5s）第二次计数到达即可给出估算
+  if (doneDelta < 2 && sampleMs < 5000) return null;
+  const msPerItem = sampleMs / doneDelta;
+  const remainingItems = total - current;
+  const rawRemainingMs = remainingItems * msPerItem;
+  const inFlightMs = Math.min(msPerItem * 0.9, Math.max(0, now - sample.lastTime));
+  const remainingMs = Math.max(0, rawRemainingMs - inFlightMs);
+  const estimatedTotalMs = total * msPerItem;
+  const elapsedActiveMs = startTime > 0 ? Math.max(0, now - startTime) : Math.max(0, now - sample.firstTime);
+  if (Math.max(estimatedTotalMs, elapsedActiveMs + remainingMs) < ETA_MIN_TASK_MS) return null;
+  return remainingMs;
+}
+
+export function formatEtaDuration(ms: number): string {
+  if (ms < 60_000) return '< 1m';
+  const totalMinutes = Math.round(ms / 60_000);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const mins = totalMinutes % 60;
+  if (hours < 24) return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`;
+}
+
 export default function ProgressLog({ current, total, logs, isDone, hasError, onClearLogs, externalStartTime, headerExtra, stats }: ProgressLogProps) {
   const { t } = useTranslation();
   const [sample, setSample] = useState<SpeedSample | null>(null);
-  const [elapsed, setElapsed] = useState('');
+  const [now, setNow] = useState(() => Date.now());
 
   const progress = total > 0 ? Math.min(100, Math.max(0, (current / total) * 100)) : 0;
   const run = externalStartTime ?? 0;
@@ -109,16 +152,12 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
   const startTime = run > 0 ? run : (sample?.firstTime ?? 0);
 
   useEffect(() => {
-    if (startTime === 0) {
-      setElapsed('');
-      return;
-    }
-    const update = () => setElapsed(formatElapsed(Date.now() - startTime));
-    update();
+    if (startTime === 0) return;
+    setNow(Date.now());
     if (isDone) return;
-    const timer = setInterval(update, 1000);
+    const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [startTime, isDone]);
+  }, [startTime, isDone, current]);
 
   // 停在底部附近时才自动滚到底，往上翻看日志时不打断
   const logContainerRef = useRef<HTMLDivElement>(null);
@@ -137,6 +176,9 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
   }, [logs.length, logs[logs.length - 1]?.dlPercent]);
 
   const speed = formatSpeed(sample);
+  const elapsed = startTime > 0 ? formatElapsed(Math.max(0, now - startTime)) : '';
+  const etaMs = estimateRemainingMs(sample, current, total, isDone, now, startTime);
+  const eta = etaMs !== null ? formatEtaDuration(etaMs) : '';
 
   const statusIcon = (status: LogEntry['status']) => {
     switch (status) {
@@ -183,8 +225,15 @@ export default function ProgressLog({ current, total, logs, isDone, hasError, on
             style={{ width: `${progress}%` }}
           />
         </div>
-        <div className="progress-count">
-          {current} / {total} {t('progressLog.files')}
+        <div className="progress-footer">
+          {eta && (
+            <span className="progress-eta" title={t('progressLog.etaRemaining', { time: eta })}>
+              {t('progressLog.etaRemaining', { time: eta })}
+            </span>
+          )}
+          <span className="progress-count">
+            {current} / {total} {t('progressLog.files')}
+          </span>
         </div>
       </div>
 

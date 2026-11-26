@@ -1194,6 +1194,7 @@ const en = {
     entries: 'entries',
     clearLogs: 'Clear logs',
     noLogs: 'No logs',
+    etaRemaining: 'ETA {{time}}',
   },
 
   modal: {

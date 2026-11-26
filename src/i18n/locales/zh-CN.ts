@@ -1245,6 +1245,7 @@ const zhCN = {
     entries: '条',
     clearLogs: '清空日志',
     noLogs: '暂无日志',
+    etaRemaining: '预计剩余 {{time}}',
   },
 
   modal: {

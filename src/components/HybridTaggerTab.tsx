@@ -22,6 +22,7 @@ import { RunIdGate, isCancelledDone, resolveProgressMessage, textsOverlap, useTa
 import { notifyTaggerModelsChanged, useTaggerModels } from '../hooks/useTaggerModels';
 import { usePythonEnvEvents } from '../hooks/usePythonEnvEvents';
 import { useTaggerDownloadLog } from '../hooks/useTaggerDownloadLog';
+import { useBatchRunStats } from '../hooks/useBatchRunStats';
 import { settledTaskStatus } from '../hooks/useBatchTask';
 import { useLlmApiConfig } from '../hooks/useLlmApiConfig';
 import { isTaggerCategory, splitOutputFormat, toIntervalMs, type TagOutputChoice } from '../utils/taggerOptions';
@@ -134,6 +135,7 @@ export default function HybridTaggerTab({ gbcModels }: { gbcModels: GbcModels })
   const [pTot, setPTot] = useState(0);
   const taskLogs = useTaskLog();
   const { logs, setLogs, appendProgressLog } = taskLogs;
+  const runStats = useBatchRunStats();
   const [isDone, setIsDone] = useState(false);
   const [hasErr, setHasErr] = useState(false);
   const { addTask, updateTask } = useTaskQueue();
@@ -168,12 +170,13 @@ export default function HybridTaggerTab({ gbcModels }: { gbcModels: GbcModels })
       }
       // 各阶段的 done 不是整条流程的终态，终态在 handleStart 收尾时落定
       updateTask('hybrid-tagger', { status: 'running', message, ...(p.total > 0 ? { current: p.current, total: p.total } : {}) });
+      runStats.onEvent(p);
       if (p.status !== 'processing') appendProgressLog(p);
     };
     const l1 = listen<UnifiedProgressPayload>('tagger-progress', handler(taggerGate.current, ['converting', 'tagging']));
     const l2 = listen<UnifiedProgressPayload>('tag-refine-progress', handler(refineGate.current, ['refining']));
     return () => { active = false; void l1.then(off => off()); void l2.then(off => off()); };
-  }, [appendProgressLog, updateTask]);
+  }, [appendProgressLog, updateTask, runStats.onEvent]);
 
   usePythonEnvEvents(processing, taskLogs);
   useTaggerDownloadLog(() => phaseRef.current === 'converting' || phaseRef.current === 'tagging', taskLogs);
@@ -269,6 +272,7 @@ export default function HybridTaggerTab({ gbcModels }: { gbcModels: GbcModels })
     setPhase(next);
     (next === 'refining' ? refineGate : taggerGate).current.begin();
     setPCur(0); setPTot(0);
+    runStats.reset();
     taskLogs.appendLog(message, 'info');
     updateTask('hybrid-tagger', { status: 'running', current: 0, total: 0, message });
   };
@@ -290,6 +294,7 @@ export default function HybridTaggerTab({ gbcModels }: { gbcModels: GbcModels })
     // 事件回调随时会写入 cancelledRef，经函数读取，类型才不会被上面的置空收窄成 null
     const cancelSummary = () => cancelledRef.current?.summary;
     setProcessing(true); setPCur(0); setPTot(0); setIsDone(false); setHasErr(false);
+    runStats.reset();
     addTask('hybrid-tagger', t('hybridTagger.taskName'));
     taskLogs.setInitialLog();
 
@@ -379,6 +384,7 @@ export default function HybridTaggerTab({ gbcModels }: { gbcModels: GbcModels })
         taskLogs.appendLog(t('hybridTagger.allDone'), 'success');
         updateTask('hybrid-tagger', { status: 'done', message: t('hybridTagger.allDone') });
       }
+      runStats.summarize(taskLogs);
     } catch (error: unknown) {
       const text = errorText(error);
       if (cancelRequestedRef.current && isCancelMessage(text)) {
@@ -405,7 +411,7 @@ export default function HybridTaggerTab({ gbcModels }: { gbcModels: GbcModels })
     }
   };
 
-  const clearLogs = () => { setLogs([]); setIsDone(false); setHasErr(false); };
+  const clearLogs = () => { setLogs([]); setIsDone(false); setHasErr(false); runStats.reset(); };
   const cancelCommand = cancelCommandFor(phase);
 
   return (
@@ -545,6 +551,7 @@ export default function HybridTaggerTab({ gbcModels }: { gbcModels: GbcModels })
         isDone={isDone}
         hasError={hasErr}
         onClearLogs={clearLogs}
+        headerExtra={runStats.headerExtra}
       />
 
       </div>

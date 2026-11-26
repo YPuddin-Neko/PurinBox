@@ -105,7 +105,8 @@
   background: var(--color-bg-elevated);
   box-shadow: var(--shadow-lg);
   z-index: 50;
-  animation: slideUp 160ms var(--ease-out-expo);
+  transform-origin: top right;
+  animation: dropdownDown 160ms var(--ease-out-expo);
 }
 
 .ui-path-menu-item {

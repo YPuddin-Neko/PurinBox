@@ -30,21 +30,22 @@ export default function CustomSelect({
 
   const selected = options.find(o => o.value === value);
   // 下拉经 portal 渲染到 body（fixed 定位），避免被 overflow 容器裁剪
-  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number; flipUp: boolean } | null>(null);
+  const [dropdownPos, setDropdownPos] = useState<{ top?: number; bottom?: number; left: number; width: number; flipUp: boolean } | null>(null);
 
   const updateDropdownPosition = useCallback(() => {
     if (!ref.current) return;
     const rect = ref.current.getBoundingClientRect();
-    const dropdownMaxH = 220; // 与 .cs-dropdown 的 max-height 一致
+    const dropdownMaxH = Math.min(220, Math.max(options.length, 1) * (compact ? 30 : 34) + 12);
     const spaceBelow = window.innerHeight - rect.bottom - 8;
     const flipUp = spaceBelow < dropdownMaxH && rect.top > spaceBelow;
     setDropdownPos({
-      top: flipUp ? rect.top - 4 : rect.bottom + 4,
+      top: flipUp ? undefined : rect.bottom + 4,
+      bottom: flipUp ? window.innerHeight - rect.top + 4 : undefined,
       left: rect.left,
       width: rect.width,
       flipUp,
     });
-  }, []);
+  }, [options.length, compact]);
 
   // 打开时计算位置，并跟随滚动/缩放更新
   useEffect(() => {
@@ -122,15 +123,15 @@ export default function CustomSelect({
 
       {open && !disabled && dropdownPos && createPortal(
         <div
-          className={`cs-dropdown ${compact ? 'cs-compact' : ''}`}
+          className={`cs-dropdown ${compact ? 'cs-compact' : ''} ${dropdownPos.flipUp ? 'cs-flip-up' : ''}`}
           ref={listRef}
           style={{
             position: 'fixed',
             top: dropdownPos.top,
+            bottom: dropdownPos.bottom,
             left: dropdownPos.left,
             width: dropdownPos.width,
             right: 'auto',
-            transform: dropdownPos.flipUp ? 'translateY(-100%)' : undefined,
           }}
         >
           {options.map(opt => (

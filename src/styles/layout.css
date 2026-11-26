@@ -144,7 +144,8 @@
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   z-index: 100;
-  animation: slideUp 0.18s var(--ease-out-expo);
+  transform-origin: top right;
+  animation: dropdownDown 160ms var(--ease-out-expo);
   overflow: hidden;
 }
 
@@ -154,7 +155,7 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--space-5);
+  padding: var(--space-5) var(--space-5) 0;
 }
 
 /* ---- Directional Page Transitions ---- */
@@ -173,6 +174,7 @@
 /* ---- Page Container ---- */
 .page {
   max-width: 100%;
+  padding-bottom: var(--space-6);
 }
 
 .page-header {

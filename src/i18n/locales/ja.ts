@@ -1194,6 +1194,7 @@ const ja = {
     entries: '件',
     clearLogs: 'ログをクリア',
     noLogs: 'ログなし',
+    etaRemaining: '残り {{time}}',
   },
 
   modal: {

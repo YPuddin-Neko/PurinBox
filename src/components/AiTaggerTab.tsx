@@ -256,7 +256,7 @@ export default function AiTaggerTab() {
                   <Save style={{ width: 13, height: 13 }} /> {t('aiTagger.presets')} <ChevronDown style={{ width: 12, height: 12 }} />
                 </button>
                 {showPresets && (
-                  <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, minWidth: 220, background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', boxShadow: '0 8px 24px rgba(0,0,0,0.2)', zIndex: 100, overflow: 'hidden' }}>
+                  <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, minWidth: 220, background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', boxShadow: '0 8px 24px rgba(0,0,0,0.2)', zIndex: 100, overflow: 'hidden', transformOrigin: 'top right', animation: 'dropdownDown 160ms var(--ease-out-expo)' }}>
                     {/* 保存当前配置 */}
                     {!showPresetSave ? (
                       <button onClick={() => setShowPresetSave(true)} style={{ width: '100%', padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 6, border: 'none', background: 'transparent', color: 'var(--color-accent-primary)', cursor: 'pointer', fontSize: 12, fontWeight: 600, borderBottom: '1px solid var(--color-border)' }}>

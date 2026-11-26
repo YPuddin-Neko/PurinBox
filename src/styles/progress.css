@@ -73,12 +73,29 @@
   background: linear-gradient(90deg, var(--color-warning) 0%, #f59e0b 100%);
 }
 
-.progress-count {
+.progress-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   font-size: var(--font-size-xs);
   color: var(--color-text-tertiary);
+}
+
+.progress-eta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.progress-count {
+  margin-left: auto;
   text-align: right;
+  white-space: nowrap;
 }
 
 /* ---- Log Panel ---- */
